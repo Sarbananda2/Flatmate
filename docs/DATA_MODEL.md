@@ -362,6 +362,24 @@ The API maps each marker to an HTTP 409 with the matching error code.
 ### `rent_lease_config`
 Active lease parameters: landlord name, contact, PAN, bank/UPI parameters, monthly rent in paise, due day of month (1-28), and `requires_landlord_receipt` toggle.
 
+Since migration 0006 it also holds the current contract term:
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `lease_start_date`, `lease_end_date` | TEXT | `YYYY-MM-DD`. The end date is inclusive; when not given it is the start date plus the duration, less a day. Both null until a term is entered |
+| `duration_months` | INTEGER | Default 11 |
+| `notice_period_days` | INTEGER | Default 30. The notice window opens this many days before the end date |
+| `lock_in_months` | INTEGER | Default 6 |
+| `security_deposit_paise` | INTEGER | Integer paise, nullable |
+| `escalation_type` | TEXT | `percent` / `fixed` / `none` |
+| `escalation_percent` | REAL | Default 5.0. A rate, not money; the projected rent is rounded to whole paise |
+| `renewal_rent_paise` | INTEGER | The agreed next-term rent when `escalation_type` is `fixed` |
+| `lease_status` | TEXT | `active` / `notice_served` / `vacated` / `renewed`. Only the first two are set by the application today |
+| `notice_served_date`, `target_handover_date` | TEXT | Set when notice to vacate is recorded; cleared by a renewal |
+
+### `rent_lease_term`
+One row per completed term, written when the lease is renewed: `term_number`, `start_date`, `end_date`, `monthly_rent_paise`, and `escalation_applied_percent` (the change from that term's rent to the next term's). The current term is the one on `rent_lease_config`; its number is one more than the rows here.
+
 ### `rent_cycle`
 State of a month's rent: links `settlement_month` to its `expense_instance`. Tracks `disbursement_status` (`pending` vs `disbursed`), funder (`disbursed_by` = `pool` vs `resident_advance`), and funding payment ID.
 

@@ -119,6 +119,14 @@ allocation weights you supply. Each charge can use its own rule, so energy can
 follow measured usage while fixed and common-area charges split equally or by
 an agreed exception. You review the full calculation before committing it.
 
+### Housing & Utilities
+
+One hub (`/services`) for the household's recurring services. Rent and
+electricity are live, each with a card summarising the selected settlement
+month and a link to its own screen; water, cooking gas, broadband and house
+help are shown as planned. The rent and electricity screens live under it at
+`/services/rent`, `/services/rent/config` and `/services/electricity`.
+
 ### Rent management
 
 A dedicated module for single master lease rent. Configures landlord details,
@@ -127,6 +135,14 @@ residents on the 1st of each month. Features **targeted rent payments** so money
 paid for rent settles that month's rent allocation first, **deferred/optional
 landlord receipt attachments**, and one-click printable **HRA rent receipts**
 (Section 10(13A) IT Act compliant).
+
+The lease also carries its **contract term**: start date, duration, notice
+period, lock-in, security deposit and an escalation clause (a percentage, a
+fixed renewal rent, or none). The Rent screen shows where the term stands, and
+when the notice window opens it asks the household to choose between
+**renewing** — which archives the finished term and starts the next at the
+escalated rent — and **serving notice to vacate**. A term that has run out
+never blocks a month's rent from being generated.
 
 ![Reviewing a statement](docs/images/statement.png)
 
@@ -230,12 +246,20 @@ Full detail: [`docs/ACCOUNTING_RULES.md`](docs/ACCOUNTING_RULES.md).
 .venv/bin/python scripts/manage.py demo            # load a sample household
 ```
 
+Sample data for the rent and lease screens, on top of the `demo` household:
+
+```bash
+.venv/bin/python scripts/seed_lease_data.py --replace-existing-rent   # a lease in its second term, October rent part-collected
+.venv/bin/python scripts/seed_lease_data.py --scenario final-month --replace-existing-rent   # the same, in the term's last month
+.venv/bin/python scripts/seed_settlement_periods.py                   # three months that each look different on the hub
+```
+
 The original terminal workflow still works against the same database:
 
 ```bash
-.venv/bin/python apartment_setup_cli.py   --db data/apartment.sqlite
-.venv/bin/python electricity_entry_cli.py --db data/apartment.sqlite --apartment home
-.venv/bin/python ledger_entry_cli.py      --db data/apartment.sqlite --apartment home
+.venv/bin/python legacy/apartment_setup_cli.py   --db data/apartment.sqlite
+.venv/bin/python legacy/electricity_entry_cli.py --db data/apartment.sqlite --apartment home
+.venv/bin/python legacy/ledger_entry_cli.py      --db data/apartment.sqlite --apartment home
 ```
 
 ---
@@ -243,12 +267,13 @@ The original terminal workflow still works against the same database:
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest        # 289 backend tests
-cd frontend && npm test           # 68 frontend tests
+.venv/bin/python -m pytest        # 488 backend tests
+cd frontend && npm test           # 121 frontend tests
 ```
 
-The backend suite includes the original prototype's 53 `unittest` tests, which
-pytest collects and which now run against the refactored services unchanged.
+The backend suite includes the original prototype's 53 `unittest` tests under
+`legacy/`, which pytest collects and which run against the refactored services
+unchanged.
 
 ---
 
@@ -324,9 +349,11 @@ Every setting is an `AEM_`-prefixed environment variable.
 | [`docs/ACCOUNTING_RULES.md`](docs/ACCOUNTING_RULES.md)   | The rules, the invariants, and the decisions still open  |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)               | How to run a month, end to end                          |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md)               | Migrations, backup, restore, troubleshooting            |
-| [`SPECIFICATION.md`](SPECIFICATION.md)                   | The business specification                              |
-| [`CHECKLIST.md`](CHECKLIST.md)                           | What was found in the repository and what was built     |
-| [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md)           | What this does not do, stated plainly                   |
+| [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md)         | The business specification                              |
+| [`docs/CHECKLIST.md`](docs/CHECKLIST.md)                 | What was found in the repository and what was built     |
+| [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) | What this does not do, stated plainly                   |
+| [`docs/TEST_RESULTS.txt`](docs/TEST_RESULTS.txt)         | The recorded test run                                   |
+| [`docs/handoffs/`](docs/handoffs/)                       | The design briefs individual features were built from   |
 
 ---
 
@@ -340,10 +367,15 @@ aem/                        the Python package
   schemas/                  typed request and response models
   migrations/               versioned, forward-only SQL
 frontend/src/               React + TypeScript
-  pages/ components/ lib/   screens, shared UI, formatting
-tests/                      pytest: invariants, API, migrations, end-to-end
-scripts/                    manage.py, run.sh, dev.sh
-docs/                       architecture, data model, rules, guide, operations
-*.py (repository root)      the original prototype's CLIs, tests, and
-                            compatibility shims re-exporting aem.*
+  pages/                    one file per screen
+  pages/services/           the Housing & Utilities hub, rent, lease, electricity
+  components/ lib/ api/     shared UI, formatting and helpers, the API client
+tests/                      pytest: invariants, API, migrations, rent, end-to-end
+scripts/                    manage.py, run.sh, dev.sh, and the sample-data seeds
+docs/                       architecture, data model, rules, guide, operations,
+                            specification, checklist, limitations
+docs/handoffs/              feature design briefs
+legacy/                     the original prototype's CLIs, tests, schema.sql, and
+                            compatibility modules re-exporting aem.*
+data/  backups/             the SQLite database and its backups (not committed)
 ```

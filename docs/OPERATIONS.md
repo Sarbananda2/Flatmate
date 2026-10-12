@@ -272,8 +272,8 @@ cd frontend && npm install && npm run build
 ## Running the tests
 
 ```bash
-.venv/bin/python -m pytest        # backend: 289 tests
-cd frontend && npm test           # frontend: 68 tests
+.venv/bin/python -m pytest        # backend: 488 tests
+cd frontend && npm test           # frontend: 121 tests
 cd frontend && npm run typecheck  # TypeScript
 ```
 
@@ -283,7 +283,8 @@ Useful subsets:
 .venv/bin/python -m pytest tests/test_invariants.py   # the twenty accounting invariants
 .venv/bin/python -m pytest tests/test_migrations.py   # upgrade safety
 .venv/bin/python -m pytest tests/test_end_to_end.py   # the full operator journey
-.venv/bin/python -m pytest test_apartment_ledger.py   # the original prototype suite
+.venv/bin/python -m pytest tests/test_rent.py         # rent and the lease lifecycle
+.venv/bin/python -m pytest legacy                     # the original prototype suite
 ```
 
 ---

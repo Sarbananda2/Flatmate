@@ -5,7 +5,7 @@ Derived from the actual repository contents on 2026-10-11.
 ## Baseline (verified before any change)
 
 - `python3 -m unittest discover` → **53 tests, 0 failures** (recorded in `TEST_RESULTS.txt`).
-- Working code found: `apartment_ledger.py` (pure split/payment/pool math),
+- (These files now live under `legacy/`.) Working code found: `apartment_ledger.py` (pure split/payment/pool math),
   `electricity_engine.py` (bill allocation), `electricity_workflow.py` (SQLite
   persistence for electricity), `ledger_workflow.py` (expenses, payments,
   statements, pooled reconciliation), three terminal CLIs, `schema.sql`.
@@ -128,13 +128,13 @@ real server and looking at it.
 ### Still open
 
 Business decisions that need a human answer are listed in
-[`docs/ACCOUNTING_RULES.md` §15](docs/ACCOUNTING_RULES.md#15-decisions-still-open)
+[`docs/ACCOUNTING_RULES.md` §15](ACCOUNTING_RULES.md#15-decisions-still-open)
 and summarised in [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 
 **Move-in/move-out proration — decided 2026-10-11: nothing prorates.** This was
 the one open decision that affected money. A partial month never reduces a
 share, for any category; dates are recorded for reference only. It is now a
-stated rule in [`docs/ACCOUNTING_RULES.md` §7](docs/ACCOUNTING_RULES.md#7-residents-and-partial-months-nothing-prorates),
+stated rule in [`docs/ACCOUNTING_RULES.md` §7](ACCOUNTING_RULES.md#7-residents-and-partial-months-nothing-prorates),
 surfaced in the UI, and locked in by tests.
 
 The decisions still open are a paisa (the payer rounding preference on weighted

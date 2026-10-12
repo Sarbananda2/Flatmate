@@ -3,10 +3,10 @@
 > **Status.** Every rule below is implemented and covered by tests. Where the
 > specification left a decision open, the application's current behaviour is
 > stated alongside it, and the full list of open decisions is in
-> [`docs/ACCOUNTING_RULES.md` §14](docs/ACCOUNTING_RULES.md#14-decisions-still-open).
+> [`docs/ACCOUNTING_RULES.md` §14](ACCOUNTING_RULES.md#14-decisions-still-open).
 >
 > The authoritative description of what the application does is
-> [`docs/ACCOUNTING_RULES.md`](docs/ACCOUNTING_RULES.md). This document records
+> [`docs/ACCOUNTING_RULES.md`](ACCOUNTING_RULES.md). This document records
 > the business intent it was built from.
 
 ## 1. Purpose
@@ -199,7 +199,7 @@ Money is entered to the workflow in integer paise. The terminal wizard accepts r
 
 The interactive entry command is:
 
-`python electricity_entry_cli.py --db apartment.sqlite --apartment <apartment_id>`
+`python legacy/electricity_entry_cli.py --db apartment.sqlite --apartment <apartment_id>`
 
 The database must already contain the apartment and resident records. This is a terminal workflow, not a graphical web form. Application-wide settlement, statement generation, and a web UI remain outside this increment.
 

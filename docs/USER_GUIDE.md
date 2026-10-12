@@ -10,9 +10,10 @@ Written for: the person who keeps the household's accounts.
 
 Open **http://127.0.0.1:8787** after running `./scripts/run.sh`.
 
-The **month selector** in the header is the settlement month every screen works
-in. Change it there once and every page follows; it is remembered between
-visits.
+The **Settlement Period** selector under the header is the settlement month
+every screen works in. Change it there once and every page follows; it is
+remembered between visits. It is hidden on setup and configuration screens,
+where the month has no effect.
 
 The topbar ribbon provides four master destinations:
 - **Month Hub** — Settlement lifecycle, cumulative balances, peer-to-peer settlement transfers.
@@ -141,15 +142,23 @@ until the shares total the expense exactly.
 
 ### Step 3b — Manage the master lease rent
 
-**Rent (`/rent`).** Manages the single master lease and its equal split.
+**Rent (`/services/rent`).** Manages the single master lease and its equal
+split. Reach it from **Housing & Utilities → Open Rent Hub**.
 
-1. **Lease Settings.** Enter the landlord's name, PAN, bank account/UPI, total monthly rent, due day (1-28), and whether you receive formal landlord receipts.
+1. **Lease Settings (`/services/rent/config`).** Enter the monthly rent and due day (1-28); the contract term (start date, duration, notice period, lock-in, security deposit); the escalation clause for renewal; the landlord's name, PAN, phone and email; the payout account (bank account, IFSC, UPI ID); and whether you receive formal landlord receipts. The form shows the projected renewal rent as you type.
 2. **Generate / Adopt Rent.** On the 1st of the month, generate the rent cycle. It splits the rent equally across active participants ($1/N$). If rent was already recorded through recurring expenses, it is **linked** rather than duplicated.
 3. **Targeted Rent Collection.** When a resident pays their rent, click **Record Payment** directly in their row on the Rent screen. Unlike general payments which apply oldest-first across all household expenses, this targeted payment settles their **rent allocation first**.
 4. **Record Landlord Payout.** When the rent is transferred to the owner, record the payout (funded either by the apartment pool or by a resident advance).
 5. **Landlord Receipts & HRA Slips.**
    - If the lease expects a landlord receipt, it can be attached during payout or deferred and uploaded later.
    - Click **View HRA Slip** for any participant to download their formal Section 10(13A) IT Act rent receipt.
+6. **The contract term.** Once the lease has a start date, the Rent screen shows a term pill such as *Term: Month 10 of 11 (Expires 28 Feb 2027)*. When the notice window opens — the notice period before the last day of the term — a banner offers two choices:
+   - **Renew Tenure** archives the finished term and starts the next one. The new start date, duration and rent are pre-filled from the lease and its escalation clause, and can be changed before confirming.
+   - **Plan to Vacate (Serve Notice)** records the date notice was given and the planned handover date, and works out the deposit refund after any deductions you enter. It changes nothing in the ledger.
+
+   Neither is forced: if the term runs out with no decision, rent keeps generating at the current rate and the banner stays as a reminder.
+
+**Housing & Utilities (`/services`).** The Rent card shows the contract, landlord, due day, the selected month's collection, and how far through its term the lease is. The Electricity card shows the bill settling in the selected month, or the most recent bill when there is none. Stepping the Settlement Period changes the month-specific rows on both cards; the term progress follows today's date and does not.
 
 ### Step 4 — Enter the electricity bill
 

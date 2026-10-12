@@ -19,7 +19,7 @@ allocation. What the operator still controls, expense by expense, is who takes
 part at all — leaving somebody out gives them an explicit zero, which is a
 participation decision rather than a proration one.
 
-Documented in [`docs/ACCOUNTING_RULES.md` §7](docs/ACCOUNTING_RULES.md#7-residents-and-partial-months-nothing-prorates)
+Documented in [`docs/ACCOUNTING_RULES.md` §7](ACCOUNTING_RULES.md#7-residents-and-partial-months-nothing-prorates)
 and locked in by tests, so it cannot drift back.
 
 ### The payer rounding preference on weighted and measured splits
@@ -63,10 +63,37 @@ reverse it and record a corrected payment, or use a signed adjustment.
 
 Rent management covers one arrangement: a single master lease with one monthly
 rent, divided equally between the residents taking part. Unequal room rents,
-several leases, a security deposit, and rent that changes part-way through a
-month are not modelled. A month's rent can still be recorded by hand as an
-ordinary expense with weighted or custom shares; the Rent screen will not adopt
-it, because it only manages equal splits.
+several leases, and rent that changes part-way through a month are not
+modelled. The lease form lists four other arrangements as "Under Development";
+they are placeholders and cannot be selected. A month's rent can still be
+recorded by hand as an ordinary expense with weighted or custom shares; the
+Rent screen will not adopt it, because it only manages equal splits.
+
+### The lease term is tracked, not enforced
+
+The contract term, notice window and lock-in are information for the household.
+Nothing is blocked when a term expires or a lock-in is broken; rent keeps
+generating at the current rate until the lease is renewed.
+
+The security deposit is recorded as a figure on the lease only. It is not a
+ledger entry, and neither is its refund: the deposit recovery shown when
+serving notice is an on-screen estimate, and the deductions entered there are
+kept only as a note in the audit trail. There is no step that marks a lease as
+finally vacated.
+
+### Rent already generated at another amount is adopted as it is
+
+If a month's rent already exists as an expense — for example from the
+recurring generator, at the Rent category's default amount — generating rent
+for that month links that expense at its own amount rather than charging the
+lease rent. Keep the Rent category's default amount in step with the lease, or
+generate rent from the Rent screen first.
+
+### Removing a resident during setup marks them moved out
+
+The guided setup can rename a saved resident and remove one, but removal is the
+same as moving out: the record is kept as inactive. A name added by mistake
+cannot be deleted outright.
 
 ### A recorded landlord payout cannot be undone
 

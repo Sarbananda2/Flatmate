@@ -52,7 +52,7 @@ do not re-implement it.** That is why the allocation preview shown in the UI
 can never disagree with what is saved — both call the same function.
 
 This is the prototype's original code, moved here and kept as the authority.
-The only behavioural changes are documented in `CHECKLIST.md`.
+The only behavioural changes are documented in [`CHECKLIST.md`](CHECKLIST.md).
 
 ### `aem/services/` — business logic
 
@@ -66,6 +66,9 @@ One module per area of the application:
 | `allocation.py` | Turning an amount plus a method into resident shares |
 | `expenses.py` | General expenses and their allocations |
 | `electricity.py` | Bills over the electricity engine |
+| `rent.py` | The master lease, its contract term, renewal and notice, monthly rent cycles, HRA receipts |
+| `housing.py` | The Housing & Utilities summary: one read-only view over rent and electricity |
+| `opening_balances.py` | Balances carried in from before the first statement |
 | `payments.py` | Payments, credits, advances, reversals |
 | `adjustments.py` | Signed ledger adjustments |
 | `recurring.py` | Preview and confirmed generation |
@@ -170,10 +173,10 @@ still say September. Existing rows were backfilled to their previous meaning.
 
 ### Compatibility was kept deliberately
 
-The prototype's modules remain at the repository root as thin shims
+The prototype's modules remain under `legacy/` as thin shims
 re-exporting `aem.*`. The original 53 tests run **unchanged** against the
 refactored services, which is how the refactor was shown not to have changed
-behaviour. The terminal CLIs still work against the same database.
+behaviour. The terminal CLIs, also under `legacy/`, still work against the same database.
 
 ### `__pool__` is a real account
 
@@ -189,6 +192,10 @@ aggregate.
 React 18 with React Router, no state-management library: screens load data with
 `useResource`, write with `useMutation`, and share only the selected settlement
 month through one small context.
+
+Screens are one file each under `src/pages/`. The Housing & Utilities screens
+sit together in `src/pages/services/`, mirroring their `/services/...` URLs;
+the old `/rent`, `/rent/config` and `/electricity` addresses redirect there.
 
 `useResource` makes the loading, error, and empty states explicit, and
 `AsyncSection` makes rendering all three unavoidable — a screen cannot
@@ -249,7 +256,9 @@ performs a WAL checkpoint so the file on disk is complete and safe to copy.
 | `tests/test_api.py` | The HTTP contract: envelope, guards, filters, exports |
 | `tests/test_migrations.py` | Upgrading a real prototype database without loss |
 | `tests/test_end_to_end.py` | The complete operator journey, over HTTP, including a restart |
-| root `test_*.py` | The original prototype suite, unchanged |
+| `tests/test_rent.py` | The lease, equal split, rent payments, payouts, receipts, and the contract term: timeline, renewal, notice |
+| `tests/test_opening_balances.py`, `tests/test_settlement_sharing_and_sync.py`, `tests/test_setup_wizard.py` | Opening balances, settlement sharing and smart-plug sync, the guided setup |
+| `legacy/test_*.py` | The original prototype suite, unchanged |
 | `frontend/src/**/*.test.*` | Money formatting, UI guarantees, form interactions |
 
 The `household` fixture is deliberately awkward: three residents, two months,
