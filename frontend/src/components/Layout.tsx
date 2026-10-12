@@ -262,27 +262,37 @@ export function Layout({ children }: { children: ReactNode }) {
         Skip to main content
       </a>
       <div className="min-h-full flex flex-col">
-        <header className="bg-[var(--bg-surface)] border-b border-[var(--border-subtle)] px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between sticky top-0 z-40 backdrop-blur-md min-h-[57px] print:hidden">
+        <header className="bg-[var(--bg-surface)] border-b border-[var(--border-subtle)] px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between sm:grid sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:gap-x-4 sticky top-0 z-40 backdrop-blur-md min-h-[57px] print:hidden">
           {/* LEFT: emblem and apartment name */}
           <Link
             to="/"
-            className="flex items-center gap-3 shrink-0 min-w-0 no-underline lg:max-w-[calc(50%-13rem)]"
+            className="flex items-center gap-3 min-w-0 no-underline sm:justify-self-start sm:max-w-full"
+            title={apartment?.name ?? undefined}
             aria-label={apartment?.name ?? 'Apartment Expense Manager'}
           >
             <span className="flex w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-700 to-indigo-500 text-white items-center justify-center shrink-0 shadow-xs">
               <Building2 className="w-4 h-4 shrink-0" aria-hidden="true" />
             </span>
-            <span className="hidden lg:block font-bold text-sm text-[var(--text-primary)] truncate">
+            <span
+              className={clsx(
+                'font-bold text-sm text-[var(--text-primary)] truncate lg:max-w-[300px]',
+                // Beside the tabs there is only room for the name on wide
+                // screens; the setup wizard has no tabs, so it can show sooner.
+                onWizard ? 'hidden sm:block' : 'hidden lg:block',
+              )}
+            >
               {apartment?.name ?? 'Apartment Expense Manager'}
             </span>
           </Link>
 
-          {/* CENTER: anchored to the ribbon midpoint, so nothing on either side
-              can shift it. Below `sm` there is no room beside the utilities,
-              and the tabs take a row of their own. */}
+          {/* CENTER: the middle column of a three-column grid whose side columns
+              are equal, so the tabs sit at the ribbon's midpoint and neither
+              side can run into them: the name truncates inside its own column.
+              Below `sm` there is no room beside the utilities, and the tabs
+              take a row of their own. */}
           {!onWizard && (
             <nav
-              className="max-sm:order-last max-sm:w-full max-sm:mt-2.5 max-sm:justify-start max-sm:overflow-x-auto sm:absolute sm:left-1/2 sm:-translate-x-1/2 flex items-center justify-center gap-1 bg-[var(--bg-elevated)] p-1 rounded-xl border border-[var(--border-subtle)] text-xs font-medium shadow-xs shrink-0"
+              className="max-sm:order-last max-sm:w-full max-sm:mt-2.5 max-sm:justify-start max-sm:overflow-x-auto sm:col-start-2 flex items-center justify-center gap-1 bg-[var(--bg-elevated)] p-1 rounded-xl border border-[var(--border-subtle)] text-xs font-medium shadow-xs shrink-0"
               aria-label="Main navigation"
             >
               {NAV_TABS.map((tab) => {
@@ -307,7 +317,7 @@ export function Layout({ children }: { children: ReactNode }) {
           )}
 
           {/* RIGHT: theme toggle, then settings as the right-most element */}
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0 sm:col-start-3 sm:justify-self-end">
             <button
               type="button"
               onClick={toggleTheme}
