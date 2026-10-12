@@ -10,6 +10,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   AlertTriangle,
+  ArrowRight,
   ArrowUpRight,
   Building2,
   CalendarDays,
@@ -20,6 +21,7 @@ import {
   Plus,
   Printer,
   Settings,
+  ShieldCheck,
   Upload,
   Users,
 } from 'lucide-react'
@@ -200,6 +202,7 @@ export function RentMonth({ month }: { month: string }) {
                   month={month}
                   onAttach={() => setDialog('attach')}
                 />
+                <DepositOverview config={config} />
               </>
             )}
 
@@ -275,6 +278,35 @@ export function RentMonth({ month }: { month: string }) {
         )
       }}
     </AsyncSection>
+  )
+}
+
+/** The lease's deposit at a glance. Its slots and escrow have a screen of their own. */
+function DepositOverview({ config }: { config: RentLeaseConfig }) {
+  return (
+    <Panel
+      title="Security Deposit"
+      icon={<ShieldCheck className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint="Held in escrow by the landlord for the length of the lease. Not part of this month's rent."
+      actions={
+        <Link to="/services/deposits" className={BUTTON_SECONDARY}>
+          Manage Deposit Slots &amp; Escrow
+          <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        </Link>
+      }
+    >
+      <div className="flex flex-wrap items-baseline gap-x-2 text-xs text-[var(--text-secondary)]">
+        <span>Total deposit</span>
+        {config.security_deposit_paise != null ? (
+          <Rupees
+            paise={config.security_deposit_paise}
+            className="text-base font-bold text-[var(--text-primary)]"
+          />
+        ) : (
+          <span className="font-semibold text-[var(--text-tertiary)]">Not entered on the lease</span>
+        )}
+      </div>
+    </Panel>
   )
 }
 

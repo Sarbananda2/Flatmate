@@ -392,6 +392,7 @@ The API maps each marker to an HTTP 409 with the matching error code.
 | 0005 | `rent_master_lease` | Single master lease config (`rent_lease_config`), monthly rent cycle lifecycle (`rent_cycle`), landlord receipt blob storage (`rent_landlord_receipt`), and HRA slips (`rent_receipt`) |
 | 0006 | `lease_lifecycle` | Contract term on `rent_lease_config` (start/end dates, duration, notice period, lock-in, security deposit, escalation clause, lease status and notice dates) and completed terms in `rent_lease_term` |
 | 0007 | `resident_profile_extensions` | Emergency contact on `resident`: name, phone and relationship |
+| 0008 | `household_security_deposits` | Deposit funding mode and primary signatory on `rent_lease_config`; the household's permanent deposit slots (`household_deposit_slot`) and their transactions (`household_deposit_transaction`) |
 
 Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from a single `0001_baseline.sql` that carries all six, so its migration files are `0001` and then `0007` onward: the numbering continues the history above rather than restarting.
 
@@ -419,6 +420,25 @@ Since migration 0006 it also holds the current contract term:
 
 ### `rent_lease_term`
 One row per completed term, written when the lease is renewed: `term_number`, `start_date`, `end_date`, `monthly_rent_paise`, and `escalation_applied_percent` (the change from that term's rent to the next term's). The current term is the one on `rent_lease_config`; its number is one more than the rows here.
+
+### `household_deposit_slot`
+The landlord's security deposit, divided into permanent slots that belong to the household -- one per space in the flat. A slot is filled, funded, vacated and filled again; it is never deleted. Together the slots' `target_deposit_paise` equal `rent_lease_config.security_deposit_paise` exactly.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `slot_number`, `slot_label` | INTEGER, TEXT | The slot's number (unique in the apartment) and its name, e.g. "Room 2" |
+| `target_deposit_paise` | BIGINT | This slot's share of the deposit |
+| `assigned_resident_id`, `assigned_since` | TEXT | The current occupant; null while vacant. A resident occupies at most one slot |
+| `status` | TEXT | `vacant` / `occupied_pending` / `occupied_funded`. `vacating` is allowed by the schema but not set by the application today |
+| `funded_amount_paise` | BIGINT | What the current occupant has put in; never more than the target |
+| `funded_date`, `payment_method`, `payment_reference`, `paid_to_resident_id` | TEXT | The latest payment towards the slot |
+
+How the deposit was funded is on the lease: `rent_lease_config.deposit_funding_mode` (`primary_signatory` or `direct_co_tenants`; null until chosen, with no default) and `deposit_primary_signatory_resident_id`.
+
+**Deposits are escrow, not operating money.** Nothing in these tables creates an expense, an allocation, a payment or an adjustment, and none of it appears in a statement or a resident's balance.
+
+### `household_deposit_transaction`
+Append-only trail of each slot's money: `funding_payment`, `move_out_deduction`, `move_out_refund`, and `direct_replacement_transfer`, each with its resident, counterparty, date, amount and reference. The runtime role may insert rows but not change or delete them.
 
 ### `rent_cycle`
 State of a month's rent: links `settlement_month` to its `expense_instance`. Tracks `disbursement_status` (`pending` vs `disbursed`), funder (`disbursed_by` = `pool` vs `resident_advance`), and funding payment ID.

@@ -10,7 +10,7 @@ This register documents architectural trade-offs, deferred features, and legal/d
 ┌───────────────────────────────────────────────────────────────────────────────┐
 │ Current Phase: Flatmate Management (4 Pillars)                                │
 │   • Pillar A: Profile, Contact Card & Dynamic UPI QR (In Progress)            │
-│   • Pillar B: Individual Security Deposit Tracking                            │
+│   • Pillar B: Household Security Deposit Slots & Sub-Escrow Tracking          │
 │   • Pillar C: Guided Exit & Settlement Clearance Workflow                     │
 │   • Pillar D: Flatmate Statements & WhatsApp Sharing                          │
 └──────────────────────────────────────┬────────────────────────────────────────┘
@@ -27,6 +27,7 @@ This register documents architectural trade-offs, deferred features, and legal/d
 ┌───────────────────────────────────────────────────────────────────────────────┐
 │ Post-Household Phase: Space Allocation Linking (DEBT-006)                     │
 │   • Link flatmates directly to rooms & bed slots within the household        │
+│   • Connect physical rooms directly to `household_deposit_slot`               │
 │   • Unlock Model 2 (Room-tiered rent pricing) & Model 3 (Sq.ft ratio)         │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -39,6 +40,7 @@ This register documents architectural trade-offs, deferred features, and legal/d
 - **Status:** Queued — **Scheduled immediately after the Household Property milestone** (which follows the 4 Flatmate Pillars).
 - **Domain Context:** Space allocation (which flatmate sleeps in which room or bed, and which parking slot is assigned) must **not** be modeled as loose, unvalidated string labels directly on the `resident` table. 
 - **Architectural Rationale:** The physical apartment floor plan (e.g. 3BHK with Master Bedroom + Balcony, Common Bedroom, 1 Car Parking Slot) outlives individual flatmates. Modeling rooms and beds as first-class physical assets under the `apartment` aggregate prevents double-occupancy conflicts, enables seamless room turnover, and serves as the prerequisite foundation for **Model 2 (Room-Tiered Rent)** and **Model 3 (Square-Footage Allocation)**.
+- **Deposit Slot Bridge:** In Pillar B, the security deposit is structured as `household_deposit_slot` owned by the Household/Lease. When physical rooms are introduced, each deposit slot directly maps to `room_id` with zero restructuring required.
 - **Prerequisite:** Completion of the Household Property domain definition.
 
 ---

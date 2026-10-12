@@ -24,6 +24,7 @@ import {
 } from '../lib/format'
 import type { OpeningBalanceItem, ResidentDetail } from '../api/types'
 import { ContactCard, EditProfileDialog, UpiCard } from './ResidentProfile'
+import { ResidentDepositCard } from './services/SecurityDeposits'
 
 export default function ResidentDetailPage() {
   const { residentId = '' } = useParams()
@@ -183,6 +184,8 @@ function Body({
         <ContactCard resident={data.resident} onEdit={() => setEditingProfile(true)} />
         <UpiCard resident={data.resident} />
       </div>
+
+      <ResidentDepositCard residentId={residentId} />
 
       {editingProfile && (
         <EditProfileDialog

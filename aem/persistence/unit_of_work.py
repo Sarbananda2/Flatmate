@@ -21,6 +21,7 @@ from .repositories.apartments import ApartmentsRepository
 from .repositories.audit import AuditRepository
 from .repositories.dashboard import DashboardRepository
 from .repositories.definitions import DefinitionsRepository
+from .repositories.deposits import DepositsRepository
 from .repositories.electricity import ElectricityRepository
 from .repositories.expenses import ExpensesRepository
 from .repositories.ledger_view import LedgerViewRepository
@@ -70,6 +71,11 @@ class UnitOfWork:
     @cached_property
     def definitions(self) -> DefinitionsRepository:
         return DefinitionsRepository(self._session)
+
+
+    @cached_property
+    def deposits(self) -> DepositsRepository:
+        return DepositsRepository(self._session)
 
 
     @cached_property

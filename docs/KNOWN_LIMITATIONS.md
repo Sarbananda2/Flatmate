@@ -95,6 +95,28 @@ The guided setup can rename a saved resident and remove one, but removal is the
 same as moving out: the record is kept as inactive. A name added by mistake
 cannot be deleted outright.
 
+### Household deposit slots: what is not modelled
+
+Deposit slots track who holds which share of the landlord's deposit and what
+was paid, kept back and handed over. Several things are deliberately left out:
+
+- **The primary signatory cannot leave or be replaced.** Their own slot cannot
+  be vacated, and the funding mode and signatory cannot be changed once slots
+  exist. A signatory moving out, or the lease ending and the landlord
+  returning the deposit, has no workflow yet.
+- **Slots cannot be removed or merged.** A slot is permanent; its label, target
+  and occupant can change, but the number of slots can only grow.
+- **Settling a leaver is one step.** The `vacating` status in the schema is not
+  used: a slot goes straight from occupied to vacant, or to its new occupant.
+- **Deductions are recorded, not spent.** What is kept back from a leaver is
+  counted against the signatory's capital at risk, but there is no record of
+  it then being paid to the landlord or a repairer.
+- **Changing the deposit on the lease does not rebalance the slots.** The
+  Rent screen flags the mismatch; the slots have to be brought back in line
+  by hand.
+- **Rooms are not linked yet.** A slot has a label, not a room; attaching
+  rooms and beds is a later phase.
+
 ### A recorded landlord payout cannot be undone
 
 Recording a payout freezes the month's rent cycle and issues the HRA receipts,

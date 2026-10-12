@@ -82,7 +82,8 @@ def current_version(conn: psycopg.Connection) -> int:
 # Tables the runtime role may add to but never rewrite. The triggers already
 # refuse UPDATE and DELETE on them; withholding the privilege means the runtime
 # role is turned away before a trigger is even consulted.
-APPEND_ONLY_TABLES = ("audit_log", "statement_revision", "ledger_adjustment", "rent_receipt")
+APPEND_ONLY_TABLES = ("audit_log", "statement_revision", "ledger_adjustment", "rent_receipt",
+                      "household_deposit_transaction")
 
 
 def grant_runtime_access(conn: psycopg.Connection, role: str) -> list[str]:

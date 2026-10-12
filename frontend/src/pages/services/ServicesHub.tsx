@@ -8,11 +8,13 @@
 import { type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import {
+  ArrowRight,
   Building2,
   Droplets,
   Flame,
   HandPlatter,
   type LucideIcon,
+  ShieldCheck,
   Wifi,
   Zap,
 } from 'lucide-react'
@@ -27,6 +29,7 @@ import {
 import { type Resource, useResource } from '../../lib/useApi'
 import { formatMonth, formatMonthShort } from '../../lib/format'
 import type { LeaseLifecycle, ServicesOverview } from '../../api/types'
+import { useDepositSummary } from './SecurityDeposits'
 
 const PLANNED_SERVICES: Array<{ title: string; icon: LucideIcon; body: string }> = [
   {
@@ -66,6 +69,7 @@ export function ServicesHub({ month }: { month: string }) {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <RentCard month={month} overview={overview} />
         <ElectricityCard month={month} overview={overview} />
+        <SecurityDepositCard />
         {PLANNED_SERVICES.map((service) => (
           <ServiceCard
             key={service.title}
@@ -251,6 +255,70 @@ function TermProgress({
         />
       </div>
     </div>
+  )
+}
+
+/* ------------------------------------------------------ security deposits -- */
+
+const NOT_SET_UP = <span className="font-normal text-[var(--text-tertiary)]">Not set up</span>
+
+const FUNDING_MODE_LABELS = {
+  primary_signatory: 'Signatory fronted',
+  direct_co_tenants: 'Direct co-tenants',
+} as const
+
+/** The lease's deposit and its slots. Escrow, so it does not follow the month. */
+function SecurityDepositCard() {
+  const summary = useDepositSummary()
+  const data = summary.data
+  const occupied = data ? data.total_slots_count - data.vacant_slots_count : 0
+
+  return (
+    <ServiceCard
+      title="Security Deposits"
+      icon={ShieldCheck}
+      badge={
+        !data ? undefined : !data.is_lease_configured ? (
+          <Pill tone="warning">No lease</Pill>
+        ) : data.funding_mode ? (
+          <Pill tone="accent">{FUNDING_MODE_LABELS[data.funding_mode]}</Pill>
+        ) : (
+          <Pill tone="warning">Setup required</Pill>
+        )
+      }
+      actions={
+        <Link to="/services/deposits" className={BUTTON_PRIMARY}>
+          Manage Deposits
+          <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        </Link>
+      }
+    >
+      <AsyncSection resource={summary} loadingLabel="Loading deposits…">
+        {(deposits) => (
+          <dl className="m-0 space-y-2">
+            <Fact label="Lease deposit">
+              {deposits.master_deposit_paise != null ? (
+                <Rupees paise={deposits.master_deposit_paise} />
+              ) : (
+                NOT_CONFIGURED
+              )}
+            </Fact>
+            <Fact label="Funded so far">
+              {deposits.total_slots_count > 0 ? (
+                <Rupees paise={deposits.total_funded_paise} />
+              ) : (
+                NOT_SET_UP
+              )}
+            </Fact>
+            <Fact label="Active slots">
+              {deposits.total_slots_count > 0
+                ? `${occupied} of ${deposits.total_slots_count} occupied`
+                : NOT_SET_UP}
+            </Fact>
+          </dl>
+        )}
+      </AsyncSection>
+    </ServiceCard>
   )
 }
 

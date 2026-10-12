@@ -13,6 +13,7 @@ import RentConfigPage from './pages/services/RentConfig'
 import ReportsPage from './pages/Reports'
 import ResidentDetailPage from './pages/ResidentDetail'
 import ResidentsPage from './pages/Residents'
+import SecurityDepositsPage from './pages/services/SecurityDeposits'
 import ServicesHubPage from './pages/services/ServicesHub'
 import SetupPage from './pages/Setup'
 import SetupWizardPage from './pages/SetupWizard'
@@ -33,10 +34,12 @@ export default function App() {
           <Route path="/services/rent" element={<RentPage />} />
           <Route path="/services/rent/config" element={<RentConfigPage />} />
           <Route path="/services/electricity" element={<ElectricityPage />} />
+          <Route path="/services/deposits" element={<SecurityDepositsPage />} />
           {/* The addresses these pages had before they moved under /services. */}
           <Route path="/rent" element={<Navigate to="/services/rent" replace />} />
           <Route path="/rent/config" element={<Navigate to="/services/rent/config" replace />} />
           <Route path="/electricity" element={<Navigate to="/services/electricity" replace />} />
+          <Route path="/deposits" element={<Navigate to="/services/deposits" replace />} />
           <Route path="/expenses" element={<ExpensesPage />} />
           <Route path="/payments" element={<PaymentsPage />} />
           <Route path="/statements" element={<StatementsPage />} />

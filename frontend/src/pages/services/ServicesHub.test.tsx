@@ -24,9 +24,24 @@ afterEach(() => {
   stub = null
 })
 
-function renderHub(overview: { rent: unknown; electricity: unknown }) {
+const noDeposits = {
+  is_lease_configured: false,
+  master_deposit_paise: null,
+  funding_mode: null,
+  total_slots_count: 0,
+  vacant_slots_count: 0,
+  total_funded_paise: 0,
+}
+
+function renderHub(
+  overview: { rent: unknown; electricity: unknown },
+  deposits: Record<string, unknown> = noDeposits,
+) {
   stub = installFetchStub({
-    routes: { '/api/services': { settlement_month: MONTH, ...overview } },
+    routes: {
+      '/api/services': { settlement_month: MONTH, ...overview },
+      '/api/rent/deposits': deposits,
+    },
   })
   render(
     <MemoryRouter>
@@ -98,6 +113,36 @@ describe('ServicesHub', () => {
     expect(await within(rent).findByText('11-Month Term (85% elapsed)')).toBeInTheDocument()
     expect(within(rent).getByText('Expires in 48d')).toBeInTheDocument()
     expect(within(rent).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '85')
+  })
+
+  it('gives security deposits a card of their own, linking to their page', async () => {
+    renderHub(
+      { rent: { config, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
+      {
+        is_lease_configured: true,
+        master_deposit_paise: 15000000,
+        funding_mode: 'primary_signatory',
+        total_slots_count: 3,
+        vacant_slots_count: 1,
+        total_funded_paise: 7000000,
+      },
+    )
+    const card = screen.getByRole('region', { name: 'Security Deposits' })
+    expect(await within(card).findByText('₹1,50,000.00')).toBeInTheDocument()
+    expect(within(card).getByText('Signatory fronted')).toBeInTheDocument()
+    expect(within(card).getByText('2 of 3 occupied')).toBeInTheDocument()
+    expect(within(card).getByText('₹70,000.00')).toBeInTheDocument()
+    expect(within(card).getByRole('link', { name: 'Manage Deposits' })).toHaveAttribute(
+      'href',
+      '/services/deposits',
+    )
+  })
+
+  it('says when the deposit has no lease or no setup yet', async () => {
+    renderHub({ rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
+    const card = screen.getByRole('region', { name: 'Security Deposits' })
+    expect(await within(card).findByText('No lease')).toBeInTheDocument()
+    expect(within(card).getAllByText('Not set up')).toHaveLength(2)
   })
 
   it('shows the planned services as placeholders with no actions', async () => {

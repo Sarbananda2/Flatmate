@@ -969,6 +969,92 @@ export interface RentMonthOverview {
   preview: RentPreview | null
 }
 
+// ------------------------------------------------- household deposit slots --
+
+export type DepositFundingMode = 'primary_signatory' | 'direct_co_tenants'
+export type DepositPaymentMethod = 'upi' | 'bank_transfer' | 'cash' | 'direct_to_landlord'
+export type DepositSettlementPath = 'signatory_refund' | 'direct_transfer'
+export type DepositSlotStatus = 'vacant' | 'occupied_pending' | 'occupied_funded' | 'vacating'
+
+export interface DepositTransaction {
+  tx_id: string
+  slot_id: string
+  resident_id: string
+  resident_display_name: string | null
+  tx_type:
+    | 'funding_payment'
+    | 'move_out_deduction'
+    | 'move_out_refund'
+    | 'direct_replacement_transfer'
+  amount_paise: number
+  tx_date: string
+  counterparty_resident_id: string | null
+  counterparty_display_name: string | null
+  payment_method: string | null
+  reference: string | null
+  notes: string | null
+}
+
+/** One permanent share of the household's deposit. It outlives its occupants. */
+export interface DepositSlot {
+  slot_id: string
+  slot_number: number
+  slot_label: string
+  target_deposit_paise: number
+  /** Null while the slot is vacant. */
+  assigned_resident_id: string | null
+  assigned_display_name: string | null
+  assigned_since: string | null
+  status: DepositSlotStatus
+  funded_amount_paise: number
+  /** What the occupant still owes on the slot; 0 while it is vacant. */
+  outstanding_paise: number
+  funded_date: string | null
+  payment_method: DepositPaymentMethod | null
+  payment_reference: string | null
+  paid_to_resident_id: string | null
+  paid_to_display_name: string | null
+  is_primary_signatory: boolean
+  transactions: DepositTransaction[]
+}
+
+/** A slot as proposed or as sent to `POST /api/rent/deposits/slots`. */
+export interface DepositSlotDraft {
+  slot_number: number
+  slot_label: string
+  target_deposit_paise: number
+  assigned_resident_id: string | null
+  assigned_display_name?: string | null
+}
+
+/** `GET /api/rent/deposits`. Escrow only: none of it is in any statement or balance. */
+export interface HouseholdDepositSummary {
+  is_lease_configured: boolean
+  /** The deposit on the lease; null until it is entered there. */
+  master_deposit_paise: number | null
+  /** Null until the operator chooses. There is no default. */
+  funding_mode: DepositFundingMode | null
+  primary_signatory_id: string | null
+  primary_signatory_name: string | null
+  /** What the signatory is still out of pocket. Null outside `primary_signatory`. */
+  signatory_capital_exposure_paise: number | null
+  reimbursements_received_paise: number
+  retained_deductions_paise: number
+  total_slots_count: number
+  vacant_slots_count: number
+  total_target_paise: number
+  total_funded_paise: number
+  /** Targets not yet funded, across vacant and part-funded slots. */
+  unfunded_gap_paise: number
+  /** Whether the slots' targets add up to the lease's deposit. */
+  is_balanced: boolean
+  /** Current residents who occupy no slot. */
+  unassigned_residents: Array<{ resident_id: string; display_name: string }>
+  /** Before any slot exists: one per resident, the deposit split equally. */
+  proposal: DepositSlotDraft[]
+  slots: DepositSlot[]
+}
+
 /** `GET /api/services`: the Housing & Utilities hub's one summary call. */
 export interface ServicesOverview {
   settlement_month: string

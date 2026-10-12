@@ -457,6 +457,61 @@ class RentLeaseVacateRequest(ApiModel):
     notes: str | None = Field(None, max_length=1000)
 
 
+# --------------------------------------------------------------------------- #
+# Household security deposit slots
+# --------------------------------------------------------------------------- #
+
+DepositFundingMode = Literal["primary_signatory", "direct_co_tenants"]
+DepositPaymentMethod = Literal["upi", "bank_transfer", "cash", "direct_to_landlord"]
+DepositSettlementPath = Literal["signatory_refund", "direct_transfer"]
+
+
+class DepositConfigUpdate(ApiModel):
+    funding_mode: DepositFundingMode = Field(
+        description="How the lease's deposit was funded. Required: there is no default.")
+    primary_signatory_resident_id: str | None = Field(
+        None, max_length=64,
+        description="The resident who paid the landlord. Needed for primary_signatory, "
+                    "and must be left out for direct_co_tenants.")
+
+
+class DepositSlotItem(ApiModel):
+    slot_number: int = Field(ge=1, le=999)
+    slot_label: str = Field(min_length=1, max_length=100)
+    target_deposit_paise: int = _money_field("This slot's share of the deposit.", ge=1)
+    assigned_resident_id: str | None = Field(
+        None, max_length=64, description="The occupant. Omit for a vacant slot.")
+
+
+class DepositSlotInitRequest(ApiModel):
+    slots: list[DepositSlotItem] = Field(
+        min_length=1, max_length=50,
+        description="Slots to create or change, matched by number. Slots left out are "
+                    "untouched. All targets together must equal the lease's deposit.")
+
+
+class DepositSlotFundingRequest(ApiModel):
+    amount_paise: int = _money_field("What was paid towards the slot.", ge=1)
+    paid_date: str = Field(pattern=DATE_PATTERN)
+    payment_method: DepositPaymentMethod
+    payment_reference: str | None = Field(None, max_length=200)
+    paid_to_resident_id: str | None = Field(
+        None, max_length=64,
+        description="Who received it. Under primary_signatory this is the signatory.")
+
+
+class DepositSlotVacateRequest(ApiModel):
+    settlement_path: DepositSettlementPath
+    deductions_paise: int = _money_field("What is kept back.")
+    deduction_reason: str | None = Field(None, max_length=2000)
+    refund_amount_paise: int = _money_field(
+        "What the leaver is handed. With the deductions, exactly what they put in.")
+    refund_date: str = Field(pattern=DATE_PATTERN)
+    refund_reference: str | None = Field(None, max_length=200)
+    incoming_resident_id: str | None = Field(
+        None, max_length=64, description="Who takes the slot over. Needed for direct_transfer.")
+
+
 class RentGenerateRequest(ApiModel):
     excluded_resident_ids: list[str] = Field(
         default_factory=list,
@@ -631,6 +686,8 @@ __all__ = [
     "PassthroughModel", "PaymentCreate", "PaymentKind", "PaymentReverse", "PeerSettlementCreate", "PeriodRule",
     "PlannableMethod", "Recurrence", "RecurringGenerateRequest", "RecurringLine",
     "LandlordReceiptUpload", "RentDisburseRequest", "RentGenerateRequest",
+    "DepositConfigUpdate", "DepositSlotFundingRequest", "DepositSlotInitRequest",
+    "DepositSlotItem", "DepositSlotVacateRequest",
     "RentLeaseConfigSave", "RentLeaseRenewRequest", "RentLeaseVacateRequest",
     "RentPaymentCreate",
     "ResidentCreate", "ResidentDeactivate", "ResidentUpdate", "SetupApartmentRequest",
