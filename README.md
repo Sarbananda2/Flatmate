@@ -305,6 +305,23 @@ original prototype's `unittest` modules under `legacy/`. What has been
 validated on PostgreSQL 18 is listed in
 [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md#what-has-and-has-not-been-validated-on-postgresql-18).
 
+### Commit messages
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)
+and are checked by a Git hook (husky + commitlint). The hook is installed by
+`npm install` in `frontend/`, so a fresh clone needs that run once.
+
+```
+<type>(<optional scope>): <subject in lower case, no full stop>
+
+<optional body>
+```
+
+Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`,
+`ci`, `chore`, `revert`. For example: `fix(rent): keep the payout date level
+with the reference field`. A message that does not fit is rejected with the
+reason; the rules are in `frontend/commitlint.config.js`.
+
 ---
 
 ## Backing up and restoring

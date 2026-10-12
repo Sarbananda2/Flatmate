@@ -1,0 +1,7 @@
+# Check the commit message against frontend/commitlint.config.js.
+# Git runs hooks from the repository root; the tooling lives in frontend/.
+case "$1" in
+  /*) message="$1" ;;
+  *) message="$PWD/$1" ;;
+esac
+cd frontend && npx --no -- commitlint --edit "$message"
