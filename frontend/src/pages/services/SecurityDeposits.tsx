@@ -9,6 +9,7 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import { clsx } from 'clsx'
 import { Landmark, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
 import { Page } from '../../components/Layout'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
@@ -284,7 +285,13 @@ function DepositSetupCard({
           </p>
         ) : (
           <>
-            <fieldset className="m-0 border-0 p-0 space-y-2.5">
+            <fieldset
+              role="radiogroup"
+              aria-required="true"
+              aria-invalid={modeError ? true : undefined}
+              aria-describedby={modeError ? 'deposit-mode-error' : undefined}
+              className="m-0 border-0 p-0 space-y-2.5"
+            >
               <legend className="p-0 pb-1 text-sm font-bold text-[var(--text-primary)]">
                 How was the deposit funded?
               </legend>
@@ -294,7 +301,9 @@ function DepositSetupCard({
                   className={
                     mode === option.value
                       ? 'flex items-start gap-3 rounded-xl border border-[var(--accent)] bg-[var(--accent-glow)] p-3.5 cursor-pointer'
-                      : 'flex items-start gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 cursor-pointer'
+                      : modeError
+                        ? 'flex items-start gap-3 rounded-xl border border-[var(--danger)] bg-[var(--bg-elevated)] p-3.5 cursor-pointer'
+                        : 'flex items-start gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 cursor-pointer'
                   }
                 >
                   <input
@@ -315,7 +324,11 @@ function DepositSetupCard({
                   </span>
                 </label>
               ))}
-              {modeError && <span className="field-error">{modeError}</span>}
+              {modeError && (
+                <span className="field-error" id="deposit-mode-error">
+                  {modeError}
+                </span>
+              )}
             </fieldset>
 
             {mode === 'primary_signatory' && (
@@ -527,22 +540,22 @@ function EscrowPoolCard({
       )}
 
       <div className="overflow-x-auto min-w-0">
-        <table className="w-full table-fixed text-left text-xs min-w-[920px] border-collapse">
+        <table className="w-full table-fixed text-left text-xs min-w-[720px] border-collapse">
           <caption className="sr-only">Household deposit slots</caption>
           <thead>
             <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Slot / Space</th>
-              <th scope="col" className="w-[13%] pb-3 pr-3 font-bold text-center">Target Deposit</th>
-              <th scope="col" className="w-[20%] pb-3 pr-3 font-bold text-center">Current Occupant</th>
-              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Funded Status</th>
-              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Paid Date &amp; Ref</th>
-              <th scope="col" className="w-[22%] pb-3 font-bold text-center">Actions</th>
+              <th scope="col" className="w-[13%] pb-3 px-2 font-bold text-center">Slot / Space</th>
+              <th scope="col" className="w-[13%] pb-3 px-2 font-bold text-center">Target Deposit</th>
+              <th scope="col" className="w-[18%] pb-3 px-2 font-bold text-center">Current Occupant</th>
+              <th scope="col" className="w-[14%] pb-3 px-2 font-bold text-center">Funded Status</th>
+              <th scope="col" className="w-[16%] pb-3 px-2 font-bold text-center">Paid Date &amp; Ref</th>
+              <th scope="col" className="w-[26%] pb-3 px-2 font-bold text-center">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
             {summary.slots.map((slot) => (
               <tr key={slot.slot_id} className="align-middle">
-                <th scope="row" className="py-3 pr-3 text-left">
+                <th scope="row" className="py-3 px-2 text-left">
                   <span className="block font-bold text-[var(--text-primary)] truncate">
                     {slot.slot_label}
                   </span>
@@ -550,19 +563,19 @@ function EscrowPoolCard({
                     Slot {slot.slot_number}
                   </span>
                 </th>
-                <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
+                <td className="py-3 px-2 text-center font-bold text-[var(--text-primary)]">
                   <Rupees paise={slot.target_deposit_paise} />
                 </td>
-                <td className="py-3 pr-3">
+                <td className="py-3 px-2">
                   <Occupant slot={slot} />
                 </td>
-                <td className="py-3 pr-3 text-center">
+                <td className="py-3 px-2 text-center">
                   <FundedStatus slot={slot} />
                 </td>
-                <td className="py-3 pr-3 text-center text-[var(--text-secondary)]">
+                <td className="py-3 px-2 text-center text-[var(--text-secondary)]">
                   <PaidDetails slot={slot} />
                 </td>
-                <td className="py-3 text-center">
+                <td className="py-3 px-2 text-center">
                   <SlotActions slot={slot} onAction={(kind) => setDialog({ kind, slot })} />
                 </td>
               </tr>
@@ -668,49 +681,65 @@ function SlotActions({
 }) {
   const occupied = slot.assigned_resident_id !== null
   const who = slot.assigned_display_name ?? 'the occupant'
-  const canFund = occupied && slot.outstanding_paise > 0
-  // The signatory's own share is settled with the landlord, not here.
-  const canVacate = occupied && !slot.is_primary_signatory
-  // An occupant can be set while the slot is vacant, or swapped while nothing is paid.
-  const canAssign = !slot.is_primary_signatory && slot.funded_amount_paise === 0
-  if (!canFund && !canVacate && !canAssign) {
-    return <span className="text-[var(--text-tertiary)]">—</span>
+  const actions: Array<{
+    kind: DialogKind
+    label: string
+    describe: string
+    icon: typeof Plus
+    className: string
+  }> = []
+  if (occupied && slot.outstanding_paise > 0) {
+    actions.push({
+      kind: 'fund',
+      label: 'Record Payment',
+      describe: `Record payment for ${slot.slot_label} from ${who}`,
+      icon: Plus,
+      className: BUTTON_SECONDARY,
+    })
   }
+  // The signatory's own share is settled with the landlord, not here.
+  if (occupied && !slot.is_primary_signatory) {
+    actions.push({
+      kind: 'vacate',
+      label: 'Vacate & Settle',
+      describe: `Vacate and settle ${slot.slot_label}`,
+      icon: LogOut,
+      className: BUTTON_QUIET,
+    })
+  }
+  // An occupant can be set while the slot is vacant, or swapped while nothing is paid.
+  if (!slot.is_primary_signatory && slot.funded_amount_paise === 0) {
+    actions.push({
+      kind: 'assign',
+      label: occupied ? 'Reassign Occupant' : 'Assign Occupant',
+      describe: `${occupied ? 'Reassign' : 'Assign'} occupant of ${slot.slot_label}`,
+      icon: UserPlus,
+      className: BUTTON_QUIET,
+    })
+  }
+  if (actions.length === 0) return <span className="text-[var(--text-tertiary)]">—</span>
+
+  // Always one line, so every row is the same height. A lone action has room
+  // for its name; several do not, so they show as icons, each still named for
+  // screen readers and on hover, and the first is spelled out on wide screens.
+  const alone = actions.length === 1
   return (
-    <span className="inline-flex flex-wrap items-center justify-center gap-1.5">
-      {canFund && (
+    <span className="inline-flex flex-nowrap items-center justify-center gap-1.5 whitespace-nowrap">
+      {actions.map((action, index) => (
         <button
+          key={action.kind}
           type="button"
-          className={BUTTON_SECONDARY}
-          onClick={() => onAction('fund')}
-          aria-label={`Record payment for ${slot.slot_label} from ${who}`}
+          className={clsx(action.className, 'whitespace-nowrap', !alone && 'px-2.5')}
+          onClick={() => onAction(action.kind)}
+          aria-label={action.describe}
+          title={action.label}
         >
-          <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-          Record Payment
+          <action.icon className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+          <span className={alone ? undefined : index === 0 ? 'sr-only xl:not-sr-only' : 'sr-only'}>
+            {action.label}
+          </span>
         </button>
-      )}
-      {canVacate && (
-        <button
-          type="button"
-          className={BUTTON_QUIET}
-          onClick={() => onAction('vacate')}
-          aria-label={`Vacate and settle ${slot.slot_label}`}
-        >
-          <LogOut className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-          Vacate &amp; Settle
-        </button>
-      )}
-      {canAssign && (
-        <button
-          type="button"
-          className={BUTTON_QUIET}
-          onClick={() => onAction('assign')}
-          aria-label={`Reassign occupant of ${slot.slot_label}`}
-        >
-          <UserPlus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-          Reassign Occupant
-        </button>
-      )}
+      ))}
     </span>
   )
 }
@@ -741,9 +770,14 @@ interface SlotModalProps {
   onDone: () => void
 }
 
+/** The earliest date a deposit event could plausibly carry. */
+const EARLIEST_DATE = '2000-01-01'
+
 function dateError(value: string): string | null {
   if (!value) return 'Enter a date.'
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return 'Enter a valid date.'
   if (value > todayIso()) return 'The date cannot be in the future.'
+  if (value < EARLIEST_DATE) return 'That date is too far in the past.'
   return null
 }
 
@@ -856,6 +890,7 @@ function FundingModal({ slot, summary, onClose, onDone }: SlotModalProps) {
             label="Paid on"
             required
             value={date}
+            min={EARLIEST_DATE}
             max={todayIso()}
             onChange={setDate}
             error={paidOnError}
@@ -926,8 +961,8 @@ function VacateModal({ slot, summary, onClose, onDone }: SlotModalProps) {
       ? 'Nothing would be handed over. Settle the slot as a refund instead.'
       : null
   const settledOnError = dateError(date)
+  // A missing path is pointed out on submit, so it does not disable the button.
   const valid =
-    Boolean(path) &&
     deductions.ok &&
     !deductionsError &&
     !reasonError &&
@@ -977,11 +1012,17 @@ function VacateModal({ slot, summary, onClose, onDone }: SlotModalProps) {
         onSubmit={(event) => {
           event.preventDefault()
           setTouched(true)
-          if (valid && !save.pending) void save.run(undefined)
+          if (path && valid && !save.pending) void save.run(undefined)
         }}
       >
         {save.error && <ErrorNotice error={save.error} />}
-        <fieldset className="m-0 border-0 p-0 space-y-2">
+        <fieldset
+          role="radiogroup"
+          aria-required="true"
+          aria-invalid={pathError ? true : undefined}
+          aria-describedby={pathError ? 'deposit-path-error' : undefined}
+          className="m-0 border-0 p-0 space-y-2"
+        >
           <legend className="p-0 pb-1 text-sm font-bold text-[var(--text-primary)]">
             How is the slot being settled?
           </legend>
@@ -991,7 +1032,9 @@ function VacateModal({ slot, summary, onClose, onDone }: SlotModalProps) {
               className={
                 path === option.value
                   ? 'flex items-start gap-3 rounded-xl border border-[var(--accent)] bg-[var(--accent-glow)] p-3 cursor-pointer'
-                  : 'flex items-start gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3 cursor-pointer'
+                  : pathError
+                    ? 'flex items-start gap-3 rounded-xl border border-[var(--danger)] bg-[var(--bg-elevated)] p-3 cursor-pointer'
+                    : 'flex items-start gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3 cursor-pointer'
               }
             >
               <input
@@ -1013,7 +1056,11 @@ function VacateModal({ slot, summary, onClose, onDone }: SlotModalProps) {
               </span>
             </label>
           ))}
-          {pathError && <span className="field-error">{pathError}</span>}
+          {pathError && (
+            <span className="field-error" id="deposit-path-error">
+              {pathError}
+            </span>
+          )}
         </fieldset>
 
         {direct &&
@@ -1105,6 +1152,7 @@ function VacateModal({ slot, summary, onClose, onDone }: SlotModalProps) {
             label="Settlement date"
             required
             value={date}
+            min={EARLIEST_DATE}
             max={todayIso()}
             onChange={setDate}
             error={settledOnError}
@@ -1146,7 +1194,7 @@ function AssignModal({ slot, summary, onClose, onDone }: SlotModalProps) {
 
   return (
     <Modal
-      title="Reassign Occupant"
+      title={occupied ? 'Reassign Occupant' : 'Assign Occupant'}
       description={
         occupied
           ? `${slotName(slot)} is assigned to ${slot.assigned_display_name}, who has paid nothing towards it. Choose who takes it instead.`

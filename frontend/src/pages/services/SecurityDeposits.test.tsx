@@ -156,6 +156,11 @@ describe('deposit setup', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Save Deposit Setup' }))
     expect(screen.getByText('Choose how the deposit was funded.')).toBeInTheDocument()
+    // The whole group is marked invalid, not just captioned.
+    expect(screen.getByRole('radiogroup', { name: 'How was the deposit funded?' })).toHaveAttribute(
+      'aria-invalid',
+      'true',
+    )
     expect(posted('/config')).toBeUndefined()
     expect(posted('/slots')).toBeUndefined()
   })
@@ -363,11 +368,20 @@ describe('the escrow pool', () => {
     expect(actions(/Room 2/)).toEqual(['Record Payment', 'Vacate & Settle', 'Reassign Occupant'])
     // Funded: it has to be settled before anyone else can take it.
     expect(actions(/Room 3/)).toEqual(['Vacate & Settle'])
-    expect(actions(/Room 4/)).toEqual(['Reassign Occupant'])
+    expect(actions(/Room 4/)).toEqual(['Assign Occupant'])
     expect(within(table).getByRole('row', { name: /Room 4/ })).toHaveTextContent('Vacant')
     expect(screen.getByRole('region', { name: 'Capital exposure' })).toHaveTextContent(
       'Vacant / Unfunded Gap₹1,00,000.001 slot vacant',
     )
+    // Every action sits on one line, and each keeps a name whatever its width.
+    for (const button of within(table).getAllByRole('button')) {
+      expect(button).toHaveClass('whitespace-nowrap')
+      expect(button).toHaveAttribute('title')
+      expect(button.closest('span')).toHaveClass('flex-nowrap')
+    }
+    for (const header of within(table).getAllByRole('columnheader')) {
+      expect(header).toHaveClass('px-2')
+    }
   })
 
   it('shows plain totals when flatmates pay the landlord directly, and recent activity', async () => {
@@ -482,6 +496,12 @@ describe('recording a payment', () => {
     await userEvent.clear(date)
     await userEvent.type(date, '2099-01-01')
     expect(within(dialog).getByText('The date cannot be in the future.')).toBeInTheDocument()
+    expect(date).toHaveAttribute('aria-invalid', 'true')
+    expect(save).toBeDisabled()
+    await userEvent.clear(date)
+    expect(within(dialog).getByText('Enter a date.')).toBeInTheDocument()
+    await userEvent.type(date, '1999-12-31')
+    expect(within(dialog).getByText('That date is too far in the past.')).toBeInTheDocument()
     expect(save).toBeDisabled()
     expect(posted('/fund')).toBeUndefined()
   })
@@ -503,8 +523,12 @@ describe('vacating and settling a slot', () => {
   it('assumes no settlement path and needs one chosen', async () => {
     const dialog = await open()
     for (const path of within(dialog).getAllByRole('radio')) expect(path).not.toBeChecked()
-    const save = within(dialog).getByRole('button', { name: 'Confirm Settlement' })
-    expect(save).toBeDisabled()
+    // Pressing confirm without a path points at what is missing instead of sending.
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Confirm Settlement' }))
+    expect(within(dialog).getByText('Choose how the slot is being settled.')).toBeInTheDocument()
+    expect(
+      within(dialog).getByRole('radiogroup', { name: 'How is the slot being settled?' }),
+    ).toHaveAttribute('aria-invalid', 'true')
     expect(posted('/vacate')).toBeUndefined()
   })
 
@@ -600,9 +624,9 @@ describe('reassigning an occupant', () => {
       { 'POST /api/rent/deposits/slots': summary() },
     )
     await userEvent.click(
-      await screen.findByRole('button', { name: 'Reassign occupant of Room 2' }),
+      await screen.findByRole('button', { name: 'Assign occupant of Room 2' }),
     )
-    const dialog = await screen.findByRole('dialog', { name: 'Reassign Occupant' })
+    const dialog = await screen.findByRole('dialog', { name: 'Assign Occupant' })
     expect(dialog).toHaveTextContent('Slot 2 (Room 2) is vacant')
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Assign Occupant' }))
