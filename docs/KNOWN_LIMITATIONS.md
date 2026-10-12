@@ -1,7 +1,7 @@
 # Known limitations
 
 What this application does not do, stated plainly, so nothing comes as a
-surprise later.
+surprise later. See also the [Technical Debt Register](TECH_DEBT.md) for architectural trade-offs, legal/tax edge cases, and deferred entity extensions.
 
 ---
 

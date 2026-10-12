@@ -31,12 +31,13 @@ import type { Apartment, Health, SetupState } from '../api/types'
 import { ExpenseFormDialog } from '../pages/ExpenseForm'
 import { useToast } from './Toast'
 
-type Section = 'hub' | 'services' | 'ledger' | 'statements' | 'settings'
+type Section = 'hub' | 'services' | 'ledger' | 'residents' | 'statements' | 'settings'
 
 const NAV_TABS: Array<{ to: string; label: string; section: Section }> = [
   { to: '/', label: 'Month Hub', section: 'hub' },
   { to: '/services', label: 'Housing & Utilities', section: 'services' },
   { to: '/transactions', label: 'Activity Ledger', section: 'ledger' },
+  { to: '/residents', label: 'Residents', section: 'residents' },
   { to: '/statements', label: 'Statements', section: 'statements' },
 ]
 
@@ -52,7 +53,7 @@ const SECTION_PREFIXES: Array<[string, Section]> = [
   ['/reports', 'statements'],
   ['/setup', 'settings'],
   ['/welcome', 'settings'],
-  ['/residents', 'settings'],
+  ['/residents', 'residents'],
   ['/definitions', 'settings'],
 ]
 
@@ -247,13 +248,15 @@ export function Layout({ children }: { children: ReactNode }) {
   }
   // Rent, electricity and setup have their own workflows; the generic
   // transaction form would only compete with them there.
-  const showRecord = section !== 'services' && section !== 'settings'
+  const showRecord =
+    section !== 'services' && section !== 'settings' && section !== 'residents'
   // The month means nothing on setup and configuration screens, so the picker
   // row is left out there altogether.
   const isConfigPage =
     location.pathname === '/services/rent/config' ||
     location.pathname === '/rent/config' ||
-    section === 'settings'
+    section === 'settings' ||
+    section === 'residents'
   const showPeriodBar = !onWizard && !isConfigPage
 
   return (
@@ -262,11 +265,11 @@ export function Layout({ children }: { children: ReactNode }) {
         Skip to main content
       </a>
       <div className="min-h-full flex flex-col">
-        <header className="bg-[var(--bg-surface)] border-b border-[var(--border-subtle)] px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between sm:grid sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:gap-x-4 sticky top-0 z-40 backdrop-blur-md min-h-[57px] print:hidden">
+        <header className="bg-[var(--bg-surface)] border-b border-[var(--border-subtle)] px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between md:grid md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-x-4 sticky top-0 z-40 backdrop-blur-md min-h-[57px] print:hidden">
           {/* LEFT: emblem and apartment name */}
           <Link
             to="/"
-            className="flex items-center gap-3 min-w-0 no-underline sm:justify-self-start sm:max-w-full"
+            className="flex items-center gap-3 min-w-0 no-underline md:justify-self-start md:max-w-full"
             title={apartment?.name ?? undefined}
             aria-label={apartment?.name ?? 'Apartment Expense Manager'}
           >
@@ -288,11 +291,11 @@ export function Layout({ children }: { children: ReactNode }) {
           {/* CENTER: the middle column of a three-column grid whose side columns
               are equal, so the tabs sit at the ribbon's midpoint and neither
               side can run into them: the name truncates inside its own column.
-              Below `sm` there is no room beside the utilities, and the tabs
+              Below `md` five tabs do not fit beside the utilities, and they
               take a row of their own. */}
           {!onWizard && (
             <nav
-              className="max-sm:order-last max-sm:w-full max-sm:mt-2.5 max-sm:justify-start max-sm:overflow-x-auto sm:col-start-2 flex items-center justify-center gap-1 bg-[var(--bg-elevated)] p-1 rounded-xl border border-[var(--border-subtle)] text-xs font-medium shadow-xs shrink-0"
+              className="max-md:order-last max-md:w-full max-md:mt-2.5 max-md:justify-start max-md:overflow-x-auto md:col-start-2 flex items-center justify-center gap-1 bg-[var(--bg-elevated)] p-1 rounded-xl border border-[var(--border-subtle)] text-xs font-medium shadow-xs shrink-0"
               aria-label="Main navigation"
             >
               {NAV_TABS.map((tab) => {
@@ -303,7 +306,7 @@ export function Layout({ children }: { children: ReactNode }) {
                     to={tab.to}
                     aria-current={active ? 'page' : undefined}
                     className={clsx(
-                      'max-sm:flex-1 text-center px-2 sm:px-2.5 md:px-4 py-1.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer no-underline',
+                      'max-md:flex-1 text-center px-2 md:px-2.5 lg:px-4 py-1.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer no-underline',
                       active
                         ? 'bg-[var(--accent)] text-white font-semibold shadow-xs'
                         : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
@@ -317,7 +320,7 @@ export function Layout({ children }: { children: ReactNode }) {
           )}
 
           {/* RIGHT: theme toggle, then settings as the right-most element */}
-          <div className="flex items-center gap-1.5 shrink-0 sm:col-start-3 sm:justify-self-end">
+          <div className="flex items-center gap-1.5 shrink-0 md:col-start-3 md:justify-self-end">
             <button
               type="button"
               onClick={toggleTheme}

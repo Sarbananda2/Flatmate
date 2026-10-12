@@ -12,6 +12,7 @@ import {
   Stat,
   StatementStatusBadge,
 } from '../components/Primitives'
+import { useToast } from '../components/Toast'
 import { useResource } from '../lib/useApi'
 import { api } from '../api/client'
 import {
@@ -22,6 +23,7 @@ import {
   parseRupees,
 } from '../lib/format'
 import type { OpeningBalanceItem, ResidentDetail } from '../api/types'
+import { ContactCard, EditProfileDialog, UpiCard } from './ResidentProfile'
 
 export default function ResidentDetailPage() {
   const { residentId = '' } = useParams()
@@ -34,7 +36,6 @@ export default function ResidentDetailPage() {
       title={resource.data?.resident.display_name ?? 'Resident'}
       subtitle="Everything charged to this resident, everything they paid, and what remains."
       breadcrumbs={[
-        { label: 'Configure' },
         { label: 'Residents', to: '/residents' },
         { label: resource.data?.resident.display_name ?? residentId },
       ]}
@@ -68,6 +69,8 @@ function Body({
   const openingBal = openingResource.data?.items.find((i) => i.resident_id === residentId)
   const isEditable = openingResource.data?.is_editable ?? true
 
+  const toast = useToast()
+  const [editingProfile, setEditingProfile] = useState(false)
   const [editingOpening, setEditingOpening] = useState(false)
   const [openingAmountStr, setOpeningAmountStr] = useState('')
   const [openingDirection, setOpeningDirection] = useState<'owed_by_resident' | 'owed_to_resident'>('owed_by_resident')
@@ -177,6 +180,23 @@ function Body({
       </div>
 
       <div className="grid grid--halves">
+        <ContactCard resident={data.resident} onEdit={() => setEditingProfile(true)} />
+        <UpiCard resident={data.resident} />
+      </div>
+
+      {editingProfile && (
+        <EditProfileDialog
+          resident={data.resident}
+          onClose={() => setEditingProfile(false)}
+          onSaved={() => {
+            setEditingProfile(false)
+            onReload()
+            toast.success('Profile saved')
+          }}
+        />
+      )}
+
+      <div className="grid grid--halves">
         <Card title="Status">
           <div className="stack stack--tight">
             <div className="row">
@@ -191,8 +211,6 @@ function Body({
                 <NetBalance paise={account.net_position_paise} name={data.resident.display_name} />
               </div>
             )}
-            {data.resident.email && <div className="subtle">{data.resident.email}</div>}
-            {data.resident.phone && <div className="subtle">{data.resident.phone}</div>}
             {data.resident.notes && <p className="muted" style={{ margin: 0 }}>{data.resident.notes}</p>}
           </div>
         </Card>

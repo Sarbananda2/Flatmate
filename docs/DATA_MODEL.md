@@ -96,6 +96,8 @@ financial record stays exactly where it was.
 | `active_from`, `active_until` | TEXT | Reference only. Nothing prorates: these never alter an allocation |
 | `is_active` | INTEGER 0/1 | |
 | `email`, `phone`, `notes` | TEXT | |
+| `upi_id` | TEXT | Optional `name@bank`. Only ever put into a payment link or QR code; never used for accounting |
+| `emergency_contact_name`, `emergency_contact_phone`, `emergency_contact_relation` | TEXT | Optional next of kin. Free text; not used for accounting |
 | `created_at`, `updated_at` | TEXT | |
 
 ### `expense_definition`
@@ -389,6 +391,9 @@ The API maps each marker to an HTTP 409 with the matching error code.
 | 0004 | `opening_balance` | Historical opening balances and opening debts carried forward into first statement |
 | 0005 | `rent_master_lease` | Single master lease config (`rent_lease_config`), monthly rent cycle lifecycle (`rent_cycle`), landlord receipt blob storage (`rent_landlord_receipt`), and HRA slips (`rent_receipt`) |
 | 0006 | `lease_lifecycle` | Contract term on `rent_lease_config` (start/end dates, duration, notice period, lock-in, security deposit, escalation clause, lease status and notice dates) and completed terms in `rent_lease_term` |
+| 0007 | `resident_profile_extensions` | Emergency contact on `resident`: name, phone and relationship |
+
+Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from a single `0001_baseline.sql` that carries all six, so its migration files are `0001` and then `0007` onward: the numbering continues the history above rather than restarting.
 
 ---
 

@@ -226,6 +226,9 @@ Claude must strictly observe these layout guards:
 * [x] **Midpoint Anchor:** Never replace `absolute left-1/2 -translate-x-1/2` with flex spacers or margins. Only absolute centering guarantees true ribbon centering regardless of text length on the left or buttons on the right.
 * [x] **Canvas Autonomy:** No elements outside the canvas or header.
 * [x] **Theme Persistence:** Store dark/light preference in `localStorage.getItem('aem.theme')` and apply to `<html data-theme="...">`.
+* [x] **Universal Table Header Center Alignment:** In all tables created across all pages, every column header (`<th>`) must be center-aligned (`text-align: center;`). No exceptions for text, amounts, or actions.
+* [x] **Mandatory Field-Level Form Validation:** Every modal, drawer, or inline form must validate all fields client-side (non-empty required fields, email, phone, UPI VPA syntax, non-negative amounts, date ranges) with inline error feedback and visual cues before submission.
+
 
 ---
 

@@ -49,6 +49,10 @@ export interface Resident {
   phone: string | null
   notes: string | null
   upi_id: string | null
+  /** Who to call for this resident in an emergency. All optional. */
+  emergency_contact_name: string | null
+  emergency_contact_phone: string | null
+  emergency_contact_relation: string | null
   created_at: string | null
   updated_at: string | null
 }

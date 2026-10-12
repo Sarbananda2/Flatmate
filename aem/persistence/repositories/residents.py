@@ -33,22 +33,34 @@ class ResidentsRepository(Repository):
     def insert(self, *, resident_id: str, apartment_id: str, display_name: str,
                active_from: str | None, active_until: str | None, is_active: int,
                email: str | None, phone: str | None, notes: str | None,
-               upi_id: str | None, created_at: str, updated_at: str) -> None:
+               upi_id: str | None, created_at: str, updated_at: str,
+               emergency_contact_name: str | None = None,
+               emergency_contact_phone: str | None = None,
+               emergency_contact_relation: str | None = None) -> None:
         self._s.execute(
             """INSERT INTO resident (resident_id, apartment_id, display_name, active_from,
                                      active_until, is_active, email, phone, notes,
-                                     upi_id, created_at, updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                     upi_id, emergency_contact_name,
+                                     emergency_contact_phone, emergency_contact_relation,
+                                     created_at, updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (resident_id, apartment_id, display_name, active_from, active_until,
-             is_active, email, phone, notes, upi_id, created_at, updated_at))
+             is_active, email, phone, notes, upi_id, emergency_contact_name,
+             emergency_contact_phone, emergency_contact_relation, created_at, updated_at))
 
     def update(self, resident_id: str, *, display_name: str, active_from: str | None,
                active_until: str | None, is_active: int, email: str | None,
                phone: str | None, notes: str | None, upi_id: str | None,
+               emergency_contact_name: str | None,
+               emergency_contact_phone: str | None,
+               emergency_contact_relation: str | None,
                updated_at: str) -> None:
         self._s.execute(
             """UPDATE resident SET display_name=%s, active_from=%s, active_until=%s,
-                   is_active=%s, email=%s, phone=%s, notes=%s, upi_id=%s, updated_at=%s
+                   is_active=%s, email=%s, phone=%s, notes=%s, upi_id=%s,
+                   emergency_contact_name=%s, emergency_contact_phone=%s,
+                   emergency_contact_relation=%s, updated_at=%s
                WHERE resident_id=%s""",
             (display_name, active_from, active_until, is_active, email, phone, notes,
-             upi_id, updated_at, resident_id))
+             upi_id, emergency_contact_name, emergency_contact_phone,
+             emergency_contact_relation, updated_at, resident_id))

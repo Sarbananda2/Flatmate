@@ -312,14 +312,14 @@ export default function TransactionsPage() {
               <table className="w-full text-left text-xs min-w-[620px] border-collapse">
                 <caption className="sr-only">Transaction ledger</caption>
                 <thead>
-                  <tr className="border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold">
+                  <tr className="border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold text-center">
                     <th scope="col" className="pb-3 pr-3 font-bold">Date</th>
                     <th scope="col" className="pb-3 pr-3 font-bold">Type</th>
                     <th scope="col" className="pb-3 pr-3 font-bold">Category</th>
                     <th scope="col" className="pb-3 pr-3 font-bold">Description</th>
                     <th scope="col" className="pb-3 pr-3 font-bold">Paid By</th>
                     <th scope="col" className="pb-3 pr-3 font-bold">Statement</th>
-                    <th scope="col" className="pb-3 font-bold text-right">Amount</th>
+                    <th scope="col" className="pb-3 font-bold">Amount</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] font-medium">

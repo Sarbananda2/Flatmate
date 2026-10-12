@@ -116,13 +116,13 @@ export default function StatementsPage() {
                 <caption className="sr-only">Statements</caption>
                 <thead>
                   <tr className="border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold">
-                    <th scope="col" className="pb-3 pr-3 font-bold">Settlement month</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold">Status</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-right">Expenses</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-right">Total</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold">Finalized</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold">Correction window</th>
-                    <th scope="col" className="pb-3 font-bold text-right">Revisions</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Settlement month</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Status</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Expenses</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Total</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Finalized</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Correction window</th>
+                    <th scope="col" className="pb-3 font-bold text-center">Revisions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] font-medium">

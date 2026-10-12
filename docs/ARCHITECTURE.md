@@ -276,6 +276,40 @@ styles, and a mobile layout. There is no CSS framework. Financial semantics —
 owed-to, owed-by, credit — each have a colour *and* a sign or a word, so no
 figure depends on colour alone.
 
+### UI and table design rules
+
+**Mandatory Rule — Table Header Alignment (All Columns):**
+Whenever a table is made or a new page is introduced, this rule must be strictly followed:
+- **All table column headers (`<th>`) must be center-aligned (`text-align: center;`) across every single column.**
+- This applies universally across the board: entity/resident names, descriptions, categories, dates, monetary amounts (`.num`), statuses, and action columns.
+- Enforced at the base design system level in `frontend/src/index.css`:
+  ```css
+  table.data thead th,
+  table.data thead th.num {
+    text-align: center;
+  }
+  ```
+- Individual pages and components must **not** override column headers to `text-left` or `text-right` via inline styles or utility classes.
+- **Table Data Cells (`<td>`)**: Row content retains its natural semantic alignment — text/names/descriptions remain left-aligned, monetary and numerical figures remain right-aligned with monospace tabular figures (`.num`), and status chips/actions remain centered.
+
+**Mandatory Rule — Comprehensive Form Field Validation:**
+Every user input form created across the application must implement explicit field-level validation:
+- **Client-Side Enforcement:**
+  - **Required vs. Optional:** All mandatory fields must check for non-empty, non-whitespace content prior to submission.
+  - **Format-Specific Validators:**
+    - *Email addresses:* Valid standard email pattern (`name@domain.tld`).
+    - *Phone numbers:* Standard digit validation (e.g., 10-digit mobile number, sanitizing non-numeric characters).
+    - *UPI IDs:* Valid Virtual Payment Address syntax (`username@handle`).
+    - *Monetary Amounts:* Must validate through `parseRupees` (strictly non-negative unless explicit adjustment, no third decimal place, integer paise precision).
+    - *Dates & Periods:* Valid `YYYY-MM-DD` or `YYYY-MM` formats within plausible temporal bounds.
+    - *Split Allocations:* Individual participant shares must mathematically sum exactly to the total expense amount.
+  - **User Feedback & State:**
+    - Inline field-level error messages beneath the offending input (never relying solely on generic alerts).
+    - Erroneous fields must receive clear visual error cues (e.g., danger border/focus ring) and accessibility labels (`aria-invalid="true"`).
+    - Save/Submit buttons should guard against invalid states or trigger clear field-level highlights on attempted submit.
+- **Backend Dual-Enforcement:**
+  - Client-side validation is never trusted in isolation; all fields are backed by Pydantic validators (`aem/schemas/models.py`) and service-layer rules (`aem/services/validation.py`) returning structured `AemError` responses.
+
 ---
 
 ## Request lifecycle

@@ -388,3 +388,54 @@ def test_the_services_summary_matches_the_rent_and_electricity_endpoints(househo
 def test_the_services_summary_requires_a_valid_month(household_client):
     assert household_client.get("/api/services").status_code == 422
     assert household_client.get("/api/services", params={"month": "2026-13"}).status_code == 422
+
+
+# ------------------------------------------------ resident emergency contact --
+
+def test_a_resident_carries_an_optional_emergency_contact(client):
+    client.post("/api/apartments", json={"apartment_id": APARTMENT, "name": "Flat"})
+    plain = client.post("/api/residents", json={
+        "resident_id": "alice", "display_name": "Alice"}).json()
+    assert plain["emergency_contact_name"] is None
+    assert plain["emergency_contact_phone"] is None
+    assert plain["emergency_contact_relation"] is None
+
+    created = client.post("/api/residents", json={
+        "resident_id": "bob", "display_name": "Bob", "phone": "+91 98765 43210",
+        "emergency_contact_name": "  Meera Rao ", "emergency_contact_phone": "+91 91234 56780",
+        "emergency_contact_relation": "Mother"})
+    assert created.status_code == 201
+    bob = client.get("/api/residents/bob").json()["resident"]
+    assert (bob["emergency_contact_name"], bob["emergency_contact_phone"],
+            bob["emergency_contact_relation"]) == ("Meera Rao", "+91 91234 56780", "Mother")
+
+
+def test_the_emergency_contact_is_edited_field_by_field_and_audited(client):
+    client.post("/api/apartments", json={"apartment_id": APARTMENT, "name": "Flat"})
+    client.post("/api/residents", json={
+        "resident_id": "bob", "display_name": "Bob", "upi_id": "bob@okaxis",
+        "emergency_contact_name": "Meera Rao", "emergency_contact_phone": "+91 91234 56780",
+        "emergency_contact_relation": "Mother"})
+
+    # Changing one field leaves the others, and everything else, as they were.
+    updated = client.patch("/api/residents/bob", json={
+        "emergency_contact_phone": "+91 90000 11111"}).json()
+    assert (updated["emergency_contact_name"], updated["emergency_contact_phone"],
+            updated["emergency_contact_relation"]) == ("Meera Rao", "+91 90000 11111", "Mother")
+    assert (updated["display_name"], updated["upi_id"]) == ("Bob", "bob@okaxis")
+
+    # An emptied field is stored as nothing, not as an empty string.
+    cleared = client.patch("/api/residents/bob", json={
+        "emergency_contact_name": "", "emergency_contact_relation": None}).json()
+    assert cleared["emergency_contact_name"] is None
+    assert cleared["emergency_contact_relation"] is None
+    assert cleared["emergency_contact_phone"] == "+91 90000 11111"
+
+    too_long = client.patch("/api/residents/bob", json={"emergency_contact_relation": "x" * 101})
+    assert too_long.status_code == 422
+
+    changed = {row["field_name"] for row in client.get(
+        "/api/audit", params={"entity_type": "resident", "entity_id": "bob"}).json()["items"]
+        if row["action"] == "update"}
+    assert {"emergency_contact_name", "emergency_contact_phone",
+            "emergency_contact_relation"} <= changed

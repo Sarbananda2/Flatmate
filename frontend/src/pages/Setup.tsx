@@ -128,6 +128,19 @@ export default function SetupPage() {
 
       {hasApartment && (
         <Card
+          title="Residents & Flatmates"
+          hint="Who lives here: contact details, emergency contacts, UPI IDs, and move-in and move-out dates."
+        >
+          <div className="row">
+            <Link className="btn btn--primary" to="/residents">
+              Manage residents
+            </Link>
+          </div>
+        </Card>
+      )}
+
+      {hasApartment && (
+        <Card
           title="Rent & Lease"
           hint="The master lease: landlord, monthly rent, due day, PAN for HRA receipts, and whether the landlord issues receipts."
         >

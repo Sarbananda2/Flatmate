@@ -107,6 +107,9 @@ class ResidentCreate(ApiModel):
     phone: str | None = Field(None, max_length=50)
     notes: str | None = Field(None, max_length=2000)
     upi_id: str | None = Field(None, max_length=320)
+    emergency_contact_name: str | None = Field(None, max_length=200)
+    emergency_contact_phone: str | None = Field(None, max_length=50)
+    emergency_contact_relation: str | None = Field(None, max_length=100)
 
 
 class ResidentUpdate(ApiModel):
@@ -118,6 +121,9 @@ class ResidentUpdate(ApiModel):
     phone: str | None = Field(None, max_length=50)
     notes: str | None = Field(None, max_length=2000)
     upi_id: str | None = Field(None, max_length=320)
+    emergency_contact_name: str | None = Field(None, max_length=200)
+    emergency_contact_phone: str | None = Field(None, max_length=50)
+    emergency_contact_relation: str | None = Field(None, max_length=100)
     reason: str | None = Field(None, max_length=2000)
 
 

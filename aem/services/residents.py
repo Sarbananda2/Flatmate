@@ -29,7 +29,13 @@ from .common import (
 )
 
 EDITABLE_FIELDS = ["display_name", "active_from", "active_until", "is_active",
-                   "email", "phone", "notes", "upi_id"]
+                   "email", "phone", "notes", "upi_id", "emergency_contact_name",
+                   "emergency_contact_phone", "emergency_contact_relation"]
+
+#: Who to call for a resident in an emergency. Optional free text, with the
+#: longest value each will hold.
+EMERGENCY_CONTACT_FIELDS = (("emergency_contact_name", 200), ("emergency_contact_phone", 50),
+                            ("emergency_contact_relation", 100))
 
 _UPI_ID = re.compile(r"^[A-Za-z0-9._-]{2,256}@[A-Za-z0-9.-]{2,64}$")
 
@@ -57,6 +63,9 @@ def create_resident(db: Database, *, apartment_id: str, resident_id: str, displa
                     is_active: bool = True, email: str | None = None,
                     phone: str | None = None, notes: str | None = None,
                     upi_id: str | None = None,
+                    emergency_contact_name: str | None = None,
+                    emergency_contact_phone: str | None = None,
+                    emergency_contact_relation: str | None = None,
                     actor: str = "operator") -> dict[str, Any]:
     resident_id = require_text(resident_id, "resident_id", max_length=64)
     display_name = require_text(display_name, "display_name", max_length=200)
@@ -64,6 +73,11 @@ def create_resident(db: Database, *, apartment_id: str, resident_id: str, displa
     active_until = optional_text(active_until, "active_until", max_length=10)
     _validate_dates(active_from, active_until)
     upi_id = _upi_id(upi_id)
+    given = {"emergency_contact_name": emergency_contact_name,
+             "emergency_contact_phone": emergency_contact_phone,
+             "emergency_contact_relation": emergency_contact_relation}
+    emergency = {field: optional_text(given[field], field, max_length=max_length)
+                 for field, max_length in EMERGENCY_CONTACT_FIELDS}
     timestamp = now_timestamp()
     with db.transaction() as uow:
         get_apartment(uow, apartment_id)
@@ -78,7 +92,7 @@ def create_resident(db: Database, *, apartment_id: str, resident_id: str, displa
             email=optional_text(email, "email", max_length=200),
             phone=optional_text(phone, "phone", max_length=50),
             notes=optional_text(notes, "notes"), upi_id=upi_id,
-            created_at=timestamp, updated_at=timestamp)
+            created_at=timestamp, updated_at=timestamp, **emergency)
         audit.record(uow, entity_type="resident", entity_id=resident_id, action="create",
                      actor=actor, apartment_id=apartment_id,
                      new_value={"display_name": display_name, "is_active": is_active,
@@ -102,7 +116,8 @@ def update_resident(db: Database, resident_id: str, *, apartment_id: str | None 
             after["display_name"] = require_text(changes["display_name"], "display_name",
                                                  max_length=200)
         for field, max_length in (("active_from", 10), ("active_until", 10),
-                                  ("email", 200), ("phone", 50), ("notes", 2000)):
+                                  ("email", 200), ("phone", 50), ("notes", 2000),
+                                  *EMERGENCY_CONTACT_FIELDS):
             if field in changes:
                 after[field] = optional_text(changes[field], field, max_length=max_length)
         if "upi_id" in changes:
@@ -116,7 +131,11 @@ def update_resident(db: Database, resident_id: str, *, apartment_id: str | None 
             active_from=after.get("active_from"), active_until=after.get("active_until"),
             is_active=after["is_active"], email=after.get("email"),
             phone=after.get("phone"), notes=after.get("notes"),
-            upi_id=after.get("upi_id"), updated_at=after["updated_at"])
+            upi_id=after.get("upi_id"),
+            emergency_contact_name=after.get("emergency_contact_name"),
+            emergency_contact_phone=after.get("emergency_contact_phone"),
+            emergency_contact_relation=after.get("emergency_contact_relation"),
+            updated_at=after["updated_at"])
         audit.record_field_changes(
             uow, entity_type="resident", entity_id=resident_id, before=before, after=after,
             fields=EDITABLE_FIELDS, actor=actor,

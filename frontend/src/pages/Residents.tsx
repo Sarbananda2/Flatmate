@@ -11,7 +11,6 @@ import { Link } from 'react-router-dom'
 import { Page } from '../components/Layout'
 import {
   AsyncSection,
-  Badge,
   Callout,
   Card,
   ConfirmDialog,
@@ -22,16 +21,17 @@ import {
 } from '../components/Primitives'
 import { CheckboxField, DateField, TextAreaField, TextField } from '../components/Form'
 import { useToast } from '../components/Toast'
+import { Avatar, Pill } from '../components/ui'
 import { api } from '../api/client'
 import { useMutation, useResource } from '../lib/useApi'
-import { formatDate, todayIso } from '../lib/format'
-import type { OpeningBalanceItem, Reconciliation, Resident } from '../api/types'
+import { todayIso } from '../lib/format'
+import type { Reconciliation, Resident } from '../api/types'
+import { whatsappHref } from './ResidentProfile'
 
 export default function ResidentsPage() {
   const toast = useToast()
   const residents = useResource<{ items: Resident[]; total: number }>('/api/residents')
   const settlement = useResource<Reconciliation>('/api/reconciliation')
-  const openingBalances = useResource<{ items: OpeningBalanceItem[] }>('/api/opening-balances')
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<Resident | null>(null)
   const [deactivating, setDeactivating] = useState<Resident | null>(null)
@@ -42,38 +42,21 @@ export default function ResidentsPage() {
       .map((account) => [account.account_id, account]),
   )
 
-  const openingMap = new Map(
-    (openingBalances.data?.items ?? []).map((item) => [item.resident_id, item]),
-  )
-
   const refresh = () => {
     residents.reload()
     settlement.reload()
-    openingBalances.reload()
   }
 
   return (
     <Page
       title="Residents"
       subtitle="The people sharing this apartment. Deactivating somebody records that they moved out; it never removes their financial history."
-      breadcrumbs={[{ label: 'Configure' }, { label: 'Residents' }]}
       actions={
         <button type="button" className="btn btn--primary" onClick={() => setCreating(true)}>
           Add resident
         </button>
       }
     >
-      <Callout tone="info" title="Nothing prorates — this household's rule">
-        A partial month does not reduce anybody's share. Somebody who moves in on the 16th and
-        takes part in an expense is charged a <strong>full ordinary share</strong> of it, and the
-        same goes for somebody moving out. Move-in and move-out dates are recorded here for
-        reference and never change an allocation.
-        <br />
-        To leave somebody out of a particular expense entirely, uncheck them in that expense's
-        participants — they then get an explicit zero share. That is a participation choice you
-        make and can see, not a calculation happening behind your back.
-      </Callout>
-
       <Card title="All residents" flush>
         <AsyncSection
           resource={residents}
@@ -92,125 +75,127 @@ export default function ResidentsPage() {
         >
           {(data) => (
             <div className="table-scroll">
-              <table className="data">
-                <caption className="sr-only">Residents and their balances</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Name</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Active from</th>
-                    <th scope="col">Active until</th>
-                    <th scope="col" className="num">
-                      Opening
-                    </th>
-                    <th scope="col" className="num">
-                      Outstanding
-                    </th>
-                    <th scope="col" className="num">
-                      Credit
-                    </th>
-                    <th scope="col" className="num">
-                      Net balance
-                    </th>
-                    <th scope="col">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.items.map((resident) => {
-                    const account = balances.get(resident.resident_id)
-                    const active = Boolean(resident.is_active)
-                    return (
-                      <tr key={resident.resident_id}>
-                        <th scope="row">
-                          <Link to={`/residents/${resident.resident_id}`}>
+            <table className="data residents-table">
+              <caption className="sr-only">Residents, how to reach them, and their balance</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Resident</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Contact &amp; UPI</th>
+                  <th scope="col" className="num">
+                    Net balance
+                  </th>
+                  <th scope="col">
+                    <span className="sr-only">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map((resident) => {
+                  const account = balances.get(resident.resident_id)
+                  const active = Boolean(resident.is_active)
+                  const net = account?.net_position_paise ?? 0
+                  const whatsapp = resident.phone ? whatsappHref(resident.phone) : null
+                  // Phone first, then whichever of UPI ID and email there is.
+                  const second = resident.upi_id ?? resident.email
+                  return (
+                    <tr key={resident.resident_id}>
+                      <th scope="row">
+                        <span className="flex items-center gap-2.5 min-w-0">
+                          <Avatar name={resident.display_name} tone={active ? 'accent' : 'neutral'} />
+                          <Link
+                            className="min-w-0 truncate font-semibold"
+                            to={`/residents/${resident.resident_id}`}
+                          >
                             {resident.display_name}
                           </Link>
-                          <div>
-                            <span className="id-chip">{resident.resident_id}</span>
+                        </span>
+                      </th>
+                      <td>
+                        {active ? (
+                          <Pill tone="success">Active</Pill>
+                        ) : (
+                          <Pill>Moved out</Pill>
+                        )}
+                      </td>
+                      <td>
+                        {resident.phone || second ? (
+                          <div className="min-w-0 space-y-0.5">
+                            {resident.phone && (
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="tabular truncate">{resident.phone}</span>
+                                {whatsapp && (
+                                  <a
+                                    className="shrink-0 text-xs font-semibold"
+                                    href={whatsapp}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    aria-label={`WhatsApp ${resident.display_name}`}
+                                  >
+                                    WhatsApp
+                                  </a>
+                                )}
+                              </div>
+                            )}
+                            {second && (
+                              <div className="tabular truncate text-xs text-[var(--text-secondary)]">
+                                {second}
+                              </div>
+                            )}
                           </div>
-                        </th>
-                        <td>
+                        ) : (
+                          <span className="subtle">—</span>
+                        )}
+                      </td>
+                      <td className="num">
+                        {net === 0 ? (
+                          <span className="subtle">Settled</span>
+                        ) : (
+                          <Money paise={net} tone="auto" sign="always" />
+                        )}
+                      </td>
+                      <td>
+                        <div className="flex items-center justify-end gap-2 whitespace-nowrap flex-nowrap">
+                          <button
+                            type="button"
+                            className="btn btn--sm"
+                            onClick={() => setEditing(resident)}
+                            aria-label={`Edit ${resident.display_name}`}
+                          >
+                            Edit
+                          </button>
                           {active ? (
-                            <Badge tone="ok">Active</Badge>
-                          ) : (
-                            <Badge tone="neutral">Moved out</Badge>
-                          )}
-                        </td>
-                        <td className="nowrap">{formatDate(resident.active_from)}</td>
-                        <td className="nowrap">{formatDate(resident.active_until)}</td>
-                        <td className="num">
-                          {(() => {
-                            const ob = openingMap.get(resident.resident_id)
-                            if (!ob) return <span className="subtle">—</span>
-                            return (
-                              <Money
-                                paise={ob.amount_paise}
-                                tone={ob.amount_paise < 0 ? 'owed-by' : 'credit'}
-                                sign="always"
-                              />
-                            )
-                          })()}
-                        </td>
-                        <td className="num">
-                          <Money
-                            paise={account?.outstanding_charges_paise ?? 0}
-                            tone={account?.outstanding_charges_paise ? 'owed-by' : 'plain'}
-                          />
-                        </td>
-                        <td className="num">
-                          <Money
-                            paise={account?.unapplied_credit_paise ?? 0}
-                            tone={account?.unapplied_credit_paise ? 'credit' : 'plain'}
-                          />
-                        </td>
-                        <td className="num">
-                          <Money
-                            paise={account?.net_position_paise ?? 0}
-                            tone="auto"
-                            sign="always"
-                          />
-                        </td>
-                        <td>
-                          <div className="row" style={{ gap: 6 }}>
                             <button
                               type="button"
                               className="btn btn--sm"
-                              onClick={() => setEditing(resident)}
+                              onClick={() => setDeactivating(resident)}
+                              aria-label={`Record that ${resident.display_name} moved out`}
                             >
-                              Edit
+                              Moved out
                             </button>
-                            {active ? (
-                              <button
-                                type="button"
-                                className="btn btn--sm"
-                                onClick={() => setDeactivating(resident)}
-                              >
-                                Moved out
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                className="btn btn--sm"
-                                onClick={async () => {
-                                  await api.post(
-                                    `/api/residents/${encodeURIComponent(resident.resident_id)}/reactivate`,
-                                  )
-                                  refresh()
-                                  toast.success(`${resident.display_name} is active again`)
-                                }}
-                              >
-                                Reactivate
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn btn--sm"
+                              aria-label={`Reactivate ${resident.display_name}`}
+                              onClick={async () => {
+                                await api.post(
+                                  `/api/residents/${encodeURIComponent(resident.resident_id)}/reactivate`,
+                                )
+                                refresh()
+                                toast.success(`${resident.display_name} is active again`)
+                              }}
+                            >
+                              Reactivate
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
             </div>
           )}
         </AsyncSection>
@@ -271,6 +256,16 @@ function ResidentDialog({
   const [phone, setPhone] = useState(resident?.phone ?? '')
   const [upiId, setUpiId] = useState(resident?.upi_id ?? '')
   const [notes, setNotes] = useState(resident?.notes ?? '')
+  const [contactName, setContactName] = useState(resident?.emergency_contact_name ?? '')
+  const [contactPhone, setContactPhone] = useState(resident?.emergency_contact_phone ?? '')
+  const [contactRelation, setContactRelation] = useState(
+    resident?.emergency_contact_relation ?? '',
+  )
+  const emergencyContact = {
+    emergency_contact_name: contactName.trim() || null,
+    emergency_contact_phone: contactPhone.trim() || null,
+    emergency_contact_relation: contactRelation.trim() || null,
+  }
   const [isActive, setIsActive] = useState(resident ? Boolean(resident.is_active) : true)
   const [touched, setTouched] = useState(false)
 
@@ -286,6 +281,7 @@ function ResidentDialog({
             upi_id: upiId.trim() || null,
             notes: notes || null,
             is_active: isActive,
+            ...emergencyContact,
           })
         : api.post<Resident>('/api/residents', {
             resident_id: residentId.trim(),
@@ -297,6 +293,7 @@ function ResidentDialog({
             upi_id: upiId.trim() || null,
             notes: notes || null,
             is_active: isActive,
+            ...emergencyContact,
           }),
     { onSuccess: onSaved },
   )
@@ -383,6 +380,33 @@ function ResidentDialog({
             hint="Optional. Adds a payable link to shared settlement summaries."
           />
         </div>
+        <fieldset className="m-0 border-0 p-0 space-y-3">
+          <legend className="p-0 text-sm font-bold text-[var(--text-primary)]">
+            Emergency contact (optional)
+          </legend>
+          <div className="form-grid">
+            <TextField
+              label="Emergency contact name"
+              value={contactName}
+              onChange={setContactName}
+              maxLength={200}
+            />
+            <TextField
+              label="Emergency contact phone"
+              type="tel"
+              value={contactPhone}
+              onChange={setContactPhone}
+              maxLength={50}
+            />
+            <TextField
+              label="Relationship"
+              value={contactRelation}
+              onChange={setContactRelation}
+              maxLength={100}
+              placeholder="e.g. Mother"
+            />
+          </div>
+        </fieldset>
         <TextAreaField label="Notes" value={notes} onChange={setNotes} rows={2} />
         <CheckboxField
           label="Currently living here"
