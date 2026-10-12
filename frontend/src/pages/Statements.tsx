@@ -34,6 +34,7 @@ import {
   formatMonthShort,
   whToKwh,
 } from '../lib/format'
+import { FlatmateSharesPanel } from './ResidentStatement'
 import type {
   ElectricityBillSummary,
   SavedElectricityBill,
@@ -80,6 +81,8 @@ export default function StatementsPage() {
         loading={statements.initialLoading}
         onCreate={() => setCreating(true)}
       />
+
+      <FlatmateSharesPanel month={month} />
 
       <Panel
         title="All Statements"

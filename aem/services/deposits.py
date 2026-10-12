@@ -468,6 +468,104 @@ def record_slot_funding(
 
 # ------------------------------------------------------------------ moving out --
 
+def settle_slot_in(
+    uow: UnitOfWork, slot_id: str, *, apartment_id: str, settlement_path: str,
+    deductions_paise: int, refund_amount_paise: int, settled_on: str,
+    deduction_reason: str | None, reference: str | None, incoming_resident_id: str | None,
+    actor: str,
+) -> dict[str, Any]:
+    """Settle a leaving occupant's slot inside the caller's transaction.
+
+    The values must already be cleaned (``vacate_and_settle_slot`` and the exit
+    clearance both do that). Returns what was settled: the leaver, what they had
+    put in, and who the money moved through.
+    """
+    direct = settlement_path == "direct_transfer"
+    deductions, refund, reason = deductions_paise, refund_amount_paise, deduction_reason
+    incoming_id = incoming_resident_id
+    timestamp = now_timestamp()
+
+    slot = _slot(uow, slot_id, apartment_id)
+    lease = _configured_lease(uow, apartment_id)
+    leaver = slot["assigned_resident_id"]
+    if leaver is None:
+        raise ConflictError("This slot is already vacant.", code="deposit_slot_vacant")
+    signatory_id = lease["deposit_primary_signatory_resident_id"]
+    if leaver == signatory_id:
+        raise ConflictError(
+            "The primary signatory's own slot cannot be vacated here: their share is "
+            "settled with the landlord when the lease ends.",
+            code="deposit_signatory_slot")
+    funded = slot["funded_amount_paise"]
+    if deductions > funded:
+        raise ValidationError("Deductions cannot be more than the deposit put in.",
+                              details={"field": "deductions_paise",
+                                       "funded_amount_paise": funded})
+    if refund + deductions != funded:
+        raise ValidationError(
+            "The refund and the deductions must add up to what was put in.",
+            details={"field": "refund_amount_paise", "funded_amount_paise": funded,
+                     "expected_refund_paise": funded - deductions})
+
+    if direct:
+        if incoming_id == leaver:
+            raise ValidationError("The incoming resident must be somebody else.",
+                                  details={"field": "incoming_resident_id"})
+        incoming = get_resident(uow, incoming_id, apartment_id)
+        if not incoming["is_active"]:
+            raise ValidationError("The incoming resident must be a current resident.",
+                                  details={"field": "incoming_resident_id"})
+        if any(other["assigned_resident_id"] == incoming_id
+               for other in uow.deposits.slots_for_apartment(apartment_id)):
+            raise ConflictError(
+                f"{incoming['display_name']} already occupies a deposit slot.",
+                code="deposit_slot_already_held", details={"resident_id": incoming_id})
+        if refund <= 0:
+            raise ValidationError(
+                "Nothing would be handed over. Settle the slot as a refund instead.",
+                details={"field": "refund_amount_paise"})
+
+    if deductions > 0:
+        _transaction(uow, slot, resident_id=leaver, tx_type="move_out_deduction",
+                     amount_paise=deductions, tx_date=settled_on, timestamp=timestamp,
+                     notes=reason)
+    if direct:
+        _transaction(uow, slot, resident_id=leaver,
+                     tx_type="direct_replacement_transfer", amount_paise=refund,
+                     tx_date=settled_on, timestamp=timestamp,
+                     counterparty_resident_id=incoming_id, reference=reference)
+        target = slot["target_deposit_paise"]
+        changes = {
+            "assigned_resident_id": incoming_id, "assigned_since": settled_on,
+            "status": _status_for(incoming_id, refund, target),
+            "funded_amount_paise": refund, "funded_date": settled_on,
+            "payment_method": None, "payment_reference": reference,
+            "paid_to_resident_id": leaver,
+        }
+    else:
+        _transaction(uow, slot, resident_id=leaver, tx_type="move_out_refund",
+                     amount_paise=refund, tx_date=settled_on, timestamp=timestamp,
+                     counterparty_resident_id=signatory_id, reference=reference)
+        changes = {
+            "assigned_resident_id": None, "assigned_since": None, "status": "vacant",
+            "funded_amount_paise": 0, "funded_date": None, "payment_method": None,
+            "payment_reference": None, "paid_to_resident_id": None,
+        }
+    uow.deposits.update_slot(slot_id, updated_at=timestamp, **changes)
+    audit.record(uow, entity_type=ENTITY, entity_id=slot_id, action="vacate",
+                 actor=actor, apartment_id=apartment_id, reason=reason,
+                 old_value={"assigned_resident_id": leaver,
+                            "funded_amount_paise": funded, "status": slot["status"]},
+                 new_value={"settlement_path": settlement_path,
+                            "deductions_paise": deductions,
+                            "refund_amount_paise": refund, "refund_date": settled_on,
+                            "refund_reference": reference,
+                            "incoming_resident_id": incoming_id,
+                            "status": changes["status"]})
+    return {"slot": slot, "leaver_resident_id": leaver, "funded_amount_paise": funded,
+            "counterparty_resident_id": incoming_id if direct else signatory_id}
+
+
 def vacate_and_settle_slot(
     db: Database, slot_id: str, *, apartment_id: str, settlement_path: Any,
     deductions_paise: Any, refund_amount_paise: Any, refund_date: Any,
@@ -504,84 +602,11 @@ def vacate_and_settle_slot(
         raise ValidationError(
             "An incoming resident is only named for a direct transfer.",
             details={"field": "incoming_resident_id"})
-    timestamp = now_timestamp()
 
     with db.transaction() as uow:
-        slot = _slot(uow, slot_id, apartment_id)
-        lease = _configured_lease(uow, apartment_id)
-        leaver = slot["assigned_resident_id"]
-        if leaver is None:
-            raise ConflictError("This slot is already vacant.", code="deposit_slot_vacant")
-        signatory_id = lease["deposit_primary_signatory_resident_id"]
-        if leaver == signatory_id:
-            raise ConflictError(
-                "The primary signatory's own slot cannot be vacated here: their share is "
-                "settled with the landlord when the lease ends.",
-                code="deposit_signatory_slot")
-        funded = slot["funded_amount_paise"]
-        if deductions > funded:
-            raise ValidationError("Deductions cannot be more than the deposit put in.",
-                                  details={"field": "deductions_paise",
-                                           "funded_amount_paise": funded})
-        if refund + deductions != funded:
-            raise ValidationError(
-                "The refund and the deductions must add up to what was put in.",
-                details={"field": "refund_amount_paise", "funded_amount_paise": funded,
-                         "expected_refund_paise": funded - deductions})
-
-        if direct:
-            if incoming_id == leaver:
-                raise ValidationError("The incoming resident must be somebody else.",
-                                      details={"field": "incoming_resident_id"})
-            incoming = get_resident(uow, incoming_id, apartment_id)
-            if not incoming["is_active"]:
-                raise ValidationError("The incoming resident must be a current resident.",
-                                      details={"field": "incoming_resident_id"})
-            if any(other["assigned_resident_id"] == incoming_id
-                   for other in uow.deposits.slots_for_apartment(apartment_id)):
-                raise ConflictError(
-                    f"{incoming['display_name']} already occupies a deposit slot.",
-                    code="deposit_slot_already_held", details={"resident_id": incoming_id})
-            if refund <= 0:
-                raise ValidationError(
-                    "Nothing would be handed over. Settle the slot as a refund instead.",
-                    details={"field": "refund_amount_paise"})
-
-        if deductions > 0:
-            _transaction(uow, slot, resident_id=leaver, tx_type="move_out_deduction",
-                         amount_paise=deductions, tx_date=settled_on, timestamp=timestamp,
-                         notes=reason)
-        if direct:
-            _transaction(uow, slot, resident_id=leaver,
-                         tx_type="direct_replacement_transfer", amount_paise=refund,
-                         tx_date=settled_on, timestamp=timestamp,
-                         counterparty_resident_id=incoming_id, reference=reference)
-            target = slot["target_deposit_paise"]
-            changes = {
-                "assigned_resident_id": incoming_id, "assigned_since": settled_on,
-                "status": _status_for(incoming_id, refund, target),
-                "funded_amount_paise": refund, "funded_date": settled_on,
-                "payment_method": None, "payment_reference": reference,
-                "paid_to_resident_id": leaver,
-            }
-        else:
-            _transaction(uow, slot, resident_id=leaver, tx_type="move_out_refund",
-                         amount_paise=refund, tx_date=settled_on, timestamp=timestamp,
-                         counterparty_resident_id=signatory_id, reference=reference)
-            changes = {
-                "assigned_resident_id": None, "assigned_since": None, "status": "vacant",
-                "funded_amount_paise": 0, "funded_date": None, "payment_method": None,
-                "payment_reference": None, "paid_to_resident_id": None,
-            }
-        uow.deposits.update_slot(slot_id, updated_at=timestamp, **changes)
-        audit.record(uow, entity_type=ENTITY, entity_id=slot_id, action="vacate",
-                     actor=actor, apartment_id=apartment_id, reason=reason,
-                     old_value={"assigned_resident_id": leaver,
-                                "funded_amount_paise": funded, "status": slot["status"]},
-                     new_value={"settlement_path": settlement_path,
-                                "deductions_paise": deductions,
-                                "refund_amount_paise": refund, "refund_date": settled_on,
-                                "refund_reference": reference,
-                                "incoming_resident_id": incoming_id,
-                                "status": changes["status"]})
+        settle_slot_in(
+            uow, slot_id, apartment_id=apartment_id, settlement_path=settlement_path,
+            deductions_paise=deductions, refund_amount_paise=refund, settled_on=settled_on,
+            deduction_reason=reason, reference=reference, incoming_resident_id=incoming_id,
+            actor=actor)
         return _summary(uow, apartment_id)

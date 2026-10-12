@@ -512,6 +512,105 @@ class DepositSlotVacateRequest(ApiModel):
         None, max_length=64, description="Who takes the slot over. Needed for direct_transfer.")
 
 
+# --------------------------------------------------------------------------- #
+# Exit clearance
+# --------------------------------------------------------------------------- #
+
+ClearanceSettlementPath = Literal["signatory_refund", "direct_replacement_transfer",
+                                  "standalone_clearance"]
+
+
+class ExitClearanceExecuteRequest(ApiModel):
+    move_out_date: str = Field(pattern=DATE_PATTERN)
+    deductions_paise: int = _money_field("What is kept back from the deposit.", default=0)
+    deduction_reason: str | None = Field(None, max_length=2000)
+    net_ledger_offset: bool = Field(
+        True, description="Clear the resident's operating balance as part of the "
+                          "settlement, so the cash handed over nets it off.")
+    settlement_path: ClearanceSettlementPath = Field(
+        description="Required; there is no default. standalone_clearance is for a "
+                    "resident who holds no deposit slot.")
+    incoming_resident_id: str | None = Field(
+        None, max_length=64,
+        description="Who takes the slot over. Needed for direct_replacement_transfer.")
+    settlement_date: str = Field(pattern=DATE_PATTERN)
+    settlement_reference: str | None = Field(None, max_length=200)
+    notes: str | None = Field(None, max_length=2000)
+
+
+class ExitClearancePreview(PassthroughModel):
+    """What a clearance would settle: the slot, and the operating balance."""
+
+    resident_id: str
+    display_name: str
+    slot: dict[str, Any] | None
+    ledger_outstanding_charges_paise: int
+    ledger_unapplied_credits_paise: int
+    operating_net_balance_paise: int
+    default_move_out_date: str
+
+
+class ExitClearanceResponse(PassthroughModel):
+    """A recorded clearance, with its net figure and a printable summary."""
+
+    clearance_id: str
+    resident_id: str
+    net_settlement_paise: int
+    settlement_direction: Literal["refund_to_resident", "payment_from_resident",
+                                  "zero_balanced"]
+    summary_text: str
+
+
+class ResidentMonthlyStatementItem(PassthroughModel):
+    """One expense's share charged to a resident in a settlement month."""
+
+    expense_id: str
+    category: str
+    description: str
+    expense_date: str
+    service_period: str
+    allocation_method: str
+    total_expense_paise: int
+    resident_share_paise: int
+    notes: str | None
+
+
+class ResidentMonthlyPaymentItem(PassthroughModel):
+    """A payment or credit in the month. Positive reduces what the resident owes."""
+
+    payment_id: str
+    payment_date: str
+    payment_kind: str
+    payment_mode: str
+    amount_paise: int
+    reference: str | None
+
+
+class ResidentMonthlyStatement(PassthroughModel):
+    """A resident's itemized month: net due = brought forward + charges - credits."""
+
+    resident_id: str
+    display_name: str
+    settlement_month: str
+    statement_status: Literal["draft", "finalized_correction_window", "closed", "not_created"]
+    items: list[ResidentMonthlyStatementItem]
+    total_charges_paise: int
+    payments: list[ResidentMonthlyPaymentItem]
+    total_payments_paise: int
+    brought_forward_paise: int
+    net_due_paise: int
+    recipient_upi_id: str | None
+    recipient_name: str | None
+    whatsapp_text: str
+
+
+class FlatmateStatementList(PassthroughModel):
+    """Every flatmate's statement for one settlement month."""
+
+    settlement_month: str
+    items: list[ResidentMonthlyStatement]
+
+
 class RentGenerateRequest(ApiModel):
     excluded_resident_ids: list[str] = Field(
         default_factory=list,
@@ -686,6 +785,9 @@ __all__ = [
     "PassthroughModel", "PaymentCreate", "PaymentKind", "PaymentReverse", "PeerSettlementCreate", "PeriodRule",
     "PlannableMethod", "Recurrence", "RecurringGenerateRequest", "RecurringLine",
     "LandlordReceiptUpload", "RentDisburseRequest", "RentGenerateRequest",
+    "ExitClearanceExecuteRequest", "ExitClearancePreview", "ExitClearanceResponse",
+    "FlatmateStatementList", "ResidentMonthlyPaymentItem", "ResidentMonthlyStatement",
+    "ResidentMonthlyStatementItem",
     "DepositConfigUpdate", "DepositSlotFundingRequest", "DepositSlotInitRequest",
     "DepositSlotItem", "DepositSlotVacateRequest",
     "RentLeaseConfigSave", "RentLeaseRenewRequest", "RentLeaseVacateRequest",

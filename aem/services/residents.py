@@ -18,7 +18,7 @@ from typing import Any
 from ..errors import ConflictError, ValidationError
 from ..ids import now_timestamp
 from ..periods import parse_iso_date
-from ..persistence import Database
+from ..persistence import Database, UnitOfWork
 from . import audit
 from .common import (
     get_apartment,
@@ -104,43 +104,51 @@ def update_resident(db: Database, resident_id: str, *, apartment_id: str | None 
                     actor: str = "operator", reason: str | None = None,
                     **changes: Any) -> dict[str, Any]:
     """Update editable resident fields. Financial history is never touched."""
+    with db.transaction() as uow:
+        return update_resident_in(uow, resident_id, apartment_id=apartment_id, actor=actor,
+                                  reason=reason, **changes)
+
+
+def update_resident_in(uow: UnitOfWork, resident_id: str, *, apartment_id: str | None = None,
+                       actor: str = "operator", reason: str | None = None,
+                       **changes: Any) -> dict[str, Any]:
+    """``update_resident`` inside the caller's transaction."""
     unknown = sorted(set(changes) - set(EDITABLE_FIELDS))
     if unknown:
         raise ValidationError(f"Unsupported resident fields: {', '.join(unknown)}.",
                               details={"unsupported_fields": unknown,
                                        "editable_fields": EDITABLE_FIELDS})
-    with db.transaction() as uow:
-        before = get_resident(uow, resident_id, apartment_id)
-        after = dict(before)
-        if "display_name" in changes:
-            after["display_name"] = require_text(changes["display_name"], "display_name",
-                                                 max_length=200)
-        for field, max_length in (("active_from", 10), ("active_until", 10),
-                                  ("email", 200), ("phone", 50), ("notes", 2000),
-                                  *EMERGENCY_CONTACT_FIELDS):
-            if field in changes:
-                after[field] = optional_text(changes[field], field, max_length=max_length)
-        if "upi_id" in changes:
-            after["upi_id"] = _upi_id(changes["upi_id"])
-        if "is_active" in changes:
-            after["is_active"] = 1 if changes["is_active"] else 0
-        _validate_dates(after.get("active_from"), after.get("active_until"))
-        after["updated_at"] = now_timestamp()
-        uow.residents.update(
-            resident_id, display_name=after["display_name"],
-            active_from=after.get("active_from"), active_until=after.get("active_until"),
-            is_active=after["is_active"], email=after.get("email"),
-            phone=after.get("phone"), notes=after.get("notes"),
-            upi_id=after.get("upi_id"),
-            emergency_contact_name=after.get("emergency_contact_name"),
-            emergency_contact_phone=after.get("emergency_contact_phone"),
-            emergency_contact_relation=after.get("emergency_contact_relation"),
-            updated_at=after["updated_at"])
-        audit.record_field_changes(
-            uow, entity_type="resident", entity_id=resident_id, before=before, after=after,
-            fields=EDITABLE_FIELDS, actor=actor,
-            apartment_id=before["apartment_id"], reason=reason)
-        return get_resident(uow, resident_id)
+    before = get_resident(uow, resident_id, apartment_id)
+    after = dict(before)
+    if "display_name" in changes:
+        after["display_name"] = require_text(changes["display_name"], "display_name",
+                                             max_length=200)
+    for field, max_length in (("active_from", 10), ("active_until", 10),
+                              ("email", 200), ("phone", 50), ("notes", 2000),
+                              *EMERGENCY_CONTACT_FIELDS):
+        if field in changes:
+            after[field] = optional_text(changes[field], field, max_length=max_length)
+    if "upi_id" in changes:
+        after["upi_id"] = _upi_id(changes["upi_id"])
+    if "is_active" in changes:
+        after["is_active"] = 1 if changes["is_active"] else 0
+    _validate_dates(after.get("active_from"), after.get("active_until"))
+    after["updated_at"] = now_timestamp()
+    uow.residents.update(
+        resident_id, display_name=after["display_name"],
+        active_from=after.get("active_from"), active_until=after.get("active_until"),
+        is_active=after["is_active"], email=after.get("email"),
+        phone=after.get("phone"), notes=after.get("notes"),
+        upi_id=after.get("upi_id"),
+        emergency_contact_name=after.get("emergency_contact_name"),
+        emergency_contact_phone=after.get("emergency_contact_phone"),
+        emergency_contact_relation=after.get("emergency_contact_relation"),
+        updated_at=after["updated_at"])
+    audit.record_field_changes(
+        uow, entity_type="resident", entity_id=resident_id, before=before, after=after,
+        fields=EDITABLE_FIELDS, actor=actor,
+        apartment_id=before["apartment_id"], reason=reason)
+    return get_resident(uow, resident_id)
 
 
 def deactivate_resident(db: Database, resident_id: str, *, active_until: str | None = None,

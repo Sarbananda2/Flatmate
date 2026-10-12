@@ -8,11 +8,11 @@ This register documents architectural trade-offs, deferred features, and legal/d
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────────┐
-│ Current Phase: Flatmate Management (4 Pillars)                                │
-│   • Pillar A: Profile, Contact Card & Dynamic UPI QR (In Progress)            │
-│   • Pillar B: Household Security Deposit Slots & Sub-Escrow Tracking          │
-│   • Pillar C: Guided Exit & Settlement Clearance Workflow                     │
-│   • Pillar D: Flatmate Statements & WhatsApp Sharing                          │
+│ Phase 1: Flatmate Management (4 Pillars) [COMPLETED]                          │
+│   • [x] Pillar A: Profile, Contact Card & Dynamic UPI QR                      │
+│   • [x] Pillar B: Household Security Deposit Slots & Sub-Escrow Tracking      │
+│   • [x] Pillar C: Guided Exit & Settlement Clearance Workflow                 │
+│   • [x] Pillar D: Flatmate Statements & WhatsApp Sharing                      │
 └──────────────────────────────────────┬────────────────────────────────────────┘
                                        │
                                        ▼

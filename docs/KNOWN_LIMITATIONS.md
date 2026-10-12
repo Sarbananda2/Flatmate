@@ -117,6 +117,30 @@ was paid, kept back and handed over. Several things are deliberately left out:
 - **Rooms are not linked yet.** A slot has a label, not a room; attaching
   rooms and beds is a later phase.
 
+### Exit clearance: what it does and does not settle
+
+The move-out clearance settles a resident's deposit slot, optionally clears
+their operating balance, marks them as moved out, and records the result.
+
+- **The offset payment says the pool was paid; the cash is elsewhere.** When
+  operating dues are netted against the deposit, one `to_pool` payment is
+  recorded for the leaver (or a `refund`, if the household owed them). In
+  reality that money stays with whoever held the deposit -- usually the primary
+  signatory -- and it is for them to pass it to the pool. That hand-over is not
+  tracked.
+- **It clears the net position, not each charge.** The payment takes the
+  resident's balance to exactly zero. If they had also paid expenses on the
+  household's behalf, some of their individual charges can still show as
+  outstanding afterwards even though nothing is owed.
+- **A clearance cannot be undone or edited.** The record is append-only. The
+  ledger payment can be reversed like any other, and the resident reactivated,
+  but the slip stays as it was made.
+- **The primary signatory cannot be cleared**, for the same reason their slot
+  cannot be vacated.
+- **The UPI code needs a UPI ID on file** for whoever is being paid, and a
+  payment made by scanning it is not detected: the settlement reference is
+  typed in by the operator.
+
 ### A recorded landlord payout cannot be undone
 
 Recording a payout freezes the month's rent cycle and issues the HRA receipts,
@@ -378,6 +402,17 @@ complete user journey is tested end to end **through the API** in
 UI was verified manually against a running server.
 
 ---
+
+### Flatmate statements are live, and pay only the primary signatory
+
+A resident's monthly statement (`GET /api/residents/{id}/statements/{month}`)
+is read from the live ledger each time, not from the month's sealed snapshot,
+so a later correction to a closed month changes what it shows. Its net due is
+a running balance: brought forward, plus the month's charges, less the month's
+credits. The UPI link and QR code name the lease's primary signatory. There is
+no separate pool or apartment UPI ID, so a household without a signatory, a
+signatory without a UPI ID, and the signatory's own statement all show no
+payment link.
 
 ## Data notes
 

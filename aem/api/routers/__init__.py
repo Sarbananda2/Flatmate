@@ -1,6 +1,7 @@
 """API routers, one module per screen area."""
 from . import (  # noqa: F401
     audit,
+    clearance,
     dashboard,
     definitions,
     deposits,
@@ -24,6 +25,7 @@ ALL_ROUTERS = [
     setup.router,
     dashboard.router,
     residents.router,
+    clearance.router,
     definitions.router,
     expenses.router,
     electricity.router,

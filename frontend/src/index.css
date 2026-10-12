@@ -781,6 +781,15 @@ dl.kv dd { margin: 0; font-size: 0.875rem; }
   body:has(.receipt-sheet) .receipt-sheet * { color: #000 !important; }
 }
 
+/* When one sheet is singled out for printing, any other sheet on the page
+   stays off the paper. */
+@media print {
+  body:has(.print-target) .receipt-sheet:not(.print-target),
+  body:has(.print-target) .receipt-sheet:not(.print-target) * {
+    visibility: hidden !important;
+  }
+}
+
 /* ------------------------------------------------------ theme transition -- */
 
 /* Continuous fluid theme ripple. The default cross-fade is switched off and

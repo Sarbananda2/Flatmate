@@ -1055,6 +1055,81 @@ export interface HouseholdDepositSummary {
   slots: DepositSlot[]
 }
 
+// ------------------------------------------------------------ exit clearance --
+
+export type ClearancePath =
+  | 'signatory_refund'
+  | 'direct_replacement_transfer'
+  | 'standalone_clearance'
+
+/** `GET /api/residents/{id}/clearance/preview`: what a clearance would settle. */
+export interface ExitClearancePreview {
+  resident_id: string
+  display_name: string
+  is_active: boolean
+  /** The deposit slot they occupy; null if they hold none. */
+  slot: {
+    slot_id: string
+    slot_number: number
+    slot_label: string
+    target_deposit_paise: number
+    funded_amount_paise: number
+  } | null
+  funding_mode: DepositFundingMode | null
+  primary_signatory_id: string | null
+  primary_signatory_name: string | null
+  ledger_outstanding_charges_paise: number
+  ledger_unapplied_credits_paise: number
+  /** Negative while they owe the household. This is what an offset clears. */
+  operating_net_balance_paise: number
+  default_move_out_date: string
+  /** Current residents with no slot, who could take theirs over. */
+  incoming_candidates: Array<{ resident_id: string; display_name: string }>
+  allowed_settlement_paths: ClearancePath[]
+  /** Why they cannot be cleared here, when they cannot. */
+  blocking_reason: string | null
+}
+
+/** A recorded exit clearance, as returned by the clearance endpoints. */
+export interface ExitClearance {
+  clearance_id: string
+  resident_id: string
+  resident_display_name: string
+  apartment_name: string
+  move_out_date: string
+  slot_id: string | null
+  slot_number: number | null
+  slot_label: string | null
+  deposit_funded_paise: number
+  deposit_deductions_paise: number
+  deduction_reason: string | null
+  /** Put in, less deductions. */
+  deposit_refund_paise: number
+  ledger_outstanding_paise: number
+  ledger_credit_paise: number
+  net_ledger_offset_applied: boolean
+  /** Signed: what the operating ledger added to, or took from, the cash. */
+  ledger_offset_paise: number
+  /** Positive: payable to the resident. Negative: payable by them. */
+  net_settlement_paise: number
+  settlement_direction: 'refund_to_resident' | 'payment_from_resident' | 'zero_balanced'
+  settlement_path: ClearancePath
+  settlement_date: string
+  settlement_reference: string | null
+  counterparty_resident_id: string | null
+  counterparty_display_name: string | null
+  clearing_payment_id: string | null
+  notes: string | null
+  /** Who the net amount is paid to, and a UPI link for it when they have a UPI ID. */
+  payee_resident_id: string | null
+  payee_display_name: string | null
+  payee_upi_id: string | null
+  upi_uri: string | null
+  /** The clearance as a short message, ready to paste into a chat. */
+  summary_text: string
+  created_at: string
+}
+
 /** `GET /api/services`: the Housing & Utilities hub's one summary call. */
 export interface ServicesOverview {
   settlement_month: string
@@ -1092,4 +1167,75 @@ export interface RentReceipt {
   issued_at: string
   verification_hash: string
   hash_matches: boolean
+}
+
+/** One expense's share charged to a resident in a settlement month. */
+export interface ResidentMonthlyStatementItem {
+  expense_id: string
+  category: string
+  description: string
+  expense_date: string
+  service_period: string
+  allocation_method: string
+  total_expense_paise: number
+  resident_share_paise: number
+  notes: string | null
+  components: Array<{
+    name: string
+    allocation_method: string
+    total_paise: number
+    resident_share_paise: number
+  }>
+}
+
+/** A payment or credit in the month. Positive reduces what the resident owes. */
+export interface ResidentMonthlyPaymentItem {
+  payment_id: string
+  payment_date: string
+  payment_kind: string
+  payment_mode: string
+  amount_paise: number
+  reference: string | null
+  description: string
+}
+
+/**
+ * A resident's own statement for one settlement month. Amounts read like a
+ * bill: a positive net due is owed to the pool, a negative one to the resident.
+ * net due = brought forward + total charges - total payments.
+ */
+export interface ResidentMonthlyStatement {
+  resident_id: string
+  display_name: string
+  is_active: boolean
+  room_label: string | null
+  apartment_name: string
+  settlement_month: string
+  statement_id: string | null
+  statement_status: 'draft' | 'finalized_correction_window' | 'closed' | 'not_created'
+  items: ResidentMonthlyStatementItem[]
+  total_charges_paise: number
+  payments: ResidentMonthlyPaymentItem[]
+  total_payments_paise: number
+  brought_forward_paise: number
+  net_due_paise: number
+  direction: 'owed_to_pool' | 'owed_to_resident' | 'settled'
+  /** What is still to pay today: never more than the net due. */
+  payable_now_paise: number
+  recipient_upi_id: string | null
+  recipient_name: string | null
+  upi_uri: string | null
+  whatsapp_text: string
+}
+
+export interface FlatmateStatementList {
+  settlement_month: string
+  statement_status: ResidentMonthlyStatement['statement_status']
+  items: ResidentMonthlyStatement[]
+  totals: {
+    total_charges_paise: number
+    total_payments_paise: number
+    brought_forward_paise: number
+    net_due_paise: number
+  }
 }

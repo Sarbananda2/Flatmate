@@ -6,8 +6,13 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Path, Query
 
 from ...errors import AemError
-from ...schemas import ResidentCreate, ResidentDeactivate, ResidentUpdate
-from ...services import payments, reconciliation, residents
+from ...schemas import (
+    ResidentCreate,
+    ResidentDeactivate,
+    ResidentMonthlyStatement,
+    ResidentUpdate,
+)
+from ...services import payments, reconciliation, resident_statements, residents
 from ..deps import ApartmentId, AppSettings, Db, to_http
 
 router = APIRouter(prefix="/api/residents", tags=["residents"])
@@ -73,6 +78,20 @@ def read_resident(db: Db, apartment_id: ApartmentId,
         "unapplied_credits": credits,
         "unapplied_credit_total_paise": sum(row["unapplied_paise"] for row in credits),
     }
+
+
+@router.get("/{resident_id}/statements/{settlement_month}",
+            response_model=ResidentMonthlyStatement,
+            summary="One resident's itemized statement for a settlement month")
+def read_monthly_statement(db: Db, apartment_id: ApartmentId, resident_id: str = Path(),
+                           settlement_month: str = Path()) -> dict[str, Any]:
+    """The resident's share line by line, what was credited, the net due, and a
+    message ready to paste into WhatsApp. Reading it changes nothing."""
+    try:
+        return resident_statements.get_resident_monthly_statement(
+            db, apartment_id, resident_id, settlement_month)
+    except AemError as exc:
+        raise to_http(exc) from exc
 
 
 @router.patch("/{resident_id}", summary="Update a resident")

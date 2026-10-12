@@ -211,6 +211,30 @@ class StatementsRepository(Repository):
             "SELECT * FROM ledger_adjustment WHERE statement_id=%s "
             "ORDER BY COALESCE(effective_date, created_at), row_seq", (statement_id,))
 
+    def resident_charges_for_month(self, apartment_id: str,
+                                   settlement_month: str) -> list[dict[str, Any]]:
+        """Every share charged to this apartment's residents that settles in the
+        month, with the expense and component it came from, oldest first."""
+        return self._s.fetch_all(
+            """SELECT a.resident_id, a.amount_paise,
+                      c.name AS component_name, c.allocation_method AS component_method,
+                      c.amount_paise AS component_amount_paise,
+                      e.expense_id, e.description, e.amount_paise AS expense_amount_paise,
+                      e.expense_date, e.service_period, e.allocation_method, e.expense_kind,
+                      e.notes, COALESCE(e.settlement_period, e.expense_period)
+                          AS settlement_period,
+                      d.name AS definition_name
+                 FROM allocation a
+                 JOIN expense_instance e ON e.expense_id = a.expense_id
+                 JOIN resident r ON r.resident_id = a.resident_id
+                 LEFT JOIN expense_component c ON c.component_id = a.component_id
+                 LEFT JOIN expense_definition d
+                        ON d.expense_definition_id = e.expense_definition_id
+                WHERE r.apartment_id = %s
+                  AND COALESCE(e.settlement_period, e.expense_period) = %s
+                ORDER BY e.expense_date, e.row_seq, c.row_seq NULLS FIRST, a.row_seq""",
+            (apartment_id, settlement_month))
+
     def active_payments_in_month(self, apartment_id: str, month: str) -> list[dict[str, Any]]:
         return self._s.fetch_all(
             """SELECT p.*, r.display_name AS payer_display_name

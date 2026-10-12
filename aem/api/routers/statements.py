@@ -7,13 +7,14 @@ from fastapi import APIRouter, Path, Query
 
 from ...errors import AemError
 from ...schemas import (
+    FlatmateStatementList,
     StatementAttachRequest,
     StatementCloseRequest,
     StatementCreate,
     StatementFinalizeRequest,
     StatementReviseRequest,
 )
-from ...services import statements
+from ...services import resident_statements, statements
 from ..deps import ApartmentId, AppSettings, Db, csv_response, to_http
 
 router = APIRouter(prefix="/api/statements", tags=["statements"])
@@ -85,6 +86,19 @@ def share_whatsapp(db: Db, statement_id: str = Path()) -> dict[str, Any]:
     from ...services import sharing
     try:
         return sharing.whatsapp_summary(db, statement_id)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.get("/{settlement_month}/flatmates", response_model=FlatmateStatementList,
+            summary="Every flatmate's statement for a settlement month")
+def flatmate_statements(db: Db, apartment_id: ApartmentId,
+                        settlement_month: str = Path()) -> dict[str, Any]:
+    """Each flatmate's share, credits and net due for the month, with the
+    message to send them. Addressed by month (YYYY-MM), not by statement, so it
+    works before the month's statement has been drafted."""
+    try:
+        return resident_statements.list_flatmate_statements(db, apartment_id, settlement_month)
     except AemError as exc:
         raise to_http(exc) from exc
 

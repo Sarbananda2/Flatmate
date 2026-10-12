@@ -19,6 +19,7 @@ from typing import ContextManager
 from .repositories.adjustments import AdjustmentsRepository
 from .repositories.apartments import ApartmentsRepository
 from .repositories.audit import AuditRepository
+from .repositories.clearance import ClearanceRepository
 from .repositories.dashboard import DashboardRepository
 from .repositories.definitions import DefinitionsRepository
 from .repositories.deposits import DepositsRepository
@@ -66,6 +67,11 @@ class UnitOfWork:
     @cached_property
     def audit(self) -> AuditRepository:
         return AuditRepository(self._session)
+
+
+    @cached_property
+    def clearance(self) -> ClearanceRepository:
+        return ClearanceRepository(self._session)
 
 
     @cached_property

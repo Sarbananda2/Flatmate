@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Page } from '../components/Layout'
+import { LogOut } from 'lucide-react'
+import { Page, useApp } from '../components/Layout'
 import { DateField } from '../components/Form'
 import {
   AsyncSection,
@@ -13,6 +14,7 @@ import {
   StatementStatusBadge,
 } from '../components/Primitives'
 import { useToast } from '../components/Toast'
+import { BUTTON_PRIMARY } from '../components/ui'
 import { useResource } from '../lib/useApi'
 import { api } from '../api/client'
 import {
@@ -23,7 +25,9 @@ import {
   parseRupees,
 } from '../lib/format'
 import type { OpeningBalanceItem, ResidentDetail } from '../api/types'
+import { ClearanceSlipPanel, ExitClearanceModal } from './ExitClearanceModal'
 import { ContactCard, EditProfileDialog, UpiCard } from './ResidentProfile'
+import { MonthlyStatementCard } from './ResidentStatement'
 import { ResidentDepositCard } from './services/SecurityDeposits'
 
 export default function ResidentDetailPage() {
@@ -57,6 +61,7 @@ function Body({
   residentId: string
   onReload: () => void
 }) {
+  const { month } = useApp()
   const account = data.account
   const active = Boolean(data.resident.is_active)
   const openCharges = data.charges.filter((charge) => charge.outstanding_paise > 0)
@@ -72,6 +77,7 @@ function Body({
 
   const toast = useToast()
   const [editingProfile, setEditingProfile] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const [editingOpening, setEditingOpening] = useState(false)
   const [openingAmountStr, setOpeningAmountStr] = useState('')
   const [openingDirection, setOpeningDirection] = useState<'owed_by_resident' | 'owed_to_resident'>('owed_by_resident')
@@ -141,6 +147,35 @@ function Body({
 
   return (
     <>
+      {active ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3">
+          <span className="min-w-0 text-xs text-[var(--text-secondary)]">
+            Moving out? One guided clearance settles their deposit, their operating balance and
+            the move-out date together.
+          </span>
+          <button type="button" className={BUTTON_PRIMARY} onClick={() => setClearing(true)}>
+            <LogOut className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            Start Clearance &amp; Move-Out
+          </button>
+        </div>
+      ) : (
+        <ClearanceSlipPanel residentId={residentId} />
+      )}
+
+      {clearing && (
+        <ExitClearanceModal
+          residentId={residentId}
+          residentName={data.resident.display_name}
+          onClose={() => setClearing(false)}
+          onCleared={() => {
+            onReload()
+            toast.success(`${data.resident.display_name} has moved out`)
+          }}
+        />
+      )}
+
+      <MonthlyStatementCard residentId={residentId} initialMonth={month} />
+
       <div className="grid grid--stats">
         <Stat
           label="Net balance"

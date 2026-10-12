@@ -393,6 +393,7 @@ The API maps each marker to an HTTP 409 with the matching error code.
 | 0006 | `lease_lifecycle` | Contract term on `rent_lease_config` (start/end dates, duration, notice period, lock-in, security deposit, escalation clause, lease status and notice dates) and completed terms in `rent_lease_term` |
 | 0007 | `resident_profile_extensions` | Emergency contact on `resident`: name, phone and relationship |
 | 0008 | `household_security_deposits` | Deposit funding mode and primary signatory on `rent_lease_config`; the household's permanent deposit slots (`household_deposit_slot`) and their transactions (`household_deposit_transaction`) |
+| 0009 | `resident_exit_clearance` | One append-only record per move-out clearance: the deposit settled, the operating balance at the time, the net cash figure, and how it was settled |
 
 Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from a single `0001_baseline.sql` that carries all six, so its migration files are `0001` and then `0007` onward: the numbering continues the history above rather than restarting.
 
@@ -439,6 +440,22 @@ How the deposit was funded is on the lease: `rent_lease_config.deposit_funding_m
 
 ### `household_deposit_transaction`
 Append-only trail of each slot's money: `funding_payment`, `move_out_deduction`, `move_out_refund`, and `direct_replacement_transfer`, each with its resident, counterparty, date, amount and reference. The runtime role may insert rows but not change or delete them.
+
+### `resident_exit_clearance`
+The record of a resident's move-out settlement, written once and never edited (the runtime role may insert rows but not change or delete them). A resident who returns and leaves again gets a second row.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `resident_id`, `move_out_date` | TEXT | Who left, and when |
+| `slot_id`, `deposit_funded_paise`, `deposit_deductions_paise`, `deduction_reason` | TEXT / BIGINT | The deposit slot they held, what they had put in, and what was kept back. `slot_id` is null for a standalone clearance |
+| `ledger_outstanding_paise`, `ledger_credit_paise` | BIGINT | Their operating **net position** at the time, split by sign: what they owed the household, or what it owed them. At most one is non-zero |
+| `net_ledger_offset_applied` | INTEGER 0/1 | Whether that balance was netted into the settlement and cleared from the ledger |
+| `net_settlement_paise`, `settlement_direction` | BIGINT, TEXT | The cash figure: positive is payable to the resident, negative payable by them |
+| `settlement_path` | TEXT | `signatory_refund` / `direct_replacement_transfer` / `standalone_clearance` |
+| `settlement_date`, `settlement_reference`, `counterparty_resident_id` | TEXT | When, with what reference, and through whom |
+| `clearing_payment_id` | TEXT FK → payment | The ledger payment that took their balance to zero, if there was one |
+
+`net_settlement_paise` is always `deposit_funded_paise - deposit_deductions_paise`, plus `ledger_credit_paise - ledger_outstanding_paise` when the offset was applied.
 
 ### `rent_cycle`
 State of a month's rent: links `settlement_month` to its `expense_instance`. Tracks `disbursement_status` (`pending` vs `disbursed`), funder (`disbursed_by` = `pool` vs `resident_advance`), and funding payment ID.

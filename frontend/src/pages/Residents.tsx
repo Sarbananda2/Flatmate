@@ -11,9 +11,7 @@ import { Link } from 'react-router-dom'
 import { Page } from '../components/Layout'
 import {
   AsyncSection,
-  Callout,
   Card,
-  ConfirmDialog,
   EmptyState,
   ErrorNotice,
   Modal,
@@ -24,8 +22,8 @@ import { useToast } from '../components/Toast'
 import { Avatar, Pill } from '../components/ui'
 import { api } from '../api/client'
 import { useMutation, useResource } from '../lib/useApi'
-import { todayIso } from '../lib/format'
 import type { Reconciliation, Resident } from '../api/types'
+import { ExitClearanceModal } from './ExitClearanceModal'
 import { whatsappHref } from './ResidentProfile'
 
 export default function ResidentsPage() {
@@ -223,14 +221,17 @@ export default function ResidentsPage() {
         />
       )}
       {deactivating && (
-        <DeactivateDialog
-          resident={deactivating}
-          outstanding={balances.get(deactivating.resident_id)?.outstanding_charges_paise ?? 0}
+        <ExitClearanceModal
+          residentId={deactivating.resident_id}
+          residentName={deactivating.display_name}
           onClose={() => setDeactivating(null)}
-          onSaved={() => {
-            setDeactivating(null)
+          onCleared={(clearance) => {
+            // The slip stays on screen; the list behind it is brought up to date.
             refresh()
-            toast.success('Move-out recorded', 'Their financial history is unchanged.')
+            toast.success(
+              `${clearance.resident_display_name} has moved out`,
+              'The clearance is recorded and their slip is on their page.',
+            )
           }}
         />
       )}
@@ -416,75 +417,5 @@ function ResidentDialog({
         />
       </form>
     </Modal>
-  )
-}
-
-function DeactivateDialog({
-  resident,
-  outstanding,
-  onClose,
-  onSaved,
-}: {
-  resident: Resident
-  outstanding: number
-  onClose: () => void
-  onSaved: () => void
-}) {
-  const [activeUntil, setActiveUntil] = useState(todayIso())
-  const [reason, setReason] = useState('')
-  const save = useMutation(
-    () =>
-      api.post(`/api/residents/${encodeURIComponent(resident.resident_id)}/deactivate`, {
-        active_until: activeUntil,
-        reason: reason || null,
-      }),
-    { onSuccess: onSaved },
-  )
-
-  return (
-    <ConfirmDialog
-      title={`Record that ${resident.display_name} moved out`}
-      confirmLabel="Record move-out"
-      pending={save.pending}
-      error={save.error}
-      onCancel={onClose}
-      onConfirm={() => void save.run(undefined)}
-      body={
-        <div className="stack">
-          <p style={{ margin: 0 }}>
-            This marks them inactive and records the date. Their charges, payments, credits, and
-            adjustments are all kept, and they stay in reconciliation until their balance is
-            settled.
-            {' '}
-            <strong>Their share of this month is not prorated</strong> — if they take part in an
-            expense settling now, they are charged a full share of it. Leave them out of that
-            expense's participants instead if they should not be in it.
-          </p>
-          {outstanding !== 0 && (
-            <Callout tone="warn" title="They still have an unsettled balance">
-              <Money paise={outstanding} tone="owed-by" /> of charges are not yet settled. They will
-              keep appearing on the dashboard until the balance is cleared or a ledger adjustment
-              documents how it was resolved.
-            </Callout>
-          )}
-        </div>
-      }
-    >
-      <div className="form-grid">
-        <DateField
-          label="Move-out date"
-          value={activeUntil}
-          onChange={setActiveUntil}
-          required
-        />
-        <TextField
-          label="Reason (optional)"
-          value={reason}
-          onChange={setReason}
-          hint="Recorded in the audit trail."
-          maxLength={200}
-        />
-      </div>
-    </ConfirmDialog>
   )
 }

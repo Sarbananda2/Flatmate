@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import ResidentsPage from './Residents'
 import { ToastProvider } from '../components/Toast'
 import { RESIDENTS, installFetchStub } from '../test/server'
@@ -101,5 +102,19 @@ describe('ResidentsPage', () => {
     expect(chrisRow).toHaveTextContent('+₹250.00')
     expect(within(chrisRow).getByRole('button', { name: 'Reactivate Chris' })).toBeInTheDocument()
     expect(within(chrisRow).getByRole('button', { name: 'Edit Chris' })).toBeInTheDocument()
+  })
+
+  it('starts the move-out clearance, not a bare deactivation, from Moved out', async () => {
+    renderPage()
+    const table = await screen.findByRole('table')
+    await userEvent.click(
+      within(table).getByRole('button', { name: 'Record that Alice moved out' }),
+    )
+    expect(await screen.findByRole('dialog', { name: 'Move-Out Clearance' })).toBeInTheDocument()
+    expect(
+      stub!.calls.some((call) => call.path === '/api/residents/alice/clearance/preview'),
+    ).toBe(true)
+    // Nothing is changed by opening it.
+    expect(stub!.calls.every((call) => call.method === 'GET')).toBe(true)
   })
 })
