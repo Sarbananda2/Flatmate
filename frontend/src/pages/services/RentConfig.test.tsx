@@ -8,8 +8,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import RentConfigPage from './RentConfig'
-import { ToastProvider } from '../components/Toast'
-import { installFetchStub, type Recorded } from '../test/server'
+import { ToastProvider } from '../../components/Toast'
+import { installFetchStub, type Recorded } from '../../test/server'
 
 const saved = {
   config_id: 'lease-1',

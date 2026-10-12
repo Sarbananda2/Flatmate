@@ -16,13 +16,14 @@ import {
   TrendingUp,
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import { Page } from '../components/Layout'
-import { AsyncSection, ErrorNotice } from '../components/Primitives'
-import { DateField, Field, MoneyInput, SelectField, TextField } from '../components/Form'
-import { useToast } from '../components/Toast'
-import { BUTTON_PRIMARY, BUTTON_SECONDARY, Panel, Pill } from '../components/ui'
-import { api } from '../api/client'
-import { useMutation, useResource } from '../lib/useApi'
+import { Page } from '../../components/Layout'
+import { AsyncSection, ErrorNotice } from '../../components/Primitives'
+import { DateField, Field, MoneyInput, SelectField, TextField } from '../../components/Form'
+import { useToast } from '../../components/Toast'
+import { BUTTON_PRIMARY, BUTTON_SECONDARY, Panel, Pill } from '../../components/ui'
+import { api } from '../../api/client'
+import { useMutation, useResource } from '../../lib/useApi'
+import { leaseDurationOptions } from '../../lib/lease'
 import {
   escalatedPaise,
   formatDate,
@@ -30,8 +31,8 @@ import {
   formatInr,
   leaseEndIso,
   paiseToInput,
-} from '../lib/format'
-import type { EscalationType, RentLeaseConfig, Resident } from '../api/types'
+} from '../../lib/format'
+import type { EscalationType, RentLeaseConfig, Resident } from '../../api/types'
 
 const DUE_DAYS = Array.from({ length: 28 }, (_, index) => {
   const day = String(index + 1)
@@ -83,8 +84,6 @@ const RENTAL_MODELS = [
     status: 'under_development',
   },
 ] as const
-
-const DURATIONS = [6, 11, 12, 24, 36]
 
 const ESCALATION_CHOICES: Array<{ value: EscalationType; label: string }> = [
   { value: 'percent', label: 'Percentage Rate' },
@@ -195,9 +194,7 @@ function LeaseForm({
   const noticeValue = wholeNumber(noticeDays, 0, 365)
   const lockInValue = wholeNumber(lockIn, 0, 60)
   const percentValue = percentage(percent)
-  const durationOptions = [...new Set([...DURATIONS, durationMonths])]
-    .sort((a, b) => a - b)
-    .map((months) => ({ value: String(months), label: `${months} months` }))
+  const durationOptions = leaseDurationOptions(durationMonths)
 
   const panError =
     pan.trim() && !PAN_PATTERN.test(pan.trim())
@@ -433,7 +430,6 @@ function LeaseForm({
         <div className="max-w-sm">
           <MoneyInput
             label="Security Deposit Held by Landlord"
-            prefix="₹"
             value={deposit}
             placeholder="e.g. 1,35,000"
             hint="The refundable deposit. Leave empty if none is held."
@@ -490,7 +486,6 @@ function LeaseForm({
             <MoneyInput
               label="Agreed Renewed Rent"
               error={shownRenewalError}
-              prefix="₹"
               required
               value={renewalRent}
               placeholder="e.g. 30,000"

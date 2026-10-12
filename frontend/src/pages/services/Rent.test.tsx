@@ -9,8 +9,8 @@ import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { RentMonth } from './Rent'
-import { ToastProvider } from '../components/Toast'
-import { RESIDENTS, installFetchStub, type Recorded } from '../test/server'
+import { ToastProvider } from '../../components/Toast'
+import { RESIDENTS, installFetchStub, type Recorded } from '../../test/server'
 
 const MONTH = '2026-10'
 

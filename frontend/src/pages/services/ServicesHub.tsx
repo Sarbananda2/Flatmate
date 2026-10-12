@@ -16,17 +16,17 @@ import {
   Wifi,
   Zap,
 } from 'lucide-react'
-import { Page, useApp } from '../components/Layout'
-import { AsyncSection } from '../components/Primitives'
+import { Page, useApp } from '../../components/Layout'
+import { AsyncSection } from '../../components/Primitives'
 import {
   BUTTON_PRIMARY,
   Pill,
   Rupees,
   StatementPill,
-} from '../components/ui'
-import { type Resource, useResource } from '../lib/useApi'
-import { formatMonth, formatMonthShort } from '../lib/format'
-import type { LeaseLifecycle, ServicesOverview } from '../api/types'
+} from '../../components/ui'
+import { type Resource, useResource } from '../../lib/useApi'
+import { formatMonth, formatMonthShort } from '../../lib/format'
+import type { LeaseLifecycle, ServicesOverview } from '../../api/types'
 
 const PLANNED_SERVICES: Array<{ title: string; icon: LucideIcon; body: string }> = [
   {

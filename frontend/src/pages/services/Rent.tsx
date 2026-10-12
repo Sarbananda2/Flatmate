@@ -23,10 +23,10 @@ import {
   Upload,
   Users,
 } from 'lucide-react'
-import { Page, useApp } from '../components/Layout'
-import { AsyncSection, Callout, ErrorNotice, Modal } from '../components/Primitives'
-import { DateField, Field, MoneyInput, SelectField, TextField } from '../components/Form'
-import { useToast } from '../components/Toast'
+import { Page, useApp } from '../../components/Layout'
+import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
+import { DateField, Field, MoneyInput, SelectField, TextField } from '../../components/Form'
+import { useToast } from '../../components/Toast'
 import {
   Avatar,
   BUTTON_PRIMARY,
@@ -39,11 +39,11 @@ import {
   Pill,
   Rupees,
   type Tone,
-} from '../components/ui'
-import { api } from '../api/client'
-import { useMutation, useResource } from '../lib/useApi'
+} from '../../components/ui'
+import { api } from '../../api/client'
+import { useMutation, useResource } from '../../lib/useApi'
 import { LeaseNoticeBanner, LeaseTermPill } from './LeaseLifecycle'
-import { formatDate, formatInr, formatMonth, paiseToInput, todayIso } from '../lib/format'
+import { formatDate, formatInr, formatMonth, paiseToInput, todayIso } from '../../lib/format'
 import type {
   RentCollectionStatus,
   RentCycle,
@@ -54,7 +54,7 @@ import type {
   RentPreview,
   RentReceipt,
   Resident,
-} from '../api/types'
+} from '../../api/types'
 
 const RECEIPT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']
 const MAX_RECEIPT_BYTES = 5 * 1024 * 1024
@@ -923,7 +923,6 @@ function RentPaymentModal({
         {record.error && <ErrorNotice error={record.error} />}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <MoneyInput
-            prefix="₹"
             label="Amount paid"
             required
             value={amount}

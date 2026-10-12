@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { render, screen, within } from '@testing-library/react'
 import { ServicesHub } from './ServicesHub'
-import { installFetchStub } from '../test/server'
+import { installFetchStub } from '../../test/server'
 
 const MONTH = '2026-10'
 

@@ -8,11 +8,12 @@
  */
 import { useState } from 'react'
 import { DoorOpen, RefreshCw } from 'lucide-react'
-import { ErrorNotice, Modal } from '../components/Primitives'
-import { DateField, MoneyInput, SelectField, TextAreaField } from '../components/Form'
-import { BUTTON_PRIMARY, BUTTON_SECONDARY, Pill, Rupees } from '../components/ui'
-import { api } from '../api/client'
-import { useMutation } from '../lib/useApi'
+import { ErrorNotice, Modal } from '../../components/Primitives'
+import { DateField, MoneyInput, SelectField, TextAreaField } from '../../components/Form'
+import { BUTTON_PRIMARY, BUTTON_SECONDARY, Pill, Rupees } from '../../components/ui'
+import { api } from '../../api/client'
+import { useMutation } from '../../lib/useApi'
+import { leaseDurationOptions } from '../../lib/lease'
 import {
   addDaysIso,
   formatDate,
@@ -20,10 +21,8 @@ import {
   leaseEndIso,
   paiseToInput,
   todayIso,
-} from '../lib/format'
-import type { RentLeaseConfig } from '../api/types'
-
-const DURATIONS = [6, 11, 12, 24, 36]
+} from '../../lib/format'
+import type { RentLeaseConfig } from '../../api/types'
 
 /** The escalation the renew button promises, e.g. `+5% Escalation`. */
 function escalationLabel(config: RentLeaseConfig): string {
@@ -201,9 +200,7 @@ function RenewLeaseModal({
     { onSuccess: onRenewed },
   )
 
-  const durationOptions = [...new Set([...DURATIONS, config.duration_months])]
-    .sort((a, b) => a - b)
-    .map((value) => ({ value: String(value), label: `${value} months` }))
+  const durationOptions = leaseDurationOptions(config.duration_months)
 
   return (
     <Modal
@@ -258,7 +255,6 @@ function RenewLeaseModal({
         </div>
         <MoneyInput
           label="New monthly rent"
-          prefix="₹"
           required
           value={rent}
           hint={`The lease's escalation clause projects ${formatInr(projected)}. Change it if a different rent was agreed.`}
@@ -390,7 +386,6 @@ function VacateLeaseModal({
             <>
               <MoneyInput
                 label="Expected deductions"
-                prefix="₹"
                 value={deductions}
                 error={deductionsError}
                 hint="Painting, repairs, or unpaid dues the landlord will keep. Leave empty if none."

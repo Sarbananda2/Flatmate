@@ -106,6 +106,13 @@ def month_label(settlement_month: str) -> str:
 
 # ---------------------------------------------------------------- the lease --
 
+def _reject_unknown(payload: Mapping[str, Any], allowed: Sequence[str], what: str) -> None:
+    unknown = sorted(set(payload) - set(allowed))
+    if unknown:
+        raise ValidationError(f"Unsupported {what} fields: {', '.join(unknown)}.",
+                              details={"unsupported_fields": unknown})
+
+
 def _pattern(value: Any, label: str, pattern: re.Pattern[str], example: str, *,
              upper: bool = False, max_length: int = 64) -> str | None:
     text = optional_text(value, label, max_length=max_length)
@@ -200,10 +207,7 @@ def _clean_term(payload: Mapping[str, Any],
 
 def _clean_config(payload: Mapping[str, Any],
                   existing: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    unknown = sorted(set(payload) - set(_CONFIG_FIELDS) - set(_TERM_DEFAULTS))
-    if unknown:
-        raise ValidationError(f"Unsupported lease fields: {', '.join(unknown)}.",
-                              details={"unsupported_fields": unknown})
+    _reject_unknown(payload, (*_CONFIG_FIELDS, *_TERM_DEFAULTS), "lease")
     rent = ensure_paise(payload.get("monthly_rent_paise"), "monthly_rent_paise", allow_zero=False)
     due_day = payload.get("due_day_of_month", 5)
     if isinstance(due_day, bool) or not isinstance(due_day, int) or not 1 <= due_day <= 28:
@@ -410,13 +414,6 @@ def save_lease_config(db_path, apartment_id: str, payload: Mapping[str, Any], *,
 
 
 # ------------------------------------------------------ renewing and leaving --
-
-def _reject_unknown(payload: Mapping[str, Any], allowed: Sequence[str], what: str) -> None:
-    unknown = sorted(set(payload) - set(allowed))
-    if unknown:
-        raise ValidationError(f"Unsupported {what} fields: {', '.join(unknown)}.",
-                              details={"unsupported_fields": unknown})
-
 
 def renew_lease_contract(db_path, apartment_id: str, payload: Mapping[str, Any], *,
                          actor: str = "operator") -> dict[str, Any]:
