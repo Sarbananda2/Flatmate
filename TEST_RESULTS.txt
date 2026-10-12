@@ -1,0 +1,68 @@
+Apartment Expense Manager — test results
+========================================
+
+Recorded 2026-10-11, against the completed application.
+
+BACKEND
+  Command: .venv/bin/python -m pytest
+  Result:  PASS — 289 tests, 0 failures, 0 errors
+
+  tests/test_invariants.py          94   the accounting invariants -- the twenty required,
+                                         plus a twenty-first locking in the household's
+                                         decision that nothing prorates -- run against a
+                                         realistic two-month household (three residents,
+                                         partial payments, an overpayment, a linked
+                                         provider advance, an electricity bill, a closed
+                                         statement, a post-close adjustment)
+  tests/test_engine_and_periods.py  59   the pure engines and the period rules, directly
+  tests/test_api.py                 34   HTTP contract: error envelope, confirmation
+                                         guards, filters, pagination, every report
+  tests/test_setup_wizard.py        32   the guided setup: derived identifiers, per-step
+                                         commit, and resuming after the tab is closed
+                                         (checked by discarding all client state, and
+                                         again from a freshly reloaded module)
+  tests/test_migrations.py          15   upgrading a populated prototype database with
+                                         counts, totals, and reconciliation preserved
+  tests/test_end_to_end.py           2   the complete operator journey over HTTP,
+                                         including a restart
+  test_apartment_ledger.py          14   \
+  test_electricity_engine.py        15    |  the original prototype suite, unchanged,
+  test_electricity_workflow.py      10    |  now running against the refactored services
+  test_ledger_workflow.py           14   /
+
+FRONTEND
+  Command: cd frontend && npm test
+  Result:  PASS — 68 tests, 0 failures
+
+  src/lib/format.test.ts            19   money and period formatting; integer-paise
+                                         round-trips; refusal to round away precision
+  src/components/Primitives.test.tsx 19  amounts never rely on colour alone; balance
+                                         direction stated in words; loading, error,
+                                         empty and first-run states; pagination
+  src/pages/ExpenseForm.test.tsx      6   the allocation breakdown is shown before
+                                         saving; the form refuses to submit unbalanced;
+                                         a non-participant gets an explicit zero; the
+                                         amount is sent as integer paise
+  src/pages/SetupWizard.test.tsx     18   the guided setup resumes at the step the server
+                                         reports (including with browser storage wiped),
+                                         pre-ticks the suggested essentials, never asks
+                                         for an identifier, and posts integer paise
+  src/pages/Statements.test.tsx       6   finalization needs explicit confirmation, warns
+                                         about unattached expenses, is blocked by
+                                         accounting errors, and a closed statement is
+                                         shown as immutable
+
+TYPES AND BUILD
+  cd frontend && npm run typecheck   PASS (application and tests)
+  cd frontend && npm run build       PASS
+
+APPLICATION
+  ./scripts/run.sh from an empty database: migrations applied, server started,
+  API and built UI both served, health "ok". The dashboard, statement,
+  reconciliation and electricity screens were verified rendering real
+  reconciled data in a browser, at 1440px and at 390px.
+
+NOTES
+  Two UI defects were found by running the application rather than by a test,
+  and both are fixed: the first-run screen presented as an error, and narrow
+  layouts overflowed horizontally. See CHECKLIST.md.
