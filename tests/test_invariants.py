@@ -1289,3 +1289,152 @@ def test_a_part_month_resident_still_reconciles_to_zero(configured):
     assert settlement["totals"]["household_expenses_paise"] == 4_500_000, (
         "allocated charges equal the household cost exactly -- nothing is left uncovered")
     assert settlement["validation"]["error_count"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Electricity corrections are atomic; new bills are shared by active residents
+# --------------------------------------------------------------------------- #
+
+_BILL_TABLES = ("expense_instance", "expense_component", "allocation",
+                "smart_plug_reading", "electricity_bill")
+
+
+def _create_october_bill(db, **overrides):
+    fields = dict(
+        apartment_id=APARTMENT, expense_id="electricity-2026-10",
+        description="September electricity bill", expense_date="2026-10-08",
+        total_amount_paise=600_000, payer_resident_id="alice",
+        smart_plug_readings=[{"resident_id": "alice", "kwh": "30"},
+                             {"resident_id": "bob", "kwh": "20"},
+                             {"resident_id": "chris", "kwh": "10"}],
+        components=[
+            {"id": "energy", "name": "Energy charges", "amount_paise": 510_000,
+             "allocation_method": "usage"},
+            {"id": "fixed", "name": "Fixed charges", "amount_paise": 90_000,
+             "allocation_method": "equal"}])
+    fields.update(overrides)
+    electricity.create_electricity_expense(db, **fields)
+
+
+def _bill_state(db, expense_id="electricity-2026-10"):
+    saved = electricity.get_electricity_expense(db, expense_id)
+    with connect(db, read_only=True) as conn:
+        counts = {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                  for table in _BILL_TABLES}
+    return saved, counts
+
+
+@pytest.mark.parametrize("changes", [
+    # Refused by the engine: a custom split that misses a resident.
+    {"components": [{"id": "all", "name": "Everything", "amount_paise": 600_000,
+                     "allocation_method": "custom",
+                     "allocations_paise": {"alice": 600_000}}]},
+    # Refused by the engine: components that do not total the bill.
+    {"total_amount_paise": 700_000},
+    # Refused by validation: a reading for someone outside the apartment.
+    {"smart_plug_readings": [{"resident_id": "ghost", "kwh": "1"}]},
+    # Refused by validation: an impossible billing period.
+    {"bill_period_start": "2026-09-30", "bill_period_end": "2026-09-01"},
+])
+def test_a_refused_recalculation_leaves_the_saved_bill_intact(configured, changes):
+    _create_october_bill(configured)
+    payments.record_payment(
+        configured, apartment_id=APARTMENT, payment_id="advance-electricity-2026-10",
+        payer_resident_id="alice", amount_paise=600_000, payment_date="2026-10-08",
+        payment_kind="provider_advance", payee_or_provider="State Electricity Board",
+        expense_id="electricity-2026-10")
+    before = _bill_state(configured)
+    assert before[0] is not None
+
+    with pytest.raises(ValidationError):
+        electricity.recalculate_electricity_expense(
+            configured, "electricity-2026-10", reason="Trying a bad correction", **changes)
+
+    assert _bill_state(configured) == before
+    with connect(configured, read_only=True) as conn:
+        assert conn.execute(
+            "SELECT expense_id FROM payment WHERE payment_id = 'advance-electricity-2026-10'"
+        ).fetchone()[0] == "electricity-2026-10"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action = 'supersede_electricity_calculation'"
+        ).fetchone()[0] == 0
+
+
+def test_a_valid_recalculation_replaces_the_bill_and_keeps_its_funding_link(configured):
+    _create_october_bill(configured)
+    payments.record_payment(
+        configured, apartment_id=APARTMENT, payment_id="advance-electricity-2026-10",
+        payer_resident_id="alice", amount_paise=600_000, payment_date="2026-10-08",
+        payment_kind="provider_advance", payee_or_provider="State Electricity Board",
+        expense_id="electricity-2026-10")
+    electricity.recalculate_electricity_expense(
+        configured, "electricity-2026-10", reason="Meter re-read",
+        total_amount_paise=630_000,
+        components=[
+            {"id": "energy", "name": "Energy charges", "amount_paise": 540_000,
+             "allocation_method": "usage"},
+            {"id": "fixed", "name": "Fixed charges", "amount_paise": 90_000,
+             "allocation_method": "equal"}])
+    saved, counts = _bill_state(configured)
+    assert saved["expense"]["amount_paise"] == 630_000
+    assert sum(a["amount_paise"] for a in saved["allocations"]) == 630_000
+    assert counts["electricity_bill"] == 1
+    with connect(configured, read_only=True) as conn:
+        assert conn.execute(
+            "SELECT expense_id FROM payment WHERE payment_id = 'advance-electricity-2026-10'"
+        ).fetchone()[0] == "electricity-2026-10"
+
+
+def test_a_custom_split_survives_a_recalculation_that_does_not_change_it(configured):
+    _create_october_bill(configured, components=[
+        {"id": "energy", "name": "Energy charges", "amount_paise": 510_000,
+         "allocation_method": "usage"},
+        {"id": "fixed", "name": "Fixed charges", "amount_paise": 90_000,
+         "allocation_method": "custom",
+         "allocations_paise": {"alice": 50_000, "bob": 40_000, "chris": 0}}])
+    electricity.recalculate_electricity_expense(
+        configured, "electricity-2026-10", reason="Corrected the bill number",
+        bill_number="SEB/26/10/0042")
+    saved, _ = _bill_state(configured)
+    fixed = {a["resident_id"]: a["amount_paise"] for a in saved["allocations"]
+             if a["component_name"] == "Fixed charges"}
+    assert fixed == {"alice": 50_000, "bob": 40_000, "chris": 0}
+
+
+def test_a_new_electricity_bill_is_not_shared_with_a_deactivated_resident(configured):
+    residents_service.deactivate_resident(configured, "chris", active_until="2026-09-30",
+                                          reason="Moved out")
+    preview = electricity.calculate_preview(
+        configured, apartment_id=APARTMENT, total_amount_paise=90_000,
+        expense_date="2026-10-08", smart_plug_readings=[],
+        components=[{"id": "fixed", "name": "Fixed charges", "amount_paise": 90_000,
+                     "allocation_method": "equal"}])
+    assert {a["resident_id"]: a["amount_paise"] for a in preview["allocations"]} == {
+        "alice": 45_000, "bob": 45_000}
+
+    _create_october_bill(
+        configured, total_amount_paise=90_000,
+        smart_plug_readings=[],
+        components=[{"id": "fixed", "name": "Fixed charges", "amount_paise": 90_000,
+                     "allocation_method": "equal"}])
+    saved, _ = _bill_state(configured)
+    assert {a["resident_id"]: a["amount_paise"] for a in saved["allocations"]} == {
+        "alice": 45_000, "bob": 45_000}
+
+    # A reading for someone who has left is refused rather than silently billed.
+    with pytest.raises(ValidationError, match="does not belong"):
+        _create_october_bill(configured, expense_id="electricity-late",
+                             smart_plug_readings=[{"resident_id": "chris", "kwh": "5"}])
+
+
+def test_correcting_an_old_bill_keeps_the_residents_it_was_shared_between(configured):
+    _create_october_bill(configured)
+    residents_service.deactivate_resident(configured, "chris", active_until="2026-10-31",
+                                          reason="Moved out")
+    electricity.recalculate_electricity_expense(
+        configured, "electricity-2026-10", reason="Corrected the bill number",
+        bill_number="SEB/26/10/0042")
+    saved, _ = _bill_state(configured)
+    fixed = {a["resident_id"]: a["amount_paise"] for a in saved["allocations"]
+             if a["component_name"] == "Fixed charges"}
+    assert fixed == {"alice": 30_000, "bob": 30_000, "chris": 30_000}

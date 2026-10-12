@@ -55,7 +55,7 @@ from ..periods import (
     parse_iso_date,
     resolve_periods,
 )
-from ..persistence import Database, PersistenceError
+from ..persistence import Database, PersistenceError, UnitOfWork
 from . import audit
 from .common import (
     assert_not_locked,
@@ -119,9 +119,9 @@ def calculate_preview(db: Database, *, apartment_id: str, total_amount_paise: in
     parse_iso_date(reference_date, "expense_date")
     with db.read() as uow:
         get_apartment(uow, apartment_id)
-        residents = resident_ids(uow, apartment_id)
+        residents = resident_ids(uow, apartment_id, active_only=True)
         if not residents:
-            raise ValidationError("No residents are registered for this apartment.",
+            raise ValidationError("No active residents are registered for this apartment.",
                                   code="no_residents")
         names = {row["resident_id"]: row["display_name"]
                  for row in uow.electricity.resident_names(apartment_id)}
@@ -176,8 +176,25 @@ def calculate_preview(db: Database, *, apartment_id: str, total_amount_paise: in
     return payload
 
 
-def create_electricity_expense(
-    db: Database, *, apartment_id: str, expense_id: str, description: str, expense_date: str,
+def create_electricity_expense(db: Database, **fields: Any):
+    """Calculate and persist an electricity expense in a single transaction.
+
+    Required: apartment_id, expense_id, description, expense_date,
+    total_amount_paise and smart_plug_readings. Each reading mapping requires
+    resident_id and kwh. Optional fields: reading_id, device_label,
+    period_start, period_end, source_note. Component mappings use the
+    electricity engine's component contract.
+
+    All money fields are integer paise. On any error, the transaction rolls
+    back so no partial expense/component/allocation/reading records remain.
+    """
+    with db.transaction() as uow:
+        return _create_electricity_expense_in(uow, **fields)
+
+
+def _create_electricity_expense_in(
+    uow: UnitOfWork, *, apartment_id: str, expense_id: str, description: str,
+    expense_date: str,
     expense_period: str | None = None, total_amount_paise: int,
     smart_plug_readings: Sequence[Mapping[str, Any]],
     components: Sequence[Mapping[str, Any]] | None = None,
@@ -189,15 +206,13 @@ def create_electricity_expense(
     settlement_period: str | None = None, service_period: str | None = None,
     period_rule: str | None = None, bill_number: str | None = None,
     notes: str | None = None, due_date: str | None = None, actor: str = "operator",
+    participants: Sequence[str] | None = None,
 ):
-    """Calculate and persist an electricity expense in a single transaction.
+    """Calculate and persist an electricity expense inside the caller's transaction.
 
-    Each reading mapping requires resident_id and kwh. Optional fields:
-    reading_id, device_label, period_start, period_end, source_note.
-    Component mappings use the electricity engine's component contract.
-
-    All money fields are integer paise. On any error, the transaction rolls
-    back so no partial expense/component/allocation/reading records remain.
+    The bill is shared between the apartment's currently active residents.
+    ``participants`` overrides that for a correction, which keeps the residents
+    the bill was originally shared between even if one has since moved out.
     """
     if not expense_id or not str(expense_id).strip():
         raise ValidationError("expense_id is required.", details={"field": "expense_id"})
@@ -222,164 +237,166 @@ def create_electricity_expense(
         smart_plug_readings, expense_date=expense_date,
         period_start=bill_period_start, period_end=bill_period_end)
 
-    with db.transaction() as uow:
-        get_apartment(uow, apartment_id)
-        residents = resident_ids(uow, apartment_id)
-        if not residents:
-            raise ValidationError("No residents are registered for this apartment.",
-                                  code="no_residents")
-        if payer_resident_id is not None and payer_resident_id not in residents:
-            raise ValidationError("payer_resident_id must belong to this apartment.",
-                                  details={"field": "payer_resident_id",
-                                           "value": payer_resident_id})
+    get_apartment(uow, apartment_id)
+    if participants is not None:
+        residents = sorted(participants)
+    else:
+        residents = resident_ids(uow, apartment_id, active_only=True)
+    if not residents:
+        raise ValidationError("No active residents are registered for this apartment.",
+                              code="no_residents")
+    if payer_resident_id is not None and payer_resident_id not in residents:
+        raise ValidationError("payer_resident_id must belong to this apartment.",
+                              details={"field": "payer_resident_id",
+                                       "value": payer_resident_id})
+    for reading in normalized:
+        if reading["resident_id"] not in residents:
+            raise ValidationError(
+                f"Reading references resident {reading['resident_id']!r}, who does not "
+                "belong to this apartment.",
+                details={"resident_id": reading["resident_id"]})
+    if expense_definition_id:
+        definition = uow.electricity.definition_apartment(expense_definition_id)
+        if not definition or definition["apartment_id"] != apartment_id:
+            raise ValidationError("expense_definition_id must belong to this apartment.",
+                                  details={"field": "expense_definition_id"})
+    if statement_id:
+        statement = uow.electricity.statement_scope(statement_id)
+        if not statement or statement["apartment_id"] != apartment_id:
+            raise ValidationError("statement_id must belong to this apartment.",
+                                  details={"field": "statement_id"})
+        if statement["status"] != "draft":
+            raise ConflictError(
+                "Electricity expenses can only be added to a draft statement.",
+                code="statement_not_draft",
+                details={"statement_id": statement_id, "status": statement["status"]})
+
+    rule = period_rule
+    if rule is None and expense_definition_id:
+        rule = uow.electricity.definition_period_rule(expense_definition_id)
+    fallback = None
+    if expense_period:
+        try:
+            fallback = normalize_month(expense_period, "expense_period")
+        except ValidationError:
+            fallback = None
+    if rule is None:
+        rule = "custom"
+    if rule == "custom":
+        resolved = resolve_periods(
+            "custom", expense_date, service_period=service_period,
+            settlement_period=settlement_period or fallback or expense_date[:7])
+    else:
+        resolved = resolve_periods(rule, expense_date, service_period=service_period,
+                                   settlement_period=settlement_period)
+    resolved_due = due_date or default_due_date(resolved.settlement_period)
+    parse_iso_date(resolved_due, "due_date")
+
+    if statement_id:
+        statement_month = uow.electricity.statement_settlement_month(statement_id)
+        if statement_month != resolved.settlement_period:
+            raise ValidationError(
+                "This bill settles in a different month from the statement it is being "
+                "attached to.",
+                code="settlement_period_mismatch",
+                details={"statement_settlement_month": statement_month,
+                         "bill_settlement_period": resolved.settlement_period})
+
+    bill: dict[str, Any] = {"total_amount_paise": total_amount_paise}
+    if components is not None:
+        bill["components"] = list(components)
+    try:
+        result = calculate_electricity({
+            "residents": residents,
+            "smart_plug_readings": engine_readings,
+            "payer_resident_id": payer_resident_id,
+            "bill": bill,
+        })
+    except ElectricityCalculationError as exc:
+        raise ValidationError(str(exc), code="electricity_calculation_error") from exc
+
+    # The engine already proves the component and resident totals reconcile;
+    # re-check here so persistence can never store a total it did not verify.
+    if sum(c.amount_paise for c in result.components) != total_amount_paise:
+        raise ValidationError(
+            "Bill components do not equal the actual bill total.",
+            code="component_total_mismatch")
+    if sum(a.amount_paise for a in result.allocations) != total_amount_paise:
+        raise ValidationError(
+            "Resident allocations do not equal the actual bill total.",
+            code="allocation_total_mismatch")
+
+    period_start = bill_period_start or month_start(resolved.service_period).isoformat()
+    period_end = bill_period_end or month_end(resolved.service_period).isoformat()
+    parse_iso_date(period_start, "bill_period_start")
+    parse_iso_date(period_end, "bill_period_end")
+    if period_end < period_start:
+        raise ValidationError("bill_period_end cannot be before bill_period_start.",
+                              details={"field": "bill_period_end"})
+
+    try:
+        uow.electricity.insert_expense(
+            expense_id=str(expense_id).strip(),
+            expense_definition_id=expense_definition_id, statement_id=statement_id,
+            description=str(description).strip(), amount_paise=total_amount_paise,
+            expense_date=expense_date,
+            expense_period=expense_period or resolved.settlement_period,
+            payer_resident_id=payer_resident_id, provider_name=provider_name,
+            created_at=timestamp, service_period=resolved.service_period,
+            settlement_period=resolved.settlement_period, period_rule=resolved.rule,
+            due_date=resolved_due, apartment_id=apartment_id,
+            reference=optional_text(bill_number, "bill_number", max_length=120),
+            notes=optional_text(notes, "notes"), updated_at=timestamp)
+        for component in result.components:
+            db_component_id = new_id("ec")
+            uow.electricity.insert_component(
+                component_id=db_component_id, expense_id=str(expense_id).strip(),
+                name=component.name, amount_paise=component.amount_paise,
+                allocation_method=_schema_method(component.allocation_method))
+            for allocation in component.allocations:
+                # A zero share of a non-zero component is a real measured
+                # result, so electricity allocations are written in full --
+                # including zeros -- and the stored rows reconcile
+                # component by component to the actual bill.
+                basis = {
+                    "method": component.allocation_method,
+                    "component_id": component.component_id,
+                    "usage_kwh_by_resident": result.breakdown["usage_kwh_by_resident"],
+                    "payer_resident_id": payer_resident_id,
+                }
+                uow.electricity.insert_allocation(
+                    allocation_id=new_id("alloc"), expense_id=str(expense_id).strip(),
+                    component_id=db_component_id, resident_id=allocation.resident_id,
+                    amount_paise=allocation.amount_paise,
+                    allocation_basis_json=json.dumps(basis, sort_keys=True))
         for reading in normalized:
-            if reading["resident_id"] not in residents:
-                raise ValidationError(
-                    f"Reading references resident {reading['resident_id']!r}, who does not "
-                    "belong to this apartment.",
-                    details={"resident_id": reading["resident_id"]})
-        if expense_definition_id:
-            definition = uow.electricity.definition_apartment(expense_definition_id)
-            if not definition or definition["apartment_id"] != apartment_id:
-                raise ValidationError("expense_definition_id must belong to this apartment.",
-                                      details={"field": "expense_definition_id"})
-        if statement_id:
-            statement = uow.electricity.statement_scope(statement_id)
-            if not statement or statement["apartment_id"] != apartment_id:
-                raise ValidationError("statement_id must belong to this apartment.",
-                                      details={"field": "statement_id"})
-            if statement["status"] != "draft":
-                raise ConflictError(
-                    "Electricity expenses can only be added to a draft statement.",
-                    code="statement_not_draft",
-                    details={"statement_id": statement_id, "status": statement["status"]})
-
-        rule = period_rule
-        if rule is None and expense_definition_id:
-            rule = uow.electricity.definition_period_rule(expense_definition_id)
-        fallback = None
-        if expense_period:
-            try:
-                fallback = normalize_month(expense_period, "expense_period")
-            except ValidationError:
-                fallback = None
-        if rule is None:
-            rule = "custom"
-        if rule == "custom":
-            resolved = resolve_periods(
-                "custom", expense_date, service_period=service_period,
-                settlement_period=settlement_period or fallback or expense_date[:7])
-        else:
-            resolved = resolve_periods(rule, expense_date, service_period=service_period,
-                                       settlement_period=settlement_period)
-        resolved_due = due_date or default_due_date(resolved.settlement_period)
-        parse_iso_date(resolved_due, "due_date")
-
-        if statement_id:
-            statement_month = uow.electricity.statement_settlement_month(statement_id)
-            if statement_month != resolved.settlement_period:
-                raise ValidationError(
-                    "This bill settles in a different month from the statement it is being "
-                    "attached to.",
-                    code="settlement_period_mismatch",
-                    details={"statement_settlement_month": statement_month,
-                             "bill_settlement_period": resolved.settlement_period})
-
-        bill: dict[str, Any] = {"total_amount_paise": total_amount_paise}
-        if components is not None:
-            bill["components"] = list(components)
-        try:
-            result = calculate_electricity({
-                "residents": residents,
-                "smart_plug_readings": engine_readings,
-                "payer_resident_id": payer_resident_id,
-                "bill": bill,
-            })
-        except ElectricityCalculationError as exc:
-            raise ValidationError(str(exc), code="electricity_calculation_error") from exc
-
-        # The engine already proves the component and resident totals reconcile;
-        # re-check here so persistence can never store a total it did not verify.
-        if sum(c.amount_paise for c in result.components) != total_amount_paise:
-            raise ValidationError(
-                "Bill components do not equal the actual bill total.",
-                code="component_total_mismatch")
-        if sum(a.amount_paise for a in result.allocations) != total_amount_paise:
-            raise ValidationError(
-                "Resident allocations do not equal the actual bill total.",
-                code="allocation_total_mismatch")
-
-        period_start = bill_period_start or month_start(resolved.service_period).isoformat()
-        period_end = bill_period_end or month_end(resolved.service_period).isoformat()
-        parse_iso_date(period_start, "bill_period_start")
-        parse_iso_date(period_end, "bill_period_end")
-        if period_end < period_start:
-            raise ValidationError("bill_period_end cannot be before bill_period_start.",
-                                  details={"field": "bill_period_end"})
-
-        try:
-            uow.electricity.insert_expense(
+            uow.electricity.insert_reading(
+                reading_id=reading["reading_id"], resident_id=reading["resident_id"],
                 expense_id=str(expense_id).strip(),
-                expense_definition_id=expense_definition_id, statement_id=statement_id,
-                description=str(description).strip(), amount_paise=total_amount_paise,
-                expense_date=expense_date,
-                expense_period=expense_period or resolved.settlement_period,
-                payer_resident_id=payer_resident_id, provider_name=provider_name,
-                created_at=timestamp, service_period=resolved.service_period,
-                settlement_period=resolved.settlement_period, period_rule=resolved.rule,
-                due_date=resolved_due, apartment_id=apartment_id,
-                reference=optional_text(bill_number, "bill_number", max_length=120),
-                notes=optional_text(notes, "notes"), updated_at=timestamp)
-            for component in result.components:
-                db_component_id = new_id("ec")
-                uow.electricity.insert_component(
-                    component_id=db_component_id, expense_id=str(expense_id).strip(),
-                    name=component.name, amount_paise=component.amount_paise,
-                    allocation_method=_schema_method(component.allocation_method))
-                for allocation in component.allocations:
-                    # A zero share of a non-zero component is a real measured
-                    # result, so electricity allocations are written in full --
-                    # including zeros -- and the stored rows reconcile
-                    # component by component to the actual bill.
-                    basis = {
-                        "method": component.allocation_method,
-                        "component_id": component.component_id,
-                        "usage_kwh_by_resident": result.breakdown["usage_kwh_by_resident"],
-                        "payer_resident_id": payer_resident_id,
-                    }
-                    uow.electricity.insert_allocation(
-                        allocation_id=new_id("alloc"), expense_id=str(expense_id).strip(),
-                        component_id=db_component_id, resident_id=allocation.resident_id,
-                        amount_paise=allocation.amount_paise,
-                        allocation_basis_json=json.dumps(basis, sort_keys=True))
-            for reading in normalized:
-                uow.electricity.insert_reading(
-                    reading_id=reading["reading_id"], resident_id=reading["resident_id"],
-                    expense_id=str(expense_id).strip(),
-                    device_label=reading["device_label"],
-                    period_start=reading["period_start"], period_end=reading["period_end"],
-                    energy_wh=reading["energy_wh"], source_note=reading["source_note"])
-            uow.electricity.insert_bill(
-                electricity_bill_id=new_id("ebill"), expense_id=str(expense_id).strip(),
-                bill_period_start=period_start, bill_period_end=period_end,
-                settlement_period=resolved.settlement_period,
-                bill_number=optional_text(bill_number, "bill_number", max_length=120),
-                provider_name=provider_name, total_amount_paise=total_amount_paise,
-                calculation_json=json.dumps(result.to_dict(), sort_keys=True),
-                notes=optional_text(notes, "notes"), created_at=timestamp)
-        except PersistenceError as exc:
-            raise ValidationError(f"Could not persist electricity expense: {exc}") from exc
+                device_label=reading["device_label"],
+                period_start=reading["period_start"], period_end=reading["period_end"],
+                energy_wh=reading["energy_wh"], source_note=reading["source_note"])
+        uow.electricity.insert_bill(
+            electricity_bill_id=new_id("ebill"), expense_id=str(expense_id).strip(),
+            bill_period_start=period_start, bill_period_end=period_end,
+            settlement_period=resolved.settlement_period,
+            bill_number=optional_text(bill_number, "bill_number", max_length=120),
+            provider_name=provider_name, total_amount_paise=total_amount_paise,
+            calculation_json=json.dumps(result.to_dict(), sort_keys=True),
+            notes=optional_text(notes, "notes"), created_at=timestamp)
+    except PersistenceError as exc:
+        raise ValidationError(f"Could not persist electricity expense: {exc}") from exc
 
-        audit.record(uow, entity_type="expense", entity_id=str(expense_id).strip(),
-                     action="create", actor=actor, apartment_id=apartment_id,
-                     new_value={"expense_kind": "electricity",
-                                "total_amount_paise": total_amount_paise,
-                                "settlement_period": resolved.settlement_period,
-                                "service_period": resolved.service_period,
-                                "bill_period": [period_start, period_end],
-                                "payer_resident_id": payer_resident_id,
-                                "allocations": {a.resident_id: a.amount_paise
-                                                for a in result.allocations}})
+    audit.record(uow, entity_type="expense", entity_id=str(expense_id).strip(),
+                 action="create", actor=actor, apartment_id=apartment_id,
+                 new_value={"expense_kind": "electricity",
+                            "total_amount_paise": total_amount_paise,
+                            "settlement_period": resolved.settlement_period,
+                            "service_period": resolved.service_period,
+                            "bill_period": [period_start, period_end],
+                            "payer_resident_id": payer_resident_id,
+                            "allocations": {a.resident_id: a.amount_paise
+                                            for a in result.allocations}})
     return result
 
 
@@ -405,6 +422,7 @@ def recalculate_electricity_expense(db: Database, expense_id: str, *, reason: st
                                   details={"expense_id": expense_id})
         bill = uow.electricity.bill_for_expense(expense_id)
         readings = uow.electricity.readings_for_expense(expense_id)
+        allocations = uow.electricity.allocations_for_expense(expense_id)
         mode = assert_not_locked(uow, expense["statement_id"], "electricity bill")
     if mode == "revision" and not reason:
         raise ValidationError("A reason is required during the correction window.",
@@ -441,12 +459,19 @@ def recalculate_electricity_expense(db: Database, expense_id: str, *, reason: st
              "source_note": r["source_note"]} for r in readings]),
         "created_at": expense["created_at"],
         "actor": actor,
+        # A correction keeps the residents the bill was shared between, so an
+        # old bill still reconciles after one of them has moved out.
+        "participants": sorted({a["resident_id"] for a in allocations}) or None,
     }
     if payload["components"] is None and bill:
         stored = json.loads(bill["calculation_json"])
         payload["components"] = [
             {"id": c["component_id"], "name": c["name"], "amount_paise": c["amount_paise"],
-             "allocation_method": c["allocation_method"]}
+             "allocation_method": c["allocation_method"],
+             # A custom split has no formula to re-run; carry its amounts over.
+             **({"allocations_paise": {a["resident_id"]: a["amount_paise"]
+                                       for a in c["allocations"]}}
+                if c["allocation_method"] == "custom" else {})}
             for c in stored["components"]]
 
     with db.transaction() as uow:
@@ -475,16 +500,16 @@ def recalculate_electricity_expense(db: Database, expense_id: str, *, reason: st
         uow.electricity.delete_components(expense_id)
         uow.electricity.delete_expense(expense_id)
 
-    create_electricity_expense(db, **payload)
-    if linked_payment_ids:
-        with db.transaction() as uow:
-            for payment_id in linked_payment_ids:
-                uow.electricity.attach_payment(payment_id, expense_id)
-    if mode == "revision":
-        with db.transaction() as uow:
+        # The replacement is written in this same transaction: if it is refused
+        # for any reason, the deletions above roll back and the saved bill stays.
+        _create_electricity_expense_in(uow, **payload)
+        for payment_id in linked_payment_ids:
+            uow.electricity.attach_payment(payment_id, expense_id)
+        if mode == "revision":
             statements.record_revision(
                 uow, statement_id=expense["statement_id"], reason=reason, created_by=actor,
                 change_note=f"electricity bill {expense_id} recalculated")
+    if mode == "revision":
         statements.refresh_snapshot(db, expense["statement_id"], actor=actor,
                                     reason=reason)
     return get_electricity_expense(db, expense_id)
