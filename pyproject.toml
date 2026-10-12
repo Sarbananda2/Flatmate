@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "apartment-expense-manager"
 version = "1.0.0"
@@ -7,12 +11,24 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
+    # The PostgreSQL driver and its connection pool. "binary" bundles libpq.
+    "psycopg[binary,pool]>=3.2",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27"]
 # Only needed to read smart plugs through POST /api/electricity/sync-tapo.
 tapo = ["tapo>=0.11"]
+
+# Only ``aem`` is the installable package. Without this, setuptools sees the
+# other top-level directories (data, backups, frontend, legacy) and refuses to
+# build, which is what made ``pip install -e '.[dev]'`` fail.
+[tool.setuptools.packages.find]
+include = ["aem*"]
+
+# The SQL migrations are read from inside the package at run time.
+[tool.setuptools.package-data]
+aem = ["**/*.sql"]
 
 [tool.pytest.ini_options]
 # The whole suite: the application's tests under ./tests, and the original

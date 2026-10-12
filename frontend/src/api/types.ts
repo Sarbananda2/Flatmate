@@ -715,7 +715,10 @@ export interface Health {
   status: 'ok' | 'degraded'
   version: string
   schema_version: number
+  database_backend?: string
+  /** The PostgreSQL target as postgresql://user@host:port/name; no password. */
   database_path: string
+  /** Whether the database could be reached. */
   database_exists: boolean
   apartment_count: number
   default_apartment_id: string | null

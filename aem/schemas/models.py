@@ -71,6 +71,7 @@ class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     version: str
     schema_version: int
+    database_backend: str = "postgresql"
     database_path: str
     database_exists: bool
     apartment_count: int

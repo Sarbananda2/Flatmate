@@ -16,16 +16,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from .. import db
-from ..db import connect, new_id, now_timestamp, transaction
 from ..errors import ConflictError, NotFoundError, ValidationError
+from ..ids import new_id, now_timestamp
 from ..periods import parse_iso_date
+from ..persistence import Database
 from . import audit
 from .common import get_apartment, get_resident, get_statement, paginate, require_text
 
 
 def record_adjustment(
-    db_path, *, apartment_id: str, resident_id: str, amount_paise: int, reason: str,
+    db: Database, *, apartment_id: str, resident_id: str, amount_paise: int, reason: str,
     created_by: str, statement_id: str | None = None, adjustment_id: str | None = None,
     created_at: str | None = None, reverses_adjustment_id: str | None = None,
     effective_date: str | None = None,
@@ -41,15 +41,13 @@ def record_adjustment(
     timestamp = created_at or now_timestamp()
     effective = effective_date or timestamp[:10]
     parse_iso_date(effective, "effective_date")
-    with transaction(db_path) as conn:
-        get_apartment(conn, apartment_id)
-        get_resident(conn, resident_id, apartment_id)
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        get_resident(uow, resident_id, apartment_id)
         if statement_id:
-            get_statement(conn, statement_id, apartment_id)
+            get_statement(uow, statement_id, apartment_id)
         if reverses_adjustment_id:
-            original = db.fetch_one(
-                conn, "SELECT * FROM ledger_adjustment WHERE adjustment_id=?",
-                (reverses_adjustment_id,))
+            original = uow.adjustments.get(reverses_adjustment_id)
             if original is None:
                 raise NotFoundError("The adjustment being reversed does not exist.",
                                     details={"reverses_adjustment_id": reverses_adjustment_id})
@@ -57,9 +55,7 @@ def record_adjustment(
                 raise ValidationError(
                     "A reversing adjustment must apply to the same resident as the original.",
                     details={"reverses_adjustment_id": reverses_adjustment_id})
-            existing = db.scalar(
-                conn, "SELECT COUNT(*) FROM ledger_adjustment WHERE reverses_adjustment_id=?",
-                (reverses_adjustment_id,), default=0)
+            existing = uow.adjustments.count_reversals_of(reverses_adjustment_id)
             if existing:
                 raise ConflictError("That adjustment has already been reversed.",
                                     code="adjustment_already_reversed",
@@ -71,14 +67,12 @@ def record_adjustment(
                     details={"original_paise": original["amount_paise"],
                              "expected_paise": -original["amount_paise"],
                              "provided_paise": amount_paise})
-        conn.execute(
-            """INSERT INTO ledger_adjustment
-               (adjustment_id, statement_id, resident_id, amount_paise, reason, created_at,
-                created_by, reverses_adjustment_id, effective_date)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (adjustment_id, statement_id, resident_id, amount_paise, reason.strip(),
-             timestamp, created_by.strip(), reverses_adjustment_id, effective))
-        audit.record(conn, entity_type="ledger_adjustment", entity_id=adjustment_id,
+        uow.adjustments.insert_adjustment(
+            adjustment_id=adjustment_id, statement_id=statement_id, resident_id=resident_id,
+            amount_paise=amount_paise, reason=reason.strip(), created_at=timestamp,
+            created_by=created_by.strip(), reverses_adjustment_id=reverses_adjustment_id,
+            effective_date=effective)
+        audit.record(uow, entity_type="ledger_adjustment", entity_id=adjustment_id,
                      action="create", actor=created_by, apartment_id=apartment_id,
                      reason=reason.strip(),
                      new_value={"resident_id": resident_id, "amount_paise": amount_paise,
@@ -88,50 +82,30 @@ def record_adjustment(
     return adjustment_id
 
 
-def reverse_adjustment(db_path, adjustment_id: str, *, apartment_id: str, reason: str,
+def reverse_adjustment(db: Database, adjustment_id: str, *, apartment_id: str, reason: str,
                        created_by: str = "operator") -> str:
     """Create the exact negative of an existing adjustment."""
     reason = require_text(reason, "reason", max_length=2000)
-    with connect(db_path, read_only=True) as conn:
-        original = db.fetch_one(conn, "SELECT * FROM ledger_adjustment WHERE adjustment_id=?",
-                                (adjustment_id,))
+    with db.read() as uow:
+        original = uow.adjustments.get(adjustment_id)
         if original is None:
             raise NotFoundError("Adjustment not found.", details={"adjustment_id": adjustment_id})
     return record_adjustment(
-        db_path, apartment_id=apartment_id, resident_id=original["resident_id"],
+        db, apartment_id=apartment_id, resident_id=original["resident_id"],
         amount_paise=-original["amount_paise"],
         reason=f"Reversal of {adjustment_id}: {reason}", created_by=created_by,
         statement_id=original["statement_id"], reverses_adjustment_id=adjustment_id)
 
 
-def list_adjustments(db_path, *, apartment_id: str, resident_id: str | None = None,
+def list_adjustments(db: Database, *, apartment_id: str, resident_id: str | None = None,
                      statement_id: str | None = None, limit: int | None = 100,
                      offset: int | None = 0) -> dict[str, Any]:
     limit, offset = paginate(limit, offset)
-    clauses = ["r.apartment_id = ?"]
-    params: list[Any] = [apartment_id]
-    if resident_id:
-        clauses.append("la.resident_id = ?")
-        params.append(resident_id)
-    if statement_id:
-        clauses.append("la.statement_id = ?")
-        params.append(statement_id)
-    where = " AND ".join(clauses)
-    base = f"""
-        FROM ledger_adjustment la
-        JOIN resident r ON r.resident_id = la.resident_id
-        LEFT JOIN monthly_statement s ON s.statement_id = la.statement_id
-        WHERE {where}
-    """
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        total = int(conn.execute(f"SELECT COUNT(*) {base}", tuple(params)).fetchone()[0])
-        rows = db.fetch_all(
-            conn,
-            f"""SELECT la.*, r.display_name, s.settlement_month, s.status AS statement_status,
-                       (SELECT rv.adjustment_id FROM ledger_adjustment rv
-                         WHERE rv.reverses_adjustment_id = la.adjustment_id) AS reversed_by
-                  {base}
-                ORDER BY la.effective_date DESC, la.created_at DESC, la.rowid DESC
-                LIMIT ? OFFSET ?""", params + [limit, offset])
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        total = uow.adjustments.count_for_apartment(
+            apartment_id=apartment_id, resident_id=resident_id, statement_id=statement_id)
+        rows = uow.adjustments.list_for_apartment(
+            apartment_id=apartment_id, resident_id=resident_id, statement_id=statement_id,
+            limit=limit, offset=offset)
     return {"items": rows, "total": total, "limit": limit, "offset": offset}

@@ -158,9 +158,9 @@ export default function SetupPage() {
                 </span>
               </div>
               <dl className="kv">
-                <dt>Database file</dt>
+                <dt>Database</dt>
                 <dd className="mono">{data.database_path}</dd>
-                <dt>Database exists</dt>
+                <dt>Database reachable</dt>
                 <dd>{data.database_exists ? 'Yes' : 'No'}</dd>
                 <dt>Schema up to date</dt>
                 <dd>{String(data.checks.schema_up_to_date ?? '—')}</dd>

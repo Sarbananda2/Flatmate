@@ -18,7 +18,7 @@ from ...schemas import (
     RentPaymentCreate,
 )
 from ...services import rent
-from ..deps import ApartmentId, AppSettings, DbPath, to_http
+from ..deps import ApartmentId, AppSettings, Db, to_http
 
 router = APIRouter(prefix="/api/rent", tags=["rent"])
 
@@ -26,22 +26,22 @@ SettlementMonth = Annotated[str, Path(pattern=MONTH_PATTERN, description="YYYY-M
 
 
 @router.get("/config", summary="Read the lease")
-def get_config(db_path: DbPath, apartment_id: ApartmentId) -> dict[str, Any]:
+def get_config(db: Db, apartment_id: ApartmentId) -> dict[str, Any]:
     """``config`` is null until the lease has been set up."""
     try:
-        return {"config": rent.get_lease_config(db_path, apartment_id)}
+        return {"config": rent.get_lease_config(db, apartment_id)}
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.post("/config", summary="Set up or update the lease")
-def save_config(payload: RentLeaseConfigSave, db_path: DbPath, apartment_id: ApartmentId,
+def save_config(payload: RentLeaseConfigSave, db: Db, apartment_id: ApartmentId,
                 settings: AppSettings) -> dict[str, Any]:
     """Landlord details, the monthly rent, the due day, and whether the
     landlord issues receipts. A month already generated keeps its amount."""
     try:
         # Only what was sent: a contract-term field left out keeps its value.
-        return rent.save_lease_config(db_path, apartment_id,
+        return rent.save_lease_config(db, apartment_id,
                                       payload.model_dump(exclude_unset=True),
                                       actor=settings.operator_name)
     except AemError as exc:
@@ -49,13 +49,13 @@ def save_config(payload: RentLeaseConfigSave, db_path: DbPath, apartment_id: Apa
 
 
 @router.post("/lease/renew", summary="Renew the lease for another term")
-def renew_lease(payload: RentLeaseRenewRequest, db_path: DbPath, apartment_id: ApartmentId,
+def renew_lease(payload: RentLeaseRenewRequest, db: Db, apartment_id: ApartmentId,
                 settings: AppSettings) -> dict[str, Any]:
     """Archive the term that is ending and start the next one. Anything omitted
     follows the lease: the day after the current term, the same duration, and
     the rent its escalation clause projects."""
     try:
-        return rent.renew_lease_contract(db_path, apartment_id,
+        return rent.renew_lease_contract(db, apartment_id,
                                          payload.model_dump(exclude_none=True),
                                          actor=settings.operator_name)
     except AemError as exc:
@@ -63,28 +63,28 @@ def renew_lease(payload: RentLeaseRenewRequest, db_path: DbPath, apartment_id: A
 
 
 @router.post("/lease/vacate", summary="Record notice to vacate")
-def vacate_lease(payload: RentLeaseVacateRequest, db_path: DbPath, apartment_id: ApartmentId,
+def vacate_lease(payload: RentLeaseVacateRequest, db: Db, apartment_id: ApartmentId,
                  settings: AppSettings) -> dict[str, Any]:
     """Mark the lease as under notice, with the date notice was served and the
     planned handover date. Rent for the remaining months is unaffected."""
     try:
-        return rent.serve_vacate_notice(db_path, apartment_id, payload.model_dump(),
+        return rent.serve_vacate_notice(db, apartment_id, payload.model_dump(),
                                         actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.get("/lease/terms", summary="List completed lease terms")
-def lease_terms(db_path: DbPath, apartment_id: ApartmentId) -> dict[str, Any]:
+def lease_terms(db: Db, apartment_id: ApartmentId) -> dict[str, Any]:
     try:
-        return {"items": rent.list_lease_terms(db_path, apartment_id)}
+        return {"items": rent.list_lease_terms(db, apartment_id)}
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.get("/cycle/{settlement_month}", summary="Read a month's rent")
 def get_cycle(
-    db_path: DbPath, apartment_id: ApartmentId, settlement_month: SettlementMonth,
+    db: Db, apartment_id: ApartmentId, settlement_month: SettlementMonth,
     exclude: Annotated[str | None, Query(
         description="Comma-separated resident IDs to leave out of the preview.")] = None,
 ) -> dict[str, Any]:
@@ -93,7 +93,7 @@ def get_cycle(
     the shares generating it would charge."""
     excluded = [rid.strip() for rid in (exclude or "").split(",") if rid.strip()]
     try:
-        return rent.rent_month_overview(db_path, apartment_id, settlement_month,
+        return rent.rent_month_overview(db, apartment_id, settlement_month,
                                         excluded_resident_ids=excluded)
     except AemError as exc:
         raise to_http(exc) from exc
@@ -101,34 +101,34 @@ def get_cycle(
 
 @router.post("/cycle/{settlement_month}/generate", status_code=201,
              summary="Generate a month's rent")
-def generate_cycle(payload: RentGenerateRequest, db_path: DbPath, apartment_id: ApartmentId,
+def generate_cycle(payload: RentGenerateRequest, db: Db, apartment_id: ApartmentId,
                    settings: AppSettings, settlement_month: SettlementMonth) -> dict[str, Any]:
     """Charge the rent equally to every active resident not left out. Rent
     already recorded for the month is adopted rather than duplicated."""
     try:
         return rent.generate_monthly_rent_cycle(
-            db_path, apartment_id, settlement_month, payload.excluded_resident_ids,
+            db, apartment_id, settlement_month, payload.excluded_resident_ids,
             actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.post("/cycle/{settlement_month}/pay", summary="Record a resident's rent payment")
-def pay_rent(payload: RentPaymentCreate, db_path: DbPath, apartment_id: ApartmentId,
+def pay_rent(payload: RentPaymentCreate, db: Db, apartment_id: ApartmentId,
              settings: AppSettings, settlement_month: SettlementMonth) -> dict[str, Any]:
     """A payment into the pool that settles this resident's rent share for the
     month first, whatever older charges they have. Excess goes to their other
     charges oldest-first. Returns the updated rent cycle."""
     try:
         return rent.record_rent_payment(
-            db_path, apartment_id=apartment_id, settlement_month=settlement_month,
+            db, apartment_id=apartment_id, settlement_month=settlement_month,
             actor=settings.operator_name, **payload.model_dump())
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.post("/cycle/{settlement_month}/disburse", summary="Record the landlord payout")
-def disburse_cycle(payload: RentDisburseRequest, db_path: DbPath, apartment_id: ApartmentId,
+def disburse_cycle(payload: RentDisburseRequest, db: Db, apartment_id: ApartmentId,
                    settings: AppSettings, settlement_month: SettlementMonth) -> dict[str, Any]:
     """Paid from the pool, or by one resident (recorded as a provider advance
     linked to the rent). Issues the HRA receipts. Cannot be recorded twice.
@@ -137,7 +137,7 @@ def disburse_cycle(payload: RentDisburseRequest, db_path: DbPath, apartment_id: 
     attach it later with ``POST .../landlord-receipt``."""
     try:
         return rent.record_landlord_disbursement(
-            db_path, apartment_id=apartment_id, settlement_month=settlement_month,
+            db, apartment_id=apartment_id, settlement_month=settlement_month,
             actor=settings.operator_name, **payload.model_dump())
     except AemError as exc:
         raise to_http(exc) from exc
@@ -145,11 +145,11 @@ def disburse_cycle(payload: RentDisburseRequest, db_path: DbPath, apartment_id: 
 
 @router.get("/cycle/{settlement_month}/receipt/{resident_id}",
             summary="Read a resident's HRA rent receipt")
-def get_receipt(db_path: DbPath, apartment_id: ApartmentId, settlement_month: SettlementMonth,
+def get_receipt(db: Db, apartment_id: ApartmentId, settlement_month: SettlementMonth,
                 resident_id: str = Path()) -> dict[str, Any]:
     try:
         return rent.get_resident_rent_receipt(
-            db_path, apartment_id=apartment_id, settlement_month=settlement_month,
+            db, apartment_id=apartment_id, settlement_month=settlement_month,
             resident_id=resident_id)
     except AemError as exc:
         raise to_http(exc) from exc
@@ -157,14 +157,14 @@ def get_receipt(db_path: DbPath, apartment_id: ApartmentId, settlement_month: Se
 
 @router.post("/cycle/{settlement_month}/landlord-receipt",
              summary="Attach or replace the landlord's receipt")
-def attach_landlord_receipt(payload: LandlordReceiptUpload, db_path: DbPath,
+def attach_landlord_receipt(payload: LandlordReceiptUpload, db: Db,
                             apartment_id: ApartmentId, settings: AppSettings,
                             settlement_month: SettlementMonth) -> dict[str, Any]:
     """For a month whose payout is already recorded and whose lease expects a
     receipt. Posting again replaces the file; both are noted in the audit log."""
     try:
         return rent.attach_landlord_receipt(
-            db_path, apartment_id=apartment_id, settlement_month=settlement_month,
+            db, apartment_id=apartment_id, settlement_month=settlement_month,
             landlord_receipt=payload.model_dump(), actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
@@ -172,11 +172,11 @@ def attach_landlord_receipt(payload: LandlordReceiptUpload, db_path: DbPath,
 
 @router.get("/cycle/{settlement_month}/landlord-receipt",
             summary="Download the landlord's receipt")
-def get_landlord_receipt(db_path: DbPath, apartment_id: ApartmentId,
+def get_landlord_receipt(db: Db, apartment_id: ApartmentId,
                          settlement_month: SettlementMonth) -> Response:
     """The file attached when the payout was recorded, exactly as uploaded."""
     try:
-        receipt = rent.get_landlord_receipt(db_path, apartment_id=apartment_id,
+        receipt = rent.get_landlord_receipt(db, apartment_id=apartment_id,
                                             settlement_month=settlement_month)
     except AemError as exc:
         raise to_http(exc) from exc

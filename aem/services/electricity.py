@@ -40,14 +40,12 @@ window, and keeps the superseded calculation in the audit trail.
 from __future__ import annotations
 
 import json
-import sqlite3
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
-from .. import db
-from ..db import connect, new_id, now_timestamp, transaction
 from ..engine.electricity import ElectricityCalculationError, calculate_electricity
 from ..errors import ConflictError, NotFoundError, ValidationError
+from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, kwh_to_wh, wh_to_kwh_string
 from ..periods import (
     default_due_date,
@@ -57,6 +55,7 @@ from ..periods import (
     parse_iso_date,
     resolve_periods,
 )
+from ..persistence import Database, PersistenceError
 from . import audit
 from .common import (
     assert_not_locked,
@@ -109,7 +108,7 @@ def _normalize_readings(readings: Sequence[Mapping[str, Any]], *, expense_date: 
     return normalized, engine_readings
 
 
-def calculate_preview(db_path, *, apartment_id: str, total_amount_paise: int,
+def calculate_preview(db: Database, *, apartment_id: str, total_amount_paise: int,
                       smart_plug_readings: Sequence[Mapping[str, Any]],
                       components: Sequence[Mapping[str, Any]] | None = None,
                       payer_resident_id: str | None = None,
@@ -118,15 +117,14 @@ def calculate_preview(db_path, *, apartment_id: str, total_amount_paise: int,
     ensure_paise(total_amount_paise, "total_amount_paise")
     reference_date = expense_date or now_timestamp()[:10]
     parse_iso_date(reference_date, "expense_date")
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        residents = resident_ids(conn, apartment_id)
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        residents = resident_ids(uow, apartment_id)
         if not residents:
             raise ValidationError("No residents are registered for this apartment.",
                                   code="no_residents")
-        names = {row["resident_id"]: row["display_name"] for row in conn.execute(
-            "SELECT resident_id, display_name FROM resident WHERE apartment_id=?",
-            (apartment_id,)).fetchall()}
+        names = {row["resident_id"]: row["display_name"]
+                 for row in uow.electricity.resident_names(apartment_id)}
     normalized, engine_readings = _normalize_readings(
         smart_plug_readings, expense_date=reference_date, period_start=None, period_end=None)
     unknown = sorted({r["resident_id"] for r in normalized} - set(residents))
@@ -179,7 +177,7 @@ def calculate_preview(db_path, *, apartment_id: str, total_amount_paise: int,
 
 
 def create_electricity_expense(
-    db_path, *, apartment_id: str, expense_id: str, description: str, expense_date: str,
+    db: Database, *, apartment_id: str, expense_id: str, description: str, expense_date: str,
     expense_period: str | None = None, total_amount_paise: int,
     smart_plug_readings: Sequence[Mapping[str, Any]],
     components: Sequence[Mapping[str, Any]] | None = None,
@@ -224,9 +222,9 @@ def create_electricity_expense(
         smart_plug_readings, expense_date=expense_date,
         period_start=bill_period_start, period_end=bill_period_end)
 
-    with transaction(db_path) as conn:
-        get_apartment(conn, apartment_id)
-        residents = resident_ids(conn, apartment_id)
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        residents = resident_ids(uow, apartment_id)
         if not residents:
             raise ValidationError("No residents are registered for this apartment.",
                                   code="no_residents")
@@ -241,16 +239,12 @@ def create_electricity_expense(
                     "belong to this apartment.",
                     details={"resident_id": reading["resident_id"]})
         if expense_definition_id:
-            definition = conn.execute(
-                "SELECT apartment_id FROM expense_definition WHERE expense_definition_id = ?",
-                (expense_definition_id,)).fetchone()
+            definition = uow.electricity.definition_apartment(expense_definition_id)
             if not definition or definition["apartment_id"] != apartment_id:
                 raise ValidationError("expense_definition_id must belong to this apartment.",
                                       details={"field": "expense_definition_id"})
         if statement_id:
-            statement = conn.execute(
-                "SELECT apartment_id, status FROM monthly_statement WHERE statement_id = ?",
-                (statement_id,)).fetchone()
+            statement = uow.electricity.statement_scope(statement_id)
             if not statement or statement["apartment_id"] != apartment_id:
                 raise ValidationError("statement_id must belong to this apartment.",
                                       details={"field": "statement_id"})
@@ -262,10 +256,7 @@ def create_electricity_expense(
 
         rule = period_rule
         if rule is None and expense_definition_id:
-            row = conn.execute(
-                "SELECT period_rule FROM expense_definition WHERE expense_definition_id=?",
-                (expense_definition_id,)).fetchone()
-            rule = row[0] if row else None
+            rule = uow.electricity.definition_period_rule(expense_definition_id)
         fallback = None
         if expense_period:
             try:
@@ -285,9 +276,7 @@ def create_electricity_expense(
         parse_iso_date(resolved_due, "due_date")
 
         if statement_id:
-            statement_month = conn.execute(
-                "SELECT settlement_month FROM monthly_statement WHERE statement_id=?",
-                (statement_id,)).fetchone()[0]
+            statement_month = uow.electricity.statement_settlement_month(statement_id)
             if statement_month != resolved.settlement_period:
                 raise ValidationError(
                     "This bill settles in a different month from the statement it is being "
@@ -329,31 +318,24 @@ def create_electricity_expense(
                                   details={"field": "bill_period_end"})
 
         try:
-            conn.execute(
-                """INSERT INTO expense_instance
-                   (expense_id, expense_definition_id, statement_id, description,
-                    amount_paise, expense_date, expense_period, payer_resident_id,
-                    provider_name, is_settled, created_at, service_period,
-                    settlement_period, period_rule, due_date, allocation_method,
-                    expense_kind, apartment_id, reference, notes,
-                    generated_from_recurrence, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,'measured','electricity',?,?,?,0,?)""",
-                (str(expense_id).strip(), expense_definition_id, statement_id,
-                 str(description).strip(), total_amount_paise, expense_date,
-                 expense_period or resolved.settlement_period, payer_resident_id,
-                 provider_name, timestamp, resolved.service_period,
-                 resolved.settlement_period, resolved.rule, resolved_due, apartment_id,
-                 optional_text(bill_number, "bill_number", max_length=120),
-                 optional_text(notes, "notes"), timestamp))
+            uow.electricity.insert_expense(
+                expense_id=str(expense_id).strip(),
+                expense_definition_id=expense_definition_id, statement_id=statement_id,
+                description=str(description).strip(), amount_paise=total_amount_paise,
+                expense_date=expense_date,
+                expense_period=expense_period or resolved.settlement_period,
+                payer_resident_id=payer_resident_id, provider_name=provider_name,
+                created_at=timestamp, service_period=resolved.service_period,
+                settlement_period=resolved.settlement_period, period_rule=resolved.rule,
+                due_date=resolved_due, apartment_id=apartment_id,
+                reference=optional_text(bill_number, "bill_number", max_length=120),
+                notes=optional_text(notes, "notes"), updated_at=timestamp)
             for component in result.components:
                 db_component_id = new_id("ec")
-                conn.execute(
-                    """INSERT INTO expense_component
-                       (component_id, expense_id, name, amount_paise, allocation_method,
-                        host_resident_id)
-                       VALUES (?,?,?,?,?,NULL)""",
-                    (db_component_id, str(expense_id).strip(), component.name,
-                     component.amount_paise, _schema_method(component.allocation_method)))
+                uow.electricity.insert_component(
+                    component_id=db_component_id, expense_id=str(expense_id).strip(),
+                    name=component.name, amount_paise=component.amount_paise,
+                    allocation_method=_schema_method(component.allocation_method))
                 for allocation in component.allocations:
                     # A zero share of a non-zero component is a real measured
                     # result, so electricity allocations are written in full --
@@ -365,38 +347,30 @@ def create_electricity_expense(
                         "usage_kwh_by_resident": result.breakdown["usage_kwh_by_resident"],
                         "payer_resident_id": payer_resident_id,
                     }
-                    conn.execute(
-                        """INSERT INTO allocation
-                           (allocation_id, expense_id, component_id, resident_id,
-                            amount_paise, allocation_basis_json)
-                           VALUES (?,?,?,?,?,?)""",
-                        (new_id("alloc"), str(expense_id).strip(), db_component_id,
-                         allocation.resident_id, allocation.amount_paise,
-                         json.dumps(basis, sort_keys=True)))
+                    uow.electricity.insert_allocation(
+                        allocation_id=new_id("alloc"), expense_id=str(expense_id).strip(),
+                        component_id=db_component_id, resident_id=allocation.resident_id,
+                        amount_paise=allocation.amount_paise,
+                        allocation_basis_json=json.dumps(basis, sort_keys=True))
             for reading in normalized:
-                conn.execute(
-                    """INSERT INTO smart_plug_reading
-                       (reading_id, resident_id, expense_id, device_label, period_start,
-                        period_end, energy_wh, source_note)
-                       VALUES (?,?,?,?,?,?,?,?)""",
-                    (reading["reading_id"], reading["resident_id"], str(expense_id).strip(),
-                     reading["device_label"], reading["period_start"], reading["period_end"],
-                     reading["energy_wh"], reading["source_note"]))
-            conn.execute(
-                """INSERT INTO electricity_bill
-                   (electricity_bill_id, expense_id, bill_period_start, bill_period_end,
-                    settlement_period, bill_number, provider_name, total_amount_paise,
-                    calculation_json, notes, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (new_id("ebill"), str(expense_id).strip(), period_start, period_end,
-                 resolved.settlement_period,
-                 optional_text(bill_number, "bill_number", max_length=120), provider_name,
-                 total_amount_paise, json.dumps(result.to_dict(), sort_keys=True),
-                 optional_text(notes, "notes"), timestamp))
-        except sqlite3.Error as exc:
+                uow.electricity.insert_reading(
+                    reading_id=reading["reading_id"], resident_id=reading["resident_id"],
+                    expense_id=str(expense_id).strip(),
+                    device_label=reading["device_label"],
+                    period_start=reading["period_start"], period_end=reading["period_end"],
+                    energy_wh=reading["energy_wh"], source_note=reading["source_note"])
+            uow.electricity.insert_bill(
+                electricity_bill_id=new_id("ebill"), expense_id=str(expense_id).strip(),
+                bill_period_start=period_start, bill_period_end=period_end,
+                settlement_period=resolved.settlement_period,
+                bill_number=optional_text(bill_number, "bill_number", max_length=120),
+                provider_name=provider_name, total_amount_paise=total_amount_paise,
+                calculation_json=json.dumps(result.to_dict(), sort_keys=True),
+                notes=optional_text(notes, "notes"), created_at=timestamp)
+        except PersistenceError as exc:
             raise ValidationError(f"Could not persist electricity expense: {exc}") from exc
 
-        audit.record(conn, entity_type="expense", entity_id=str(expense_id).strip(),
+        audit.record(uow, entity_type="expense", entity_id=str(expense_id).strip(),
                      action="create", actor=actor, apartment_id=apartment_id,
                      new_value={"expense_kind": "electricity",
                                 "total_amount_paise": total_amount_paise,
@@ -409,7 +383,7 @@ def create_electricity_expense(
     return result
 
 
-def recalculate_electricity_expense(db_path, expense_id: str, *, reason: str,
+def recalculate_electricity_expense(db: Database, expense_id: str, *, reason: str,
                                     actor: str = "operator", **changes: Any) -> dict[str, Any]:
     """Replace a saved electricity calculation, auditably.
 
@@ -424,17 +398,14 @@ def recalculate_electricity_expense(db_path, expense_id: str, *, reason: str,
                               "calculation.", details={"field": "reason"})
     from . import statements  # local import avoids a cycle with snapshots
 
-    with connect(db_path, read_only=True) as conn:
-        expense = get_expense(conn, expense_id)
+    with db.read() as uow:
+        expense = get_expense(uow, expense_id)
         if expense["expense_kind"] != "electricity":
             raise ValidationError("That expense is not an electricity bill.",
                                   details={"expense_id": expense_id})
-        bill = db.fetch_one(conn, "SELECT * FROM electricity_bill WHERE expense_id=?",
-                            (expense_id,))
-        readings = db.fetch_all(
-            conn, "SELECT * FROM smart_plug_reading WHERE expense_id=? ORDER BY rowid",
-            (expense_id,))
-        mode = assert_not_locked(conn, expense["statement_id"], "electricity bill")
+        bill = uow.electricity.bill_for_expense(expense_id)
+        readings = uow.electricity.readings_for_expense(expense_id)
+        mode = assert_not_locked(uow, expense["statement_id"], "electricity bill")
     if mode == "revision" and not reason:
         raise ValidationError("A reason is required during the correction window.",
                               details={"field": "reason"})
@@ -478,24 +449,17 @@ def recalculate_electricity_expense(db_path, expense_id: str, *, reason: str,
              "allocation_method": c["allocation_method"]}
             for c in stored["components"]]
 
-    with transaction(db_path) as conn:
-        settled = int(db.scalar(
-            conn,
-            """SELECT COALESCE(SUM(pa.amount_paise), 0) FROM payment_application pa
-                 JOIN allocation a ON a.allocation_id = pa.allocation_id
-                WHERE a.expense_id = ?""", (expense_id,), default=0))
+    with db.transaction() as uow:
+        settled = uow.electricity.applied_paise_for_expense(expense_id)
         if settled:
             raise ConflictError(
                 "Payments have already been applied to this bill's charges. Reverse them "
                 "first, or record a ledger adjustment instead.",
                 code="allocations_have_payments",
                 details={"expense_id": expense_id, "applied_paise": settled})
-        linked_payment_ids = [row["payment_id"] for row in db.fetch_all(
-            conn, "SELECT payment_id FROM payment WHERE expense_id=? ORDER BY rowid",
-            (expense_id,))]
-        previous = db.fetch_one(conn, "SELECT * FROM electricity_bill WHERE expense_id=?",
-                                (expense_id,))
-        audit.record(conn, entity_type="expense", entity_id=expense_id,
+        linked_payment_ids = uow.electricity.linked_payment_ids(expense_id)
+        previous = uow.electricity.bill_for_expense(expense_id)
+        audit.record(uow, entity_type="expense", entity_id=expense_id,
                      action="supersede_electricity_calculation", actor=actor,
                      apartment_id=expense["apartment_id"], reason=reason,
                      old_value={"amount_paise": expense["amount_paise"],
@@ -504,51 +468,38 @@ def recalculate_electricity_expense(db_path, expense_id: str, *, reason: str,
         if linked_payment_ids:
             # Detach the funding links so the expense row can be replaced, then
             # restore exactly those links once the new row exists.
-            conn.execute("UPDATE payment SET expense_id=NULL WHERE expense_id=?", (expense_id,))
-        conn.execute("DELETE FROM allocation WHERE expense_id=?", (expense_id,))
-        conn.execute("DELETE FROM smart_plug_reading WHERE expense_id=?", (expense_id,))
-        conn.execute("DELETE FROM electricity_bill WHERE expense_id=?", (expense_id,))
-        conn.execute("DELETE FROM expense_component WHERE expense_id=?", (expense_id,))
-        conn.execute("DELETE FROM expense_instance WHERE expense_id=?", (expense_id,))
+            uow.electricity.detach_payments(expense_id)
+        uow.electricity.delete_allocations(expense_id)
+        uow.electricity.delete_readings(expense_id)
+        uow.electricity.delete_bill(expense_id)
+        uow.electricity.delete_components(expense_id)
+        uow.electricity.delete_expense(expense_id)
 
-    create_electricity_expense(db_path, **payload)
+    create_electricity_expense(db, **payload)
     if linked_payment_ids:
-        with transaction(db_path) as conn:
+        with db.transaction() as uow:
             for payment_id in linked_payment_ids:
-                conn.execute("UPDATE payment SET expense_id=? WHERE payment_id=?",
-                             (expense_id, payment_id))
+                uow.electricity.attach_payment(payment_id, expense_id)
     if mode == "revision":
-        with transaction(db_path) as conn:
+        with db.transaction() as uow:
             statements.record_revision(
-                conn, statement_id=expense["statement_id"], reason=reason, created_by=actor,
+                uow, statement_id=expense["statement_id"], reason=reason, created_by=actor,
                 change_note=f"electricity bill {expense_id} recalculated")
-        statements.refresh_snapshot(db_path, expense["statement_id"], actor=actor,
+        statements.refresh_snapshot(db, expense["statement_id"], actor=actor,
                                     reason=reason)
-    return get_electricity_expense(db_path, expense_id)
+    return get_electricity_expense(db, expense_id)
 
 
-def get_electricity_expense(db_path, expense_id: str) -> dict[str, Any] | None:
+def get_electricity_expense(db: Database, expense_id: str) -> dict[str, Any] | None:
     """Read a saved electricity expense with components, readings, and allocations."""
-    with connect(db_path, read_only=True) as conn:
-        expense = db.fetch_one(conn, "SELECT * FROM expense_instance WHERE expense_id = ?",
-                               (expense_id,))
+    with db.read() as uow:
+        expense = uow.expenses.get(expense_id)
         if expense is None:
             return None
-        components = db.fetch_all(
-            conn, "SELECT * FROM expense_component WHERE expense_id = ? ORDER BY rowid",
-            (expense_id,))
-        readings = db.fetch_all(
-            conn, "SELECT * FROM smart_plug_reading WHERE expense_id = ? ORDER BY rowid",
-            (expense_id,))
-        allocations = db.fetch_all(
-            conn,
-            """SELECT a.*, c.name AS component_name, r.display_name
-                 FROM allocation a
-                 LEFT JOIN expense_component c ON c.component_id = a.component_id
-                 LEFT JOIN resident r ON r.resident_id = a.resident_id
-                WHERE a.expense_id = ? ORDER BY c.rowid, a.resident_id""", (expense_id,))
-        bill = db.fetch_one(conn, "SELECT * FROM electricity_bill WHERE expense_id=?",
-                            (expense_id,))
+        components = uow.electricity.components_for_expense(expense_id)
+        readings = uow.electricity.readings_for_expense(expense_id)
+        allocations = uow.electricity.allocations_for_expense(expense_id)
+        bill = uow.electricity.bill_for_expense(expense_id)
     for reading in readings:
         reading["kwh"] = wh_to_kwh_string(reading["energy_wh"])
     resident_totals: dict[str, int] = {}
@@ -571,54 +522,23 @@ def get_electricity_expense(db_path, expense_id: str) -> dict[str, Any] | None:
     return result
 
 
-def list_electricity_bills(db_path, apartment_id: str, *, limit: int = 50,
+def list_electricity_bills(db: Database, apartment_id: str, *, limit: int = 50,
                            offset: int = 0) -> dict[str, Any]:
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        total = int(db.scalar(
-            conn, "SELECT COUNT(*) FROM expense_instance WHERE apartment_id=? "
-                  "AND expense_kind='electricity'", (apartment_id,), default=0))
-        rows = db.fetch_all(
-            conn,
-            """SELECT e.expense_id, e.description, e.amount_paise, e.expense_date,
-                      e.service_period, e.settlement_period, e.payer_resident_id,
-                      e.statement_id, e.provider_name,
-                      r.display_name AS payer_display_name,
-                      s.status AS statement_status, s.settlement_month,
-                      b.bill_period_start, b.bill_period_end, b.bill_number,
-                      (SELECT COALESCE(SUM(sp.energy_wh), 0) FROM smart_plug_reading sp
-                        WHERE sp.expense_id = e.expense_id) AS total_energy_wh,
-                      (SELECT COUNT(*) FROM expense_component c
-                        WHERE c.expense_id = e.expense_id) AS component_count
-                 FROM expense_instance e
-                 LEFT JOIN electricity_bill b ON b.expense_id = e.expense_id
-                 LEFT JOIN resident r ON r.resident_id = e.payer_resident_id
-                 LEFT JOIN monthly_statement s ON s.statement_id = e.statement_id
-                WHERE e.apartment_id = ? AND e.expense_kind = 'electricity'
-                ORDER BY e.expense_date DESC, e.rowid DESC LIMIT ? OFFSET ?""",
-            (apartment_id, int(limit), int(offset)))
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        total = uow.electricity.count_bills(apartment_id)
+        rows = uow.electricity.list_bills(apartment_id, limit=int(limit),
+                                          offset=int(offset))
     for row in rows:
         row["total_kwh"] = wh_to_kwh_string(row["total_energy_wh"])
     return {"items": rows, "total": total, "limit": int(limit), "offset": int(offset)}
 
 
-def consumption_history(db_path, apartment_id: str) -> list[dict[str, Any]]:
+def consumption_history(db: Database, apartment_id: str) -> list[dict[str, Any]]:
     """Per-resident kWh and paise, by service period: the consumption report."""
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        rows = db.fetch_all(
-            conn,
-            """SELECT e.service_period, sp.resident_id, r.display_name,
-                      SUM(sp.energy_wh) AS energy_wh,
-                      (SELECT COALESCE(SUM(a.amount_paise), 0) FROM allocation a
-                        WHERE a.expense_id = e.expense_id
-                          AND a.resident_id = sp.resident_id) AS amount_paise
-                 FROM smart_plug_reading sp
-                 JOIN expense_instance e ON e.expense_id = sp.expense_id
-                 JOIN resident r ON r.resident_id = sp.resident_id
-                WHERE e.apartment_id = ? AND e.expense_kind = 'electricity'
-                GROUP BY e.service_period, sp.resident_id
-                ORDER BY e.service_period DESC, r.display_name""", (apartment_id,))
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        rows = uow.electricity.consumption_by_period(apartment_id)
     for row in rows:
         row["kwh"] = wh_to_kwh_string(row["energy_wh"])
     return rows

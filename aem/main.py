@@ -1,9 +1,18 @@
 """FastAPI application: startup, shutdown, error handling, and static serving.
 
 Startup
-    Resolves settings, runs any pending migrations (so the database is always at
-    the schema the code expects, and existing data is preserved), and closes any
-    statement whose correction window elapsed while the app was not running.
+    Resolves settings, connects to the configured PostgreSQL database, checks
+    that its schema is the one this code expects, and closes any statement
+    whose correction window elapsed while the app was not running.
+
+    The app does not migrate. Changing the schema takes the role that owns it,
+    and the serving process connects as a different role that owns nothing:
+    migrations are a separate step (``scripts/manage.py init``), which the
+    launch scripts run before starting the app.
+
+    The app only connects. It never starts or stops a database server: the
+    development launcher manages the local cluster, and a deployment points
+    this app at an endpoint that is managed elsewhere.
 
 While running
     A background task closes statements whose correction window has elapsed,
@@ -11,10 +20,9 @@ While running
     restarts the app or presses the button.
 
 Shutdown
-    There is no connection pool to drain: every unit of work opens and closes its
-    own SQLite connection inside a context manager, so a shutdown can never leave
-    a transaction open. The shutdown path performs a WAL checkpoint so the
-    database file on disk is complete and safe to copy for a backup.
+    Every unit of work is a context manager that commits or rolls back before
+    it returns, so a shutdown can never leave a transaction open. The shutdown
+    path closes the connection pool; the database server keeps running.
 
 Errors
     Every expected error is an :class:`aem.errors.AemError` and is rendered as
@@ -26,9 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -40,9 +46,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
 from .config import Settings, get_settings
-from .db import connect
 from .errors import AemError
-from .migrations import current_version, migrate
+from .persistence import Database, PersistenceError
 from .services import statements
 
 logger = logging.getLogger("aem")
@@ -67,20 +72,10 @@ operator's own machine, bound to localhost. Do not expose it to a network.
 """
 
 
-def _checkpoint(db_path: Path) -> None:
-    """Flush the WAL into the main database file so a file copy is a valid backup."""
-    try:
-        if db_path.exists():
-            with connect(db_path) as conn:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    except sqlite3.DatabaseError as exc:  # pragma: no cover - logged, not fatal
-        logger.warning("Could not checkpoint the database on shutdown: %s", exc)
-
-
-async def _close_expired_periodically(db_path: Path, interval_seconds: float) -> None:
+async def _close_expired_periodically(db: Database, interval_seconds: float) -> None:
     """Close statements past their correction window, for as long as the app runs.
 
-    The work is one short SQLite transaction, run off the event loop. A failed
+    The work is one short transaction, run off the event loop. A failed
     pass is logged and the loop carries on: a statement that could not be closed
     this hour is simply picked up by the next pass.
     """
@@ -88,11 +83,11 @@ async def _close_expired_periodically(db_path: Path, interval_seconds: float) ->
         await asyncio.sleep(interval_seconds)
         try:
             closed = await asyncio.to_thread(
-                statements.close_expired_statements, db_path, actor="scheduler")
+                statements.close_expired_statements, db, actor="scheduler")
             if closed:
                 logger.info("Closed %d statement(s) past their correction window: %s",
                             len(closed), closed)
-        except (AemError, sqlite3.Error) as exc:
+        except (AemError, PersistenceError) as exc:
             logger.warning("Could not close expired statements: %s", exc)
 
 
@@ -103,23 +98,43 @@ async def lifespan(app: FastAPI):
         level=getattr(logging, settings.log_level, logging.INFO),
         format="%(asctime)s %(levelname)-7s %(name)s %(message)s")
     logger.info("Apartment Expense Manager %s starting", __version__)
-    logger.info("Database: %s", settings.database_path)
+    database: Database = app.state.database
+    logger.info("Database: %s", database.describe())
 
-    if settings.auto_migrate:
-        for line in migrate(settings.database_path):
-            logger.info("migration: %s", line)
-    app.state.schema_version = current_version(settings.database_path)
-    logger.info("Schema version: %s", app.state.schema_version)
+    connection = database.status()
+    app.state.schema_version = connection["schema_version"]
+    schema_current = (connection["reachable"]
+                      and connection["schema_version"] == connection["latest_schema_version"])
+    if not connection["reachable"]:
+        logger.error("The database could not be reached: %s", connection["error"])
+    elif not schema_current:
+        logger.error(
+            "The database schema is at version %s; this code needs %s. The app does not "
+            "migrate. Run 'python scripts/manage.py init' as the migration role, then "
+            "restart.", connection["schema_version"], connection["latest_schema_version"])
+    else:
+        logger.info("Schema version: %s", app.state.schema_version)
 
-    if settings.auto_close_expired_statements:
+    if settings.auto_close_expired_statements and schema_current:
         try:
-            closed = statements.close_expired_statements(settings.database_path,
-                                                          actor="startup")
+            closed = statements.close_expired_statements(database, actor="startup")
             if closed:
                 logger.info("Closed %d statement(s) whose correction window elapsed "
                             "while the app was not running: %s", len(closed), closed)
         except AemError as exc:  # pragma: no cover - logged, not fatal
             logger.warning("Could not close expired statements at startup: %s", exc)
+
+    if connection.get("role_is_privileged"):
+        logger.warning(
+            "The application is connected to PostgreSQL as %s, which is a superuser (or "
+            "has REPLICATION or BYPASSRLS). Such a role can switch off the schema's "
+            "integrity triggers. Serve as an ordinary role that owns nothing.",
+            connection.get("role"))
+    if connection.get("role_owns_tables") or connection.get("role_can_change_schema"):
+        logger.warning(
+            "The application is connected to PostgreSQL as %s, which owns tables or can "
+            "change the schema. Serve as the runtime role and keep the owning role for "
+            "'manage.py init', 'import-sqlite' and 'restore'.", connection.get("role"))
 
     if not settings.describe()["binds_loopback_only"]:
         logger.warning(
@@ -128,9 +143,10 @@ async def lifespan(app: FastAPI):
             "read and change the household's accounts.", settings.host)
 
     closer: asyncio.Task[None] | None = None
-    if settings.auto_close_expired_statements and settings.auto_close_interval_minutes > 0:
+    if (settings.auto_close_expired_statements and schema_current
+            and settings.auto_close_interval_minutes > 0):
         closer = asyncio.create_task(_close_expired_periodically(
-            settings.database_path, settings.auto_close_interval_minutes * 60))
+            database, settings.auto_close_interval_minutes * 60))
 
     try:
         yield
@@ -141,8 +157,8 @@ async def lifespan(app: FastAPI):
                 await closer
             except asyncio.CancelledError:
                 pass
-        logger.info("Shutting down; checkpointing the database")
-        _checkpoint(settings.database_path)
+        logger.info("Shutting down; closing database connections")
+        database.close()
 
 
 def _error_response(status_code: int, code: str, message: str,
@@ -152,8 +168,17 @@ def _error_response(status_code: int, code: str, message: str,
         content={"error": {"code": code, "message": message, "details": details or {}}})
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None,
+               database: Database | None = None) -> FastAPI:
+    """Build the application.
+
+    ``database`` is where the data lives; when omitted it is the PostgreSQL
+    database named by the settings. Nothing connects until the app starts.
+    """
     resolved = settings or get_settings()
+    if database is None:
+        from .persistence.postgres import PostgresDatabase
+        database = PostgresDatabase(resolved.database, log_sql=resolved.log_sql)
     app = FastAPI(
         title="Apartment Expense Manager",
         version=__version__,
@@ -181,6 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ],
     )
     app.state.settings = resolved
+    app.state.database = database
     app.state.schema_version = 0
 
     app.add_middleware(
@@ -216,22 +242,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse(status_code=exc.status_code, content=detail)
         return _error_response(exc.status_code, f"http_{exc.status_code}", str(detail))
 
-    @app.exception_handler(sqlite3.Error)
-    async def handle_sqlite_error(request: Request, exc: sqlite3.Error) -> JSONResponse:
-        message = str(exc)
-        logger.error("Database error on %s %s: %s", request.method, request.url.path, message)
-        for marker, code, status in (
-            ("closed_statement", "closed_statement", 409),
-            ("locked_statement", "locked_statement", 409),
-            ("append_only", "append_only_record", 409),
-            ("overapplied_payment", "payment_overapplied", 409),
-            ("overapplied_charge", "charge_overapplied", 409),
-        ):
-            if marker in message:
-                return _error_response(status, code, message.split(": ", 1)[-1])
-        return _error_response(500, "database_error",
-                               "The database refused the change and nothing was saved.",
-                               {"detail": message})
+    @app.exception_handler(PersistenceError)
+    async def handle_persistence_error(request: Request,
+                                       exc: PersistenceError) -> JSONResponse:
+        """The database refused something the services did not anticipate.
+
+        A schema guard (closed statement, append-only table, over-application)
+        arrives with its own code and a 409; anything else is a 500 whose
+        detail is the database's own message.
+        """
+        logger.error("Database error on %s %s: %s %s", request.method, request.url.path,
+                     exc.message, exc.details.get("detail", ""))
+        return _error_response(exc.http_status, exc.code, exc.message, exc.details)
 
     from .api.routers import ALL_ROUTERS
 

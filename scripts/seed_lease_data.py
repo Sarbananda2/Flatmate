@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Seed a master lease in its second term, with October 2026 rent part-collected.
 
-    python scripts/seed_lease_data.py                           seed the default database
-    python scripts/seed_lease_data.py --db other.sqlite         seed another one
+    python scripts/seed_lease_data.py                           seed the configured database
     python scripts/seed_lease_data.py --scenario final-month    the term's last month
     python scripts/seed_lease_data.py --replace-existing-rent   see below
 
@@ -32,10 +31,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aem.config import get_settings  # noqa: E402
-from aem.db import connect  # noqa: E402
 from aem.errors import AemError  # noqa: E402
-from aem.migrations import migrate  # noqa: E402
 from aem.money import format_inr  # noqa: E402
+from aem.persistence import Database  # noqa: E402
+from aem.persistence.postgres import PostgresDatabase  # noqa: E402
 from aem.services import expenses, rent  # noqa: E402
 
 MONTH = "2026-10"
@@ -83,32 +82,30 @@ SCENARIOS = {
 PAYMENTS = (("alice", "2026-10-02"), ("bob", "2026-10-03"))
 
 
-def _existing_rent_expense(path: Path, apartment_id: str) -> dict | None:
+def _existing_rent_expense(db: Database, apartment_id: str) -> dict | None:
     """The month's rent expense under the household's Rent definition, if any."""
-    with connect(path, read_only=True) as conn:
-        definition_id = rent._find_rent_definition(conn, apartment_id)
-        row = conn.execute(
-            """SELECT expense_id, amount_paise FROM expense_instance
-                WHERE apartment_id=? AND expense_definition_id=? AND settlement_period=?""",
-            (apartment_id, definition_id, MONTH)).fetchone()
-    return dict(row) if row else None
+    with db.read() as uow:
+        definition_id = rent._find_rent_definition(uow, apartment_id)
+        rows = (uow.rent.expenses_for_definition_month(apartment_id, definition_id, MONTH)
+                if definition_id else [])
+    return rows[0] if rows else None
 
 
-def seed(path: Path, apartment_id: str, *, scenario: str = "mid-term",
+def seed(db: Database, apartment_id: str, *, scenario: str = "mid-term",
          replace_existing_rent: bool) -> int:
     previous, current = SCENARIOS[scenario]["previous"], SCENARIOS[scenario]["current"]
-    migrate(path)
-    if rent.get_lease_config(path, apartment_id) is not None:
+    db.require_current_schema()
+    if rent.get_lease_config(db, apartment_id) is not None:
         print(f"Apartment {apartment_id!r} already has a lease; leaving it as it is.")
         return 1
-    if rent.list_lease_terms(path, apartment_id):
+    if rent.list_lease_terms(db, apartment_id):
         print(f"Apartment {apartment_id!r} already has lease history; leaving it as it is.")
         return 1
 
     # Checked before anything is written, so a refusal leaves the database alone.
     # An expense already there for another amount would be adopted as it is
     # rather than charged at the lease rent.
-    existing = _existing_rent_expense(path, apartment_id)
+    existing = _existing_rent_expense(db, apartment_id)
     replace = bool(existing
                    and existing["amount_paise"] != current["new_monthly_rent_paise"])
     if replace and not replace_existing_rent:
@@ -119,15 +116,14 @@ def seed(path: Path, apartment_id: str, *, scenario: str = "mid-term",
         return 1
 
     # 1. The lease as it stood in its first term, then the renewal that archived it.
-    rent.save_lease_config(path, apartment_id, {**LANDLORD, **previous}, actor="seed")
-    config = rent.renew_lease_contract(path, apartment_id, current, actor="seed")
-    with connect(path) as conn:
-        conn.execute(
-            "UPDATE rent_lease_term SET archived_at=?, created_at=? WHERE apartment_id=?",
-            (current["new_start_date"] + "T09:00:00+05:30",
-             previous["lease_start_date"] + "T09:00:00+05:30",
-             apartment_id))
-    term = rent.list_lease_terms(path, apartment_id)[0]
+    rent.save_lease_config(db, apartment_id, {**LANDLORD, **previous}, actor="seed")
+    config = rent.renew_lease_contract(db, apartment_id, current, actor="seed")
+    with db.transaction() as uow:
+        uow.rent.backdate_lease_terms(
+            apartment_id,
+            archived_at=current["new_start_date"] + "T09:00:00+05:30",
+            created_at=previous["lease_start_date"] + "T09:00:00+05:30")
+    term = rent.list_lease_terms(db, apartment_id)[0]
     print(f"Lease: {config['landlord_name']}, {format_inr(config['monthly_rent_paise'])} a month, "
           f"term {config['term_number']} from {config['lease_start_date']} "
           f"to {config['lease_end_date']}")
@@ -137,13 +133,13 @@ def seed(path: Path, apartment_id: str, *, scenario: str = "mid-term",
 
     # 2. October's rent.
     if replace:
-        expenses.delete_expense(path, existing["expense_id"], apartment_id=apartment_id,
+        expenses.delete_expense(db, existing["expense_id"], apartment_id=apartment_id,
                                 reason="Replaced by rent generated under the master lease.",
                                 actor="seed")
         print(f"Removed the existing {MONTH} rent expense of "
               f"{format_inr(existing['amount_paise'])} ({existing['expense_id']})")
 
-    cycle = rent.generate_monthly_rent_cycle(path, apartment_id, MONTH, actor="seed")
+    cycle = rent.generate_monthly_rent_cycle(db, apartment_id, MONTH, actor="seed")
     print(f"Rent for {MONTH}: {format_inr(cycle['total_rent_paise'])} between "
           f"{cycle['participant_count']} residents")
 
@@ -151,7 +147,7 @@ def seed(path: Path, apartment_id: str, *, scenario: str = "mid-term",
     shares = {row["resident_id"]: row["share_paise"] for row in cycle["participants"]}
     for resident_id, paid_on in PAYMENTS:
         cycle = rent.record_rent_payment(
-            path, apartment_id=apartment_id, settlement_month=MONTH, resident_id=resident_id,
+            db, apartment_id=apartment_id, settlement_month=MONTH, resident_id=resident_id,
             amount_paise=shares[resident_id], payment_date=paid_on, payment_mode="upi",
             note=f"Rent for {rent.month_label(MONTH)}", actor="seed")
     for row in cycle["participants"]:
@@ -164,21 +160,22 @@ def seed(path: Path, apartment_id: str, *, scenario: str = "mid-term",
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--db", help="database path (default: the configured one)")
     parser.add_argument("--apartment", default="home", help="apartment ID (default: home)")
     parser.add_argument("--scenario", choices=sorted(SCENARIOS), default="mid-term",
                         help="where the lease stands in October 2026 (default: mid-term)")
     parser.add_argument("--replace-existing-rent", action="store_true",
                         help=f"delete a {MONTH} rent expense for a different amount first")
     args = parser.parse_args()
-    path = Path(args.db or get_settings().database_path)
-    print(f"Database: {path}")
+    db = PostgresDatabase(get_settings().database)
+    print(f"Database: {db.describe()}")
     try:
-        return seed(path, args.apartment, scenario=args.scenario,
+        return seed(db, args.apartment, scenario=args.scenario,
                     replace_existing_rent=args.replace_existing_rent)
     except AemError as exc:
         print(f"Stopped: {exc}")
         return 1
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":

@@ -20,10 +20,10 @@ from datetime import date, timedelta
 from typing import Any, Awaitable, Callable
 
 from ..config import Settings, TapoPlug
-from ..db import connect
 from ..errors import AemError, ValidationError
 from ..money import wh_to_kwh_string
 from ..periods import parse_iso_date
+from ..persistence import Database
 from .common import get_apartment, list_residents
 
 MAX_PERIOD_DAYS = 100
@@ -87,7 +87,7 @@ async def _gather(plugs: tuple[TapoPlug, ...], fetch: DailyEnergyFetcher, first:
         *(fetch(plug.ip_address, first, last) for plug in plugs), return_exceptions=True)
 
 
-def sync_readings(db_path, *, apartment_id: str, settings: Settings, period_start: str,
+def sync_readings(db: Database, *, apartment_id: str, settings: Settings, period_start: str,
                   period_end: str, fetch: DailyEnergyFetcher | None = None) -> dict[str, Any]:
     """Fetch each configured plug's energy for the period. Writes nothing."""
     first = parse_iso_date(period_start, "period_start")
@@ -113,10 +113,10 @@ def sync_readings(db_path, *, apartment_id: str, settings: Settings, period_star
                 "AEM_TAPO_PASSWORD, and AEM_TAPO_PLUGS.", code="tapo_not_configured")
         fetch = _tapo_fetcher(settings.tapo_username, settings.tapo_password)
 
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
         names = {row["resident_id"]: row["display_name"]
-                 for row in list_residents(conn, apartment_id)}
+                 for row in list_residents(uow, apartment_id)}
     unknown = sorted({plug.resident_id for plug in plugs} - set(names))
     if unknown:
         raise ValidationError(

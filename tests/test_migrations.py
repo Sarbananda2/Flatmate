@@ -4,25 +4,57 @@ The point of these tests is that an existing prototype database is *upgraded*,
 not replaced: every resident, expense, allocation, payment, and statement
 survives, the important totals are unchanged, and the new columns are
 backfilled to mean what they meant before.
+
+The upgrade has two legs now. The SQLite schema history (kept, import-only, in
+``aem.persistence.sqlite_import.legacy_migrations``) still takes a prototype
+file to the final SQLite schema, and the importer then copies it into
+PostgreSQL. Tests about the first leg use real SQLite files; tests about what
+survives, and about using the upgraded database, go through the importer.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
-from aem.db import connect
-from aem.migrations import MigrationError, current_version, discover, migrate, split_statements
+from aem.persistence import MigrationError
+from aem.persistence.postgres import migrate as postgres_migrations
+from aem.persistence.sqlite_import import legacy_migrations
+from aem.persistence.sqlite_import.importer import import_sqlite
+from aem.persistence.sqlite_import.legacy_migrations import (
+    current_version, discover, migrate, split_statements)
 from aem.services import expenses, payments, reconciliation, statements
 from tests.conftest import APARTMENT
+from tests.support import DatabaseRefusal, config_of, connect
 
-PROTOTYPE_SCHEMA = Path(__file__).resolve().parent.parent / "legacy" / "schema.sql"
+LEGACY_DIR = Path(__file__).resolve().parent.parent / "legacy"
+PROTOTYPE_SCHEMA = LEGACY_DIR / "schema.sql"
 
 COUNTED_TABLES = ("apartment", "resident", "expense_definition", "monthly_statement",
                   "expense_instance", "expense_component", "allocation",
                   "smart_plug_reading", "payment", "payment_application",
                   "ledger_adjustment", "statement_revision")
+
+
+@contextmanager
+def open_sqlite(path: Path) -> Iterator[sqlite3.Connection]:
+    """A SQLite file opened the way the legacy runner expects, and always closed."""
+    conn = sqlite3.connect(str(path), isolation_level=None)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        yield conn
+    finally:
+        conn.close()
+
+
+def count_rows(conn) -> dict[str, int]:
+    return {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in COUNTED_TABLES}
 
 
 def build_prototype_database(path: Path) -> dict[str, int]:
@@ -101,8 +133,7 @@ def build_prototype_database(path: Path) -> dict[str, int]:
            VALUES ('adj-old','stmt-aug','bob',5000,'Historical correction',
                    '2026-08-25T10:00:00+05:30','operator')""")
     conn.commit()
-    counts = {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-              for table in COUNTED_TABLES}
+    counts = count_rows(conn)
     conn.close()
     return counts
 
@@ -113,25 +144,45 @@ def prototype_db(tmp_path: Path) -> tuple[Path, dict[str, int]]:
     return path, build_prototype_database(path)
 
 
+@pytest.fixture()
+def imported(prototype_db, database_factory):
+    """The prototype database after the whole upgrade: imported into PostgreSQL."""
+    path, _ = prototype_db
+    target = database_factory(migrated=False)
+    report = import_sqlite(path, config_of(target))
+    assert report.committed and report.source_schema_version == 1
+    return target
+
+
 def test_an_existing_prototype_database_is_adopted_not_rebuilt(prototype_db):
     path, _ = prototype_db
-    assert current_version(path) == 1, "a prototype database is recognised as the baseline"
-    log = migrate(path)
-    assert any("adopted the existing prototype database" in line for line in log)
-    assert any("0002_" in line for line in log)
-    assert current_version(path) == max(m.version for m in discover())
+    with open_sqlite(path) as conn:
+        assert current_version(conn) == 1, "a prototype database is recognised as the baseline"
+        log = migrate(conn)
+        assert any("adopted the prototype database" in line for line in log)
+        assert any("0002_" in line for line in log)
+        assert current_version(conn) == max(m.version for m in discover())
+        assert current_version(conn) == legacy_migrations.FINAL_VERSION
 
 
-def test_every_record_survives_the_migration(prototype_db):
+def test_every_record_survives_the_migration(prototype_db, database_factory):
     path, before = prototype_db
-    migrate(path)
-    with connect(path, read_only=True) as conn:
-        after = {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                 for table in COUNTED_TABLES}
+    target = database_factory(migrated=False)
+    report = import_sqlite(path, config_of(target))
+    with connect(target, read_only=True) as conn:
+        after = count_rows(conn)
     assert after == before
+    copied = {result.table: (result.source_rows, result.target_rows)
+              for result in report.tables}
+    assert {table: copied[table] for table in COUNTED_TABLES} == {
+        table: (count, count) for table, count in before.items()}
+    # The SQLite file is left exactly as the prototype wrote it.
+    with open_sqlite(path) as conn:
+        assert current_version(conn) == 1
+        assert count_rows(conn) == before
 
 
-def test_the_important_totals_are_unchanged(prototype_db):
+def test_the_important_totals_are_unchanged(prototype_db, database_factory):
     path, _ = prototype_db
     def totals(connection):
         return {
@@ -149,10 +200,11 @@ def test_the_important_totals_are_unchanged(prototype_db):
                 "SELECT COALESCE(SUM(energy_wh),0) FROM smart_plug_reading").fetchone()[0],
         }
 
-    with sqlite3.connect(path) as conn:
+    with open_sqlite(path) as conn:
         before = totals(conn)
-    migrate(path)
-    with connect(path, read_only=True) as conn:
+    target = database_factory(migrated=False)
+    import_sqlite(path, config_of(target))
+    with connect(target, read_only=True) as conn:
         after = totals(conn)
     assert after == before
     assert before["expenses"] == 5_100_000
@@ -160,8 +212,8 @@ def test_the_important_totals_are_unchanged(prototype_db):
 
 def test_the_new_period_columns_are_backfilled_to_their_old_meaning(prototype_db):
     path, _ = prototype_db
-    migrate(path)
-    with connect(path, read_only=True) as conn:
+    with open_sqlite(path) as conn:
+        migrate(conn)
         rows = {row["expense_id"]: dict(row) for row in conn.execute(
             "SELECT * FROM expense_instance").fetchall()}
     rent = rows["rent-aug"]
@@ -181,8 +233,8 @@ def test_the_new_period_columns_are_backfilled_to_their_old_meaning(prototype_db
 
 def test_payments_are_linked_to_their_apartment_and_marked_active(prototype_db):
     path, _ = prototype_db
-    migrate(path)
-    with connect(path, read_only=True) as conn:
+    with open_sqlite(path) as conn:
+        migrate(conn)
         row = dict(conn.execute("SELECT * FROM payment WHERE payment_id='pay-chris'").fetchone())
     assert row["apartment_id"] == APARTMENT
     assert row["status"] == "active"
@@ -191,17 +243,15 @@ def test_payments_are_linked_to_their_apartment_and_marked_active(prototype_db):
 
 def test_an_adjustment_gets_an_effective_date_from_its_creation_time(prototype_db):
     path, _ = prototype_db
-    migrate(path)
-    with connect(path, read_only=True) as conn:
+    with open_sqlite(path) as conn:
+        migrate(conn)
         row = dict(conn.execute(
             "SELECT * FROM ledger_adjustment WHERE adjustment_id='adj-old'").fetchone())
     assert row["effective_date"] == "2026-08-25"
 
 
-def test_a_migrated_database_reconciles_immediately(prototype_db):
-    path, _ = prototype_db
-    migrate(path)
-    settlement = reconciliation.reconcile(path, apartment_id=APARTMENT)
+def test_a_migrated_database_reconciles_immediately(imported):
+    settlement = reconciliation.reconcile(imported, apartment_id=APARTMENT)
     assert settlement["net_positions_sum_paise"] == 0
     assert settlement["validation"]["error_count"] == 0
     assert settlement["totals"]["household_expenses_paise"] == 5_100_000
@@ -214,75 +264,94 @@ def test_a_migrated_database_reconciles_immediately(prototype_db):
     assert chris["pool_payments_paise"] == 1_000_000
 
 
-def test_the_migrated_database_keeps_working_for_new_records(prototype_db):
-    path, _ = prototype_db
-    migrate(path)
+def test_the_migrated_database_keeps_working_for_new_records(imported):
     expenses.create_expense(
-        path, apartment_id=APARTMENT, expense_id="new-after-migration",
+        imported, apartment_id=APARTMENT, expense_id="new-after-migration",
         description="Post-migration expense", amount_paise=90_000,
         expense_date="2026-09-02", period_rule="current_month", allocation_method="equal")
     payments.record_payment(
-        path, apartment_id=APARTMENT, payment_id="new-payment", payer_resident_id="bob",
+        imported, apartment_id=APARTMENT, payment_id="new-payment", payer_resident_id="bob",
         amount_paise=100_000, payment_date="2026-09-10")
-    settlement = reconciliation.reconcile(path, apartment_id=APARTMENT)
+    settlement = reconciliation.reconcile(imported, apartment_id=APARTMENT)
     assert settlement["net_positions_sum_paise"] == 0
     assert settlement["totals"]["household_expenses_paise"] == 5_190_000
 
 
-def test_the_old_draft_statement_can_still_be_finalized(prototype_db):
-    path, _ = prototype_db
-    migrate(path)
-    snapshot = statements.finalize_statement(path, statement_id="stmt-aug",
+def test_the_old_draft_statement_can_still_be_finalized(imported):
+    snapshot = statements.finalize_statement(imported, statement_id="stmt-aug",
                                               finalized_by="operator", require_clean=True)
     assert snapshot["status"] == "finalized_correction_window"
     assert snapshot["statement_total_paise"] == 5_100_000
-    stored = statements.read_finalized_snapshot(path, "stmt-aug")
+    stored = statements.read_finalized_snapshot(imported, "stmt-aug")
     assert stored["hash_matches"] is True
 
 
-def test_migrating_twice_is_a_no_op(prototype_db):
+def test_migrating_twice_is_a_no_op(prototype_db, database_factory):
     path, before = prototype_db
-    migrate(path)
-    log = migrate(path)
-    assert log == [f"database already at version {current_version(path)}"]
-    with connect(path, read_only=True) as conn:
-        after = {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                 for table in COUNTED_TABLES}
+    # The SQLite runner: a second run finds nothing to apply and changes nothing.
+    with open_sqlite(path) as conn:
+        migrate(conn)
+        assert migrate(conn) == []
+        assert current_version(conn) == legacy_migrations.FINAL_VERSION
+        assert count_rows(conn) == before
+    # The PostgreSQL runner, on the imported database, says so.
+    target = database_factory(migrated=False)
+    import_sqlite(path, config_of(target))
+    log = target.migrate()
+    assert log == [f"database already at version {target.schema_version()}"]
+    with connect(target, read_only=True) as conn:
+        after = count_rows(conn)
     assert after == before
 
 
-def test_initialize_database_is_the_same_as_migrating(tmp_path):
-    from aem.migrations import initialize_database
+def test_initialize_database_is_the_same_as_migrating(database_factory, monkeypatch):
+    monkeypatch.syspath_prepend(str(LEGACY_DIR))
+    from electricity_workflow import initialize_database
 
-    path = tmp_path / "fresh.sqlite"
-    initialize_database(path)
-    assert current_version(path) == max(m.version for m in discover())
-    initialize_database(path)  # repeat is safe
-    with connect(path, read_only=True) as conn:
+    db = database_factory(migrated=False)
+    initialize_database(db)
+    assert db.schema_version() == max(m.version for m in postgres_migrations.discover())
+    initialize_database(db)  # repeat is safe
+    with connect(db, read_only=True) as conn:
         assert conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='apartment'"
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_schema = current_schema() AND table_name = 'apartment'"
         ).fetchone()[0] == 1
 
 
-def test_a_migration_edited_after_being_applied_is_reported(tmp_path, monkeypatch):
+def test_a_migration_edited_after_being_applied_is_reported(database_factory):
     """Editing an applied migration is a mistake, and it is named rather than ignored."""
-    path = tmp_path / "checksum.sqlite"
-    migrate(path)
-    with connect(path) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("UPDATE schema_migration SET checksum='tampered' WHERE version=2")
-        conn.execute("COMMIT")
+    db = database_factory()
+    with connect(db, as_owner=True) as conn:
+        conn.execute("UPDATE schema_migration SET checksum='tampered' WHERE version=1")
     with pytest.raises(MigrationError, match="changed after it"):
-        migrate(path)
+        db.migrate()
+
+
+def _data_changing_text(sql: str) -> str:
+    """A PostgreSQL migration's text as the forward-only check should read it.
+
+    The baseline installs guards that *refuse* TRUNCATE on the append-only
+    tables (``CREATE TRIGGER trg_..._no_truncate BEFORE TRUNCATE ON ...``) and
+    says why in a comment. None of that truncates anything, so comments, that
+    trigger clause, and names that merely contain the word are left out; a
+    real ``TRUNCATE table`` statement would still be caught.
+    """
+    lines = [line.split("--", 1)[0] for line in sql.lower().splitlines()]
+    text = " ".join(" ".join(lines).split()).replace("before truncate on", "")
+    return re.sub(r"\w+truncate\w*|truncate\w+", "", text)
 
 
 def test_no_migration_drops_data(tmp_path):
     """A forward-only policy, checked mechanically against the migration text."""
     forbidden = ("drop table", "drop column", "truncate", "delete from")
-    for migration in discover():
-        lowered = migration.sql.lower()
+    texts = [(f"sqlite {m.name}", m.sql.lower()) for m in discover()]
+    texts += [(f"postgresql {m.name}", _data_changing_text(m.sql))
+              for m in postgres_migrations.discover()]
+    assert len(texts) > len(discover()) >= legacy_migrations.FINAL_VERSION
+    for name, lowered in texts:
         for phrase in forbidden:
-            assert phrase not in lowered, f"{migration.name} contains {phrase!r}"
+            assert phrase not in lowered, f"{name} contains {phrase!r}"
 
 
 def test_the_statement_splitter_handles_trigger_bodies():
@@ -301,14 +370,13 @@ def test_the_statement_splitter_handles_trigger_bodies():
     assert statements_found[1].rstrip().endswith("END;")
 
 
-def test_foreign_keys_are_enforced_on_every_connection(tmp_path):
-    path = tmp_path / "fk.sqlite"
-    migrate(path)
-    with connect(path) as conn:
-        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
-        conn.execute("BEGIN IMMEDIATE")
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO resident (resident_id, apartment_id, display_name) "
-                "VALUES ('ghost','no-such-apartment','Ghost')")
-        conn.execute("ROLLBACK")
+def test_foreign_keys_are_enforced_on_every_connection(database_factory):
+    db = database_factory()
+    # PostgreSQL has no per-connection switch to check: the behaviour is the fact.
+    for _ in range(2):
+        with connect(db) as conn:
+            with pytest.raises(DatabaseRefusal):
+                conn.execute(
+                    "INSERT INTO resident (resident_id, apartment_id, display_name) "
+                    "VALUES ('ghost','no-such-apartment','Ghost')")
+            assert conn.execute("SELECT COUNT(*) FROM resident").fetchone()[0] == 0

@@ -9,19 +9,20 @@ from typing import Any
 
 from . import electricity, rent
 from ..periods import normalize_month
+from ..persistence import Database
 
 
-def services_overview(db_path, apartment_id: str, settlement_month: str) -> dict[str, Any]:
+def services_overview(db: Database, apartment_id: str, settlement_month: str) -> dict[str, Any]:
     """The lease and the month's rent cycle, and the electricity bill settling
     in the month alongside the most recent bill on file."""
     settlement_month = normalize_month(settlement_month, "settlement_month")
-    bills = electricity.list_electricity_bills(db_path, apartment_id, limit=500)["items"]
+    bills = electricity.list_electricity_bills(db, apartment_id, limit=500)["items"]
     for_month = [bill for bill in bills if bill["settlement_period"] == settlement_month]
     return {
         "settlement_month": settlement_month,
         "rent": {
-            "config": rent.get_lease_config(db_path, apartment_id),
-            "cycle": rent.get_rent_cycle(db_path, apartment_id, settlement_month),
+            "config": rent.get_lease_config(db, apartment_id),
+            "cycle": rent.get_rent_cycle(db, apartment_id, settlement_month),
         },
         "electricity": {
             "bill": for_month[0] if for_month else None,

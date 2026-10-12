@@ -1,15 +1,50 @@
 # Data model
 
-Sixteen tables, twenty indexes, fifteen integrity triggers. Every money column
-is `INTEGER` paise; every timestamp is ISO-8601 with a timezone; every date is
-`YYYY-MM-DD` and every period is `YYYY-MM`, both compared as strings in SQL.
+The schema is PostgreSQL 18, defined in
+`aem/persistence/postgres/migrations/`. Every money column is integer paise;
+every timestamp is ISO-8601 with a timezone; every date is `YYYY-MM-DD` and
+every period is `YYYY-MM`, all stored as `TEXT` and compared as strings in SQL.
+
+**Reading the type columns below.** The tables in this document were written
+when the database was SQLite, and the schema was carried over to PostgreSQL
+column for column. Names, meanings, constraints, and guards are unchanged.
+Where a table lists a type, read it as follows:
+
+| Listed | In PostgreSQL |
+| --- | --- |
+| `TEXT` | `TEXT` — including every ID, date, timestamp, and JSON document |
+| `INTEGER` on a `*_paise` column, `energy_wh`, `size_bytes` | `BIGINT` |
+| `INTEGER` elsewhere (0/1 flags, counts, day numbers) | `INTEGER` |
+| `REAL` | `DOUBLE PRECISION` (only the two escalation percentages; never money) |
+| `BLOB` | `BYTEA` |
+
+Two things exist only in the PostgreSQL schema:
+
+- **`row_seq`**, a `BIGINT` identity column on every table, is the order rows
+  were inserted in. It replaces SQLite's implicit `rowid`, which the
+  application relied on to order charges, payments, and audit entries recorded
+  on the same date. It is bookkeeping: the persistence layer never returns it
+  as part of a record.
+- **Every foreign key is `DEFERRABLE`** (and checked immediately, as before, in
+  normal use), so that the one-off import from SQLite can load tables that
+  refer to one another.
+
+The integrity triggers are PL/pgSQL functions raising the same
+`marker: explanation` messages as before. The `typeof(...) = 'integer'` checks
+have no PostgreSQL equivalent — a `BIGINT` column would silently round a
+fractional value on the way in — so the rule is kept where values enter: the
+persistence adapter sends a Python `float` untyped, and PostgreSQL then refuses
+it for an integer column instead of rounding it. A client that bypasses the
+adapter (a hand-typed `psql` statement) does not get that protection. Four
+`BEFORE TRUNCATE` triggers were added to the append-only tables, since
+`TRUNCATE` does not fire row triggers and SQLite had no such statement.
 
 Written for: engineers reading or extending the schema.
 
 Generate the live schema at any time with:
 
 ```bash
-sqlite3 data/apartment.sqlite .schema
+pg_dump --schema-only --no-owner -h 127.0.0.1 -p 55432 -U aem aem
 ```
 
 ---
@@ -384,7 +419,7 @@ One row per completed term, written when the lease is renewed: `term_number`, `s
 State of a month's rent: links `settlement_month` to its `expense_instance`. Tracks `disbursement_status` (`pending` vs `disbursed`), funder (`disbursed_by` = `pool` vs `resident_advance`), and funding payment ID.
 
 ### `rent_landlord_receipt`
-Binary blob storage of landlord receipt files (PDF/JPEG/PNG/WebP) with SHA-256 integrity hash, kept in SQLite so backups remain 100% self-contained.
+Binary blob storage of landlord receipt files (PDF/JPEG/PNG/WebP) with SHA-256 integrity hash, kept in the database so backups remain 100% self-contained.
 
 ### `rent_receipt`
 Statutory Section 10(13A) IT Act compliant rent receipts issued to each participant upon landlord payout.

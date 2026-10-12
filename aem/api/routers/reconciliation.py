@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query
 
 from ...errors import AemError
 from ...services import reconciliation, validation
-from ..deps import ApartmentId, DbPath, csv_response, to_http
+from ..deps import ApartmentId, Db, csv_response, to_http
 
 router = APIRouter(prefix="/api/reconciliation", tags=["reconciliation"])
 
@@ -16,7 +16,7 @@ MONTH = r"^\d{4}-(0[1-9]|1[0-2])$"
 
 
 @router.get("", summary="Reconcile the full household ledger")
-def reconcile(db_path: DbPath, apartment_id: ApartmentId,
+def reconcile(db: Db, apartment_id: ApartmentId,
               as_of_date: Annotated[str | None, Query(pattern=DATE)] = None,
               require_clean: Annotated[bool, Query()] = False) -> dict[str, Any]:
     """One auditable calculation across every recorded transaction and month.
@@ -26,7 +26,7 @@ def reconcile(db_path: DbPath, apartment_id: ApartmentId,
     are advice only -- nothing in this call changes a record.
     """
     try:
-        return reconciliation.reconcile(db_path, apartment_id=apartment_id,
+        return reconciliation.reconcile(db, apartment_id=apartment_id,
                                         as_of_date=as_of_date,
                                         require_clean=require_clean)
     except AemError as exc:
@@ -34,7 +34,7 @@ def reconcile(db_path: DbPath, apartment_id: ApartmentId,
 
 
 @router.get("/entries", summary="The ledger entries behind the reconciliation")
-def entries(db_path: DbPath, apartment_id: ApartmentId,
+def entries(db: Db, apartment_id: ApartmentId,
             as_of_date: Annotated[str | None, Query(pattern=DATE)] = None,
             account_id: Annotated[str | None, Query()] = None,
             kind: Annotated[str | None, Query()] = None,
@@ -45,7 +45,7 @@ def entries(db_path: DbPath, apartment_id: ApartmentId,
     dashboard can be traced back to a row."""
     try:
         return reconciliation.ledger_entries(
-            db_path, apartment_id=apartment_id, as_of_date=as_of_date,
+            db, apartment_id=apartment_id, as_of_date=as_of_date,
             account_id=account_id, kind=kind, settlement_period=settlement_period,
             limit=limit, offset=offset)
     except AemError as exc:
@@ -53,20 +53,20 @@ def entries(db_path: DbPath, apartment_id: ApartmentId,
 
 
 @router.get("/validation", summary="Accounting validation issues")
-def validate(db_path: DbPath, apartment_id: ApartmentId) -> dict[str, Any]:
+def validate(db: Db, apartment_id: ApartmentId) -> dict[str, Any]:
     """Named, record-level exceptions. ``error`` blocks settlement figures;
     ``warning`` reconciles but needs operator review."""
     try:
-        return validation.validate(db_path, apartment_id)
+        return validation.validate(db, apartment_id)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.get("/entries/export/csv", summary="Export the ledger entries as CSV")
-def export_entries(db_path: DbPath, apartment_id: ApartmentId,
+def export_entries(db: Db, apartment_id: ApartmentId,
                    as_of_date: Annotated[str | None, Query(pattern=DATE)] = None):
     try:
-        rows = reconciliation.ledger_entries(db_path, apartment_id=apartment_id,
+        rows = reconciliation.ledger_entries(db, apartment_id=apartment_id,
                                              as_of_date=as_of_date, limit=2000)["items"]
     except AemError as exc:
         raise to_http(exc) from exc

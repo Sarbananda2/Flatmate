@@ -10,12 +10,36 @@ that only this machine can reach it:
 
 * the server binds ``127.0.0.1`` by default, never ``0.0.0.0``;
 * CORS allows only the local Vite dev origins;
-* the database is a file under the project directory, with normal file
-  permissions.
+* the database is PostgreSQL. Locally it is a project-scoped cluster that
+  listens on loopback only and requires a password; in AWS it is whatever
+  endpoint the settings below name.
 
 Do not expose this to the internet, and do not put it behind a reverse proxy
 without adding authentication first. Every setting below can be overridden with
 an ``AEM_``-prefixed environment variable.
+
+Database settings
+-----------------
+
+The application uses two PostgreSQL roles and keeps them apart:
+
+* the **runtime role** (``AEM_DB_USER`` / ``AEM_DB_PASSWORD``) serves requests.
+  It owns nothing and cannot change the schema;
+* the **migration role** (``AEM_DB_MIGRATION_USER`` /
+  ``AEM_DB_MIGRATION_PASSWORD``) owns the tables. Only ``manage.py init``,
+  ``import-sqlite``, ``restore``, and the test setup use it. A serving process
+  does not need its password, and should not be given it.
+
+``AEM_DATABASE_URL`` (a libpq URL) or the separate ``AEM_DB_HOST``,
+``AEM_DB_PORT``, ``AEM_DB_NAME``, ``AEM_DB_USER``, and ``AEM_DB_PASSWORD`` say
+where the database is. The defaults point at the local development cluster on
+``127.0.0.1:55432``. The application only ever *connects*: it does not start,
+stop, or provision a database server.
+
+Secrets are never committed. For local development they live in ``.env.local``
+at the project root (ignored by Git; see ``.env.example``), which is read here
+if it exists. A variable already set in the environment always wins, so a
+deployment configures itself through its environment and needs no file.
 
 The optional Tapo connector is the one place this application reaches out: it
 talks to smart plugs on the local network with the operator's TP-Link account
@@ -25,17 +49,50 @@ environment only, never stored in the database and never returned by the API.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from .persistence.postgres.config import (
+    DEFAULT_HOST as DEFAULT_DB_HOST,
+    DEFAULT_NAME as DEFAULT_DB_NAME,
+    DEFAULT_PORT as DEFAULT_DB_PORT,
+    DEFAULT_USER as DEFAULT_DB_USER,
+    PostgresConfig,
+)
+
 ENV_PREFIX = "AEM_"
-DEFAULT_DB_FILENAME = "apartment.sqlite"
+ENV_FILE_NAME = ".env.local"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 
 
+def load_env_file(path: Path) -> list[str]:
+    """Read ``KEY=value`` lines into the environment, without overriding it.
+
+    Returns the names that were set. Blank lines and ``#`` comments are
+    skipped, an optional leading ``export`` is allowed, and matching quotes
+    around a value are removed. Values are never logged.
+    """
+    if not path.is_file():
+        return []
+    loaded: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.removeprefix("export ").partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
+
+
 def _env(name: str, default: str | None = None) -> str | None:
-    return os.environ.get(f"{ENV_PREFIX}{name}", default)
+    value = os.environ.get(f"{ENV_PREFIX}{name}")
+    return default if value is None or value == "" else value
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -85,11 +142,14 @@ class Settings:
     """Resolved configuration. Read once at startup via :func:`get_settings`."""
 
     project_root: Path
-    database_path: Path
+    # The runtime role's connection: what serving requests uses.
+    database: PostgresConfig
+    # The schema owner's connection, or None when this process has not been
+    # given it. Used only by migration and import tooling.
+    migration_database: PostgresConfig | None = None
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     cors_origins: tuple[str, ...] = ()
-    auto_migrate: bool = True
     auto_close_expired_statements: bool = True
     auto_close_interval_minutes: int = 60
     default_correction_window_hours: int = 72
@@ -103,11 +163,13 @@ class Settings:
     def describe(self) -> dict[str, object]:
         """Non-secret view of the configuration, for the health endpoint."""
         return {
-            "database_path": str(self.database_path),
+            "database_backend": "postgresql",
+            # Host, port, and names only. The password is never included.
+            "database": self.database.describe(),
+            "database_is_local": self.database.is_local,
             "host": self.host,
             "port": self.port,
             "cors_origins": list(self.cors_origins),
-            "auto_migrate": self.auto_migrate,
             "auto_close_expired_statements": self.auto_close_expired_statements,
             "default_correction_window_hours": self.default_correction_window_hours,
             "operator_name": self.operator_name,
@@ -130,19 +192,58 @@ def _default_origins() -> tuple[str, ...]:
     return ("http://127.0.0.1:5173", "http://localhost:5173")
 
 
+def _database_config() -> PostgresConfig:
+    return PostgresConfig(
+        host=_env("DB_HOST", DEFAULT_DB_HOST) or DEFAULT_DB_HOST,
+        port=_env_int("DB_PORT", DEFAULT_DB_PORT),
+        name=_env("DB_NAME", DEFAULT_DB_NAME) or DEFAULT_DB_NAME,
+        user=_env("DB_USER", DEFAULT_DB_USER) or DEFAULT_DB_USER,
+        password=_env("DB_PASSWORD"),
+        url=_env("DATABASE_URL"),
+        sslmode=_env("DB_SSLMODE"),
+        sslrootcert=_env("DB_SSLROOTCERT"),
+        schema=_env("DB_SCHEMA"),
+        connect_timeout_seconds=max(1, _env_int("DB_CONNECT_TIMEOUT", 10)),
+        pool_min_size=max(0, _env_int("DB_POOL_MIN", 1)),
+        pool_max_size=max(1, _env_int("DB_POOL_MAX", 5)),
+    )
+
+
+DEFAULT_DB_MIGRATION_USER = "aem_owner"
+
+
+def _migration_database_config(runtime: PostgresConfig) -> PostgresConfig | None:
+    """The schema owner's connection: the same database, a different role.
+
+    ``None`` unless that role's password (or a URL of its own) is configured,
+    which is how a serving process ends up unable to migrate.
+    """
+    url = _env("MIGRATION_DATABASE_URL")
+    password = _env("DB_MIGRATION_PASSWORD")
+    if not url and not password:
+        return None
+    return replace(
+        runtime,
+        user=_env("DB_MIGRATION_USER", DEFAULT_DB_MIGRATION_USER) or DEFAULT_DB_MIGRATION_USER,
+        password=password,
+        url=url,
+        grant_to=_env("DB_USER", DEFAULT_DB_USER) or DEFAULT_DB_USER,
+        pool_min_size=0, pool_max_size=1,
+    )
+
+
 def get_settings(*, project_root: Path | None = None) -> Settings:
     root = Path(project_root or _env("PROJECT_ROOT") or Path(__file__).resolve().parent.parent)
-    raw_db = _env("DB_PATH")
-    database_path = Path(raw_db).expanduser() if raw_db else root / "data" / DEFAULT_DB_FILENAME
-    if not database_path.is_absolute():
-        database_path = (root / database_path).resolve()
+    env_file = Path(_env("ENV_FILE") or root / ENV_FILE_NAME).expanduser()
+    load_env_file(env_file)
+    database = _database_config()
     return Settings(
         project_root=root,
-        database_path=database_path,
+        database=database,
+        migration_database=_migration_database_config(database),
         host=_env("HOST", DEFAULT_HOST) or DEFAULT_HOST,
         port=_env_int("PORT", DEFAULT_PORT),
         cors_origins=_default_origins(),
-        auto_migrate=_env_bool("AUTO_MIGRATE", True),
         auto_close_expired_statements=_env_bool("AUTO_CLOSE_EXPIRED", True),
         default_correction_window_hours=_env_int("CORRECTION_WINDOW_HOURS", 72),
         operator_name=_env("OPERATOR_NAME", "operator") or "operator",

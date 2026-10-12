@@ -8,26 +8,26 @@ from fastapi import APIRouter, Path, Query
 from ...errors import AemError
 from ...schemas import ResidentCreate, ResidentDeactivate, ResidentUpdate
 from ...services import payments, reconciliation, residents
-from ..deps import ApartmentId, AppSettings, DbPath, to_http
+from ..deps import ApartmentId, AppSettings, Db, to_http
 
 router = APIRouter(prefix="/api/residents", tags=["residents"])
 
 
 @router.get("", summary="List residents")
-def list_residents(db_path: DbPath, apartment_id: ApartmentId,
+def list_residents(db: Db, apartment_id: ApartmentId,
                    active_only: Annotated[bool, Query()] = False) -> dict[str, Any]:
     try:
-        items = residents.read_residents(db_path, apartment_id, active_only=active_only)
+        items = residents.read_residents(db, apartment_id, active_only=active_only)
     except AemError as exc:
         raise to_http(exc) from exc
     return {"items": items, "total": len(items)}
 
 
 @router.post("", status_code=201, summary="Create a resident")
-def create_resident(payload: ResidentCreate, db_path: DbPath, apartment_id: ApartmentId,
+def create_resident(payload: ResidentCreate, db: Db, apartment_id: ApartmentId,
                     settings: AppSettings) -> dict[str, Any]:
     try:
-        return residents.create_resident(db_path, apartment_id=apartment_id,
+        return residents.create_resident(db, apartment_id=apartment_id,
                                          actor=settings.operator_name,
                                          **payload.model_dump())
     except AemError as exc:
@@ -35,7 +35,7 @@ def create_resident(payload: ResidentCreate, db_path: DbPath, apartment_id: Apar
 
 
 @router.get("/{resident_id}", summary="Read one resident with their financial history")
-def read_resident(db_path: DbPath, apartment_id: ApartmentId,
+def read_resident(db: Db, apartment_id: ApartmentId,
                   resident_id: str = Path()) -> dict[str, Any]:
     """The resident record plus every charge, payment, credit, and balance.
 
@@ -44,14 +44,14 @@ def read_resident(db_path: DbPath, apartment_id: ApartmentId,
     Their shares are never prorated for a partial month.
     """
     try:
-        resident = residents.read_resident(db_path, resident_id, apartment_id)
-        charges = payments.resident_charge_ledger(db_path, apartment_id=apartment_id,
+        resident = residents.read_resident(db, resident_id, apartment_id)
+        charges = payments.resident_charge_ledger(db, apartment_id=apartment_id,
                                                   resident_id=resident_id)
-        resident_payments = payments.list_payments(db_path, apartment_id=apartment_id,
+        resident_payments = payments.list_payments(db, apartment_id=apartment_id,
                                                    resident_id=resident_id, limit=200)
-        credits = [row for row in payments.unapplied_credits(db_path, apartment_id)
+        credits = [row for row in payments.unapplied_credits(db, apartment_id)
                    if row["payer_resident_id"] == resident_id]
-        settlement = reconciliation.reconcile(db_path, apartment_id=apartment_id)
+        settlement = reconciliation.reconcile(db, apartment_id=apartment_id)
     except AemError as exc:
         raise to_http(exc) from exc
     account = next((a for a in settlement["accounts"] if a["account_id"] == resident_id), None)
@@ -76,19 +76,19 @@ def read_resident(db_path: DbPath, apartment_id: ApartmentId,
 
 
 @router.patch("/{resident_id}", summary="Update a resident")
-def update_resident(payload: ResidentUpdate, db_path: DbPath, apartment_id: ApartmentId,
+def update_resident(payload: ResidentUpdate, db: Db, apartment_id: ApartmentId,
                     settings: AppSettings, resident_id: str = Path()) -> dict[str, Any]:
     data = payload.model_dump(exclude_unset=True)
     reason = data.pop("reason", None)
     try:
-        return residents.update_resident(db_path, resident_id, apartment_id=apartment_id,
+        return residents.update_resident(db, resident_id, apartment_id=apartment_id,
                                          actor=settings.operator_name, reason=reason, **data)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.post("/{resident_id}/deactivate", summary="Record that a resident moved out")
-def deactivate_resident(payload: ResidentDeactivate, db_path: DbPath,
+def deactivate_resident(payload: ResidentDeactivate, db: Db,
                         apartment_id: ApartmentId, settings: AppSettings,
                         resident_id: str = Path()) -> dict[str, Any]:
     """Mark the resident inactive. No financial history is deleted, and no
@@ -97,17 +97,17 @@ def deactivate_resident(payload: ResidentDeactivate, db_path: DbPath,
     allocations are left exactly as entered."""
     try:
         return residents.deactivate_resident(
-            db_path, resident_id, apartment_id=apartment_id,
+            db, resident_id, apartment_id=apartment_id,
             actor=settings.operator_name, **payload.model_dump(exclude_unset=True))
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.post("/{resident_id}/reactivate", summary="Reactivate a resident")
-def reactivate_resident(db_path: DbPath, apartment_id: ApartmentId, settings: AppSettings,
+def reactivate_resident(db: Db, apartment_id: ApartmentId, settings: AppSettings,
                         resident_id: str = Path()) -> dict[str, Any]:
     try:
-        return residents.reactivate_resident(db_path, resident_id, apartment_id=apartment_id,
+        return residents.reactivate_resident(db, resident_id, apartment_id=apartment_id,
                                              actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc

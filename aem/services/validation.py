@@ -17,11 +17,10 @@ specific record. Severity decides what the UI does with it:
 """
 from __future__ import annotations
 
-import sqlite3
+from datetime import datetime
 from typing import Any
 
-from .. import db
-from ..db import connect
+from ..persistence import Database, UnitOfWork
 from .common import get_apartment, resident_ids
 
 SEVERITY_ERROR = "error"
@@ -36,18 +35,26 @@ def _issue(code: str, severity: str, message: str, *, entity_type: str,
             "details": details or {}, "suggested_action": suggested_action}
 
 
-def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict[str, Any]]:
+def _within_days(first: Any, second: Any, days: int) -> bool:
+    """Whether two stored dates are at most `days` apart.
+
+    False when either is not a date, so a malformed value leaves a record out
+    of a check instead of failing the whole validation run.
+    """
+    try:
+        gap = datetime.fromisoformat(first) - datetime.fromisoformat(second)
+    except (TypeError, ValueError):
+        return False
+    return abs(gap.total_seconds()) <= days * 86400
+
+
+def validate_apartment(uow: UnitOfWork, apartment_id: str) -> list[dict[str, Any]]:
     """Run every integrity check for one apartment and return the issues found."""
     issues: list[dict[str, Any]] = []
-    residents = set(resident_ids(conn, apartment_id))
+    residents = set(resident_ids(uow, apartment_id))
 
     # 1. Each expense's allocations must equal its total, exactly.
-    for row in conn.execute(
-        """SELECT e.expense_id, e.description, e.amount_paise, e.settlement_period,
-                  COALESCE((SELECT SUM(a.amount_paise) FROM allocation a
-                             WHERE a.expense_id = e.expense_id), 0) AS allocated_paise
-             FROM expense_instance e
-            WHERE e.apartment_id = ?""", (apartment_id,)).fetchall():
+    for row in uow.validation.expenses_with_allocated_total(apartment_id):
         if row["allocated_paise"] != row["amount_paise"]:
             issues.append(_issue(
                 "allocation_total_mismatch", SEVERITY_ERROR,
@@ -61,11 +68,7 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
                 suggested_action="Edit the expense's allocations so they sum to its amount."))
 
     # 2. Allocations must belong to residents of this apartment.
-    for row in conn.execute(
-        """SELECT a.allocation_id, a.resident_id, a.expense_id
-             FROM allocation a
-             JOIN expense_instance e ON e.expense_id = a.expense_id
-            WHERE e.apartment_id = ?""", (apartment_id,)).fetchall():
+    for row in uow.validation.allocations_for_apartment(apartment_id):
         if row["resident_id"] not in residents:
             issues.append(_issue(
                 "allocation_foreign_resident", SEVERITY_ERROR,
@@ -75,11 +78,7 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
                 suggested_action="Reassign or remove the allocation."))
 
     # 3. Expenses with no allocations at all.
-    for row in conn.execute(
-        """SELECT e.expense_id, e.description, e.amount_paise FROM expense_instance e
-            WHERE e.apartment_id = ? AND e.amount_paise > 0
-              AND NOT EXISTS (SELECT 1 FROM allocation a WHERE a.expense_id = e.expense_id)""",
-        (apartment_id,)).fetchall():
+    for row in uow.validation.expenses_without_allocations(apartment_id):
         issues.append(_issue(
             "expense_not_allocated", SEVERITY_ERROR,
             f"Expense '{row['description']}' has no resident allocations.",
@@ -88,13 +87,7 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
             suggested_action="Allocate the expense to residents, or delete it."))
 
     # 4. Expenses with no apartment: created before the upgrade and never linked.
-    for row in conn.execute(
-        """SELECT e.expense_id, e.description FROM expense_instance e
-            WHERE e.apartment_id IS NULL
-              AND EXISTS (SELECT 1 FROM allocation a JOIN resident r
-                            ON r.resident_id = a.resident_id
-                           WHERE a.expense_id = e.expense_id AND r.apartment_id = ?)""",
-        (apartment_id,)).fetchall():
+    for row in uow.validation.unlinked_expenses_allocated_to(apartment_id):
         issues.append(_issue(
             "expense_missing_apartment", SEVERITY_WARNING,
             f"Expense '{row['description']}' is allocated to this apartment's residents but "
@@ -103,11 +96,7 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
             suggested_action="Open and save the expense to relink it."))
 
     # 5. A payment can never be applied beyond its own amount.
-    for row in conn.execute(
-        """SELECT p.payment_id, p.amount_paise,
-                  COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                             WHERE pa.payment_id = p.payment_id), 0) AS applied_paise
-             FROM payment p WHERE p.apartment_id = ?""", (apartment_id,)).fetchall():
+    for row in uow.validation.payments_with_applied_total(apartment_id):
         if row["applied_paise"] > row["amount_paise"]:
             issues.append(_issue(
                 "payment_overapplied", SEVERITY_ERROR,
@@ -118,13 +107,7 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
                 suggested_action="Reverse and re-record the payment."))
 
     # 6. A charge can never be settled beyond its own amount.
-    for row in conn.execute(
-        """SELECT a.allocation_id, a.amount_paise, a.resident_id,
-                  COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                             WHERE pa.allocation_id = a.allocation_id), 0) AS settled_paise
-             FROM allocation a
-             JOIN expense_instance e ON e.expense_id = a.expense_id
-            WHERE e.apartment_id = ?""", (apartment_id,)).fetchall():
+    for row in uow.validation.allocations_with_settled_total(apartment_id):
         if row["settled_paise"] > row["amount_paise"]:
             issues.append(_issue(
                 "charge_overapplied", SEVERITY_ERROR,
@@ -136,14 +119,7 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
                 suggested_action="Reverse the payment that over-settled this charge."))
 
     # 7. Linked advances must not exceed the expense they fund.
-    for row in conn.execute(
-        """SELECT e.expense_id, e.description, e.amount_paise, e.payer_resident_id,
-                  COALESCE(SUM(p.amount_paise), 0) AS linked_paise
-             FROM expense_instance e
-             JOIN payment p ON p.expense_id = e.expense_id
-            WHERE e.apartment_id = ? AND p.payment_kind = 'provider_advance'
-              AND p.status = 'active'
-            GROUP BY e.expense_id""", (apartment_id,)).fetchall():
+    for row in uow.validation.expenses_with_linked_advances(apartment_id):
         if row["linked_paise"] > row["amount_paise"]:
             issues.append(_issue(
                 "advance_exceeds_expense", SEVERITY_ERROR,
@@ -171,20 +147,9 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
     # 8. The double count this household is most exposed to: an expense that
     #    names a payer, plus an *unlinked* advance by that same resident for the
     #    same amount. Reconciliation would credit the resident twice.
-    for row in conn.execute(
-        """SELECT p.payment_id, p.payer_resident_id, p.amount_paise, p.payment_date,
-                  e.expense_id, e.description, e.expense_date
-             FROM payment p
-             JOIN expense_instance e
-               ON e.apartment_id = p.apartment_id
-              AND e.payer_resident_id = p.payer_resident_id
-              AND e.amount_paise = p.amount_paise
-            WHERE p.apartment_id = ? AND p.payment_kind = 'provider_advance'
-              AND p.status = 'active' AND p.expense_id IS NULL
-              AND NOT EXISTS (SELECT 1 FROM payment lp WHERE lp.expense_id = e.expense_id
-                                AND lp.payment_kind = 'provider_advance' AND lp.status='active')
-              AND ABS(julianday(p.payment_date) - julianday(e.expense_date)) <= 7""",
-        (apartment_id,)).fetchall():
+    for row in uow.validation.unlinked_advances_matching_payer_expenses(apartment_id):
+        if not _within_days(row["payment_date"], row["expense_date"], 7):
+            continue
         issues.append(_issue(
             "possible_double_counted_advance", SEVERITY_WARNING,
             f"Provider advance {row['payment_id']} matches expense '{row['description']}' "
@@ -201,12 +166,7 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
 
     # 9. A reversed payment must not keep applications; a reversal must point at
     #    a payment that is actually marked reversed.
-    for row in conn.execute(
-        """SELECT p.payment_id, p.status,
-                  (SELECT COUNT(*) FROM payment_application pa
-                    WHERE pa.payment_id = p.payment_id) AS application_count
-             FROM payment p WHERE p.apartment_id = ? AND p.status <> 'active'""",
-        (apartment_id,)).fetchall():
+    for row in uow.validation.inactive_payments_with_application_count(apartment_id):
         if row["application_count"]:
             issues.append(_issue(
                 "reversed_payment_still_applied", SEVERITY_ERROR,
@@ -217,13 +177,7 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
                 suggested_action="Remove the stale applications, then re-record the payment."))
 
     # 10. Statement/period consistency.
-    for row in conn.execute(
-        """SELECT e.expense_id, e.description, e.settlement_period, s.settlement_month,
-                  s.statement_id
-             FROM expense_instance e
-             JOIN monthly_statement s ON s.statement_id = e.statement_id
-            WHERE e.apartment_id = ? AND e.settlement_period <> s.settlement_month""",
-        (apartment_id,)).fetchall():
+    for row in uow.validation.expenses_on_wrong_period_statement(apartment_id):
         issues.append(_issue(
             "statement_period_mismatch", SEVERITY_WARNING,
             f"'{row['description']}' settles in {row['settlement_period']} but is attached to "
@@ -235,10 +189,7 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
             suggested_action="Move the expense to the statement for its settlement month."))
 
     # 11. A finalized statement should have a snapshot; a closed one must.
-    for row in conn.execute(
-        """SELECT statement_id, settlement_month, status, snapshot_json
-             FROM monthly_statement WHERE apartment_id = ? AND status <> 'draft'""",
-        (apartment_id,)).fetchall():
+    for row in uow.validation.non_draft_statements(apartment_id):
         if not row["snapshot_json"]:
             issues.append(_issue(
                 "statement_missing_snapshot", SEVERITY_ERROR,
@@ -251,15 +202,7 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
     # 12. Residents who are inactive but still carry an open position are not an
     #     error; they must simply remain visible. Reported so the dashboard can
     #     say so rather than hiding them.
-    for row in conn.execute(
-        """SELECT r.resident_id, r.display_name,
-                  COALESCE((SELECT SUM(a.amount_paise) FROM allocation a
-                             WHERE a.resident_id = r.resident_id), 0)
-                  - COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                               JOIN allocation a2 ON a2.allocation_id = pa.allocation_id
-                              WHERE a2.resident_id = r.resident_id), 0) AS outstanding_paise
-             FROM resident r WHERE r.apartment_id = ? AND r.is_active = 0""",
-        (apartment_id,)).fetchall():
+    for row in uow.validation.inactive_residents_with_outstanding(apartment_id):
         if row["outstanding_paise"]:
             issues.append(_issue(
                 "inactive_resident_open_balance", SEVERITY_WARNING,
@@ -276,10 +219,10 @@ def validate_apartment(conn: sqlite3.Connection, apartment_id: str) -> list[dict
     return issues
 
 
-def validate(db_path, apartment_id: str) -> dict[str, Any]:
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        issues = validate_apartment(conn, apartment_id)
+def validate(db: Database, apartment_id: str) -> dict[str, Any]:
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        issues = validate_apartment(uow, apartment_id)
     errors = [i for i in issues if i["severity"] == SEVERITY_ERROR]
     return {
         "apartment_id": apartment_id,

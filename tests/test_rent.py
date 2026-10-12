@@ -17,7 +17,6 @@ from dataclasses import replace
 import pytest
 
 from aem.config import get_settings
-from aem.db import connect
 from aem.errors import ConflictError, NotFoundError, ValidationError
 from aem.money import paise_in_words
 from aem.services import (
@@ -32,6 +31,7 @@ from aem.services import (
 )
 
 from .conftest import APARTMENT
+from .support import DatabaseRefusal, connect
 
 MONTH = "2026-11"
 LEASE = {
@@ -113,7 +113,7 @@ def test_rent_is_recorded_under_a_housing_definition(apartment, configured):
 
 def test_a_housing_definition_is_created_when_the_household_has_none(apartment):
     config = _lease(apartment)
-    definition = _rows(apartment, "SELECT * FROM expense_definition WHERE expense_definition_id=?",
+    definition = _rows(apartment, "SELECT * FROM expense_definition WHERE expense_definition_id=%s",
                        (config["expense_definition_id"],))[0]
     assert (definition["category"], definition["recurrence"]) == ("Housing", "none")
 
@@ -139,8 +139,8 @@ def test_an_invalid_lease_is_refused_and_nothing_is_saved(apartment, field, valu
 
 def test_the_database_itself_refuses_non_integer_or_non_positive_rent(leased):
     for bad in (0, -1, 4500000.5):
-        with connect(leased) as conn, pytest.raises(sqlite3.IntegrityError):
-            conn.execute("UPDATE rent_lease_config SET monthly_rent_paise=?", (bad,))
+        with connect(leased) as conn, pytest.raises(DatabaseRefusal):
+            conn.execute("UPDATE rent_lease_config SET monthly_rent_paise=%s", (bad,))
 
 
 # ------------------------------------------------------------ the equal split --
@@ -163,7 +163,7 @@ def test_the_rent_expense_is_an_ordinary_housing_expense_for_the_month(leased):
     assert expense["payer_resident_id"] is None
     assert expense["allocation_method"] == "equal"
     category = _rows(leased, "SELECT category FROM expense_definition "
-                             "WHERE expense_definition_id=?", (expense["expense_definition_id"],))
+                             "WHERE expense_definition_id=%s", (expense["expense_definition_id"],))
     assert category == [{"category": "Housing"}]
 
 
@@ -176,7 +176,7 @@ def test_shares_always_sum_to_the_rent_to_the_paisa(apartment, rent_paise, exclu
     assert sum(shares.values()) == rent_paise, "zero paisa drift"
     assert max(shares.values()) - min(shares.values()) <= 1
     stored = _rows(apartment, "SELECT SUM(amount_paise) AS total FROM allocation "
-                              "WHERE expense_id=?", (cycle["expense_id"],))
+                              "WHERE expense_id=%s", (cycle["expense_id"],))
     assert stored[0]["total"] == rent_paise
     assert all(isinstance(v, int) and not isinstance(v, bool) for v in shares.values())
 
@@ -346,7 +346,7 @@ def _outstanding(db, expense_id, resident_id):
     return _rows(db, """SELECT a.amount_paise - COALESCE(
                                (SELECT SUM(pa.amount_paise) FROM payment_application pa
                                  WHERE pa.allocation_id = a.allocation_id), 0) AS open
-                          FROM allocation a WHERE a.expense_id=? AND a.resident_id=?""",
+                          FROM allocation a WHERE a.expense_id=%s AND a.resident_id=%s""",
                  (expense_id, resident_id))[0]["open"]
 
 
@@ -498,7 +498,7 @@ def test_a_payout_is_recorded_once(leased):
         _disburse(leased, "resident_advance", funding_resident_id="alice")
     assert again.value.code == "rent_already_disbursed"
     assert _rows(leased, "SELECT 1 FROM payment") == []
-    with connect(leased) as conn, pytest.raises(sqlite3.IntegrityError):
+    with connect(leased) as conn, pytest.raises(DatabaseRefusal):
         conn.execute("UPDATE rent_cycle SET disbursement_reference='edited'")
 
 
@@ -715,7 +715,7 @@ def test_an_attached_receipt_can_be_replaced_and_the_swap_is_audited(receipted):
         b"\x89PNG the right one", "image/png")
 
     trail = _rows(receipted, "SELECT action, old_value, new_value FROM audit_log "
-                             "WHERE action LIKE '%landlord_receipt' ORDER BY rowid")
+                             "WHERE action LIKE '%%landlord_receipt' ORDER BY row_seq")
     assert [row["action"] for row in trail] == ["replace_landlord_receipt"]
     assert hashlib.sha256(b"%PDF-1.4 landlord receipt").hexdigest() in trail[0]["old_value"]
     assert cycle["landlord_receipt"]["sha256"] in trail[0]["new_value"]
@@ -821,13 +821,15 @@ def test_a_receipt_keeps_the_landlord_details_it_was_issued_with(leased):
 def test_receipts_are_immutable_and_tampering_is_detectable(leased):
     _generate(leased)
     _disburse(leased, "pool")
-    with connect(leased) as conn:
-        with pytest.raises(sqlite3.IntegrityError):
+    # As the table's owner: the runtime role may not update a receipt at all,
+    # and could not remove the guard below.
+    with connect(leased, as_owner=True) as conn:
+        with pytest.raises(DatabaseRefusal):
             conn.execute("UPDATE rent_receipt SET amount_paise = amount_paise + 1")
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(DatabaseRefusal):
             conn.execute("DELETE FROM rent_receipt")
-        # Remove the guard, as somebody editing the file directly could.
-        conn.execute("DROP TRIGGER trg_rent_receipt_no_update")
+        # Remove the guard, as somebody editing the database directly could.
+        conn.execute("DROP TRIGGER trg_rent_receipt_no_update ON rent_receipt")
         conn.execute("UPDATE rent_receipt SET amount_paise = amount_paise + 1 "
                      "WHERE resident_id='alice'")
     receipt = rent.get_resident_rent_receipt(leased, apartment_id=APARTMENT,
@@ -865,8 +867,8 @@ def api(apartment):
 
     from aem.main import create_app
 
-    settings = replace(get_settings(), database_path=apartment, auto_migrate=True)
-    with TestClient(create_app(settings)) as test_client:
+    settings = get_settings()
+    with TestClient(create_app(settings, database=apartment)) as test_client:
         yield test_client
 
 
@@ -969,21 +971,52 @@ def _timeline(db, on):
                                            date.fromisoformat(on))
 
 
-def test_migration_0006_adds_the_term_columns_with_their_defaults(leased):
-    from aem.migrations import current_version, discover
-    assert current_version(leased) == max(m.version for m in discover()) >= 6
-    row = _rows(leased, "SELECT * FROM rent_lease_config")[0]
-    assert (row["duration_months"], row["notice_period_days"], row["lock_in_months"]) == (11, 30, 6)
-    assert (row["escalation_type"], row["escalation_percent"], row["lease_status"]) == (
-        "percent", 5.0, "active")
-    assert row["lease_start_date"] is None and row["security_deposit_paise"] is None
+def _sqlite(path):
+    """An old SQLite database file, opened the way the legacy runner expects."""
+    from contextlib import closing
+    conn = sqlite3.connect(path, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return closing(conn)
+
+
+def test_migration_0006_adds_the_term_columns_with_their_defaults(leased, tmp_path):
+    from aem.persistence.postgres.migrate import latest_version
+    from aem.persistence.sqlite_import.legacy_migrations import (
+        FINAL_VERSION, current_version, discover, migrate)
+    # The SQLite history still ends at 0006, and its runner still gets a file there.
+    with _sqlite(tmp_path / "v6.sqlite") as conn:
+        migrate(conn)
+        assert current_version(conn) == max(m.version for m in discover()) >= 6
+        assert current_version(conn) == FINAL_VERSION
+        conn.execute("INSERT INTO apartment (apartment_id, name, created_at) VALUES (?,?,?)",
+                     (APARTMENT, "Flat 402", "then"))
+        conn.execute(
+            "INSERT INTO rent_lease_config (config_id, apartment_id, landlord_name, "
+            "monthly_rent_paise, created_at, updated_at) VALUES ('lease-1',?,?,?,?,?)",
+            (APARTMENT, "Kumar Yadav", 2_850_000, "then", "then"))
+        old = dict(conn.execute("SELECT * FROM rent_lease_config").fetchone())
+        assert conn.execute("SELECT COUNT(*) FROM rent_lease_term").fetchone()[0] == 0
+    # The PostgreSQL schema carries the same columns and the same defaults.
+    assert leased.schema_version() == latest_version()
+    for row in (old, _rows(leased, "SELECT * FROM rent_lease_config")[0]):
+        assert (row["duration_months"], row["notice_period_days"],
+                row["lock_in_months"]) == (11, 30, 6)
+        assert (row["escalation_type"], row["escalation_percent"], row["lease_status"]) == (
+            "percent", 5.0, "active")
+        assert row["lease_start_date"] is None and row["security_deposit_paise"] is None
     assert _rows(leased, "SELECT 1 FROM rent_lease_term") == []
 
 
-def test_migration_0006_upgrades_a_version_5_lease_without_touching_it(tmp_path):
-    from aem.migrations import discover, split_statements
+def test_migration_0006_upgrades_a_version_5_lease_without_touching_it(tmp_path,
+                                                                       database_factory):
+    from aem.persistence.sqlite_import.importer import import_sqlite
+    from aem.persistence.sqlite_import.legacy_migrations import (
+        current_version, discover, migrate, split_statements)
+
+    from .support import config_of
     path = tmp_path / "v5.sqlite"
-    with connect(path) as conn:
+    with _sqlite(path) as conn:
         conn.execute("CREATE TABLE schema_migration (version INTEGER PRIMARY KEY, name TEXT "
                      "NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL, "
                      "adopted INTEGER NOT NULL DEFAULT 0)")
@@ -1000,15 +1033,28 @@ def test_migration_0006_upgrades_a_version_5_lease_without_touching_it(tmp_path)
             "INSERT INTO rent_lease_config (config_id, apartment_id, landlord_name, "
             "monthly_rent_paise, created_at, updated_at) VALUES ('lease-1',?,?,?,?,?)",
             (APARTMENT, "Kumar Yadav", 2_850_000, "then", "then"))
-        conn.commit()
 
-    from aem.migrations import migrate
-    assert migrate(path) == ["applied 0006_lease_lifecycle"]
-    config = rent.get_lease_config(path, APARTMENT)
+    # The upgrade path is now the import: 0006 is applied to a temporary copy of
+    # the version 5 file, and the lease is read from PostgreSQL.
+    target = database_factory(migrated=False)
+    report = import_sqlite(path, config_of(target))
+    assert report.source_schema_version == 5
+    assert [line for line in report.log if line.startswith("temporary copy: ")] == [
+        "temporary copy: applied 0006_lease_lifecycle"]
+    config = rent.get_lease_config(target, APARTMENT)
     assert (config["landlord_name"], config["monthly_rent_paise"]) == ("Kumar Yadav", 2_850_000)
     assert (config["duration_months"], config["lease_status"]) == (11, "active")
     # No start date yet, so there is no timeline to report.
     assert config["lifecycle"] is None and config["term_number"] == 1
+
+    # The file itself was not touched by the import, and the SQLite runner still
+    # takes it from 5 to 6 with the lease as it was.
+    with _sqlite(path) as conn:
+        assert current_version(conn) == 5
+        assert migrate(conn) == ["applied 0006_lease_lifecycle"]
+        row = dict(conn.execute("SELECT * FROM rent_lease_config").fetchone())
+    assert (row["landlord_name"], row["monthly_rent_paise"]) == ("Kumar Yadav", 2_850_000)
+    assert (row["duration_months"], row["lease_status"]) == (11, "active")
 
 
 def test_the_term_is_saved_and_its_end_date_is_computed(apartment):

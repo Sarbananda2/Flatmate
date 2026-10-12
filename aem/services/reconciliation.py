@@ -39,15 +39,13 @@ reversal nets to nothing while both rows stay in the audit trail.
 """
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
-from .. import db
-from ..db import connect
 from ..engine.ledger import net_settlement_transfers
 from ..errors import ReconciliationError, ValidationError
 from ..money import format_inr
 from ..periods import normalize_month, parse_iso_date
+from ..persistence import Database, UnitOfWork
 from .common import POOL_ACCOUNT_ID, get_apartment, list_residents, resident_ids
 from .validation import SEVERITY_ERROR, validate_apartment
 
@@ -73,45 +71,23 @@ def _entry(account: str, amount_paise: int, kind: str, *, source_type: str,
             "counter_account_id": counter_account}
 
 
-def build_ledger_entries(conn: sqlite3.Connection, apartment_id: str, *,
+def build_ledger_entries(uow: UnitOfWork, apartment_id: str, *,
                          as_of_date: str | None = None) -> list[dict[str, Any]]:
     """Turn every record for one apartment into signed ledger entries."""
-    residents = set(resident_ids(conn, apartment_id))
+    residents = set(resident_ids(uow, apartment_id))
     entries: list[dict[str, Any]] = []
 
-    expenses = conn.execute(
-        """SELECT e.* FROM expense_instance e
-            WHERE (e.apartment_id = ?
-                   OR (e.apartment_id IS NULL AND EXISTS (
-                         SELECT 1 FROM allocation ax JOIN resident rx
-                                ON rx.resident_id = ax.resident_id
-                          WHERE ax.expense_id = e.expense_id AND rx.apartment_id = ?)))
-              AND (? IS NULL OR e.expense_date <= ?)
-            ORDER BY e.expense_date, e.rowid""",
-        (apartment_id, apartment_id, as_of_date, as_of_date)).fetchall()
+    expenses = uow.reconciliation.expenses_for_ledger(apartment_id, as_of_date)
 
     # Expenses whose funding is recorded as a linked provider advance. For these
     # the payer field is deliberately ignored, so the same money is credited once.
     linked_advance_totals = {
         row["expense_id"]: int(row["linked_paise"])
-        for row in conn.execute(
-            """SELECT p.expense_id, SUM(p.amount_paise) AS linked_paise
-                 FROM payment p
-                WHERE p.payment_kind = 'provider_advance' AND p.status = 'active'
-                  AND p.expense_id IS NOT NULL
-                  AND p.payer_resident_id IN (SELECT resident_id FROM resident
-                                               WHERE apartment_id = ?)
-                  AND (? IS NULL OR p.payment_date <= ?)
-                GROUP BY p.expense_id""",
-            (apartment_id, as_of_date, as_of_date)).fetchall()}
+        for row in uow.reconciliation.linked_advance_totals(apartment_id, as_of_date)}
 
     for expense in expenses:
         expense_id = expense["expense_id"]
-        allocations = conn.execute(
-            """SELECT a.allocation_id, a.resident_id, a.amount_paise
-                 FROM allocation a JOIN resident r ON r.resident_id = a.resident_id
-                WHERE a.expense_id = ? AND r.apartment_id = ?
-                ORDER BY a.rowid""", (expense_id, apartment_id)).fetchall()
+        allocations = uow.reconciliation.allocations_for_expense(expense_id, apartment_id)
         allocated = sum(row["amount_paise"] for row in allocations)
         if allocated != expense["amount_paise"]:
             raise ReconciliationError(
@@ -150,14 +126,7 @@ def build_ledger_entries(conn: sqlite3.Connection, apartment_id: str, *,
                 description=f"{expense['description']} funded by {payer}",
                 settlement_period=period, counter_account=payer))
 
-    payments = conn.execute(
-        """SELECT p.* FROM payment p
-            WHERE p.payer_resident_id IN (SELECT resident_id FROM resident
-                                           WHERE apartment_id = ?)
-              AND p.status = 'active'
-              AND (? IS NULL OR p.payment_date <= ?)
-            ORDER BY p.payment_date, p.rowid""",
-        (apartment_id, as_of_date, as_of_date)).fetchall()
+    payments = uow.reconciliation.active_payments_for_ledger(apartment_id, as_of_date)
 
     for payment in payments:
         rid = payment["payer_resident_id"]
@@ -183,16 +152,7 @@ def build_ledger_entries(conn: sqlite3.Connection, apartment_id: str, *,
             source_id=payment["payment_id"], entry_date=payment["payment_date"],
             description=f"{text} ({rid})", settlement_period=period, counter_account=rid))
 
-    adjustments = conn.execute(
-        """SELECT la.* FROM ledger_adjustment la
-            WHERE (la.statement_id IN (SELECT statement_id FROM monthly_statement
-                                        WHERE apartment_id = ?)
-                   OR (la.statement_id IS NULL AND la.resident_id IN
-                       (SELECT resident_id FROM resident WHERE apartment_id = ?)))
-              AND (? IS NULL
-                   OR COALESCE(la.effective_date, substr(la.created_at, 1, 10)) <= ?)
-            ORDER BY COALESCE(la.effective_date, substr(la.created_at, 1, 10)), la.rowid""",
-        (apartment_id, apartment_id, as_of_date, as_of_date)).fetchall()
+    adjustments = uow.reconciliation.adjustments_for_ledger(apartment_id, as_of_date)
 
     for adjustment in adjustments:
         rid = adjustment["resident_id"]
@@ -211,11 +171,7 @@ def build_ledger_entries(conn: sqlite3.Connection, apartment_id: str, *,
 
     # What each resident owed, or was owed, before the household started
     # recording here. Signed like every other entry, with the pool opposite.
-    opening_balances = conn.execute(
-        """SELECT ob.* FROM opening_balance ob
-            WHERE ob.apartment_id = ? AND (? IS NULL OR ob.as_of_date <= ?)
-            ORDER BY ob.as_of_date, ob.rowid""",
-        (apartment_id, as_of_date, as_of_date)).fetchall()
+    opening_balances = uow.reconciliation.opening_balances_for_ledger(apartment_id, as_of_date)
 
     for opening in opening_balances:
         rid = opening["resident_id"]
@@ -236,7 +192,7 @@ def build_ledger_entries(conn: sqlite3.Connection, apartment_id: str, *,
     return entries
 
 
-def _settlement_view(conn: sqlite3.Connection, apartment_id: str, *,
+def _settlement_view(uow: UnitOfWork, apartment_id: str, *,
                      as_of_date: str | None) -> dict[str, dict[str, int]]:
     """Charge-level view: what is charged, what is settled, what is left over.
 
@@ -244,24 +200,14 @@ def _settlement_view(conn: sqlite3.Connection, apartment_id: str, *,
     by payment application rather than by net position -- and the two are
     cross-checked against each other in :func:`reconcile`.
     """
-    residents = resident_ids(conn, apartment_id)
+    residents = resident_ids(uow, apartment_id)
     view = {rid: {"allocated_charges_paise": 0, "settled_paise": 0,
                   "outstanding_charges_paise": 0, "unapplied_credit_paise": 0,
                   "opening_debt_paise": 0, "opening_debt_outstanding_paise": 0,
                   "opening_credit_paise": 0}
             for rid in residents}
 
-    for row in conn.execute(
-        """SELECT a.resident_id, a.amount_paise,
-                  COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                             JOIN payment p ON p.payment_id = pa.payment_id
-                            WHERE pa.allocation_id = a.allocation_id AND p.status = 'active'
-                              AND (? IS NULL OR p.payment_date <= ?)), 0) AS settled
-             FROM allocation a
-             JOIN expense_instance e ON e.expense_id = a.expense_id
-             JOIN resident r ON r.resident_id = a.resident_id
-            WHERE r.apartment_id = ? AND (? IS NULL OR e.expense_date <= ?)""",
-        (as_of_date, as_of_date, apartment_id, as_of_date, as_of_date)).fetchall():
+    for row in uow.reconciliation.charges_with_settled(apartment_id, as_of_date):
         bucket = view.setdefault(row["resident_id"], {
             "allocated_charges_paise": 0, "settled_paise": 0,
             "outstanding_charges_paise": 0, "unapplied_credit_paise": 0,
@@ -274,16 +220,7 @@ def _settlement_view(conn: sqlite3.Connection, apartment_id: str, *,
     # An opening debt is the resident's oldest charge, settled by applications
     # like any other. An opening credit is nothing a payment can settle, so it
     # is carried beside the charges rather than among them.
-    for row in conn.execute(
-        """SELECT ob.resident_id, ob.amount_paise,
-                  COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                             JOIN payment p ON p.payment_id = pa.payment_id
-                            WHERE pa.opening_balance_id = ob.opening_balance_id
-                              AND p.status = 'active'
-                              AND (? IS NULL OR p.payment_date <= ?)), 0) AS settled
-             FROM opening_balance ob
-            WHERE ob.apartment_id = ? AND (? IS NULL OR ob.as_of_date <= ?)""",
-        (as_of_date, as_of_date, apartment_id, as_of_date, as_of_date)).fetchall():
+    for row in uow.reconciliation.opening_balances_with_settled(apartment_id, as_of_date):
         bucket = view.get(row["resident_id"])
         if bucket is None:
             continue
@@ -297,22 +234,13 @@ def _settlement_view(conn: sqlite3.Connection, apartment_id: str, *,
         bucket["opening_debt_paise"] += debt
         bucket["opening_debt_outstanding_paise"] += debt - settled
 
-    for row in conn.execute(
-        """SELECT p.payer_resident_id AS rid,
-                  p.amount_paise - COALESCE((SELECT SUM(pa.amount_paise)
-                                               FROM payment_application pa
-                                              WHERE pa.payment_id = p.payment_id), 0)
-                      AS unapplied
-             FROM payment p
-            WHERE p.apartment_id = ? AND p.payment_kind = 'to_pool' AND p.status = 'active'
-              AND (? IS NULL OR p.payment_date <= ?)""",
-        (apartment_id, as_of_date, as_of_date)).fetchall():
+    for row in uow.reconciliation.unapplied_pool_payments(apartment_id, as_of_date):
         if row["rid"] in view:
             view[row["rid"]]["unapplied_credit_paise"] += int(row["unapplied"])
     return view
 
 
-def reconcile(db_path, *, apartment_id: str, as_of_date: str | None = None,
+def reconcile(db: Database, *, apartment_id: str, as_of_date: str | None = None,
               require_clean: bool = False) -> dict[str, Any]:
     """Reconcile the full apartment ledger into account positions and transfers.
 
@@ -327,11 +255,11 @@ def reconcile(db_path, *, apartment_id: str, as_of_date: str | None = None,
             raise ValidationError("as_of_date must use YYYY-MM-DD format.",
                                   details={"field": "as_of_date"}) from None
 
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        residents = list_residents(conn, apartment_id)
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        residents = list_residents(uow, apartment_id)
         resident_id_list = sorted(row["resident_id"] for row in residents)
-        issues = validate_apartment(conn, apartment_id)
+        issues = validate_apartment(uow, apartment_id)
         blocking = [issue for issue in issues if issue["severity"] == SEVERITY_ERROR]
         if blocking and require_clean:
             raise ReconciliationError(
@@ -340,8 +268,8 @@ def reconcile(db_path, *, apartment_id: str, as_of_date: str | None = None,
                 code="unreconciled_ledger",
                 details={"issues": blocking})
 
-        entries = build_ledger_entries(conn, apartment_id, as_of_date=as_of_date)
-        charge_view = _settlement_view(conn, apartment_id, as_of_date=as_of_date)
+        entries = build_ledger_entries(uow, apartment_id, as_of_date=as_of_date)
+        charge_view = _settlement_view(uow, apartment_id, as_of_date=as_of_date)
 
         positions = {rid: 0 for rid in resident_id_list}
         positions[POOL_ACCOUNT_ID] = 0
@@ -549,7 +477,7 @@ def _formula_explanation(row: dict[str, Any]) -> str:
             + f" = {format_inr(row['carried_forward_paise'])} (carried forward)")
 
 
-def carry_forward(conn: sqlite3.Connection, apartment_id: str, settlement_month: str, *,
+def carry_forward(uow: UnitOfWork, apartment_id: str, settlement_month: str, *,
                   as_of_date: str | None = None,
                   statement_charges: dict[str, int] | None = None) -> dict[str, Any]:
     """How each resident's balance moved across one settlement month.
@@ -575,14 +503,14 @@ def carry_forward(conn: sqlite3.Connection, apartment_id: str, settlement_month:
     """
     statement_charges = statement_charges or {}
     names = {row["resident_id"]: row["display_name"]
-             for row in list_residents(conn, apartment_id)}
+             for row in list_residents(uow, apartment_id)}
     rows = {rid: {"resident_id": rid, "display_name": names[rid],
                   **{field: 0 for field in _MOVEMENT_FIELDS},
                   "statement_charges_paise": int(statement_charges.get(rid, 0))}
             for rid in sorted(names, key=lambda rid: (names[rid], rid))}
     charged = {rid: 0 for rid in rows}
 
-    for entry in build_ledger_entries(conn, apartment_id, as_of_date=as_of_date):
+    for entry in build_ledger_entries(uow, apartment_id, as_of_date=as_of_date):
         row = rows.get(entry["account_id"])
         if row is None:
             continue
@@ -616,16 +544,16 @@ def carry_forward(conn: sqlite3.Connection, apartment_id: str, settlement_month:
     }
 
 
-def ledger_entries(db_path, *, apartment_id: str, as_of_date: str | None = None,
+def ledger_entries(db: Database, *, apartment_id: str, as_of_date: str | None = None,
                    account_id: str | None = None, kind: str | None = None,
                    settlement_period: str | None = None, limit: int = 500,
                    offset: int = 0) -> dict[str, Any]:
     """The reconciliation's own entries, for auditing a number back to its record."""
     if settlement_period:
         settlement_period = normalize_month(settlement_period, "settlement_period")
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        entries = build_ledger_entries(conn, apartment_id, as_of_date=as_of_date)
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        entries = build_ledger_entries(uow, apartment_id, as_of_date=as_of_date)
     if account_id:
         entries = [e for e in entries if e["account_id"] == account_id]
     if kind:
@@ -641,11 +569,11 @@ def ledger_entries(db_path, *, apartment_id: str, as_of_date: str | None = None,
 
 # Prototype-compatible entry point. The richer `reconcile` is the same
 # calculation; this name and its return keys are preserved for existing callers.
-def reconcile_pooled_settlement(db_path, *, apartment_id: str,
+def reconcile_pooled_settlement(db: Database, *, apartment_id: str,
                                 as_of_date: str | None = None) -> dict[str, Any]:
     """Reconcile the full apartment ledger into resident and pool positions.
 
     Positive means the pool owes the account; negative means the account owes
     the pool. The synthetic __pool__ account ensures the result is zero-sum.
     """
-    return reconcile(db_path, apartment_id=apartment_id, as_of_date=as_of_date)
+    return reconcile(db, apartment_id=apartment_id, as_of_date=as_of_date)

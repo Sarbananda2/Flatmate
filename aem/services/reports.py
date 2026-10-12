@@ -17,11 +17,11 @@ import io
 import json
 from typing import Any, Iterable, Sequence
 
-from .. import db
-from ..db import connect, now_timestamp
 from ..errors import NotFoundError, ValidationError
+from ..ids import now_timestamp
 from ..money import paise_to_rupee_string
 from ..periods import normalize_month
+from ..persistence import Database
 from .common import POOL_ACCOUNT_ID, get_apartment, get_statement
 from .electricity import consumption_history
 from .reconciliation import ledger_entries, reconcile
@@ -81,80 +81,31 @@ def to_csv(rows: Sequence[dict[str, Any]], *, columns: Sequence[str] | None = No
     return buffer.getvalue()
 
 
-def monthly_household_expenses(db_path, *, apartment_id: str,
+def monthly_household_expenses(db: Database, *, apartment_id: str,
                                settlement_period: str | None = None) -> list[dict[str, Any]]:
     """Household expenses by settlement month, or the lines within one month."""
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
         if settlement_period:
             period = normalize_month(settlement_period, "settlement_period")
-            return db.fetch_all(
-                conn,
-                """SELECT e.settlement_period, e.service_period, e.expense_date,
-                          e.expense_id, e.description, COALESCE(d.category, '') AS category,
-                          e.expense_kind, e.amount_paise, e.provider_name,
-                          COALESCE(r.display_name, 'Household pool') AS funded_by,
-                          CASE WHEN EXISTS (SELECT 1 FROM payment p
-                                             WHERE p.expense_id = e.expense_id
-                                               AND p.payment_kind='provider_advance'
-                                               AND p.status='active')
-                               THEN 'linked_provider_advance'
-                               WHEN e.payer_resident_id IS NOT NULL THEN 'payer_resident'
-                               ELSE 'household_pool' END AS funding_source,
-                          COALESCE(s.status, 'unattached') AS statement_status
-                     FROM expense_instance e
-                     LEFT JOIN expense_definition d
-                            ON d.expense_definition_id = e.expense_definition_id
-                     LEFT JOIN resident r ON r.resident_id = e.payer_resident_id
-                     LEFT JOIN monthly_statement s ON s.statement_id = e.statement_id
-                    WHERE e.apartment_id = ? AND e.settlement_period = ?
-                    ORDER BY e.expense_date, e.rowid""", (apartment_id, period))
-        return db.fetch_all(
-            conn,
-            """SELECT e.settlement_period, COUNT(*) AS expense_count,
-                      SUM(e.amount_paise) AS total_paise,
-                      SUM(CASE WHEN e.expense_kind='electricity' THEN e.amount_paise ELSE 0 END)
-                          AS electricity_paise,
-                      SUM(CASE WHEN e.payer_resident_id IS NOT NULL THEN e.amount_paise ELSE 0 END)
-                          AS resident_funded_paise
-                 FROM expense_instance e WHERE e.apartment_id = ?
-                GROUP BY e.settlement_period ORDER BY e.settlement_period DESC""",
-            (apartment_id,))
+            return uow.reports.expense_lines_for_period(apartment_id, period)
+        return uow.reports.expense_totals_by_period(apartment_id)
 
 
-def resident_expense_breakdown(db_path, *, apartment_id: str,
+def resident_expense_breakdown(db: Database, *, apartment_id: str,
                                settlement_period: str | None = None) -> list[dict[str, Any]]:
-    params: list[Any] = [apartment_id]
-    clause = ""
+    period = None
     if settlement_period:
-        clause = " AND e.settlement_period = ?"
-        params.append(normalize_month(settlement_period, "settlement_period"))
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        return db.fetch_all(
-            conn,
-            f"""SELECT e.settlement_period, a.resident_id, r.display_name,
-                       COALESCE(d.category, 'Uncategorised') AS category,
-                       COUNT(DISTINCT e.expense_id) AS expense_count,
-                       SUM(a.amount_paise) AS charged_paise,
-                       COALESCE(SUM((SELECT COALESCE(SUM(pa.amount_paise), 0)
-                                       FROM payment_application pa
-                                       JOIN payment p ON p.payment_id = pa.payment_id
-                                      WHERE pa.allocation_id = a.allocation_id
-                                        AND p.status = 'active')), 0) AS settled_paise
-                  FROM allocation a
-                  JOIN expense_instance e ON e.expense_id = a.expense_id
-                  JOIN resident r ON r.resident_id = a.resident_id
-                  LEFT JOIN expense_definition d
-                         ON d.expense_definition_id = e.expense_definition_id
-                 WHERE e.apartment_id = ?{clause}
-                 GROUP BY e.settlement_period, a.resident_id, category
-                 ORDER BY e.settlement_period DESC, r.display_name, category""", params)
+        period = normalize_month(settlement_period, "settlement_period")
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        return uow.reports.resident_charges_by_category(apartment_id,
+                                                        settlement_period=period)
 
 
-def resident_payments_and_balances(db_path, *, apartment_id: str) -> list[dict[str, Any]]:
+def resident_payments_and_balances(db: Database, *, apartment_id: str) -> list[dict[str, Any]]:
     """Per-resident payments, credits, outstanding charges, and net position."""
-    reconciliation = reconcile(db_path, apartment_id=apartment_id)
+    reconciliation = reconcile(db, apartment_id=apartment_id)
     return [
         {
             "resident_id": account["account_id"],
@@ -180,22 +131,10 @@ def resident_payments_and_balances(db_path, *, apartment_id: str) -> list[dict[s
     ]
 
 
-def provider_advance_report(db_path, *, apartment_id: str) -> list[dict[str, Any]]:
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        rows = db.fetch_all(
-            conn,
-            """SELECT p.payment_id, p.payment_date, p.payer_resident_id,
-                      r.display_name, p.amount_paise, p.payee_or_provider, p.reference,
-                      p.status, p.expense_id, e.description AS funded_expense_description,
-                      e.amount_paise AS funded_expense_paise,
-                      e.settlement_period AS funded_settlement_period,
-                      e.payer_resident_id AS expense_payer_resident_id
-                 FROM payment p
-                 JOIN resident r ON r.resident_id = p.payer_resident_id
-                 LEFT JOIN expense_instance e ON e.expense_id = p.expense_id
-                WHERE p.apartment_id = ? AND p.payment_kind = 'provider_advance'
-                ORDER BY p.payment_date DESC, p.rowid DESC""", (apartment_id,))
+def provider_advance_report(db: Database, *, apartment_id: str) -> list[dict[str, Any]]:
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        rows = uow.reports.provider_advances(apartment_id)
     for row in rows:
         row["is_linked"] = row["expense_id"] is not None
         row["double_count_risk"] = (
@@ -208,66 +147,30 @@ def provider_advance_report(db_path, *, apartment_id: str) -> list[dict[str, Any
     return rows
 
 
-def credits_and_adjustments(db_path, *, apartment_id: str) -> list[dict[str, Any]]:
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        credits = db.fetch_all(
-            conn,
-            """SELECT 'unapplied_credit' AS entry_type, p.payment_id AS entry_id,
-                      p.payment_date AS entry_date, p.payer_resident_id AS resident_id,
-                      r.display_name,
-                      p.amount_paise - COALESCE((SELECT SUM(pa.amount_paise)
-                                                   FROM payment_application pa
-                                                  WHERE pa.payment_id = p.payment_id), 0)
-                          AS amount_paise,
-                      'Overpayment held as a credit' AS reason, NULL AS statement_id,
-                      NULL AS reversed_by
-                 FROM payment p JOIN resident r ON r.resident_id = p.payer_resident_id
-                WHERE p.apartment_id = ? AND p.payment_kind='to_pool' AND p.status='active'
-                  AND p.amount_paise > COALESCE((SELECT SUM(pa.amount_paise)
-                                                   FROM payment_application pa
-                                                  WHERE pa.payment_id = p.payment_id), 0)""",
-            (apartment_id,))
-        adjustments = db.fetch_all(
-            conn,
-            """SELECT 'ledger_adjustment' AS entry_type, la.adjustment_id AS entry_id,
-                      COALESCE(la.effective_date, substr(la.created_at,1,10)) AS entry_date,
-                      la.resident_id, r.display_name, la.amount_paise, la.reason,
-                      la.statement_id,
-                      (SELECT rv.adjustment_id FROM ledger_adjustment rv
-                        WHERE rv.reverses_adjustment_id = la.adjustment_id) AS reversed_by
-                 FROM ledger_adjustment la JOIN resident r ON r.resident_id = la.resident_id
-                WHERE r.apartment_id = ?""", (apartment_id,))
+def credits_and_adjustments(db: Database, *, apartment_id: str) -> list[dict[str, Any]]:
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        credits = uow.reports.unapplied_credits(apartment_id)
+        adjustments = uow.reports.ledger_adjustments(apartment_id)
     return sorted(credits + adjustments, key=lambda row: (row["entry_date"] or "",
                                                           row["entry_id"]), reverse=True)
 
 
-def statement_summary(db_path, *, apartment_id: str) -> list[dict[str, Any]]:
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        return db.fetch_all(
-            conn,
-            """SELECT s.statement_id, s.settlement_month, s.status, s.created_at,
-                      s.finalized_at, s.finalized_by, s.correction_deadline, s.closed_at,
-                      (SELECT COUNT(*) FROM expense_instance e
-                        WHERE e.statement_id = s.statement_id) AS expense_count,
-                      (SELECT COALESCE(SUM(e.amount_paise), 0) FROM expense_instance e
-                        WHERE e.statement_id = s.statement_id) AS statement_total_paise,
-                      (SELECT COUNT(*) FROM statement_revision sr
-                        WHERE sr.statement_id = s.statement_id) AS revision_count
-                 FROM monthly_statement s WHERE s.apartment_id = ?
-                ORDER BY s.settlement_month DESC""", (apartment_id,))
+def statement_summary(db: Database, *, apartment_id: str) -> list[dict[str, Any]]:
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        return uow.reports.statement_summaries(apartment_id)
 
 
-def statement_detail_rows(db_path, statement_id: str) -> list[dict[str, Any]]:
+def statement_detail_rows(db: Database, statement_id: str) -> list[dict[str, Any]]:
     """Statement lines, from the stored snapshot when the statement is finalized."""
-    with connect(db_path, read_only=True) as conn:
-        statement = get_statement(conn, statement_id)
+    with db.read() as uow:
+        statement = get_statement(uow, statement_id)
     if statement["snapshot_json"]:
-        snapshot = read_finalized_snapshot(db_path, statement_id)["snapshot"]
+        snapshot = read_finalized_snapshot(db, statement_id)["snapshot"]
         source = "stored_snapshot"
     else:
-        snapshot = statement_snapshot(db_path, statement_id)
+        snapshot = statement_snapshot(db, statement_id)
         source = "live_draft"
     rows: list[dict[str, Any]] = []
     names = {r["resident_id"]: r["display_name"] for r in snapshot.get("residents", [])}
@@ -296,15 +199,15 @@ def statement_detail_rows(db_path, statement_id: str) -> list[dict[str, Any]]:
     return rows
 
 
-def statement_export(db_path, statement_id: str) -> dict[str, Any]:
+def statement_export(db: Database, statement_id: str) -> dict[str, Any]:
     """The printable/exportable statement: lines, charges, and net positions."""
-    with connect(db_path, read_only=True) as conn:
-        statement = get_statement(conn, statement_id)
+    with db.read() as uow:
+        statement = get_statement(uow, statement_id)
     if statement["snapshot_json"]:
-        read = read_finalized_snapshot(db_path, statement_id)
+        read = read_finalized_snapshot(db, statement_id)
         snapshot, source, hash_matches = read["snapshot"], "stored_snapshot", read["hash_matches"]
     else:
-        snapshot, source, hash_matches = statement_snapshot(db_path, statement_id), \
+        snapshot, source, hash_matches = statement_snapshot(db, statement_id), \
             "live_draft", None
     return {
         "source": source,
@@ -323,25 +226,18 @@ def statement_export(db_path, statement_id: str) -> dict[str, Any]:
         "adjustments": snapshot.get("adjustments", []),
         "payments_in_month": snapshot.get("payments_in_month", []),
         "revisions": snapshot.get("revisions", []),
-        "detail_rows": statement_detail_rows(db_path, statement_id),
+        "detail_rows": statement_detail_rows(db, statement_id),
         "validation": snapshot.get("validation", {}),
     }
 
 
-def audit_trail_rows(db_path, *, apartment_id: str, limit: int = 2000) -> list[dict[str, Any]]:
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        return db.fetch_all(
-            conn,
-            """SELECT created_at, actor, entity_type, entity_id, action, field_name,
-                      old_value, new_value, reason
-                 FROM audit_log
-                WHERE apartment_id = ? OR apartment_id IS NULL
-                ORDER BY created_at DESC, rowid DESC LIMIT ?""",
-            (apartment_id, int(limit)))
+def audit_trail_rows(db: Database, *, apartment_id: str, limit: int = 2000) -> list[dict[str, Any]]:
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        return uow.reports.audit_trail(apartment_id, limit=int(limit))
 
 
-def build_report(db_path, kind: str, *, apartment_id: str,
+def build_report(db: Database, kind: str, *, apartment_id: str,
                  settlement_period: str | None = None,
                  statement_id: str | None = None) -> dict[str, Any]:
     """Dispatch to one report and return its rows plus a title for display."""
@@ -353,39 +249,39 @@ def build_report(db_path, kind: str, *, apartment_id: str,
                               details={"field": "statement_id"})
 
     if kind == "monthly_household_expenses":
-        rows = monthly_household_expenses(db_path, apartment_id=apartment_id,
+        rows = monthly_household_expenses(db, apartment_id=apartment_id,
                                           settlement_period=settlement_period)
         title = ("Household expenses — " + settlement_period if settlement_period
                  else "Household expenses by month")
     elif kind == "resident_expense_breakdown":
-        rows = resident_expense_breakdown(db_path, apartment_id=apartment_id,
+        rows = resident_expense_breakdown(db, apartment_id=apartment_id,
                                           settlement_period=settlement_period)
         title = "Resident expense breakdown"
     elif kind == "resident_payments_and_balances":
-        rows = resident_payments_and_balances(db_path, apartment_id=apartment_id)
+        rows = resident_payments_and_balances(db, apartment_id=apartment_id)
         title = "Resident payments and outstanding balances"
     elif kind == "provider_advances":
-        rows = provider_advance_report(db_path, apartment_id=apartment_id)
+        rows = provider_advance_report(db, apartment_id=apartment_id)
         title = "Provider advances"
     elif kind == "electricity_consumption":
-        rows = consumption_history(db_path, apartment_id)
+        rows = consumption_history(db, apartment_id)
         title = "Electricity consumption and allocation"
     elif kind == "credits_and_adjustments":
-        rows = credits_and_adjustments(db_path, apartment_id=apartment_id)
+        rows = credits_and_adjustments(db, apartment_id=apartment_id)
         title = "Credits and adjustments"
     elif kind == "statement_summary":
-        rows = statement_summary(db_path, apartment_id=apartment_id)
+        rows = statement_summary(db, apartment_id=apartment_id)
         title = "Statement summaries"
     elif kind == "statement_detail":
-        rows = statement_detail_rows(db_path, statement_id)
+        rows = statement_detail_rows(db, statement_id)
         title = "Statement detail"
     elif kind == "transaction_ledger":
         from .ledger_view import list_transactions
-        rows = list_transactions(db_path, apartment_id=apartment_id,
+        rows = list_transactions(db, apartment_id=apartment_id,
                                  settlement_period=settlement_period, limit=500)["items"]
         title = "Transaction ledger"
     else:  # audit_trail
-        rows = audit_trail_rows(db_path, apartment_id=apartment_id)
+        rows = audit_trail_rows(db, apartment_id=apartment_id)
         title = "Audit trail"
 
     return {"kind": kind, "title": title, "apartment_id": apartment_id,

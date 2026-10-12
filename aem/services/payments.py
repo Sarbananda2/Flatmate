@@ -41,12 +41,9 @@ trail complete while the money nets to nothing.
 """
 from __future__ import annotations
 
-import sqlite3
 from datetime import date
 from typing import Any
 
-from .. import db
-from ..db import connect, new_id, now_timestamp, transaction
 from ..engine.ledger import (
     Charge,
     PaymentAllocationResult,
@@ -54,8 +51,10 @@ from ..engine.ledger import (
     apply_payment_oldest_first,
 )
 from ..errors import ConflictError, NotFoundError, ValidationError
+from ..ids import new_id, now_timestamp
 from ..money import ensure_paise
 from ..periods import normalize_month, parse_iso_date
+from ..persistence import Database, UnitOfWork
 from . import audit
 from .common import (
     PAYMENT_KINDS,
@@ -70,33 +69,24 @@ from .opening_balances import opening_charge_id, split_charge_id
 
 APPLICABLE_KINDS = ("to_pool",)
 
+#: Sort keys ``list_payments`` accepts; the repository owns the ORDER BY for each.
+PAYMENT_SORTS = ("payment_date_desc", "payment_date_asc", "amount_desc", "amount_asc")
 
-def _open_charges(conn: sqlite3.Connection, resident_id: str) -> tuple[list[Charge], dict[str, int]]:
+
+def _open_charges(uow: UnitOfWork, resident_id: str) -> tuple[list[Charge], dict[str, int]]:
     """Every charge belonging to one resident, with what is already applied.
 
     Ordering inputs are (due date, insertion sequence, allocation ID). The
-    sequence is the allocation row's ``rowid``, which is monotonic, so the
+    sequence is the allocation row's ``row_seq``, which is monotonic, so the
     oldest-first result never depends on a random identifier.
 
     An opening debt (a negative opening balance) is included as a charge due on
     its ``as_of_date`` with sequence 0, so it is settled before any ordinary
     charge due the same day. Its charge ID carries the ``opening:`` prefix.
     """
-    rows = conn.execute(
-        """SELECT a.allocation_id, a.amount_paise, a.rowid AS seq,
-                  e.expense_date, e.due_date, e.settlement_period, e.description,
-                  e.statement_id
-             FROM allocation a
-             JOIN expense_instance e ON e.expense_id = a.expense_id
-            WHERE a.resident_id = ?
-            ORDER BY COALESCE(e.due_date, e.expense_date), a.rowid, a.allocation_id""",
-        (resident_id,)).fetchall()
+    rows = uow.payments.charges_for_resident(resident_id)
     already: dict[str, int] = {}
-    for row in conn.execute(
-        """SELECT pa.allocation_id, SUM(pa.amount_paise) AS applied
-             FROM payment_application pa
-            WHERE pa.allocation_id IS NOT NULL
-            GROUP BY pa.allocation_id""").fetchall():
+    for row in uow.payments.applied_by_allocation():
         already[row["allocation_id"]] = int(row["applied"])
     charges = [
         Charge(
@@ -110,12 +100,7 @@ def _open_charges(conn: sqlite3.Connection, resident_id: str) -> tuple[list[Char
         )
         for row in rows
     ]
-    opening = conn.execute(
-        """SELECT ob.opening_balance_id, ob.amount_paise, ob.as_of_date,
-                  COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                             WHERE pa.opening_balance_id = ob.opening_balance_id), 0) AS applied
-             FROM opening_balance ob
-            WHERE ob.resident_id = ? AND ob.amount_paise < 0""", (resident_id,)).fetchone()
+    opening = uow.payments.opening_debt_for_resident(resident_id)
     if opening is not None:
         charge_id = opening_charge_id(opening["opening_balance_id"])
         charges.append(Charge(
@@ -127,19 +112,14 @@ def _open_charges(conn: sqlite3.Connection, resident_id: str) -> tuple[list[Char
     return charges, {cid: already.get(cid, 0) for cid in (c.charge_id for c in charges)}
 
 
-def _charge_due_date(conn: sqlite3.Connection, charge_id: str) -> str | None:
+def _charge_due_date(uow: UnitOfWork, charge_id: str) -> str | None:
     allocation_id, opening_balance_id = split_charge_id(charge_id)
     if opening_balance_id:
-        return db.scalar(conn, "SELECT as_of_date FROM opening_balance WHERE opening_balance_id=?",
-                         (opening_balance_id,))
-    return db.scalar(conn,
-                     """SELECT COALESCE(e.due_date, e.expense_date)
-                          FROM allocation a
-                          JOIN expense_instance e ON e.expense_id = a.expense_id
-                         WHERE a.allocation_id = ?""", (allocation_id,))
+        return uow.payments.opening_balance_as_of_date(opening_balance_id)
+    return uow.payments.allocation_due_date(allocation_id)
 
 
-def _write_application(conn: sqlite3.Connection, *, payment_id: str, charge_id: str,
+def _write_application(uow: UnitOfWork, *, payment_id: str, charge_id: str,
                        amount_paise: int, timestamp: str, accumulate: bool = False) -> None:
     """Record one payment application against a charge or an opening debt.
 
@@ -148,23 +128,19 @@ def _write_application(conn: sqlite3.Connection, *, payment_id: str, charge_id: 
     """
     allocation_id, opening_balance_id = split_charge_id(charge_id)
     if accumulate:
-        column = "opening_balance_id" if opening_balance_id else "allocation_id"
-        target = opening_balance_id or allocation_id
-        existing = conn.execute(
-            f"SELECT payment_application_id FROM payment_application "
-            f"WHERE payment_id=? AND {column}=?", (payment_id, target)).fetchone()
+        if opening_balance_id:
+            existing = uow.payments.application_id_for_opening_balance(
+                payment_id, opening_balance_id)
+        else:
+            existing = uow.payments.application_id_for_allocation(payment_id, allocation_id)
         if existing:
-            conn.execute("UPDATE payment_application SET amount_paise = amount_paise + ? "
-                         "WHERE payment_application_id=?",
-                         (amount_paise, existing["payment_application_id"]))
+            uow.payments.add_to_application(existing, amount_paise)
             return
-    conn.execute(
-        """INSERT INTO payment_application
-           (payment_application_id, payment_id, allocation_id, opening_balance_id,
-            amount_paise, charge_due_date, created_at)
-           VALUES (?,?,?,?,?,?,?)""",
-        (new_id("application"), payment_id, allocation_id, opening_balance_id, amount_paise,
-         _charge_due_date(conn, charge_id), timestamp))
+    uow.payments.insert_application(
+        payment_application_id=new_id("application"), payment_id=payment_id,
+        allocation_id=allocation_id, opening_balance_id=opening_balance_id,
+        amount_paise=amount_paise, charge_due_date=_charge_due_date(uow, charge_id),
+        created_at=timestamp)
 
 
 def _application_summary(charge_id: str, amount_paise: int) -> dict[str, Any]:
@@ -201,7 +177,7 @@ def _apply_targeted(amount_paise: int, charges: list[Charge], already: dict[str,
 
 
 def _record_payment(
-    conn: sqlite3.Connection, *, apartment_id: str, payment_id: str, payer_resident_id: str,
+    uow: UnitOfWork, *, apartment_id: str, payment_id: str, payer_resident_id: str,
     amount_paise: int, payment_date: str, payment_kind: str, payee_or_provider: str | None,
     reference: str | None, note: str | None, timestamp: str, expense_id: str | None,
     actor: str, target_allocation_id: str | None = None, payment_mode: str | None = None,
@@ -228,14 +204,13 @@ def _record_payment(
         raise ValidationError("payment_date must use YYYY-MM-DD format.",
                               details={"field": "payment_date"}) from None
 
-    get_apartment(conn, apartment_id)
-    residents = resident_ids(conn, apartment_id)
+    get_apartment(uow, apartment_id)
+    residents = resident_ids(uow, apartment_id)
     if payer_resident_id not in residents:
         raise ValidationError("Payer must belong to this apartment.",
                               details={"field": "payer_resident_id",
                                        "value": payer_resident_id})
-    if conn.execute("SELECT 1 FROM payment WHERE payment_id=?",
-                    (payment_id.strip(),)).fetchone():
+    if uow.payments.exists(payment_id.strip()):
         raise ConflictError("A payment with this ID already exists.",
                             code="payment_exists",
                             details={"payment_id": payment_id.strip()})
@@ -243,31 +218,19 @@ def _record_payment(
         if payment_kind != "provider_advance":
             raise ValidationError("Only provider advances may be linked to an expense.",
                                   details={"field": "expense_id"})
-        expense = conn.execute(
-            "SELECT expense_id, apartment_id, statement_id, amount_paise "
-            "FROM expense_instance WHERE expense_id=?", (expense_id,)).fetchone()
+        expense = uow.payments.expense_for_link(expense_id)
         if not expense:
             raise NotFoundError("Linked expense not found.",
                                 details={"expense_id": expense_id})
         owner = expense["apartment_id"]
         if owner is None and expense["statement_id"]:
-            owner = db.scalar(
-                conn, "SELECT apartment_id FROM monthly_statement WHERE statement_id=?",
-                (expense["statement_id"],))
+            owner = uow.payments.statement_apartment_id(expense["statement_id"])
         if owner is None:
-            owner = db.scalar(
-                conn,
-                """SELECT r.apartment_id FROM allocation a
-                     JOIN resident r ON r.resident_id = a.resident_id
-                    WHERE a.expense_id = ? LIMIT 1""", (expense_id,))
+            owner = uow.payments.expense_apartment_id_from_allocations(expense_id)
         if owner != apartment_id:
             raise ValidationError("Linked expense must belong to this apartment.",
                                   details={"expense_id": expense_id})
-        already_linked = int(db.scalar(
-            conn,
-            """SELECT COALESCE(SUM(amount_paise), 0) FROM payment
-                WHERE expense_id=? AND payment_kind='provider_advance' AND status='active'""",
-            (expense_id,), default=0))
+        already_linked = uow.payments.linked_advances_paise(expense_id)
         if already_linked + amount_paise > expense["amount_paise"]:
             raise ValidationError(
                 "Linked provider advances would exceed the expense they fund. "
@@ -280,28 +243,26 @@ def _record_payment(
 
     applied = None
     if payment_kind in APPLICABLE_KINDS:
-        charges, already = _open_charges(conn, payer_resident_id)
+        charges, already = _open_charges(uow, payer_resident_id)
         if target_allocation_id:
             applied = _apply_targeted(amount_paise, charges, already, target_allocation_id)
         else:
             applied = apply_payment_oldest_first(amount_paise, charges, already)
 
-    conn.execute(
-        """INSERT INTO payment
-           (payment_id, payer_resident_id, amount_paise, payment_date, payment_kind,
-            expense_id, payee_or_provider, reference, note, apartment_id, status,
-            reverses_payment_id, created_at, created_by, payment_mode)
-           VALUES (?,?,?,?,?,?,?,?,?,?,'active',NULL,?,?,?)""",
-        (payment_id.strip(), payer_resident_id, amount_paise, payment_date, payment_kind,
-         expense_id, optional_text(payee_or_provider, "payee_or_provider", max_length=200),
-         optional_text(reference, "reference", max_length=200),
-         optional_text(note, "note"), apartment_id, timestamp, actor, payment_mode))
+    uow.payments.insert_payment(
+        payment_id=payment_id.strip(), payer_resident_id=payer_resident_id,
+        amount_paise=amount_paise, payment_date=payment_date, payment_kind=payment_kind,
+        expense_id=expense_id,
+        payee_or_provider=optional_text(payee_or_provider, "payee_or_provider", max_length=200),
+        reference=optional_text(reference, "reference", max_length=200),
+        note=optional_text(note, "note"), apartment_id=apartment_id, created_at=timestamp,
+        created_by=actor, payment_mode=payment_mode)
     if applied:
         for application in applied.applications:
-            _write_application(conn, payment_id=payment_id.strip(),
+            _write_application(uow, payment_id=payment_id.strip(),
                                charge_id=application.charge_id,
                                amount_paise=application.amount_paise, timestamp=timestamp)
-    audit.record(conn, entity_type="payment", entity_id=payment_id.strip(),
+    audit.record(uow, entity_type="payment", entity_id=payment_id.strip(),
                  action="create", actor=actor, apartment_id=apartment_id,
                  new_value={"payer_resident_id": payer_resident_id,
                             "amount_paise": amount_paise,
@@ -327,7 +288,7 @@ def _record_payment(
 
 
 def record_payment(
-    db_path, *, apartment_id: str, payment_id: str, payer_resident_id: str,
+    db: Database, *, apartment_id: str, payment_id: str, payer_resident_id: str,
     amount_paise: int, payment_date: str, payment_kind: str = "to_pool",
     payee_or_provider: str | None = None, reference: str | None = None,
     note: str | None = None, created_at: str | None = None,
@@ -345,9 +306,9 @@ def record_payment(
     unapplied credit. Nothing is estimated: the applications written here are
     exactly the ones reported.
     """
-    with transaction(db_path) as conn:
+    with db.transaction() as uow:
         return _record_payment(
-            conn, apartment_id=apartment_id, payment_id=payment_id,
+            uow, apartment_id=apartment_id, payment_id=payment_id,
             payer_resident_id=payer_resident_id, amount_paise=amount_paise,
             payment_date=payment_date, payment_kind=payment_kind,
             payee_or_provider=payee_or_provider, reference=reference, note=note,
@@ -356,7 +317,7 @@ def record_payment(
 
 
 def settle_peer_to_peer(
-    db_path, *, apartment_id: str, from_resident_id: str, to_resident_id: str,
+    db: Database, *, apartment_id: str, from_resident_id: str, to_resident_id: str,
     amount_paise: int, payment_date: str, reference: str | None = None,
     note: str | None = None, settlement_id: str | None = None, actor: str = "operator",
 ) -> dict[str, Any]:
@@ -378,25 +339,25 @@ def settle_peer_to_peer(
     if not settlement_id:
         raise ValidationError("settlement_id is required.", details={"field": "settlement_id"})
     timestamp = now_timestamp()
-    with transaction(db_path) as conn:
-        get_apartment(conn, apartment_id)
-        payer = get_resident(conn, from_resident_id, apartment_id)
-        receiver = get_resident(conn, to_resident_id, apartment_id)
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        payer = get_resident(uow, from_resident_id, apartment_id)
+        receiver = get_resident(uow, to_resident_id, apartment_id)
         shared = dict(apartment_id=apartment_id, amount_paise=amount_paise,
                       payment_date=payment_date, reference=reference, timestamp=timestamp,
                       expense_id=None, actor=actor)
         label = optional_text(note, "note")
         paid = _record_payment(
-            conn, payment_id=f"{settlement_id}-paid", payer_resident_id=from_resident_id,
+            uow, payment_id=f"{settlement_id}-paid", payer_resident_id=from_resident_id,
             payment_kind="to_pool", payee_or_provider=receiver["display_name"],
             note=label or f"Direct settlement to {receiver['display_name']} ({settlement_id})",
             **shared)
         received = _record_payment(
-            conn, payment_id=f"{settlement_id}-received", payer_resident_id=to_resident_id,
+            uow, payment_id=f"{settlement_id}-received", payer_resident_id=to_resident_id,
             payment_kind="refund", payee_or_provider=payer["display_name"],
             note=label or f"Direct settlement from {payer['display_name']} ({settlement_id})",
             **shared)
-        audit.record(conn, entity_type="p2p_settlement", entity_id=settlement_id,
+        audit.record(uow, entity_type="p2p_settlement", entity_id=settlement_id,
                      action="create", actor=actor, apartment_id=apartment_id,
                      new_value={"from_resident_id": from_resident_id,
                                 "to_resident_id": to_resident_id,
@@ -414,7 +375,7 @@ def settle_peer_to_peer(
     }
 
 
-def reapply_unapplied_credit(db_path, *, apartment_id: str, resident_id: str,
+def reapply_unapplied_credit(db: Database, *, apartment_id: str, resident_id: str,
                              actor: str = "operator") -> dict[str, Any]:
     """Apply a resident's existing unapplied credit to charges that now exist.
 
@@ -422,27 +383,20 @@ def reapply_unapplied_credit(db_path, *, apartment_id: str, resident_id: str,
     visible credit until somebody decides to use it. Credits are consumed
     oldest-payment-first, and each one is applied oldest-charge-first.
     """
-    with transaction(db_path) as conn:
-        get_apartment(conn, apartment_id)
-        get_resident(conn, resident_id, apartment_id)
-        rows = conn.execute(
-            """SELECT p.payment_id, p.amount_paise, p.payment_date,
-                      COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                                 WHERE pa.payment_id = p.payment_id), 0) AS applied
-                 FROM payment p
-                WHERE p.payer_resident_id = ? AND p.payment_kind = 'to_pool'
-                  AND p.status = 'active'
-                ORDER BY p.payment_date, p.rowid""", (resident_id,)).fetchall()
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        get_resident(uow, resident_id, apartment_id)
+        rows = uow.payments.pool_payments_with_applied(resident_id)
         created: list[dict[str, Any]] = []
         total_applied = 0
         for row in rows:
             remaining = int(row["amount_paise"]) - int(row["applied"])
             if remaining <= 0:
                 continue
-            charges, already = _open_charges(conn, resident_id)
+            charges, already = _open_charges(uow, resident_id)
             result = apply_payment_oldest_first(remaining, charges, already)
             for application in result.applications:
-                _write_application(conn, payment_id=row["payment_id"],
+                _write_application(uow, payment_id=row["payment_id"],
                                    charge_id=application.charge_id,
                                    amount_paise=application.amount_paise,
                                    timestamp=now_timestamp(), accumulate=True)
@@ -451,7 +405,7 @@ def reapply_unapplied_credit(db_path, *, apartment_id: str, resident_id: str,
                                                        application.amount_paise)})
                 total_applied += application.amount_paise
         if created:
-            audit.record(conn, entity_type="resident", entity_id=resident_id,
+            audit.record(uow, entity_type="resident", entity_id=resident_id,
                          action="apply_credit", actor=actor, apartment_id=apartment_id,
                          new_value={"applications": created,
                                     "total_applied_paise": total_applied})
@@ -459,7 +413,7 @@ def reapply_unapplied_credit(db_path, *, apartment_id: str, resident_id: str,
                 "total_applied_paise": total_applied}
 
 
-def reverse_payment(db_path, payment_id: str, *, reason: str, actor: str = "operator",
+def reverse_payment(db: Database, payment_id: str, *, reason: str, actor: str = "operator",
                     apartment_id: str | None = None,
                     reversal_payment_id: str | None = None,
                     reversal_date: str | None = None) -> dict[str, Any]:
@@ -474,16 +428,14 @@ def reverse_payment(db_path, payment_id: str, *, reason: str, actor: str = "oper
     if not reason:
         raise ValidationError("A reason is required to reverse a payment.",
                               details={"field": "reason"})
-    with transaction(db_path) as conn:
-        original = db.fetch_one(conn, "SELECT * FROM payment WHERE payment_id=?", (payment_id,))
+    with db.transaction() as uow:
+        original = uow.payments.get(payment_id)
         if original is None:
             raise NotFoundError("Payment not found.", details={"payment_id": payment_id})
         if apartment_id is not None and original["apartment_id"] not in (None, apartment_id):
             raise ValidationError("Payment must belong to this apartment.",
                                   details={"payment_id": payment_id})
-        rent_cycle = db.fetch_one(
-            conn, "SELECT cycle_id, settlement_month FROM rent_cycle WHERE funding_payment_id=?",
-            (payment_id,))
+        rent_cycle = uow.payments.rent_cycle_funded_by(payment_id)
         if rent_cycle is not None:
             # The cycle is frozen once the landlord is paid, and it names this
             # advance as how. Reversing it would leave the two disagreeing.
@@ -499,27 +451,21 @@ def reverse_payment(db_path, payment_id: str, *, reason: str, actor: str = "oper
                 code="payment_not_active",
                 details={"payment_id": payment_id, "status": original["status"]})
         reversal_id = (reversal_payment_id or f"{payment_id}-reversal").strip()
-        if conn.execute("SELECT 1 FROM payment WHERE payment_id=?", (reversal_id,)).fetchone():
+        if uow.payments.exists(reversal_id):
             reversal_id = new_id("reversal")
         timestamp = now_timestamp()
-        released = db.fetch_all(
-            conn, "SELECT allocation_id, opening_balance_id, amount_paise "
-                  "FROM payment_application WHERE payment_id=?",
-            (payment_id,))
-        conn.execute("DELETE FROM payment_application WHERE payment_id=?", (payment_id,))
-        conn.execute("UPDATE payment SET status='reversed' WHERE payment_id=?", (payment_id,))
-        conn.execute(
-            """INSERT INTO payment
-               (payment_id, payer_resident_id, amount_paise, payment_date, payment_kind,
-                expense_id, payee_or_provider, reference, note, apartment_id, status,
-                reverses_payment_id, created_at, created_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,'reversal',?,?,?)""",
-            (reversal_id, original["payer_resident_id"], original["amount_paise"],
-             reversal_date or timestamp[:10], original["payment_kind"], original["expense_id"],
-             original["payee_or_provider"], original["reference"],
-             f"Reversal of {payment_id}: {reason}", original["apartment_id"],
-             payment_id, timestamp, actor))
-        audit.record(conn, entity_type="payment", entity_id=payment_id, action="reverse",
+        released = uow.payments.released_applications(payment_id)
+        uow.payments.delete_applications(payment_id)
+        uow.payments.mark_reversed(payment_id)
+        uow.payments.insert_reversal(
+            payment_id=reversal_id, payer_resident_id=original["payer_resident_id"],
+            amount_paise=original["amount_paise"],
+            payment_date=reversal_date or timestamp[:10],
+            payment_kind=original["payment_kind"], expense_id=original["expense_id"],
+            payee_or_provider=original["payee_or_provider"], reference=original["reference"],
+            note=f"Reversal of {payment_id}: {reason}", apartment_id=original["apartment_id"],
+            reverses_payment_id=payment_id, created_at=timestamp, created_by=actor)
+        audit.record(uow, entity_type="payment", entity_id=payment_id, action="reverse",
                      actor=actor, apartment_id=original["apartment_id"], reason=reason,
                      old_value={"status": "active",
                                 "applications": released,
@@ -529,45 +475,27 @@ def reverse_payment(db_path, payment_id: str, *, reason: str, actor: str = "oper
                 "released_applications": released, "reason": reason}
 
 
-def read_payment(db_path, payment_id: str) -> dict[str, Any]:
-    with connect(db_path, read_only=True) as conn:
-        payment = db.fetch_one(conn, "SELECT * FROM payment WHERE payment_id=?", (payment_id,))
+def read_payment(db: Database, payment_id: str) -> dict[str, Any]:
+    with db.read() as uow:
+        payment = uow.payments.get(payment_id)
         if payment is None:
             raise NotFoundError("Payment not found.", details={"payment_id": payment_id})
-        payment["payer_display_name"] = db.scalar(
-            conn, "SELECT display_name FROM resident WHERE resident_id=?",
-            (payment["payer_resident_id"],))
-        payment["applications"] = db.fetch_all(
-            conn,
-            """SELECT pa.*, COALESCE(a.resident_id, ob.resident_id) AS resident_id,
-                      COALESCE(a.amount_paise, -ob.amount_paise) AS charge_amount_paise,
-                      e.expense_id,
-                      COALESCE(e.description, 'Opening balance') AS expense_description,
-                      e.settlement_period, COALESCE(e.expense_date, ob.as_of_date) AS expense_date
-                 FROM payment_application pa
-                 LEFT JOIN allocation a ON a.allocation_id = pa.allocation_id
-                 LEFT JOIN expense_instance e ON e.expense_id = a.expense_id
-                 LEFT JOIN opening_balance ob ON ob.opening_balance_id = pa.opening_balance_id
-                WHERE pa.payment_id = ?
-                ORDER BY COALESCE(e.due_date, e.expense_date, ob.as_of_date), pa.rowid""",
-            (payment_id,))
+        payment["payer_display_name"] = uow.payments.payer_display_name(
+            payment["payer_resident_id"])
+        payment["applications"] = uow.payments.applications_for_payment(payment_id)
         applied = sum(row["amount_paise"] for row in payment["applications"])
         payment["applied_paise"] = applied
         payment["unapplied_paise"] = (payment["amount_paise"] - applied
                                       if payment["payment_kind"] == "to_pool"
                                       and payment["status"] == "active" else 0)
-        payment["linked_expense"] = db.fetch_one(
-            conn, "SELECT expense_id, description, amount_paise, settlement_period "
-                  "FROM expense_instance WHERE expense_id=?", (payment["expense_id"],)) \
+        payment["linked_expense"] = uow.payments.linked_expense_summary(payment["expense_id"]) \
             if payment["expense_id"] else None
-        payment["reversal"] = db.fetch_one(
-            conn, "SELECT payment_id, payment_date, note FROM payment "
-                  "WHERE reverses_payment_id=?", (payment_id,))
+        payment["reversal"] = uow.payments.reversal_of(payment_id)
         return payment
 
 
 def list_payments(
-    db_path, *, apartment_id: str, resident_id: str | None = None,
+    db: Database, *, apartment_id: str, resident_id: str | None = None,
     payment_kind: str | None = None, status: str | None = None,
     settlement_period: str | None = None, date_from: str | None = None,
     date_to: str | None = None, expense_id: str | None = None,
@@ -575,73 +503,33 @@ def list_payments(
     limit: int | None = 50, offset: int | None = 0, sort: str = "payment_date_desc",
 ) -> dict[str, Any]:
     limit, offset = paginate(limit, offset)
-    clauses = ["p.apartment_id = ?"]
-    params: list[Any] = [apartment_id]
-    if resident_id:
-        clauses.append("p.payer_resident_id = ?")
-        params.append(resident_id)
+    filters: dict[str, Any] = {
+        "apartment_id": apartment_id, "resident_id": resident_id, "payment_kind": None,
+        "status": status, "settlement_period": None, "date_from": None, "date_to": None,
+        "expense_id": expense_id, "unapplied_only": bool(unapplied_only), "search": None,
+    }
     if payment_kind:
         if payment_kind not in PAYMENT_KINDS:
             raise ValidationError("Unsupported payment_kind.",
                                   details={"field": "payment_kind"})
-        clauses.append("p.payment_kind = ?")
-        params.append(payment_kind)
-    if status:
-        clauses.append("p.status = ?")
-        params.append(status)
+        filters["payment_kind"] = payment_kind
     if settlement_period:
-        clauses.append("substr(p.payment_date, 1, 7) = ?")
-        params.append(normalize_month(settlement_period, "settlement_period"))
+        filters["settlement_period"] = normalize_month(settlement_period, "settlement_period")
     if date_from:
-        clauses.append("p.payment_date >= ?")
-        params.append(parse_iso_date(date_from, "date_from").isoformat())
+        filters["date_from"] = parse_iso_date(date_from, "date_from").isoformat()
     if date_to:
-        clauses.append("p.payment_date <= ?")
-        params.append(parse_iso_date(date_to, "date_to").isoformat())
-    if expense_id:
-        clauses.append("p.expense_id = ?")
-        params.append(expense_id)
+        filters["date_to"] = parse_iso_date(date_to, "date_to").isoformat()
     if search:
-        clauses.append("(COALESCE(p.payee_or_provider,'') LIKE ? OR COALESCE(p.reference,'') "
-                       "LIKE ? OR COALESCE(p.note,'') LIKE ? OR p.payment_id LIKE ?)")
-        params.extend([f"%{search.strip()}%"] * 4)
-    if unapplied_only:
-        clauses.append("p.payment_kind = 'to_pool' AND p.status = 'active' AND p.amount_paise > "
-                       "COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa "
-                       "WHERE pa.payment_id = p.payment_id), 0)")
+        filters["search"] = search.strip()
 
-    orders = {
-        "payment_date_desc": "p.payment_date DESC, p.rowid DESC",
-        "payment_date_asc": "p.payment_date ASC, p.rowid ASC",
-        "amount_desc": "p.amount_paise DESC, p.rowid DESC",
-        "amount_asc": "p.amount_paise ASC, p.rowid ASC",
-    }
-    if sort not in orders:
+    if sort not in PAYMENT_SORTS:
         raise ValidationError(f"Unsupported sort: {sort}",
-                              details={"field": "sort", "allowed": sorted(orders)})
-    where = " AND ".join(clauses)
-    base = f"""
-        FROM payment p
-        LEFT JOIN resident r ON r.resident_id = p.payer_resident_id
-        WHERE {where}
-    """
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        total = int(conn.execute(f"SELECT COUNT(*) {base}", tuple(params)).fetchone()[0])
-        total_amount = int(conn.execute(
-            f"SELECT COALESCE(SUM(p.amount_paise), 0) {base}", tuple(params)).fetchone()[0])
-        rows = db.fetch_all(
-            conn,
-            f"""SELECT p.*, r.display_name AS payer_display_name,
-                       COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                                  WHERE pa.payment_id = p.payment_id), 0) AS applied_paise,
-                       (SELECT COUNT(*) FROM payment_application pa
-                         WHERE pa.payment_id = p.payment_id) AS application_count,
-                       (SELECT e.description FROM expense_instance e
-                         WHERE e.expense_id = p.expense_id) AS linked_expense_description
-                  {base}
-                ORDER BY {orders[sort]} LIMIT ? OFFSET ?""",
-            params + [limit, offset])
+                              details={"field": "sort", "allowed": sorted(PAYMENT_SORTS)})
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        total = uow.payments.count_payments(**filters)
+        total_amount = uow.payments.total_amount_paise(**filters)
+        rows = uow.payments.list_payments(sort=sort, limit=limit, offset=offset, **filters)
     for row in rows:
         row["unapplied_paise"] = (row["amount_paise"] - row["applied_paise"]
                                   if row["payment_kind"] == "to_pool"
@@ -650,85 +538,41 @@ def list_payments(
             "limit": limit, "offset": offset}
 
 
-def unapplied_credits(db_path, apartment_id: str) -> list[dict[str, Any]]:
+def unapplied_credits(db: Database, apartment_id: str) -> list[dict[str, Any]]:
     """Every pool payment with money left over, by resident.
 
     Credits are reported from the records themselves -- payment amount minus the
     applications written against it -- so a credit can never be lost between
     months or quietly absorbed.
     """
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        return db.fetch_all(
-            conn,
-            """SELECT p.payment_id, p.payer_resident_id, r.display_name, p.payment_date,
-                      p.amount_paise,
-                      COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                                 WHERE pa.payment_id = p.payment_id), 0) AS applied_paise,
-                      p.amount_paise - COALESCE((SELECT SUM(pa.amount_paise)
-                                                   FROM payment_application pa
-                                                  WHERE pa.payment_id = p.payment_id), 0)
-                          AS unapplied_paise
-                 FROM payment p JOIN resident r ON r.resident_id = p.payer_resident_id
-                WHERE p.apartment_id = ? AND p.payment_kind = 'to_pool' AND p.status = 'active'
-                  AND p.amount_paise > COALESCE((SELECT SUM(pa.amount_paise)
-                                                   FROM payment_application pa
-                                                  WHERE pa.payment_id = p.payment_id), 0)
-                ORDER BY p.payment_date, p.rowid""", (apartment_id,))
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        return uow.payments.unapplied_credits(apartment_id)
 
 
-def provider_advances(db_path, apartment_id: str) -> list[dict[str, Any]]:
+def provider_advances(db: Database, apartment_id: str) -> list[dict[str, Any]]:
     """Provider advances with their link status.
 
     ``is_linked`` is the field that decides whether the funded expense's
     ``payer_resident_id`` is used or ignored, so it is reported explicitly
     rather than inferred by the reader.
     """
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        rows = db.fetch_all(
-            conn,
-            """SELECT p.*, r.display_name AS payer_display_name,
-                      e.description AS expense_description, e.amount_paise AS expense_amount_paise,
-                      e.payer_resident_id AS expense_payer_resident_id,
-                      e.settlement_period AS expense_settlement_period
-                 FROM payment p
-                 JOIN resident r ON r.resident_id = p.payer_resident_id
-                 LEFT JOIN expense_instance e ON e.expense_id = p.expense_id
-                WHERE p.apartment_id = ? AND p.payment_kind = 'provider_advance'
-                ORDER BY p.payment_date DESC, p.rowid DESC""", (apartment_id,))
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        rows = uow.payments.provider_advances(apartment_id)
     for row in rows:
         row["is_linked"] = row["expense_id"] is not None
     return rows
 
 
-def resident_charge_ledger(db_path, *, apartment_id: str, resident_id: str,
+def resident_charge_ledger(db: Database, *, apartment_id: str, resident_id: str,
                            include_settled: bool = True) -> list[dict[str, Any]]:
     """One resident's charges, oldest first, with how much of each is settled."""
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        get_resident(conn, resident_id, apartment_id)
-        rows = db.fetch_all(
-            conn,
-            """SELECT a.allocation_id, a.amount_paise, e.expense_id, e.description,
-                      e.expense_date, e.due_date, e.settlement_period, e.service_period,
-                      e.statement_id, s.status AS statement_status,
-                      COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                                 WHERE pa.allocation_id = a.allocation_id), 0) AS settled_paise
-                 FROM allocation a
-                 JOIN expense_instance e ON e.expense_id = a.expense_id
-                 LEFT JOIN monthly_statement s ON s.statement_id = e.statement_id
-                WHERE a.resident_id = ?
-                ORDER BY COALESCE(e.due_date, e.expense_date), a.rowid""", (resident_id,))
-        opening = db.fetch_one(
-            conn,
-            """SELECT ob.opening_balance_id, -ob.amount_paise AS amount_paise, ob.as_of_date,
-                      ob.note,
-                      COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                                 WHERE pa.opening_balance_id = ob.opening_balance_id), 0)
-                          AS settled_paise
-                 FROM opening_balance ob
-                WHERE ob.resident_id = ? AND ob.amount_paise < 0""", (resident_id,))
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        get_resident(uow, resident_id, apartment_id)
+        rows = uow.payments.charge_ledger_for_resident(resident_id)
+        opening = uow.payments.opening_debt_ledger_row(resident_id)
     for row in rows:
         row["is_opening_balance"] = False
     if opening:

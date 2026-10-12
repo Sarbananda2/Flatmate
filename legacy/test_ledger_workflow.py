@@ -1,8 +1,7 @@
-import sqlite3
-import tempfile
 import unittest
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
+
+import _root  # noqa: F401  (makes ``tests`` importable)
 
 from electricity_workflow import initialize_database
 from ledger_workflow import (
@@ -18,20 +17,20 @@ from ledger_workflow import (
     reconcile_pooled_settlement,
     record_adjustment,
 )
+from tests.support import connect, drop_database, new_database
 
 
 class LedgerWorkflowTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.db = Path(self.temp.name) / "home.sqlite"
+        self.db = new_database()
         initialize_database(self.db)
-        with sqlite3.connect(self.db) as conn:
+        with connect(self.db) as conn:
             conn.execute(
-                "INSERT INTO apartment (apartment_id, name, created_at) VALUES (?, ?, ?)",
+                "INSERT INTO apartment (apartment_id, name, created_at) VALUES (%s, %s, %s)",
                 ("home", "Test Apartment", "2026-10-10T10:00:00+05:30"),
             )
-            conn.executemany(
-                "INSERT INTO resident (resident_id, apartment_id, display_name) VALUES (?, ?, ?)",
+            conn.cursor().executemany(
+                "INSERT INTO resident (resident_id, apartment_id, display_name) VALUES (%s, %s, %s)",
                 [("alice", "home", "Alice"), ("bob", "home", "Bob")],
             )
         self.statement_id = create_monthly_statement(
@@ -40,7 +39,7 @@ class LedgerWorkflowTests(unittest.TestCase):
         )
 
     def tearDown(self):
-        self.temp.cleanup()
+        drop_database(self.db)
 
     def test_create_expense_persists_allocations(self):
         result = create_expense(
@@ -51,7 +50,7 @@ class LedgerWorkflowTests(unittest.TestCase):
             payer_resident_id="alice", statement_id=self.statement_id,
         )
         self.assertEqual(result["amount_paise"], 10001)
-        with sqlite3.connect(self.db) as conn:
+        with connect(self.db) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM expense_instance WHERE expense_id='groceries-1'").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT SUM(amount_paise) FROM allocation WHERE expense_id='groceries-1'").fetchone()[0], 10001)
 
@@ -63,7 +62,7 @@ class LedgerWorkflowTests(unittest.TestCase):
                 expense_date="2026-10-05", expense_period="2026-10",
                 allocations_paise={"alice": 40, "bob": 40},
             )
-        with sqlite3.connect(self.db) as conn:
+        with connect(self.db) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM expense_instance WHERE expense_id='bad'").fetchone()[0], 0)
 
     def test_requires_all_apartment_residents_in_allocations(self):
@@ -103,7 +102,7 @@ class LedgerWorkflowTests(unittest.TestCase):
         )
         self.assertEqual(sum(x["amount_paise"] for x in result["applications"]), 7000)
         self.assertEqual(result["unapplied_credit_paise"], 0)
-        with sqlite3.connect(self.db) as conn:
+        with connect(self.db) as conn:
             rows = conn.execute(
                 """SELECT a.expense_id, SUM(pa.amount_paise) FROM payment_application pa
                    JOIN allocation a ON a.allocation_id=pa.allocation_id
@@ -133,7 +132,7 @@ class LedgerWorkflowTests(unittest.TestCase):
             payee_or_provider="Electricity provider",
         )
         self.assertEqual(result["applications"], [])
-        with sqlite3.connect(self.db) as conn:
+        with connect(self.db) as conn:
             self.assertEqual(conn.execute("SELECT payment_kind FROM payment WHERE payment_id='provider'").fetchone()[0], "provider_advance")
 
     def test_statement_snapshot_and_finalize(self):
@@ -151,8 +150,8 @@ class LedgerWorkflowTests(unittest.TestCase):
             self.db, statement_id=self.statement_id, finalized_by="operator", now=now,
         )
         self.assertEqual(finalized["status"], "finalized_correction_window")
-        with sqlite3.connect(self.db) as conn:
-            row = conn.execute("SELECT status, snapshot_json FROM monthly_statement WHERE statement_id=?", (self.statement_id,)).fetchone()
+        with connect(self.db) as conn:
+            row = conn.execute("SELECT status, snapshot_json FROM monthly_statement WHERE statement_id=%s", (self.statement_id,)).fetchone()
         self.assertEqual(row[0], "finalized_correction_window")
         self.assertIsNotNone(row[1])
         with self.assertRaisesRegex(LedgerWorkflowError, "draft statement"):
@@ -230,8 +229,8 @@ class LedgerWorkflowTests(unittest.TestCase):
         self.assertEqual(result["adjustment_net_paise_by_resident"]["bob"], 250)
         self.assertEqual(result["net_positions_paise_by_account"]["bob"], 250)
         self.assertEqual(result["net_positions_paise_by_account"]["__pool__"], -250)
-        with sqlite3.connect(self.db) as conn:
-            self.assertEqual(conn.execute("SELECT reason FROM ledger_adjustment WHERE adjustment_id=?", (adjustment_id,)).fetchone()[0], "Correction from prior statement")
+        with connect(self.db) as conn:
+            self.assertEqual(conn.execute("SELECT reason FROM ledger_adjustment WHERE adjustment_id=%s", (adjustment_id,)).fetchone()[0], "Correction from prior statement")
 
     def test_reconciliation_can_cut_off_by_date(self):
         create_expense(

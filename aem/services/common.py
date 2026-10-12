@@ -1,10 +1,10 @@
 """Lookups and guards shared by every service."""
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from ..errors import ConflictError, ImmutableRecordError, NotFoundError, ValidationError
+from ..persistence import UnitOfWork
 
 POOL_ACCOUNT_ID = "__pool__"
 
@@ -40,45 +40,34 @@ def optional_text(value: Any, label: str, *, max_length: int = 2000) -> str | No
     return text
 
 
-def get_apartment(conn: sqlite3.Connection, apartment_id: str) -> dict[str, Any]:
-    row = conn.execute("SELECT * FROM apartment WHERE apartment_id = ?",
-                       (apartment_id,)).fetchone()
-    if row is None:
+def get_apartment(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
+    apartment = uow.apartments.get(apartment_id)
+    if apartment is None:
         raise NotFoundError("Apartment not found.",
                             details={"apartment_id": apartment_id})
-    return dict(row)
+    return apartment
 
 
-def apartment_exists(conn: sqlite3.Connection, apartment_id: str) -> bool:
-    return conn.execute("SELECT 1 FROM apartment WHERE apartment_id = ?",
-                        (apartment_id,)).fetchone() is not None
+def apartment_exists(uow: UnitOfWork, apartment_id: str) -> bool:
+    return uow.apartments.exists(apartment_id)
 
 
-def list_residents(conn: sqlite3.Connection, apartment_id: str, *,
+def list_residents(uow: UnitOfWork, apartment_id: str, *,
                    active_only: bool = False) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM resident WHERE apartment_id = ?"
-    if active_only:
-        sql += " AND is_active = 1"
-    sql += " ORDER BY display_name, resident_id"
-    return [dict(row) for row in conn.execute(sql, (apartment_id,)).fetchall()]
+    return uow.residents.list_for_apartment(apartment_id, active_only=active_only)
 
 
-def resident_ids(conn: sqlite3.Connection, apartment_id: str, *,
+def resident_ids(uow: UnitOfWork, apartment_id: str, *,
                  active_only: bool = False) -> list[str]:
     """Resident IDs, sorted. Sorting makes every downstream split deterministic."""
-    sql = "SELECT resident_id FROM resident WHERE apartment_id = ?"
-    if active_only:
-        sql += " AND is_active = 1"
-    return sorted(row[0] for row in conn.execute(sql, (apartment_id,)).fetchall())
+    return sorted(uow.residents.ids_for_apartment(apartment_id, active_only=active_only))
 
 
-def get_resident(conn: sqlite3.Connection, resident_id: str,
+def get_resident(uow: UnitOfWork, resident_id: str,
                  apartment_id: str | None = None) -> dict[str, Any]:
-    row = conn.execute("SELECT * FROM resident WHERE resident_id = ?",
-                       (resident_id,)).fetchone()
-    if row is None:
+    resident = uow.residents.get(resident_id)
+    if resident is None:
         raise NotFoundError("Resident not found.", details={"resident_id": resident_id})
-    resident = dict(row)
     if apartment_id is not None and resident["apartment_id"] != apartment_id:
         raise ValidationError("Resident must belong to this apartment.",
                               details={"resident_id": resident_id,
@@ -86,36 +75,32 @@ def get_resident(conn: sqlite3.Connection, resident_id: str,
     return resident
 
 
-def get_statement(conn: sqlite3.Connection, statement_id: str,
+def get_statement(uow: UnitOfWork, statement_id: str,
                   apartment_id: str | None = None) -> dict[str, Any]:
-    row = conn.execute("SELECT * FROM monthly_statement WHERE statement_id = ?",
-                       (statement_id,)).fetchone()
-    if row is None:
+    statement = uow.statements.get(statement_id)
+    if statement is None:
         raise NotFoundError("Statement not found.", details={"statement_id": statement_id})
-    statement = dict(row)
     if apartment_id is not None and statement["apartment_id"] != apartment_id:
         raise ValidationError("Statement must belong to this apartment.",
                               details={"statement_id": statement_id})
     return statement
 
 
-def get_expense(conn: sqlite3.Connection, expense_id: str,
+def get_expense(uow: UnitOfWork, expense_id: str,
                 apartment_id: str | None = None) -> dict[str, Any]:
-    row = conn.execute("SELECT * FROM expense_instance WHERE expense_id = ?",
-                       (expense_id,)).fetchone()
-    if row is None:
+    expense = uow.expenses.get(expense_id)
+    if expense is None:
         raise NotFoundError("Expense not found.", details={"expense_id": expense_id})
-    expense = dict(row)
     if apartment_id is not None and expense.get("apartment_id") not in (None, apartment_id):
         raise ValidationError("Expense must belong to this apartment.",
                               details={"expense_id": expense_id})
     return expense
 
 
-def require_draft_statement(conn: sqlite3.Connection, statement_id: str,
+def require_draft_statement(uow: UnitOfWork, statement_id: str,
                             apartment_id: str) -> dict[str, Any]:
     """Guard used when attaching a new expense to a statement."""
-    statement = get_statement(conn, statement_id, apartment_id)
+    statement = get_statement(uow, statement_id, apartment_id)
     if statement["status"] != "draft":
         raise ConflictError("Expenses can only be added to a draft statement.",
                             code="statement_not_draft",
@@ -124,7 +109,7 @@ def require_draft_statement(conn: sqlite3.Connection, statement_id: str,
     return statement
 
 
-def statement_edit_mode(conn: sqlite3.Connection, statement_id: str | None) -> str:
+def statement_edit_mode(uow: UnitOfWork, statement_id: str | None) -> str:
     """How an edit to a record in this statement must be handled.
 
     ``"free"``      — draft, or not attached to any statement: edit directly.
@@ -135,7 +120,7 @@ def statement_edit_mode(conn: sqlite3.Connection, statement_id: str | None) -> s
     """
     if not statement_id:
         return "free"
-    statement = get_statement(conn, statement_id)
+    statement = get_statement(uow, statement_id)
     if statement["status"] == "draft":
         return "free"
     if statement["status"] == "finalized_correction_window":
@@ -143,9 +128,9 @@ def statement_edit_mode(conn: sqlite3.Connection, statement_id: str | None) -> s
     return "locked"
 
 
-def assert_not_locked(conn: sqlite3.Connection, statement_id: str | None,
+def assert_not_locked(uow: UnitOfWork, statement_id: str | None,
                       what: str = "record") -> str:
-    mode = statement_edit_mode(conn, statement_id)
+    mode = statement_edit_mode(uow, statement_id)
     if mode == "locked":
         raise ImmutableRecordError(
             f"This {what} belongs to a closed statement and cannot be changed. "

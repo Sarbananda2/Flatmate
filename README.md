@@ -1,17 +1,21 @@
 # Apartment Expense Manager
 
-Household expense accounting for a shared apartment, running entirely on your
-own machine. It records what the household spent, works out each resident's
+Household expense accounting for a shared apartment, running on your own
+machine. It records what the household spent, works out each resident's
 share, tracks who actually paid, carries unpaid balances and credits forward,
 and produces monthly statements that can be finalized, corrected within a
 window, and then closed.
 
-- **Backend** — Python + FastAPI over SQLite, with versioned migrations.
+- **Backend** — Python + FastAPI over PostgreSQL 18, with versioned migrations.
+  Routes and services reach the database only through repositories; see
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - **Frontend** — React + TypeScript + Vite.
 - **Money** — integer paise everywhere. No floating-point arithmetic touches a
   financial value, from the input box to the database column.
-- **Local-first** — one SQLite file, no cloud service, no account, no network
-  dependency. It binds to `127.0.0.1` by default and has no authentication, so
+- **Local-first** — the database is a PostgreSQL cluster inside this project
+  directory, started and stopped with the app. No cloud service, no account, no
+  network dependency. The same code can instead connect to a managed PostgreSQL
+  endpoint by changing its settings. It binds to `127.0.0.1` by default and has no authentication, so
   do not expose it (see [Security](#security)).
 
 ![The dashboard](docs/images/dashboard.png)
@@ -26,33 +30,53 @@ python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 
 # 2. Frontend (Node 18+)
-cd frontend && npm install && npm run build && cd ..
+cd frontend && npm install && cd ..
 
-# 3. Create the database and start
-./scripts/run.sh
+# 3. PostgreSQL 18 must be installed. Say where, unless it is on PATH:
+cp .env.example .env.local        # then set AEM_PG_BIN_DIR in it
+
+# 4. Start the database, the API, and the UI together
+./scripts/dev.sh
 ```
 
-Then open **http://127.0.0.1:8787**. A brand-new database takes you straight
-into the guided setup; the API documentation is at `/docs`.
+Then open **http://127.0.0.1:5173**. A brand-new database takes you straight
+into the guided setup; the API documentation is at `http://127.0.0.1:8787/docs`.
+
+The first run creates the project's own PostgreSQL cluster in `data/postgres/`
+and a password for it in `.env.local`. Later runs reuse it: your data stays
+between sessions. Stopping `dev.sh` stops the cluster it started. Only
+PostgreSQL **18** is used — if another version is all that is installed, the
+script says so and stops. Installing it, and everything else about the
+database, is in [`docs/OPERATIONS.md`](docs/OPERATIONS.md#postgresql-18).
+
+**Coming from a version that used SQLite?** The one-time import into the local
+PostgreSQL database has been completed. `data/apartment.sqlite` is preserved
+unchanged as a rollback reference; normal app operation uses PostgreSQL. The
+explicit importer remains available for a new, empty target — see
+[Moving from SQLite](docs/OPERATIONS.md#moving-from-sqlite).
 
 > If `python3 -m venv` fails with an `ensurepip` error on Debian or Ubuntu,
 > install `python3-venv` first, or install the dependencies another way:
-> `pip3 install --user fastapi 'uvicorn[standard]' pydantic pytest httpx` and
-> run the scripts with `PYTHON=python3 ./scripts/run.sh`.
+> `pip3 install --user fastapi 'uvicorn[standard]' pydantic 'psycopg[binary,pool]' pytest httpx`
+> and run the scripts with `PYTHON=python3 ./scripts/dev.sh`.
 
 To look around before entering real data:
 
 ```bash
+./scripts/local_postgres.sh start          # if dev.sh is not already running
 .venv/bin/python scripts/manage.py demo    # a sample household, two months
 ```
 
-### Development
+### Serving the built UI
 
 ```bash
-./scripts/dev.sh      # API with reload on :8787, Vite dev server on :5173
+cd frontend && npm run build && cd ..
+./scripts/local_postgres.sh start     # the database, on its own
+./scripts/run.sh                      # API and built UI on http://127.0.0.1:8787
 ```
 
-Open the Vite URL; it proxies `/api` and `/health` to the backend.
+`run.sh` only connects to the database; it never starts or stops one. That
+also makes it the way to run against a remote PostgreSQL endpoint.
 
 ---
 
@@ -236,12 +260,15 @@ Full detail: [`docs/ACCOUNTING_RULES.md`](docs/ACCOUNTING_RULES.md).
 ## Commands
 
 ```bash
-.venv/bin/python scripts/manage.py init            # create or upgrade the database
-.venv/bin/python scripts/manage.py status          # schema version and record counts
+./scripts/local_postgres.sh start|stop|status      # the project's PostgreSQL cluster
+
+.venv/bin/python scripts/manage.py init            # create or upgrade the schema
+.venv/bin/python scripts/manage.py status          # connection, schema version, record counts
 .venv/bin/python scripts/manage.py serve           # run the API and the built UI
 .venv/bin/python scripts/manage.py check           # accounting validation + reconciliation
-.venv/bin/python scripts/manage.py backup          # safe copy into ./backups
-.venv/bin/python scripts/manage.py restore <file>  # restore a backup
+.venv/bin/python scripts/manage.py backup          # pg_dump into ./backups
+.venv/bin/python scripts/manage.py restore <file>  # load a dump into an empty database
+.venv/bin/python scripts/manage.py import-sqlite   # copy an old SQLite database in, once
 .venv/bin/python scripts/manage.py close-expired   # close statements past their window
 .venv/bin/python scripts/manage.py demo            # load a sample household
 ```
@@ -254,12 +281,12 @@ Sample data for the rent and lease screens, on top of the `demo` household:
 .venv/bin/python scripts/seed_settlement_periods.py                   # three months that each look different on the hub
 ```
 
-The original terminal workflow still works against the same database:
+The original terminal workflow works against the same, configured database:
 
 ```bash
-.venv/bin/python legacy/apartment_setup_cli.py   --db data/apartment.sqlite
-.venv/bin/python legacy/electricity_entry_cli.py --db data/apartment.sqlite --apartment home
-.venv/bin/python legacy/ledger_entry_cli.py      --db data/apartment.sqlite --apartment home
+.venv/bin/python legacy/apartment_setup_cli.py
+.venv/bin/python legacy/electricity_entry_cli.py --apartment home
+.venv/bin/python legacy/ledger_entry_cli.py      --apartment home
 ```
 
 ---
@@ -267,36 +294,39 @@ The original terminal workflow still works against the same database:
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest        # 488 backend tests
+./scripts/local_postgres.sh start
+.venv/bin/python -m pytest        # backend tests, against PostgreSQL
 cd frontend && npm test           # 121 frontend tests
 ```
 
-The backend suite includes the original prototype's 53 `unittest` tests under
-`legacy/`, which pytest collects and which run against the refactored services
-unchanged.
+The backend tests use a separate test database (`aem_test`), never the
+household's, and give each test its own schema. The suite includes the
+original prototype's `unittest` modules under `legacy/`. What has been
+validated on PostgreSQL 18 is listed in
+[`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md#what-has-and-has-not-been-validated-on-postgresql-18).
 
 ---
 
 ## Backing up and restoring
 
-The whole database is one SQLite file (`data/apartment.sqlite` by default).
+The whole application state is one PostgreSQL database.
 
 ```bash
 .venv/bin/python scripts/manage.py backup
 ```
 
-This uses SQLite's own backup API, so it is safe while the application is
-running, and it verifies the copy's integrity before reporting success.
-Backups land in `./backups/apartment-<timestamp>.sqlite`. **Keep a copy
-somewhere other than this directory too.**
+This runs `pg_dump`, so it is safe while the application is running, and it
+checks the dump can be read back before reporting success. Backups land in
+`./backups/apartment-<timestamp>.dump`. **Keep a copy somewhere other than
+this directory too.** Do not copy `data/postgres/` by hand; it is not a backup.
 
 ```bash
-.venv/bin/python scripts/manage.py restore backups/apartment-20261011T013036.sqlite
+.venv/bin/python scripts/manage.py restore backups/apartment-20261012T013036.dump
 ```
 
-Restoring verifies the backup first, moves any existing database aside rather
-than deleting it, and runs migrations on the restored file. Full procedure:
-[`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+Restoring loads the dump into an **empty** database and runs migrations on it.
+It refuses a database that already holds the application's tables, so it can
+never overwrite one. Full procedure: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ---
 
@@ -320,14 +350,29 @@ without adding authentication first.
 
 ## Configuration
 
-Every setting is an `AEM_`-prefixed environment variable.
+Every setting is an `AEM_`-prefixed environment variable. Local values,
+including the database password, go in `.env.local` (ignored by Git; copy
+`.env.example`). A variable set in the environment overrides the file.
 
 | Variable                      | Default                   | Meaning                                              |
 | ----------------------------- | ------------------------- | ---------------------------------------------------- |
-| `AEM_DB_PATH`                 | `./data/apartment.sqlite` | SQLite file                                          |
+| `AEM_DB_HOST`                 | `127.0.0.1`               | PostgreSQL host                                      |
+| `AEM_DB_PORT`                 | `55432`                   | PostgreSQL port. Not 5432, so the project's cluster never collides with another server |
+| `AEM_DB_NAME`                 | `aem`                     | Database name                                        |
+| `AEM_DB_USER`                 | `aem`                     | The runtime role the app serves as. Owns nothing; cannot change the schema |
+| `AEM_DB_MIGRATION_USER`       | `aem_owner`               | The migration role, which owns the tables. Used only by `init`, `import-sqlite`, `restore`, and test setup |
+| `AEM_DB_MIGRATION_PASSWORD`   | generated into `.env.local` | Not needed, and best not present, on a host that only serves |
+| `AEM_MIGRATION_DATABASE_URL`  | unset                     | A full URL for the migration role, when `AEM_DATABASE_URL` is used |
+| `AEM_DB_PASSWORD`             | generated into `.env.local` | Never committed, logged, or returned by the API    |
+| `AEM_DATABASE_URL`            | unset                     | A full `postgresql://` URL; replaces the five above  |
+| `AEM_DB_SSLMODE`              | unset                     | libpq `sslmode`; use `verify-full` for a remote endpoint |
+| `AEM_DB_SSLROOTCERT`          | unset                     | CA bundle for `verify-full`                          |
+| `AEM_DB_POOL_MAX`             | `5`                       | Most connections the app holds open                  |
+| `AEM_PG_BIN_DIR`              | found on `PATH`           | PostgreSQL 18's `bin` directory. Local cluster and backups only |
+| `AEM_PG_DATA_DIR`             | `./data/postgres`         | Where the local cluster keeps its files              |
+| `AEM_DB_PATH`                 | `./data/apartment.sqlite` | Only the default source for `manage.py import-sqlite`. The app no longer reads it |
 | `AEM_HOST`                    | `127.0.0.1`               | Bind address. Anything else is a network exposure.   |
 | `AEM_PORT`                    | `8787`                    | Port                                                 |
-| `AEM_AUTO_MIGRATE`            | `true`                    | Run pending migrations at startup                    |
 | `AEM_AUTO_CLOSE_EXPIRED`      | `true`                    | Close statements whose window elapsed while stopped  |
 | `AEM_AUTO_CLOSE_INTERVAL_MINUTES` | `60`                  | How often a running app closes expired statements; `0` turns the loop off |
 | `AEM_TAPO_USERNAME`           | unset                     | TP-Link account for the optional Tapo connector      |
@@ -344,11 +389,12 @@ Every setting is an `AEM_`-prefixed environment variable.
 
 | Document                                                 | Contents                                                |
 | -------------------------------------------------------- | ------------------------------------------------------- |
+| [`docs/TECH_STACK.md`](docs/TECH_STACK.md)               | Technologies used and how application data is stored   |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)           | How the pieces fit together, and why                    |
 | [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md)               | Every table and column                                  |
 | [`docs/ACCOUNTING_RULES.md`](docs/ACCOUNTING_RULES.md)   | The rules, the invariants, and the decisions still open  |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)               | How to run a month, end to end                          |
-| [`docs/OPERATIONS.md`](docs/OPERATIONS.md)               | Migrations, backup, restore, troubleshooting            |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md)               | PostgreSQL setup, migrations, SQLite import, backup, restore |
 | [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md)         | The business specification                              |
 | [`docs/CHECKLIST.md`](docs/CHECKLIST.md)                 | What was found in the repository and what was built     |
 | [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) | What this does not do, stated plainly                   |
@@ -365,17 +411,23 @@ aem/                        the Python package
   services/                 business logic, one module per area
   api/routers/              HTTP routing only
   schemas/                  typed request and response models
-  migrations/               versioned, forward-only SQL
+  persistence/              the only code that touches the database
+    repositories/           all application SQL, one module per service
+    postgres/               the PostgreSQL adapter and versioned migrations
+    sqlite_import/          one-off importer for a pre-PostgreSQL database
 frontend/src/               React + TypeScript
   pages/                    one file per screen
   pages/services/           the Housing & Utilities hub, rent, lease, electricity
   components/ lib/ api/     shared UI, formatting and helpers, the API client
 tests/                      pytest: invariants, API, migrations, rent, end-to-end
-scripts/                    manage.py, run.sh, dev.sh, and the sample-data seeds
+scripts/                    manage.py, run.sh, dev.sh, local_postgres.sh, and the
+                            sample-data seeds
 docs/                       architecture, data model, rules, guide, operations,
                             specification, checklist, limitations
 docs/handoffs/              feature design briefs
 legacy/                     the original prototype's CLIs, tests, schema.sql, and
                             compatibility modules re-exporting aem.*
-data/  backups/             the SQLite database and its backups (not committed)
+data/  backups/             the local PostgreSQL cluster (data/postgres) and
+                            database dumps (not committed)
+.env.example                template for .env.local, which holds local secrets
 ```

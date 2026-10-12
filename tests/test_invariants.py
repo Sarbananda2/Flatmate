@@ -12,12 +12,10 @@ will not pass here.
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from aem.db import connect
 from aem.errors import AemError, ConflictError, ImmutableRecordError, ValidationError
 from aem.services import (
     adjustments,
@@ -31,6 +29,7 @@ from aem.services import (
 )
 from aem.services.common import POOL_ACCOUNT_ID
 from tests.conftest import APARTMENT
+from tests.support import DatabaseRefusal, connect
 
 
 # --------------------------------------------------------------------------- #
@@ -53,9 +52,12 @@ MONEY_COLUMNS = {
 def test_every_money_column_is_declared_and_stored_as_an_integer(household):
     with connect(household, read_only=True) as conn:
         for table, columns in MONEY_COLUMNS.items():
-            declared = {row[1]: row[2].upper() for row in conn.execute(f"PRAGMA table_info({table})")}
+            declared = {row[0]: row[1].upper() for row in conn.execute(
+                """SELECT column_name, data_type FROM information_schema.columns
+                    WHERE table_schema = current_schema() AND table_name = %s""",
+                (table,)).fetchall()}
             for column in columns:
-                assert declared[column] == "INTEGER", f"{table}.{column} is {declared[column]}"
+                assert declared[column] == "BIGINT", f"{table}.{column} is {declared[column]}"
                 for row in conn.execute(f"SELECT {column} FROM {table}").fetchall():
                     value = row[0]
                     assert value is None or isinstance(value, int), (
@@ -91,7 +93,7 @@ def test_every_expense_allocation_set_sums_to_its_total(household):
             """SELECT e.expense_id, e.amount_paise,
                       COALESCE((SELECT SUM(a.amount_paise) FROM allocation a
                                  WHERE a.expense_id = e.expense_id), 0) AS allocated
-                 FROM expense_instance e WHERE e.apartment_id = ?""", (APARTMENT,)).fetchall()
+                 FROM expense_instance e WHERE e.apartment_id = %s""", (APARTMENT,)).fetchall()
     assert rows
     for row in rows:
         assert row["allocated"] == row["amount_paise"], row["expense_id"]
@@ -138,10 +140,10 @@ def test_electricity_components_and_allocations_both_equal_the_actual_bill(house
 def test_each_electricity_component_allocation_equals_that_component(household):
     with connect(household, read_only=True) as conn:
         for component in conn.execute(
-            "SELECT component_id, amount_paise FROM expense_component WHERE expense_id=?",
+            "SELECT component_id, amount_paise FROM expense_component WHERE expense_id=%s",
             ("electricity-2026-09",)).fetchall():
             allocated = conn.execute(
-                "SELECT COALESCE(SUM(amount_paise),0) FROM allocation WHERE component_id=?",
+                "SELECT COALESCE(SUM(amount_paise),0) FROM allocation WHERE component_id=%s",
                 (component["component_id"],)).fetchone()[0]
             assert allocated == component["amount_paise"]
 
@@ -215,7 +217,7 @@ def test_no_payment_is_applied_beyond_its_own_amount(household):
             """SELECT p.payment_id, p.amount_paise,
                       COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
                                  WHERE pa.payment_id = p.payment_id), 0) AS applied
-                 FROM payment p WHERE p.apartment_id = ?""", (APARTMENT,)).fetchall()
+                 FROM payment p WHERE p.apartment_id = %s""", (APARTMENT,)).fetchall()
     assert rows
     for row in rows:
         assert row["applied"] <= row["amount_paise"], row["payment_id"]
@@ -239,11 +241,11 @@ def test_the_database_refuses_an_over_applied_payment(configured):
     with connect(configured) as conn:
         allocation_id = conn.execute(
             "SELECT allocation_id FROM allocation WHERE expense_id='big-charge'").fetchone()[0]
-        with pytest.raises(sqlite3.IntegrityError, match="overapplied_payment"):
+        with pytest.raises(DatabaseRefusal, match="overapplied_payment"):
             conn.execute(
                 """INSERT INTO payment_application
                    (payment_application_id, payment_id, allocation_id, amount_paise, created_at)
-                   VALUES ('bogus', 'small-payment', ?, 1000, '2026-10-01T00:00:00+05:30')""",
+                   VALUES ('bogus', 'small-payment', %s, 1000, '2026-10-01T00:00:00+05:30')""",
                 (allocation_id,))
 
 
@@ -252,11 +254,11 @@ def test_the_database_refuses_an_over_settled_charge(household):
     with connect(household) as conn:
         allocation_id = conn.execute(
             "SELECT allocation_id FROM allocation ORDER BY amount_paise LIMIT 1").fetchone()[0]
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(DatabaseRefusal):
             conn.execute(
                 """INSERT INTO payment_application
                    (payment_application_id, payment_id, allocation_id, amount_paise, created_at)
-                   VALUES ('bogus', 'pay-chris-2026-09', ?, 99999999,
+                   VALUES ('bogus', 'pay-chris-2026-09', %s, 99999999,
                            '2026-10-01T00:00:00+05:30')""",
                 (allocation_id,))
 
@@ -276,19 +278,14 @@ def test_a_charge_cannot_be_settled_beyond_its_own_amount(household):
 # 6. Oldest-first allocation is deterministic.
 # --------------------------------------------------------------------------- #
 
-def test_oldest_first_allocation_is_deterministic_and_order_independent(configured):
+def test_oldest_first_allocation_is_deterministic_and_order_independent(
+        configured, database_factory):
     """Two identical databases built in different insertion orders settle the same."""
-    import tempfile
-    from pathlib import Path
-
-    from aem.migrations import migrate
     from aem.services import apartments as apartment_service
     from aem.services import residents as resident_service
 
     def build(order):
-        directory = Path(tempfile.mkdtemp())
-        path = directory / "x.sqlite"
-        migrate(path)
+        path = database_factory()
         apartment_service.create_apartment(path, apartment_id=APARTMENT, name="Flat")
         for resident_id, name in (("alice", "Alice"), ("bob", "Bob"), ("chris", "Chris")):
             resident_service.create_resident(path, apartment_id=APARTMENT,
@@ -657,7 +654,7 @@ def test_regenerating_recurring_expenses_creates_no_duplicates(configured):
     with connect(configured, read_only=True) as conn:
         counts = conn.execute(
             """SELECT expense_definition_id, COUNT(*) AS n FROM expense_instance
-                WHERE apartment_id=? AND settlement_period='2026-11'
+                WHERE apartment_id=%s AND settlement_period='2026-11'
                 GROUP BY expense_definition_id""", (APARTMENT,)).fetchall()
     assert {row["expense_definition_id"]: row["n"] for row in counts} == {
         "rent": 1, "broadband": 1}
@@ -668,14 +665,14 @@ def test_the_database_itself_refuses_a_duplicate_generated_expense(configured):
         configured, apartment_id=APARTMENT, settlement_period="2026-11",
         lines=[{"expense_definition_id": "rent"}])
     with connect(configured) as conn:
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(DatabaseRefusal):
             conn.execute(
                 """INSERT INTO expense_instance
                    (expense_id, expense_definition_id, description, amount_paise, expense_date,
                     expense_period, is_settled, created_at, settlement_period,
                     generated_from_recurrence, apartment_id)
                    VALUES ('dupe','rent','Rent again',1,'2026-11-01','2026-11',0,
-                           '2026-11-01T00:00:00+05:30','2026-11',1,?)""",
+                           '2026-11-01T00:00:00+05:30','2026-11',1,%s)""",
                 (APARTMENT,))
 
 
@@ -773,32 +770,42 @@ def test_a_closed_statement_refuses_a_revision(household):
 
 def test_the_database_refuses_to_rewrite_a_closed_snapshot(household):
     with connect(household) as conn:
-        with pytest.raises(sqlite3.IntegrityError, match="closed_statement"):
-            conn.execute("UPDATE monthly_statement SET snapshot_json='{}' WHERE statement_id=?",
+        with pytest.raises(DatabaseRefusal, match="closed_statement"):
+            conn.execute("UPDATE monthly_statement SET snapshot_json='{}' WHERE statement_id=%s",
                          ("stmt-2026-09",))
-        with pytest.raises(sqlite3.IntegrityError, match="closed_statement"):
-            conn.execute("UPDATE monthly_statement SET status='draft' WHERE statement_id=?",
+        with pytest.raises(DatabaseRefusal, match="closed_statement"):
+            conn.execute("UPDATE monthly_statement SET status='draft' WHERE statement_id=%s",
                          ("stmt-2026-09",))
 
 
 def test_the_database_refuses_to_delete_an_expense_in_a_closed_statement(household):
     with connect(household) as conn:
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute("DELETE FROM expense_instance WHERE expense_id=?",
+        with pytest.raises(DatabaseRefusal):
+            conn.execute("DELETE FROM expense_instance WHERE expense_id=%s",
                          ("groceries-2026-09",))
 
 
 def test_the_audit_log_cannot_be_rewritten(household):
+    # The role the application serves as is not permitted to try...
     with connect(household) as conn:
-        with pytest.raises(sqlite3.IntegrityError, match="append_only"):
+        with pytest.raises(DatabaseRefusal, match="permission denied"):
             conn.execute("UPDATE audit_log SET actor='someone else'")
-        with pytest.raises(sqlite3.IntegrityError, match="append_only"):
+        with pytest.raises(DatabaseRefusal, match="permission denied"):
+            conn.execute("DELETE FROM audit_log")
+    # ...and the triggers refuse even the role that owns the table.
+    with connect(household, as_owner=True) as conn:
+        with pytest.raises(DatabaseRefusal, match="append_only"):
+            conn.execute("UPDATE audit_log SET actor='someone else'")
+        with pytest.raises(DatabaseRefusal, match="append_only"):
             conn.execute("DELETE FROM audit_log")
 
 
 def test_statement_revisions_cannot_be_rewritten(household):
     with connect(household) as conn:
-        with pytest.raises(sqlite3.IntegrityError, match="append_only"):
+        with pytest.raises(DatabaseRefusal, match="permission denied"):
+            conn.execute("UPDATE statement_revision SET reason='different'")
+    with connect(household, as_owner=True) as conn:
+        with pytest.raises(DatabaseRefusal, match="append_only"):
             conn.execute("UPDATE statement_revision SET reason='different'")
 
 
@@ -1053,7 +1060,7 @@ def test_a_reconciliation_error_is_raised_rather_than_balanced_away(apartment):
     from aem.errors import ReconciliationError
 
     with connect(apartment) as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("BEGIN")
         conn.execute(
             """INSERT INTO expense_instance
                (expense_id, description, amount_paise, expense_date, expense_period,
@@ -1061,7 +1068,7 @@ def test_a_reconciliation_error_is_raised_rather_than_balanced_away(apartment):
                 apartment_id, allocation_method, expense_kind, generated_from_recurrence)
                VALUES ('broken','Hand-edited',10000,'2026-10-01','2026-10',0,
                        '2026-10-01T00:00:00+05:30','2026-10','2026-10','2026-10-31',
-                       ?, 'custom','general',0)""", (APARTMENT,))
+                       %s, 'custom','general',0)""", (APARTMENT,))
         conn.execute(
             """INSERT INTO allocation (allocation_id, expense_id, resident_id, amount_paise)
                VALUES ('a-broken','broken','alice',4000)""")
@@ -1077,7 +1084,7 @@ def test_validation_names_the_record_at_fault(apartment):
     from aem.services import validation
 
     with connect(apartment) as conn:
-        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("BEGIN")
         conn.execute(
             """INSERT INTO expense_instance
                (expense_id, description, amount_paise, expense_date, expense_period,
@@ -1085,7 +1092,7 @@ def test_validation_names_the_record_at_fault(apartment):
                 apartment_id, allocation_method, expense_kind, generated_from_recurrence)
                VALUES ('broken','Hand-edited',10000,'2026-10-01','2026-10',0,
                        '2026-10-01T00:00:00+05:30','2026-10','2026-10','2026-10-31',
-                       ?, 'custom','general',0)""", (APARTMENT,))
+                       %s, 'custom','general',0)""", (APARTMENT,))
         conn.execute("COMMIT")
     report = validation.validate(apartment, APARTMENT)
     assert report["is_reconcilable"] is False

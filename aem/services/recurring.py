@@ -22,11 +22,11 @@ import json
 from datetime import date
 from typing import Any, Mapping, Sequence
 
-from .. import db
-from ..db import connect, new_id, now_timestamp
 from ..errors import ConflictError, ValidationError
+from ..ids import new_id, now_timestamp
 from ..money import ensure_paise
 from ..periods import month_end, normalize_month, resolve_periods, shift_month
+from ..persistence import Database
 from .allocation import plan_allocation
 from .common import get_apartment, get_statement, resident_ids
 from .expenses import create_expense
@@ -48,29 +48,18 @@ def _transaction_date_for(definition: Mapping[str, Any], settlement_period: str)
     return date(*map(int, settlement_period.split("-")), min(day, last)).isoformat()
 
 
-def preview(db_path, *, apartment_id: str, settlement_period: str) -> dict[str, Any]:
+def preview(db: Database, *, apartment_id: str, settlement_period: str) -> dict[str, Any]:
     settlement_period = normalize_month(settlement_period, "settlement_period")
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        residents = resident_ids(conn, apartment_id)
-        active_residents = resident_ids(conn, apartment_id, active_only=True)
-        definitions = db.fetch_all(
-            conn,
-            "SELECT * FROM expense_definition WHERE apartment_id=? AND is_active=1 "
-            "ORDER BY sort_order, name", (apartment_id,))
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        residents = resident_ids(uow, apartment_id)
+        active_residents = resident_ids(uow, apartment_id, active_only=True)
+        definitions = uow.recurring.active_definitions(apartment_id)
         existing = {
-            row["expense_definition_id"]: row for row in db.fetch_all(
-                conn,
-                """SELECT expense_definition_id, expense_id, description, amount_paise,
-                          generated_from_recurrence
-                     FROM expense_instance
-                    WHERE apartment_id=? AND settlement_period=?
-                      AND expense_definition_id IS NOT NULL""",
-                (apartment_id, settlement_period))}
-        statement = db.fetch_one(
-            conn, "SELECT statement_id, status FROM monthly_statement "
-                  "WHERE apartment_id=? AND settlement_month=?",
-            (apartment_id, settlement_period))
+            row["expense_definition_id"]: row
+            for row in uow.recurring.expenses_against_definitions(
+                apartment_id, settlement_period)}
+        statement = uow.recurring.statement_for_month(apartment_id, settlement_period)
 
     lines: list[dict[str, Any]] = []
     for definition in definitions:
@@ -153,7 +142,7 @@ def preview(db_path, *, apartment_id: str, settlement_period: str) -> dict[str, 
     }
 
 
-def generate(db_path, *, apartment_id: str, settlement_period: str,
+def generate(db: Database, *, apartment_id: str, settlement_period: str,
              lines: Sequence[Mapping[str, Any]], statement_id: str | None = None,
              attach_to_statement: bool = True, actor: str = "operator") -> dict[str, Any]:
     """Create the confirmed recurring expenses. Nothing is created without a line.
@@ -168,12 +157,12 @@ def generate(db_path, *, apartment_id: str, settlement_period: str,
             "No recurring expenses were confirmed, so nothing was generated.",
             code="nothing_to_generate")
     plan = {line["expense_definition_id"]: line for line in preview(
-        db_path, apartment_id=apartment_id, settlement_period=settlement_period)["lines"]}
+        db, apartment_id=apartment_id, settlement_period=settlement_period)["lines"]}
 
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
         if statement_id:
-            statement = get_statement(conn, statement_id, apartment_id)
+            statement = get_statement(uow, statement_id, apartment_id)
             if statement["settlement_month"] != settlement_period:
                 raise ValidationError(
                     "That statement is for a different settlement month.",
@@ -186,10 +175,7 @@ def generate(db_path, *, apartment_id: str, settlement_period: str,
                                     details={"statement_id": statement_id,
                                              "status": statement["status"]})
         elif attach_to_statement:
-            row = db.fetch_one(
-                conn, "SELECT statement_id, status FROM monthly_statement "
-                      "WHERE apartment_id=? AND settlement_month=?",
-                (apartment_id, settlement_period))
+            row = uow.recurring.statement_for_month(apartment_id, settlement_period)
             if row and row["status"] == "draft":
                 statement_id = row["statement_id"]
 
@@ -223,7 +209,7 @@ def generate(db_path, *, apartment_id: str, settlement_period: str,
         expense_id = line.get("expense_id") or new_id(f"rec-{definition_id}")
         try:
             result = create_expense(
-                db_path, apartment_id=apartment_id, expense_id=expense_id,
+                db, apartment_id=apartment_id, expense_id=expense_id,
                 description=line.get("description") or planned["suggested_description"],
                 amount_paise=amount,
                 expense_date=line.get("expense_date") or planned["transaction_date"],

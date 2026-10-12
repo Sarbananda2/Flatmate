@@ -16,13 +16,12 @@ exist in the database.
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any, Mapping, Sequence
 
-from .. import db
-from ..db import connect, new_id, now_timestamp, transaction
 from ..errors import ConflictError, NotFoundError, ValidationError
+from ..ids import new_id, now_timestamp
 from ..money import ensure_paise
+from ..persistence import Database, IntegrityViolation, PersistenceError, UnitOfWork
 from ..periods import (
     PERIOD_RULES,
     default_due_date,
@@ -49,9 +48,12 @@ EDITABLE_FIELDS = ["description", "amount_paise", "expense_date", "service_perio
                    "settlement_period", "due_date", "payer_resident_id", "provider_name",
                    "reference", "notes", "statement_id", "expense_definition_id"]
 
+SORT_KEYS = ("expense_date_desc", "expense_date_asc", "amount_desc", "amount_asc",
+             "description_asc")
+
 
 def _resolve_expense_periods(
-    conn: sqlite3.Connection, *, expense_definition_id: str | None, period_rule: str | None,
+    uow: UnitOfWork, *, expense_definition_id: str | None, period_rule: str | None,
     expense_date: str, expense_period: str | None, service_period: str | None,
     settlement_period: str | None,
 ) -> tuple[str, str, str]:
@@ -64,11 +66,9 @@ def _resolve_expense_periods(
     """
     rule = period_rule
     if rule is None and expense_definition_id:
-        row = conn.execute(
-            "SELECT period_rule FROM expense_definition WHERE expense_definition_id=?",
-            (expense_definition_id,)).fetchone()
+        row = uow.expenses.definition_period_rule(expense_definition_id)
         if row is not None:
-            rule = row[0]
+            rule = row["period_rule"]
     if rule is None:
         rule = "custom"
     if rule not in PERIOD_RULES:
@@ -95,18 +95,17 @@ def _resolve_expense_periods(
     return resolved.rule, resolved.service_period, resolved.settlement_period
 
 
-def preview_allocation(db_path, *, apartment_id: str, amount_paise: int, method: str,
+def preview_allocation(db: Database, *, apartment_id: str, amount_paise: int, method: str,
                        participants: Sequence[str] | None = None,
                        weights: Mapping[str, int] | None = None,
                        shares_paise: Mapping[str, int] | None = None,
                        payer_resident_id: str | None = None) -> dict[str, Any]:
     """Calculate the shares an expense *would* get, without saving anything."""
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        residents = resident_ids(conn, apartment_id)
-        names = {row["resident_id"]: row["display_name"] for row in conn.execute(
-            "SELECT resident_id, display_name FROM resident WHERE apartment_id=?",
-            (apartment_id,)).fetchall()}
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        residents = resident_ids(uow, apartment_id)
+        names = {row["resident_id"]: row["display_name"]
+                 for row in uow.expenses.resident_display_names(apartment_id)}
     plan = plan_allocation(amount_paise=amount_paise, method=method,
                            all_residents=residents, participants=participants,
                            weights=weights, shares_paise=shares_paise,
@@ -121,7 +120,7 @@ def preview_allocation(db_path, *, apartment_id: str, amount_paise: int, method:
 
 
 def _create_expense(
-    conn: sqlite3.Connection, *, apartment_id: str, expense_id: str, description: str,
+    uow: UnitOfWork, *, apartment_id: str, expense_id: str, description: str,
     amount_paise: int, expense_date: str, expense_period: str | None = None,
     allocations_paise: Mapping[str, int] | None = None,
     payer_resident_id: str | None = None, provider_name: str | None = None,
@@ -176,8 +175,8 @@ def _create_expense(
                          "provided_paise": sum(allocations_paise.values())})
 
     timestamp = created_at or now_timestamp()
-    get_apartment(conn, apartment_id)
-    residents = resident_ids(conn, apartment_id)
+    get_apartment(uow, apartment_id)
+    residents = resident_ids(uow, apartment_id)
     if not residents:
         raise ValidationError("No residents registered for this apartment.",
                               code="no_residents")
@@ -205,26 +204,22 @@ def _create_expense(
                               details={"field": "payer_resident_id",
                                        "value": payer_resident_id})
     if expense_definition_id:
-        row = conn.execute(
-            "SELECT apartment_id, is_active FROM expense_definition WHERE expense_definition_id=?",
-            (expense_definition_id,)).fetchone()
+        row = uow.expenses.definition_owner(expense_definition_id)
         if not row or row["apartment_id"] != apartment_id:
             raise ValidationError("Expense definition must belong to this apartment.",
                                   details={"field": "expense_definition_id"})
     if statement_id:
-        require_draft_statement(conn, statement_id, apartment_id)
+        require_draft_statement(uow, statement_id, apartment_id)
 
     rule, resolved_service, resolved_settlement = _resolve_expense_periods(
-        conn, expense_definition_id=expense_definition_id, period_rule=period_rule,
+        uow, expense_definition_id=expense_definition_id, period_rule=period_rule,
         expense_date=expense_date, expense_period=expense_period,
         service_period=service_period, settlement_period=settlement_period)
     resolved_due = due_date or default_due_date(resolved_settlement)
     parse_iso_date(resolved_due, "due_date")
 
     if statement_id:
-        statement_month = conn.execute(
-            "SELECT settlement_month FROM monthly_statement WHERE statement_id=?",
-            (statement_id,)).fetchone()[0]
+        statement_month = uow.expenses.statement_settlement_month(statement_id)
         if statement_month != resolved_settlement:
             raise ValidationError(
                 "This expense settles in a different month from the statement it is "
@@ -240,55 +235,49 @@ def _create_expense(
     basis.setdefault("method", allocation_method)
     basis_json = json.dumps(basis, sort_keys=True, default=str)
     try:
-        conn.execute(
-            """INSERT INTO expense_instance
-               (expense_id, expense_definition_id, statement_id, description, amount_paise,
-                expense_date, expense_period, payer_resident_id, provider_name, is_settled,
-                created_at, service_period, settlement_period, period_rule, due_date,
-                allocation_method, expense_kind, apartment_id, reference, notes,
-                generated_from_recurrence, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (expense_id.strip(), expense_definition_id, statement_id, description.strip(),
-             amount_paise, expense_date, expense_period or resolved_settlement,
-             payer_resident_id, optional_text(provider_name, "provider_name", max_length=200),
-             timestamp, resolved_service, resolved_settlement, rule, resolved_due,
-             allocation_method, expense_kind, apartment_id,
-             optional_text(reference, "reference", max_length=200),
-             optional_text(notes, "notes"), 1 if generated_from_recurrence else 0,
-             timestamp))
-        conn.execute(
-            """INSERT INTO expense_component
-               (component_id, expense_id, name, amount_paise, allocation_method, host_resident_id)
-               VALUES (?,?,?,?,?,NULL)""",
-            (component_id, expense_id.strip(), description.strip(), amount_paise,
-             allocation_method))
+        uow.expenses.insert_expense(
+            expense_id=expense_id.strip(), expense_definition_id=expense_definition_id,
+            statement_id=statement_id, description=description.strip(),
+            amount_paise=amount_paise, expense_date=expense_date,
+            expense_period=expense_period or resolved_settlement,
+            payer_resident_id=payer_resident_id,
+            provider_name=optional_text(provider_name, "provider_name", max_length=200),
+            created_at=timestamp, service_period=resolved_service,
+            settlement_period=resolved_settlement, period_rule=rule, due_date=resolved_due,
+            allocation_method=allocation_method, expense_kind=expense_kind,
+            apartment_id=apartment_id,
+            reference=optional_text(reference, "reference", max_length=200),
+            notes=optional_text(notes, "notes"),
+            generated_from_recurrence=1 if generated_from_recurrence else 0,
+            updated_at=timestamp)
+        uow.expenses.insert_component(
+            component_id=component_id, expense_id=expense_id.strip(),
+            name=description.strip(), amount_paise=amount_paise,
+            allocation_method=allocation_method)
         for resident_id in residents:
             amount = shares[resident_id]
             if amount == 0:
                 # A zero share is a recorded decision, not a charge. It is
                 # kept in the allocation basis rather than as a 0-paise row.
                 continue
-            conn.execute(
-                """INSERT INTO allocation
-                   (allocation_id, expense_id, component_id, resident_id, amount_paise,
-                    allocation_basis_json)
-                   VALUES (?,?,?,?,?,?)""",
-                (new_id("allocation"), expense_id.strip(), component_id, resident_id,
-                 amount, basis_json))
-    except sqlite3.IntegrityError as exc:
-        message = str(exc)
-        if "idx_recurrence_unique" in message:
-            raise ConflictError(
-                "A recurring expense for this definition and settlement month already "
-                "exists. Generation never creates a duplicate.",
-                code="duplicate_recurring_expense",
-                details={"expense_definition_id": expense_definition_id,
-                         "settlement_period": resolved_settlement}) from exc
+            uow.expenses.insert_allocation(
+                allocation_id=new_id("allocation"), expense_id=expense_id.strip(),
+                component_id=component_id, resident_id=resident_id, amount_paise=amount,
+                allocation_basis_json=basis_json)
+    except IntegrityViolation as exc:
+        # Every constraint failure here is reported the same way, as it always
+        # has been -- including a second generated expense for a definition and
+        # month (idx_recurrence_unique). The SQLite version tried to single that
+        # case out as a 409 'duplicate_recurring_expense' by looking for the
+        # index name in the error text, but SQLite never put it there, so the
+        # check never matched. PostgreSQL does name the constraint
+        # (exc.constraint); whether to start acting on it is a product decision
+        # recorded in docs/KNOWN_LIMITATIONS.md, not something the port changes.
         raise ValidationError(f"Could not save expense: {exc}") from exc
-    except sqlite3.Error as exc:
+    except PersistenceError as exc:
         raise ValidationError(f"Could not save expense: {exc}") from exc
 
-    audit.record(conn, entity_type="expense", entity_id=expense_id.strip(),
+    audit.record(uow, entity_type="expense", entity_id=expense_id.strip(),
                  action="create", actor=actor, apartment_id=apartment_id,
                  new_value={"description": description.strip(),
                             "amount_paise": amount_paise,
@@ -311,7 +300,7 @@ def _create_expense(
 
 
 def create_expense(
-    db_path, *, apartment_id: str, expense_id: str, description: str, amount_paise: int,
+    db: Database, *, apartment_id: str, expense_id: str, description: str, amount_paise: int,
     expense_date: str, expense_period: str | None = None,
     allocations_paise: Mapping[str, int] | None = None,
     payer_resident_id: str | None = None, provider_name: str | None = None,
@@ -337,9 +326,9 @@ def create_expense(
     meaning -- but they are validated and reported, so an incomplete allocation
     is always rejected rather than quietly accepted.
     """
-    with transaction(db_path) as conn:
+    with db.transaction() as uow:
         return _create_expense(
-            conn, apartment_id=apartment_id, expense_id=expense_id, description=description,
+            uow, apartment_id=apartment_id, expense_id=expense_id, description=description,
             amount_paise=amount_paise, expense_date=expense_date, expense_period=expense_period,
             allocations_paise=allocations_paise, payer_resident_id=payer_resident_id,
             provider_name=provider_name, expense_definition_id=expense_definition_id,
@@ -351,24 +340,19 @@ def create_expense(
             weights=weights, actor=actor)
 
 
-def _reallocate(conn: sqlite3.Connection, expense: dict[str, Any], *,
+def _reallocate(uow: UnitOfWork, expense: dict[str, Any], *,
                 shares: Mapping[str, int], method: str,
                 basis: Mapping[str, Any]) -> None:
-    component = conn.execute(
-        "SELECT component_id FROM expense_component WHERE expense_id=? ORDER BY rowid",
-        (expense["expense_id"],)).fetchall()
+    component = uow.expenses.component_ids(expense["expense_id"])
     if len(component) != 1:
         raise ConflictError(
             "This expense has itemised components, so its allocations cannot be replaced "
             "here. Edit it through its own module (electricity bills are edited as bills).",
             code="component_expense_not_editable",
             details={"expense_id": expense["expense_id"], "component_count": len(component)})
-    component_id = component[0][0]
+    component_id = component[0]
     basis_json = json.dumps(dict(basis), sort_keys=True, default=str)
-    applied = conn.execute(
-        """SELECT COALESCE(SUM(pa.amount_paise), 0) FROM payment_application pa
-           JOIN allocation a ON a.allocation_id = pa.allocation_id
-           WHERE a.expense_id = ?""", (expense["expense_id"],)).fetchone()[0]
+    applied = uow.expenses.applied_paise(expense["expense_id"])
     if applied:
         raise ConflictError(
             "Payments have already been applied to this expense's charges, so its "
@@ -376,24 +360,20 @@ def _reallocate(conn: sqlite3.Connection, expense: dict[str, Any], *,
             "ledger adjustment.",
             code="allocations_have_payments",
             details={"expense_id": expense["expense_id"], "applied_paise": applied})
-    conn.execute("DELETE FROM allocation WHERE expense_id=?", (expense["expense_id"],))
-    conn.execute(
-        "UPDATE expense_component SET amount_paise=?, allocation_method=? WHERE component_id=?",
-        (expense["amount_paise"], method, component_id))
+    uow.expenses.delete_allocations(expense["expense_id"])
+    uow.expenses.update_component(component_id, amount_paise=expense["amount_paise"],
+                                  allocation_method=method)
     for resident_id, amount in sorted(shares.items()):
         if amount == 0:
             continue
-        conn.execute(
-            """INSERT INTO allocation
-               (allocation_id, expense_id, component_id, resident_id, amount_paise,
-                allocation_basis_json)
-               VALUES (?,?,?,?,?,?)""",
-            (new_id("allocation"), expense["expense_id"], component_id, resident_id,
-             amount, basis_json))
+        uow.expenses.insert_allocation(
+            allocation_id=new_id("allocation"), expense_id=expense["expense_id"],
+            component_id=component_id, resident_id=resident_id, amount_paise=amount,
+            allocation_basis_json=basis_json)
 
 
 def update_expense(
-    db_path, expense_id: str, *, apartment_id: str | None = None, reason: str | None = None,
+    db: Database, expense_id: str, *, apartment_id: str | None = None, reason: str | None = None,
     actor: str = "operator", allocations_paise: Mapping[str, int] | None = None,
     allocation_method: str | None = None, participants: Sequence[str] | None = None,
     weights: Mapping[str, int] | None = None, now: Any = None, **changes: Any,
@@ -413,10 +393,10 @@ def update_expense(
                                        "editable_fields": EDITABLE_FIELDS})
     from . import statements  # local import: statements builds snapshots of expenses
 
-    with transaction(db_path) as conn:
-        before = get_expense(conn, expense_id, apartment_id)
+    with db.transaction() as uow:
+        before = get_expense(uow, expense_id, apartment_id)
         owning_apartment = before.get("apartment_id") or apartment_id
-        mode = assert_not_locked(conn, before["statement_id"], "expense")
+        mode = assert_not_locked(uow, before["statement_id"], "expense")
         if mode == "revision" and not (reason or "").strip():
             raise ValidationError(
                 "This expense belongs to a finalized statement inside its correction "
@@ -424,7 +404,7 @@ def update_expense(
                 code="revision_reason_required",
                 details={"statement_id": before["statement_id"]})
 
-        residents = resident_ids(conn, owning_apartment)
+        residents = resident_ids(uow, owning_apartment)
         after = dict(before)
         if "description" in changes:
             after["description"] = require_text(changes["description"], "description",
@@ -452,17 +432,15 @@ def update_expense(
         if "expense_definition_id" in changes:
             value = changes["expense_definition_id"]
             if value:
-                row = conn.execute(
-                    "SELECT apartment_id FROM expense_definition WHERE expense_definition_id=?",
-                    (value,)).fetchone()
-                if not row or row[0] != owning_apartment:
+                row = uow.expenses.definition_owner(value)
+                if not row or row["apartment_id"] != owning_apartment:
                     raise ValidationError("Expense definition must belong to this apartment.",
                                           details={"field": "expense_definition_id"})
             after["expense_definition_id"] = value or None
         if "statement_id" in changes:
             value = changes["statement_id"]
             if value:
-                statement = require_draft_statement(conn, value, owning_apartment)
+                statement = require_draft_statement(uow, value, owning_apartment)
                 if statement["settlement_month"] != after["settlement_period"]:
                     raise ValidationError(
                         "This expense settles in a different month from that statement.",
@@ -472,17 +450,15 @@ def update_expense(
             after["statement_id"] = value or None
 
         after["updated_at"] = now_timestamp()
-        conn.execute(
-            """UPDATE expense_instance SET description=?, amount_paise=?, expense_date=?,
-                   service_period=?, settlement_period=?, due_date=?, payer_resident_id=?,
-                   provider_name=?, reference=?, notes=?, statement_id=?,
-                   expense_definition_id=?, updated_at=?
-               WHERE expense_id=?""",
-            (after["description"], after["amount_paise"], after["expense_date"],
-             after["service_period"], after["settlement_period"], after["due_date"],
-             after["payer_resident_id"], after["provider_name"], after["reference"],
-             after["notes"], after["statement_id"], after["expense_definition_id"],
-             after["updated_at"], expense_id))
+        uow.expenses.update_expense(
+            expense_id, description=after["description"], amount_paise=after["amount_paise"],
+            expense_date=after["expense_date"], service_period=after["service_period"],
+            settlement_period=after["settlement_period"], due_date=after["due_date"],
+            payer_resident_id=after["payer_resident_id"],
+            provider_name=after["provider_name"], reference=after["reference"],
+            notes=after["notes"], statement_id=after["statement_id"],
+            expense_definition_id=after["expense_definition_id"],
+            updated_at=after["updated_at"])
 
         method = allocation_method or before.get("allocation_method") or "custom"
         needs_reallocation = (allocations_paise is not None or allocation_method is not None
@@ -522,75 +498,64 @@ def update_expense(
                 existing_participants = participants
                 if existing_participants is None and plan_method == "equal":
                     existing_participants = sorted(
-                        row[0] for row in conn.execute(
-                            "SELECT DISTINCT resident_id FROM allocation WHERE expense_id=?",
-                            (expense_id,)).fetchall()) or residents
+                        uow.expenses.allocated_resident_ids(expense_id)) or residents
                 plan = plan_allocation(amount_paise=after["amount_paise"], method=plan_method,
                                        all_residents=residents,
                                        participants=existing_participants, weights=weights,
                                        payer_resident_id=after["payer_resident_id"])
                 shares, basis = plan.shares_paise, dict(plan.basis)
                 method = plan_method
-            _reallocate(conn, after, shares=shares, method=method, basis=basis)
-            conn.execute("UPDATE expense_instance SET allocation_method=? WHERE expense_id=?",
-                         (method, expense_id))
+            _reallocate(uow, after, shares=shares, method=method, basis=basis)
+            uow.expenses.set_allocation_method(expense_id, method)
             after["allocation_method"] = method
-            audit.record(conn, entity_type="expense", entity_id=expense_id,
+            audit.record(uow, entity_type="expense", entity_id=expense_id,
                          action="reallocate", actor=actor, apartment_id=owning_apartment,
                          reason=reason, field_name="allocations",
                          new_value={k: v for k, v in shares.items() if v})
 
         audit.record_field_changes(
-            conn, entity_type="expense", entity_id=expense_id, before=before, after=after,
+            uow, entity_type="expense", entity_id=expense_id, before=before, after=after,
             fields=EDITABLE_FIELDS, actor=actor, apartment_id=owning_apartment, reason=reason)
 
         if mode == "revision":
             statements.record_revision(
-                conn, statement_id=before["statement_id"], reason=reason.strip(),
+                uow, statement_id=before["statement_id"], reason=reason.strip(),
                 created_by=actor, now=now,
                 change_note=f"expense {expense_id} edited during the correction window")
-        return get_expense(conn, expense_id)
+        return get_expense(uow, expense_id)
 
 
-def delete_expense(db_path, expense_id: str, *, apartment_id: str | None = None,
+def delete_expense(db: Database, expense_id: str, *, apartment_id: str | None = None,
                    reason: str | None = None, actor: str = "operator") -> dict[str, Any]:
     """Remove an expense. Only possible while it is unattached or in a draft.
 
     Finalized and closed statements keep their expenses; corrections there are
     revisions or ledger adjustments, never deletions.
     """
-    with transaction(db_path) as conn:
-        expense = get_expense(conn, expense_id, apartment_id)
+    with db.transaction() as uow:
+        expense = get_expense(uow, expense_id, apartment_id)
         if expense["statement_id"]:
-            statement = conn.execute(
-                "SELECT status FROM monthly_statement WHERE statement_id=?",
-                (expense["statement_id"],)).fetchone()
-            if statement[0] != "draft":
+            status = uow.expenses.statement_status(expense["statement_id"])
+            if status != "draft":
                 raise ConflictError(
                     "Expenses can only be removed while their statement is a draft.",
                     code="statement_not_draft",
-                    details={"statement_id": expense["statement_id"], "status": statement[0]})
-        applied = conn.execute(
-            """SELECT COALESCE(SUM(pa.amount_paise), 0) FROM payment_application pa
-               JOIN allocation a ON a.allocation_id = pa.allocation_id
-               WHERE a.expense_id = ?""", (expense_id,)).fetchone()[0]
+                    details={"statement_id": expense["statement_id"], "status": status})
+        applied = uow.expenses.applied_paise(expense_id)
         if applied:
             raise ConflictError(
                 "Payments have been applied to this expense's charges. Reverse those "
                 "payments first so the audit trail stays intact.",
                 code="allocations_have_payments",
                 details={"expense_id": expense_id, "applied_paise": applied})
-        linked = conn.execute(
-            "SELECT COUNT(*) FROM payment WHERE expense_id=?", (expense_id,)).fetchone()[0]
+        linked = uow.expenses.linked_payment_count(expense_id)
         if linked:
             raise ConflictError(
                 "A payment is linked to this expense as its funding. Unlink or reverse "
                 "that payment first.",
                 code="expense_has_linked_payment",
                 details={"expense_id": expense_id, "linked_payments": linked})
-        rent_cycle = conn.execute(
-            "SELECT cycle_id, settlement_month, disbursement_status FROM rent_cycle "
-            "WHERE expense_id=?", (expense_id,)).fetchone()
+        rent_cycle = uow.expenses.rent_cycle_for_expense(expense_id)
         if rent_cycle is not None:
             if rent_cycle["disbursement_status"] != "pending":
                 raise ConflictError(
@@ -600,18 +565,18 @@ def delete_expense(db_path, expense_id: str, *, apartment_id: str | None = None,
                     details={"expense_id": expense_id, "cycle_id": rent_cycle["cycle_id"]})
             # A pending rent cycle is only a wrapper around this expense, so it
             # goes with it; the month's rent can then be generated afresh.
-            conn.execute("DELETE FROM rent_cycle WHERE cycle_id=?", (rent_cycle["cycle_id"],))
-            audit.record(conn, entity_type="rent_cycle", entity_id=rent_cycle["cycle_id"],
+            uow.expenses.delete_rent_cycle(rent_cycle["cycle_id"])
+            audit.record(uow, entity_type="rent_cycle", entity_id=rent_cycle["cycle_id"],
                          action="delete", actor=actor, apartment_id=expense.get("apartment_id"),
                          reason=reason,
                          old_value={"settlement_month": rent_cycle["settlement_month"],
                                     "expense_id": expense_id})
-        conn.execute("DELETE FROM allocation WHERE expense_id=?", (expense_id,))
-        conn.execute("DELETE FROM smart_plug_reading WHERE expense_id=?", (expense_id,))
-        conn.execute("DELETE FROM electricity_bill WHERE expense_id=?", (expense_id,))
-        conn.execute("DELETE FROM expense_component WHERE expense_id=?", (expense_id,))
-        conn.execute("DELETE FROM expense_instance WHERE expense_id=?", (expense_id,))
-        audit.record(conn, entity_type="expense", entity_id=expense_id, action="delete",
+        uow.expenses.delete_allocations(expense_id)
+        uow.expenses.delete_readings(expense_id)
+        uow.expenses.delete_electricity_bill(expense_id)
+        uow.expenses.delete_components(expense_id)
+        uow.expenses.delete_expense(expense_id)
+        audit.record(uow, entity_type="expense", entity_id=expense_id, action="delete",
                      actor=actor, apartment_id=expense.get("apartment_id"), reason=reason,
                      old_value={k: expense[k] for k in
                                 ("description", "amount_paise", "expense_date",
@@ -619,41 +584,25 @@ def delete_expense(db_path, expense_id: str, *, apartment_id: str | None = None,
         return {"expense_id": expense_id, "deleted": True}
 
 
-def read_expense(db_path, expense_id: str) -> dict[str, Any]:
-    with connect(db_path, read_only=True) as conn:
-        expense = get_expense(conn, expense_id)
-        expense["components"] = db.fetch_all(
-            conn, "SELECT * FROM expense_component WHERE expense_id=? ORDER BY rowid",
-            (expense_id,))
-        expense["allocations"] = db.fetch_all(
-            conn,
-            """SELECT a.*, r.display_name,
-                      (SELECT COALESCE(SUM(pa.amount_paise), 0) FROM payment_application pa
-                        WHERE pa.allocation_id = a.allocation_id) AS settled_paise
-                 FROM allocation a JOIN resident r ON r.resident_id = a.resident_id
-                WHERE a.expense_id = ? ORDER BY r.display_name, a.rowid""",
-            (expense_id,))
+def read_expense(db: Database, expense_id: str) -> dict[str, Any]:
+    with db.read() as uow:
+        expense = get_expense(uow, expense_id)
+        expense["components"] = uow.expenses.components(expense_id)
+        expense["allocations"] = uow.expenses.allocations_with_settlement(expense_id)
         for row in expense["allocations"]:
             row["outstanding_paise"] = row["amount_paise"] - row["settled_paise"]
             row["allocation_basis"] = json.loads(row["allocation_basis_json"]) \
                 if row.get("allocation_basis_json") else None
-        expense["linked_payments"] = db.fetch_all(
-            conn, "SELECT * FROM payment WHERE expense_id=? ORDER BY payment_date, payment_id",
-            (expense_id,))
-        expense["readings"] = db.fetch_all(
-            conn, "SELECT * FROM smart_plug_reading WHERE expense_id=? ORDER BY rowid",
-            (expense_id,))
-        expense["electricity_bill"] = db.fetch_one(
-            conn, "SELECT * FROM electricity_bill WHERE expense_id=?", (expense_id,))
-        expense["statement"] = db.fetch_one(
-            conn, "SELECT statement_id, settlement_month, status FROM monthly_statement "
-                  "WHERE statement_id=?", (expense["statement_id"],)) \
+        expense["linked_payments"] = uow.expenses.linked_payments(expense_id)
+        expense["readings"] = uow.expenses.readings(expense_id)
+        expense["electricity_bill"] = uow.expenses.electricity_bill(expense_id)
+        expense["statement"] = uow.expenses.statement_summary(expense["statement_id"]) \
             if expense["statement_id"] else None
         return expense
 
 
 def list_expenses(
-    db_path, *, apartment_id: str, settlement_period: str | None = None,
+    db: Database, *, apartment_id: str, settlement_period: str | None = None,
     service_period: str | None = None, statement_id: str | None = None,
     resident_id: str | None = None, expense_definition_id: str | None = None,
     expense_kind: str | None = None, category: str | None = None,
@@ -662,82 +611,30 @@ def list_expenses(
     sort: str = "expense_date_desc",
 ) -> dict[str, Any]:
     limit, offset = paginate(limit, offset)
-    clauses = ["e.apartment_id = ?"]
-    params: list[Any] = [apartment_id]
-    if settlement_period:
-        clauses.append("e.settlement_period = ?")
-        params.append(normalize_month(settlement_period, "settlement_period"))
-    if service_period:
-        clauses.append("e.service_period = ?")
-        params.append(normalize_month(service_period, "service_period"))
-    if statement_id:
-        clauses.append("e.statement_id = ?")
-        params.append(statement_id)
-    if unattached_only:
-        clauses.append("e.statement_id IS NULL")
-    if expense_definition_id:
-        clauses.append("e.expense_definition_id = ?")
-        params.append(expense_definition_id)
-    if expense_kind:
-        clauses.append("e.expense_kind = ?")
-        params.append(expense_kind)
-    if category:
-        clauses.append("d.category = ?")
-        params.append(category)
-    if resident_id:
-        clauses.append("EXISTS (SELECT 1 FROM allocation a WHERE a.expense_id = e.expense_id "
-                       "AND a.resident_id = ?)")
-        params.append(resident_id)
-    if date_from:
-        clauses.append("e.expense_date >= ?")
-        params.append(parse_iso_date(date_from, "date_from").isoformat())
-    if date_to:
-        clauses.append("e.expense_date <= ?")
-        params.append(parse_iso_date(date_to, "date_to").isoformat())
-    if search:
-        clauses.append("(e.description LIKE ? OR COALESCE(e.provider_name,'') LIKE ? "
-                       "OR COALESCE(e.reference,'') LIKE ? OR COALESCE(e.notes,'') LIKE ?)")
-        pattern = f"%{search.strip()}%"
-        params.extend([pattern] * 4)
-
-    orders = {
-        "expense_date_desc": "e.expense_date DESC, e.rowid DESC",
-        "expense_date_asc": "e.expense_date ASC, e.rowid ASC",
-        "amount_desc": "e.amount_paise DESC, e.rowid DESC",
-        "amount_asc": "e.amount_paise ASC, e.rowid ASC",
-        "description_asc": "e.description ASC, e.rowid ASC",
+    filters: dict[str, Any] = {
+        "apartment_id": apartment_id,
+        "settlement_period": (normalize_month(settlement_period, "settlement_period")
+                              if settlement_period else None),
+        "service_period": (normalize_month(service_period, "service_period")
+                           if service_period else None),
+        "statement_id": statement_id or None,
+        "unattached_only": bool(unattached_only),
+        "expense_definition_id": expense_definition_id or None,
+        "expense_kind": expense_kind or None,
+        "category": category or None,
+        "resident_id": resident_id or None,
+        "date_from": parse_iso_date(date_from, "date_from").isoformat() if date_from else None,
+        "date_to": parse_iso_date(date_to, "date_to").isoformat() if date_to else None,
+        "search": search.strip() if search else None,
     }
-    if sort not in orders:
+
+    if sort not in SORT_KEYS:
         raise ValidationError(f"Unsupported sort: {sort}",
-                              details={"field": "sort", "allowed": sorted(orders)})
-    where = " AND ".join(clauses)
-    base = f"""
-        FROM expense_instance e
-        LEFT JOIN expense_definition d ON d.expense_definition_id = e.expense_definition_id
-        LEFT JOIN monthly_statement s ON s.statement_id = e.statement_id
-        LEFT JOIN resident r ON r.resident_id = e.payer_resident_id
-        WHERE {where}
-    """
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        total = int(conn.execute(f"SELECT COUNT(*) {base}", tuple(params)).fetchone()[0])
-        total_amount = int(conn.execute(
-            f"SELECT COALESCE(SUM(e.amount_paise), 0) {base}", tuple(params)).fetchone()[0])
-        rows = db.fetch_all(
-            conn,
-            f"""SELECT e.*, d.name AS definition_name, d.category AS category,
-                       s.settlement_month AS statement_month, s.status AS statement_status,
-                       r.display_name AS payer_display_name,
-                       (SELECT COUNT(*) FROM allocation a WHERE a.expense_id = e.expense_id)
-                           AS allocation_count,
-                       (SELECT COALESCE(SUM(a.amount_paise), 0) FROM allocation a
-                         WHERE a.expense_id = e.expense_id) AS allocated_paise,
-                       (SELECT COALESCE(SUM(p.amount_paise), 0) FROM payment p
-                         WHERE p.expense_id = e.expense_id
-                           AND p.payment_kind = 'provider_advance'
-                           AND p.status = 'active') AS linked_advance_paise
-                  {base}
-                ORDER BY {orders[sort]} LIMIT ? OFFSET ?""",
-            params + [limit, offset])
+                              details={"field": "sort", "allowed": sorted(SORT_KEYS)})
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        total = uow.expenses.count_matching(**filters)
+        total_amount = uow.expenses.total_amount_matching(**filters)
+        rows = uow.expenses.list_page(sort=sort, limit=limit, offset=offset, **filters)
     return {"items": rows, "total": total, "total_amount_paise": total_amount,
             "limit": limit, "offset": offset}

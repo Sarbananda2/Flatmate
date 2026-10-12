@@ -14,7 +14,6 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from aem.config import TapoPlug, get_settings
-from aem.db import connect
 from aem.errors import ConflictError, NotFoundError, ValidationError
 from aem.main import _close_expired_periodically
 from aem.services import (
@@ -28,6 +27,7 @@ from aem.services import (
 )
 
 from .conftest import APARTMENT
+from .support import connect
 
 
 @pytest.fixture()

@@ -16,14 +16,13 @@ A definition carries:
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any, Mapping, Sequence
 
-from .. import db
-from ..db import connect, new_id, now_timestamp, transaction
 from ..errors import ConflictError, NotFoundError, ValidationError
+from ..ids import new_id, now_timestamp
 from ..money import ensure_paise
 from ..periods import PERIOD_RULES, normalize_month, resolve_periods
+from ..persistence import Database, IntegrityViolation
 from . import audit
 from .common import (
     ALLOCATION_METHODS,
@@ -160,7 +159,7 @@ def _decode(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_expense_definition(
-    db_path, *, apartment_id: str, definition_id: str, name: str, category: str,
+    db: Database, *, apartment_id: str, definition_id: str, name: str, category: str,
     period_rule: str, default_allocation_method: str = "equal",
     is_recurring: bool = True, recurrence: str | None = None,
     default_amount_paise: int | None = None, default_provider_name: str | None = None,
@@ -192,14 +191,13 @@ def create_expense_definition(
             "day_of_month must be between 1 and 28 so every month has that day.",
             details={"field": "day_of_month"})
     timestamp = now_timestamp()
-    with transaction(db_path) as conn:
-        get_apartment(conn, apartment_id)
-        if conn.execute("SELECT 1 FROM expense_definition WHERE expense_definition_id=?",
-                        (definition_id.strip(),)).fetchone():
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        if uow.definitions.exists(definition_id.strip()):
             raise ConflictError("Could not create expense definition: ID already exists.",
                                 code="definition_exists",
                                 details={"expense_definition_id": definition_id.strip()})
-        known = set(resident_ids(conn, apartment_id))
+        known = set(resident_ids(uow, apartment_id))
         participants_json = _json_list(default_participants, "default_participants")
         weights_json = _json_weights(default_weights, "default_weights")
         for label, raw in (("default_participants", participants_json),
@@ -214,34 +212,31 @@ def create_expense_definition(
                     f"{label} names residents who do not belong to this apartment.",
                     details={"field": label, "unknown_resident_ids": unknown})
         try:
-            conn.execute(
-                """INSERT INTO expense_definition
-                   (expense_definition_id, apartment_id, name, category, period_rule,
-                    default_allocation_method, is_recurring, is_active, recurrence,
-                    default_amount_paise, default_provider_name, default_participants_json,
-                    default_weights_json, day_of_month, notes, sort_order,
-                    created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)""",
-                (definition_id.strip(), apartment_id, name.strip(), category.strip(),
-                 period_rule, default_allocation_method, int(bool(is_recurring)),
-                 resolved_recurrence, default_amount_paise,
-                 optional_text(default_provider_name, "default_provider_name", max_length=200),
-                 participants_json, weights_json,
-                 int(day_of_month) if day_of_month is not None else None,
-                 optional_text(notes, "notes"), int(sort_order), timestamp, timestamp))
-        except sqlite3.IntegrityError as exc:
+            uow.definitions.insert_definition(
+                expense_definition_id=definition_id.strip(), apartment_id=apartment_id,
+                name=name.strip(), category=category.strip(), period_rule=period_rule,
+                default_allocation_method=default_allocation_method,
+                is_recurring=int(bool(is_recurring)), recurrence=resolved_recurrence,
+                default_amount_paise=default_amount_paise,
+                default_provider_name=optional_text(
+                    default_provider_name, "default_provider_name", max_length=200),
+                default_participants_json=participants_json,
+                default_weights_json=weights_json,
+                day_of_month=int(day_of_month) if day_of_month is not None else None,
+                notes=optional_text(notes, "notes"), sort_order=int(sort_order),
+                created_at=timestamp, updated_at=timestamp)
+        except IntegrityViolation as exc:
             raise ValidationError(f"Could not create expense definition: {exc}") from exc
-        audit.record(conn, entity_type="expense_definition", entity_id=definition_id.strip(),
+        audit.record(uow, entity_type="expense_definition", entity_id=definition_id.strip(),
                      action="create", actor=actor, apartment_id=apartment_id,
                      new_value={"name": name.strip(), "category": category.strip(),
                                 "period_rule": period_rule,
                                 "recurrence": resolved_recurrence})
-        return _decode(db.fetch_one(
-            conn, "SELECT * FROM expense_definition WHERE expense_definition_id=?",
-            (definition_id.strip(),)))
+        return _decode(uow.definitions.get(definition_id.strip()))
 
 
-def update_expense_definition(db_path, definition_id: str, *, apartment_id: str | None = None,
+def update_expense_definition(db: Database, definition_id: str, *,
+                              apartment_id: str | None = None,
                               actor: str = "operator", reason: str | None = None,
                               **changes: Any) -> dict[str, Any]:
     raw_changes = dict(changes)
@@ -256,9 +251,8 @@ def update_expense_definition(db_path, definition_id: str, *, apartment_id: str 
         raise ValidationError(f"Unsupported definition fields: {', '.join(unknown)}.",
                               details={"unsupported_fields": unknown,
                                        "editable_fields": EDITABLE_FIELDS})
-    with transaction(db_path) as conn:
-        before = db.fetch_one(conn, "SELECT * FROM expense_definition WHERE expense_definition_id=?",
-                              (definition_id,))
+    with db.transaction() as uow:
+        before = uow.definitions.get(definition_id)
         if before is None:
             raise NotFoundError("Expense definition not found.",
                                 details={"expense_definition_id": definition_id})
@@ -314,60 +308,53 @@ def update_expense_definition(db_path, definition_id: str, *, apartment_id: str 
             if key in raw_changes:
                 after[key] = raw_changes[key]
         after["updated_at"] = now_timestamp()
-        conn.execute(
-            """UPDATE expense_definition SET name=?, category=?, period_rule=?,
-                   default_allocation_method=?, is_recurring=?, is_active=?, recurrence=?,
-                   default_amount_paise=?, default_provider_name=?,
-                   default_participants_json=?, default_weights_json=?, day_of_month=?,
-                   notes=?, sort_order=?, updated_at=?
-               WHERE expense_definition_id=?""",
-            (after["name"], after["category"], after["period_rule"],
-             after["default_allocation_method"], after["is_recurring"], after["is_active"],
-             after["recurrence"], after["default_amount_paise"],
-             after["default_provider_name"], after["default_participants_json"],
-             after["default_weights_json"], after["day_of_month"], after["notes"],
-             after["sort_order"], after["updated_at"], definition_id))
+        uow.definitions.update_definition(
+            definition_id, name=after["name"], category=after["category"],
+            period_rule=after["period_rule"],
+            default_allocation_method=after["default_allocation_method"],
+            is_recurring=after["is_recurring"], is_active=after["is_active"],
+            recurrence=after["recurrence"],
+            default_amount_paise=after["default_amount_paise"],
+            default_provider_name=after["default_provider_name"],
+            default_participants_json=after["default_participants_json"],
+            default_weights_json=after["default_weights_json"],
+            day_of_month=after["day_of_month"], notes=after["notes"],
+            sort_order=after["sort_order"], updated_at=after["updated_at"])
         audit.record_field_changes(
-            conn, entity_type="expense_definition", entity_id=definition_id, before=before,
+            uow, entity_type="expense_definition", entity_id=definition_id, before=before,
             after=after, fields=EDITABLE_FIELDS, actor=actor,
             apartment_id=before["apartment_id"], reason=reason)
-        return _decode(db.fetch_one(
-            conn, "SELECT * FROM expense_definition WHERE expense_definition_id=?",
-            (definition_id,)))
+        return _decode(uow.definitions.get(definition_id))
 
 
-def deactivate_expense_definition(db_path, definition_id: str, *,
+def deactivate_expense_definition(db: Database, definition_id: str, *,
                                   apartment_id: str | None = None,
                                   actor: str = "operator") -> dict[str, Any]:
     """Deactivate rather than delete: expenses already recorded against the
     definition keep their link and stay auditable."""
-    return update_expense_definition(db_path, definition_id, apartment_id=apartment_id,
+    return update_expense_definition(db, definition_id, apartment_id=apartment_id,
                                      actor=actor, reason="definition deactivated",
                                      is_active=False)
 
 
-def list_expense_definitions(db_path, apartment_id: str, *,
+def list_expense_definitions(db: Database, apartment_id: str, *,
                              include_inactive: bool = False) -> list[dict[str, Any]]:
     """List definitions. Only active ones by default, matching the prototype."""
-    with connect(db_path, read_only=True) as conn:
-        sql = "SELECT * FROM expense_definition WHERE apartment_id=?"
-        if not include_inactive:
-            sql += " AND is_active=1"
-        sql += " ORDER BY sort_order, name"
-        return [_decode(row) for row in db.fetch_all(conn, sql, (apartment_id,))]
+    with db.read() as uow:
+        return [_decode(row) for row in uow.definitions.list_for_apartment(
+            apartment_id, include_inactive=include_inactive)]
 
 
-def read_expense_definition(db_path, definition_id: str) -> dict[str, Any]:
-    with connect(db_path, read_only=True) as conn:
-        row = db.fetch_one(conn, "SELECT * FROM expense_definition WHERE expense_definition_id=?",
-                           (definition_id,))
+def read_expense_definition(db: Database, definition_id: str) -> dict[str, Any]:
+    with db.read() as uow:
+        row = uow.definitions.get(definition_id)
         if row is None:
             raise NotFoundError("Expense definition not found.",
                                 details={"expense_definition_id": definition_id})
         return _decode(row)
 
 
-def seed_starter_definitions(db_path, apartment_id: str, *,
+def seed_starter_definitions(db: Database, apartment_id: str, *,
                              actor: str = "operator") -> list[dict[str, Any]]:
     """Create a conventional starting set of definitions, on request only.
 
@@ -376,12 +363,12 @@ def seed_starter_definitions(db_path, apartment_id: str, *,
     """
     created: list[dict[str, Any]] = []
     existing = {row["expense_definition_id"]
-                for row in list_expense_definitions(db_path, apartment_id,
+                for row in list_expense_definitions(db, apartment_id,
                                                     include_inactive=True)}
     for starter in STARTER_DEFINITIONS:
         if starter["definition_id"] in existing:
             continue
         created.append(create_expense_definition(
-            db_path, apartment_id=apartment_id, actor=actor,
+            db, apartment_id=apartment_id, actor=actor,
             is_recurring=starter["recurrence"] != "none", **starter))
     return created

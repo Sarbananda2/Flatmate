@@ -15,10 +15,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .. import db
-from ..db import connect, now_timestamp, transaction
 from ..errors import ConflictError, ValidationError
+from ..ids import now_timestamp
 from ..periods import parse_iso_date
+from ..persistence import Database
 from . import audit
 from .common import (
     get_apartment,
@@ -52,7 +52,7 @@ def _validate_dates(active_from: str | None, active_until: str | None) -> None:
                               details={"field": "active_until"})
 
 
-def create_resident(db_path, *, apartment_id: str, resident_id: str, display_name: str,
+def create_resident(db: Database, *, apartment_id: str, resident_id: str, display_name: str,
                     active_from: str | None = None, active_until: str | None = None,
                     is_active: bool = True, email: str | None = None,
                     phone: str | None = None, notes: str | None = None,
@@ -65,29 +65,28 @@ def create_resident(db_path, *, apartment_id: str, resident_id: str, display_nam
     _validate_dates(active_from, active_until)
     upi_id = _upi_id(upi_id)
     timestamp = now_timestamp()
-    with transaction(db_path) as conn:
-        get_apartment(conn, apartment_id)
-        if conn.execute("SELECT 1 FROM resident WHERE resident_id=?", (resident_id,)).fetchone():
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        if uow.residents.exists(resident_id):
             raise ConflictError("A resident with this ID already exists.",
                                 code="resident_exists",
                                 details={"resident_id": resident_id})
-        conn.execute(
-            """INSERT INTO resident (resident_id, apartment_id, display_name, active_from,
-                                     active_until, is_active, email, phone, notes,
-                                     upi_id, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (resident_id, apartment_id, display_name, active_from, active_until,
-             1 if is_active else 0, optional_text(email, "email", max_length=200),
-             optional_text(phone, "phone", max_length=50),
-             optional_text(notes, "notes"), upi_id, timestamp, timestamp))
-        audit.record(conn, entity_type="resident", entity_id=resident_id, action="create",
+        uow.residents.insert(
+            resident_id=resident_id, apartment_id=apartment_id, display_name=display_name,
+            active_from=active_from, active_until=active_until,
+            is_active=1 if is_active else 0,
+            email=optional_text(email, "email", max_length=200),
+            phone=optional_text(phone, "phone", max_length=50),
+            notes=optional_text(notes, "notes"), upi_id=upi_id,
+            created_at=timestamp, updated_at=timestamp)
+        audit.record(uow, entity_type="resident", entity_id=resident_id, action="create",
                      actor=actor, apartment_id=apartment_id,
                      new_value={"display_name": display_name, "is_active": is_active,
                                 "active_from": active_from})
-        return get_resident(conn, resident_id)
+        return get_resident(uow, resident_id)
 
 
-def update_resident(db_path, resident_id: str, *, apartment_id: str | None = None,
+def update_resident(db: Database, resident_id: str, *, apartment_id: str | None = None,
                     actor: str = "operator", reason: str | None = None,
                     **changes: Any) -> dict[str, Any]:
     """Update editable resident fields. Financial history is never touched."""
@@ -96,8 +95,8 @@ def update_resident(db_path, resident_id: str, *, apartment_id: str | None = Non
         raise ValidationError(f"Unsupported resident fields: {', '.join(unknown)}.",
                               details={"unsupported_fields": unknown,
                                        "editable_fields": EDITABLE_FIELDS})
-    with transaction(db_path) as conn:
-        before = get_resident(conn, resident_id, apartment_id)
+    with db.transaction() as uow:
+        before = get_resident(uow, resident_id, apartment_id)
         after = dict(before)
         if "display_name" in changes:
             after["display_name"] = require_text(changes["display_name"], "display_name",
@@ -112,21 +111,20 @@ def update_resident(db_path, resident_id: str, *, apartment_id: str | None = Non
             after["is_active"] = 1 if changes["is_active"] else 0
         _validate_dates(after.get("active_from"), after.get("active_until"))
         after["updated_at"] = now_timestamp()
-        conn.execute(
-            """UPDATE resident SET display_name=?, active_from=?, active_until=?,
-                   is_active=?, email=?, phone=?, notes=?, upi_id=?, updated_at=?
-               WHERE resident_id=?""",
-            (after["display_name"], after.get("active_from"), after.get("active_until"),
-             after["is_active"], after.get("email"), after.get("phone"),
-             after.get("notes"), after.get("upi_id"), after["updated_at"], resident_id))
+        uow.residents.update(
+            resident_id, display_name=after["display_name"],
+            active_from=after.get("active_from"), active_until=after.get("active_until"),
+            is_active=after["is_active"], email=after.get("email"),
+            phone=after.get("phone"), notes=after.get("notes"),
+            upi_id=after.get("upi_id"), updated_at=after["updated_at"])
         audit.record_field_changes(
-            conn, entity_type="resident", entity_id=resident_id, before=before, after=after,
+            uow, entity_type="resident", entity_id=resident_id, before=before, after=after,
             fields=EDITABLE_FIELDS, actor=actor,
             apartment_id=before["apartment_id"], reason=reason)
-        return get_resident(conn, resident_id)
+        return get_resident(uow, resident_id)
 
 
-def deactivate_resident(db_path, resident_id: str, *, active_until: str | None = None,
+def deactivate_resident(db: Database, resident_id: str, *, active_until: str | None = None,
                         apartment_id: str | None = None, reason: str | None = None,
                         actor: str = "operator") -> dict[str, Any]:
     """Mark a resident as moved out. Nothing financial is deleted or recalculated.
@@ -138,24 +136,24 @@ def deactivate_resident(db_path, resident_id: str, *, active_until: str | None =
     an explicit zero share.
     """
     return update_resident(
-        db_path, resident_id, apartment_id=apartment_id, actor=actor,
+        db, resident_id, apartment_id=apartment_id, actor=actor,
         reason=reason or "resident deactivated",
         is_active=False,
         active_until=active_until or now_timestamp()[:10])
 
 
-def reactivate_resident(db_path, resident_id: str, *, apartment_id: str | None = None,
+def reactivate_resident(db: Database, resident_id: str, *, apartment_id: str | None = None,
                         actor: str = "operator") -> dict[str, Any]:
-    return update_resident(db_path, resident_id, apartment_id=apartment_id, actor=actor,
+    return update_resident(db, resident_id, apartment_id=apartment_id, actor=actor,
                            reason="resident reactivated", is_active=True, active_until=None)
 
 
-def read_residents(db_path, apartment_id: str, *, active_only: bool = False) -> list[dict[str, Any]]:
-    with connect(db_path, read_only=True) as conn:
-        get_apartment(conn, apartment_id)
-        return list_residents(conn, apartment_id, active_only=active_only)
+def read_residents(db: Database, apartment_id: str, *, active_only: bool = False) -> list[dict[str, Any]]:
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        return list_residents(uow, apartment_id, active_only=active_only)
 
 
-def read_resident(db_path, resident_id: str, apartment_id: str | None = None) -> dict[str, Any]:
-    with connect(db_path, read_only=True) as conn:
-        return get_resident(conn, resident_id, apartment_id)
+def read_resident(db: Database, resident_id: str, apartment_id: str | None = None) -> dict[str, Any]:
+    with db.read() as uow:
+        return get_resident(uow, resident_id, apartment_id)

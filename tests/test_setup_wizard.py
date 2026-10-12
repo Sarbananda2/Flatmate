@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from aem.db import connect
 from aem.errors import ValidationError
 from aem.services import setup as setup_service
 from aem.services.definitions import ESSENTIALS_CATALOGUE, STARTER_DEFINITIONS
 from tests.conftest import APARTMENT
+from tests.support import connect
 
 
 # --------------------------------------------------------------------------- #
@@ -175,7 +175,7 @@ def test_re_submitting_the_resident_step_creates_no_duplicates(apartment):
     assert (second["created_count"], second["skipped_count"]) == (0, 2)
     with connect(apartment, read_only=True) as conn:
         names = [row[0] for row in conn.execute(
-            "SELECT display_name FROM resident WHERE apartment_id=? AND display_name "
+            "SELECT display_name FROM resident WHERE apartment_id=%s AND display_name "
             "IN ('Dana','Eve')", (APARTMENT,)).fetchall()]
     assert sorted(names) == ["Dana", "Eve"]
 
@@ -200,7 +200,7 @@ def test_a_half_finished_step_writes_nothing(apartment):
                    {"name": "Broken", "period_rule": "every_other_tuesday"}])
     with connect(apartment, read_only=True) as conn:
         assert conn.execute(
-            "SELECT COUNT(*) FROM expense_definition WHERE apartment_id=?",
+            "SELECT COUNT(*) FROM expense_definition WHERE apartment_id=%s",
             (APARTMENT,)).fetchone()[0] == 0
 
 

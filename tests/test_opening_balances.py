@@ -13,7 +13,6 @@ from dataclasses import replace
 import pytest
 
 from aem.config import get_settings
-from aem.db import connect
 from aem.errors import ConflictError, NotFoundError, ValidationError
 from aem.services import (
     adjustments,
@@ -25,6 +24,7 @@ from aem.services import (
 )
 
 from .conftest import APARTMENT
+from .support import connect
 
 
 def _set(db, resident_id, amount_paise, as_of_date="2026-08-31", **extra):
@@ -219,7 +219,7 @@ def test_every_change_is_audited(apartment):
         apartment, apartment_id=APARTMENT, resident_id="alice")
     with connect(apartment, read_only=True) as conn:
         actions = [row[0] for row in conn.execute(
-            "SELECT action FROM audit_log WHERE entity_type='opening_balance' ORDER BY rowid")]
+            "SELECT action FROM audit_log WHERE entity_type='opening_balance' ORDER BY row_seq")]
     assert actions == ["create", "update", "delete"]
 
 
@@ -307,8 +307,8 @@ def test_a_charge_left_off_the_statement_is_shown_apart(household):
 
 def test_money_paid_to_a_provider_is_an_advance_not_a_pool_payment(household):
     """Alice paid September's groceries herself; Bob's advance paid the electricity."""
-    with connect(household, read_only=True) as conn:
-        movement = reconciliation.carry_forward(conn, APARTMENT, "2026-09")
+    with household.read() as uow:
+        movement = reconciliation.carry_forward(uow, APARTMENT, "2026-09")
     rows = {row["resident_id"]: row for row in movement["residents"]}
     assert (rows["alice"]["provider_advances_paise"],
             rows["alice"]["payments_applied_paise"]) == (333_401, 0)
@@ -346,9 +346,9 @@ def api(apartment):
 
     from aem.main import create_app
 
-    settings = replace(get_settings(), database_path=apartment, auto_migrate=True,
+    settings = replace(get_settings(),
                        auto_close_expired_statements=False)
-    with TestClient(create_app(settings)) as test_client:
+    with TestClient(create_app(settings, database=apartment)) as test_client:
         yield test_client
 
 

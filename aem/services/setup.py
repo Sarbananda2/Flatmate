@@ -23,15 +23,14 @@ gets a numeric suffix.
 from __future__ import annotations
 
 import re
-import sqlite3
 import unicodedata
 from typing import Any, Iterable, Mapping, Sequence
 
-from .. import db
-from ..db import connect, now_timestamp, transaction
 from ..errors import ConflictError, ValidationError
+from ..ids import now_timestamp
 from ..money import ensure_paise
 from ..periods import PERIOD_RULES, normalize_month
+from ..persistence import Database, UnitOfWork
 from . import apartments, audit
 from .common import ALLOCATION_METHODS, RECURRENCES, get_apartment, require_text
 from .definitions import ESSENTIALS_CATALOGUE
@@ -63,9 +62,9 @@ def slugify(value: str, *, fallback: str = "item", max_length: int = 48) -> str:
     return slug or fallback
 
 
-def _unique_id(conn: sqlite3.Connection, table: str, column: str, candidate: str) -> str:
+def _unique_id(uow: UnitOfWork, table: str, column: str, candidate: str) -> str:
     """`candidate`, or `candidate-2`, `candidate-3`, ... if it is already taken."""
-    taken = {row[0] for row in conn.execute(f"SELECT {column} FROM {table}").fetchall()}
+    taken = uow.setup.taken_ids(table, column)
     if candidate not in taken:
         return candidate
     for suffix in range(2, 1000):
@@ -80,40 +79,30 @@ def _unique_id(conn: sqlite3.Connection, table: str, column: str, candidate: str
 # Progress
 # --------------------------------------------------------------------------- #
 
-def setup_state(db_path, apartment_id: str | None = None) -> dict[str, Any]:
+def setup_state(db: Database, apartment_id: str | None = None) -> dict[str, Any]:
     """Where setup has got to, and therefore where to resume.
 
     Everything here is read from real records. There is no separate "wizard
     progress" row that could drift out of step with the data.
     """
-    resolved = apartment_id or apartments.default_apartment_id(db_path)
-    with connect(db_path, read_only=True) as conn:
+    resolved = apartment_id or apartments.default_apartment_id(db)
+    with db.read() as uow:
         apartment = None
         if resolved:
-            row = db.fetch_one(conn, "SELECT * FROM apartment WHERE apartment_id=?",
-                               (resolved,))
+            row = uow.apartments.get(resolved)
             apartment = row
-        apartment_count = int(db.scalar(conn, "SELECT COUNT(*) FROM apartment", default=0))
+        apartment_count = uow.setup.apartment_count()
         resident_count = active_residents = definition_count = statement_count = 0
         residents: list[dict[str, Any]] = []
         definitions_preview: list[dict[str, Any]] = []
         if apartment:
-            residents = db.fetch_all(
-                conn, "SELECT resident_id, display_name, is_active FROM resident "
-                      "WHERE apartment_id=? ORDER BY display_name", (resolved,))
+            residents = uow.setup.residents_overview(resolved)
             resident_count = len(residents)
             active_residents = sum(1 for r in residents if r["is_active"])
-            definitions_preview = db.fetch_all(
-                conn, "SELECT expense_definition_id, name, category, period_rule "
-                      "FROM expense_definition WHERE apartment_id=? AND is_active=1 "
-                      "ORDER BY sort_order, name", (resolved,))
+            definitions_preview = uow.setup.active_definitions_preview(resolved)
             definition_count = len(definitions_preview)
-            statement_count = int(db.scalar(
-                conn, "SELECT COUNT(*) FROM monthly_statement WHERE apartment_id=?",
-                (resolved,), default=0))
-        completed_at = db.scalar(
-            conn, "SELECT setting_value FROM app_setting WHERE setting_key=?",
-            (SETUP_COMPLETED_SETTING,))
+            statement_count = uow.setup.statement_count(resolved)
+        completed_at = uow.setup.setting_value(SETUP_COMPLETED_SETTING)
 
     if not apartment:
         next_step = STEP_APARTMENT
@@ -171,23 +160,23 @@ def catalogue() -> list[dict[str, Any]]:
 # Steps. Each commits, so closing the tab after one never loses it.
 # --------------------------------------------------------------------------- #
 
-def create_apartment_step(db_path, *, name: str, currency_code: str = "INR",
+def create_apartment_step(db: Database, *, name: str, currency_code: str = "INR",
                           timezone: str = "Asia/Kolkata",
                           apartment_id: str | None = None,
                           actor: str = "operator") -> dict[str, Any]:
     """Step 1. The operator types a name; the identifier is derived from it."""
     name = require_text(name, "name", max_length=200)
-    with connect(db_path, read_only=True) as conn:
+    with db.read() as uow:
         resolved_id = (slugify(apartment_id, fallback="home", max_length=64)
                        if apartment_id else slugify(name, fallback="home", max_length=64))
-        resolved_id = _unique_id(conn, "apartment", "apartment_id", resolved_id)
+        resolved_id = _unique_id(uow, "apartment", "apartment_id", resolved_id)
     created = apartments.create_apartment(
-        db_path, apartment_id=resolved_id, name=name, currency_code=currency_code,
+        db, apartment_id=resolved_id, name=name, currency_code=currency_code,
         timezone=timezone, actor=actor)
     return {"apartment": created, "apartment_id": resolved_id}
 
 
-def create_residents_step(db_path, *, apartment_id: str, names: Sequence[str],
+def create_residents_step(db: Database, *, apartment_id: str, names: Sequence[str],
                           actor: str = "operator") -> dict[str, Any]:
     """Step 2. Everyone at once, in one transaction.
 
@@ -207,22 +196,19 @@ def create_residents_step(db_path, *, apartment_id: str, names: Sequence[str],
     timestamp = now_timestamp()
     created: list[dict[str, Any]] = []
     skipped: list[str] = []
-    with transaction(db_path) as conn:
-        get_apartment(conn, apartment_id)
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
         existing = {row["display_name"].casefold(): row["resident_id"] for row in
-                    conn.execute("SELECT resident_id, display_name FROM resident "
-                                 "WHERE apartment_id=?", (apartment_id,)).fetchall()}
+                    uow.setup.resident_names(apartment_id)}
         for name in cleaned:
             if name.casefold() in existing:
                 skipped.append(name)
                 continue
-            resident_id = _unique_id(conn, "resident", "resident_id", slugify(name, fallback="resident"))
-            conn.execute(
-                """INSERT INTO resident
-                   (resident_id, apartment_id, display_name, is_active, created_at, updated_at)
-                   VALUES (?,?,?,1,?,?)""",
-                (resident_id, apartment_id, name, timestamp, timestamp))
-            audit.record(conn, entity_type="resident", entity_id=resident_id,
+            resident_id = _unique_id(uow, "resident", "resident_id", slugify(name, fallback="resident"))
+            uow.setup.insert_resident(
+                resident_id=resident_id, apartment_id=apartment_id, display_name=name,
+                created_at=timestamp, updated_at=timestamp)
+            audit.record(uow, entity_type="resident", entity_id=resident_id,
                          action="create", actor=actor, apartment_id=apartment_id,
                          reason="guided setup",
                          new_value={"display_name": name, "is_active": True})
@@ -231,7 +217,7 @@ def create_residents_step(db_path, *, apartment_id: str, names: Sequence[str],
             "skipped": skipped, "skipped_count": len(skipped)}
 
 
-def create_categories_step(db_path, *, apartment_id: str,
+def create_categories_step(db: Database, *, apartment_id: str,
                            items: Sequence[Mapping[str, Any]],
                            actor: str = "operator") -> dict[str, Any]:
     """Step 3. Every chosen category at once, in one transaction.
@@ -247,11 +233,10 @@ def create_categories_step(db_path, *, apartment_id: str,
     created: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
 
-    with transaction(db_path) as conn:
-        get_apartment(conn, apartment_id)
-        existing_names = {row["name"].casefold() for row in conn.execute(
-            "SELECT name FROM expense_definition WHERE apartment_id=?",
-            (apartment_id,)).fetchall()}
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        existing_names = {existing.casefold() for existing in
+                          uow.setup.definition_names(apartment_id)}
         for index, item in enumerate(items):
             name = require_text(item.get("name"), f"items[{index}].name", max_length=200)
             if name.casefold() in existing_names:
@@ -278,18 +263,17 @@ def create_categories_step(db_path, *, apartment_id: str,
                 ensure_paise(amount, f"items[{index}].default_amount_paise")
 
             definition_id = _unique_id(
-                conn, "expense_definition", "expense_definition_id",
+                uow, "expense_definition", "expense_definition_id",
                 slugify(item.get("definition_id") or name, fallback="category", max_length=64))
-            conn.execute(
-                """INSERT INTO expense_definition
-                   (expense_definition_id, apartment_id, name, category, period_rule,
-                    default_allocation_method, is_recurring, is_active, recurrence,
-                    default_amount_paise, sort_order, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?)""",
-                (definition_id, apartment_id, name, category, period_rule, method,
-                 0 if recurrence == "none" else 1, recurrence, amount,
-                 int(item.get("sort_order") or (index + 1) * 10), timestamp, timestamp))
-            audit.record(conn, entity_type="expense_definition", entity_id=definition_id,
+            uow.setup.insert_definition(
+                expense_definition_id=definition_id, apartment_id=apartment_id, name=name,
+                category=category, period_rule=period_rule,
+                default_allocation_method=method,
+                is_recurring=0 if recurrence == "none" else 1, recurrence=recurrence,
+                default_amount_paise=amount,
+                sort_order=int(item.get("sort_order") or (index + 1) * 10),
+                created_at=timestamp, updated_at=timestamp)
+            audit.record(uow, entity_type="expense_definition", entity_id=definition_id,
                          action="create", actor=actor, apartment_id=apartment_id,
                          reason="guided setup",
                          new_value={"name": name, "category": category,
@@ -304,7 +288,7 @@ def create_categories_step(db_path, *, apartment_id: str,
             "skipped": skipped, "skipped_count": len(skipped)}
 
 
-def finish_setup(db_path, *, apartment_id: str | None = None,
+def finish_setup(db: Database, *, apartment_id: str | None = None,
                  create_statement_for: str | None = None,
                  actor: str = "operator") -> dict[str, Any]:
     """Step 4. Mark setup done, and optionally open the first statement.
@@ -313,7 +297,7 @@ def finish_setup(db_path, *, apartment_id: str | None = None,
     anything: residents and categories stay editable, and the guided setup can
     be reopened at any time to add more.
     """
-    resolved = apartment_id or apartments.default_apartment_id(db_path)
+    resolved = apartment_id or apartments.default_apartment_id(db)
     statement_id = None
     if create_statement_for and resolved:
         from . import statements  # local import: statements has no business here otherwise
@@ -321,22 +305,21 @@ def finish_setup(db_path, *, apartment_id: str | None = None,
         month = normalize_month(create_statement_for, "create_statement_for")
         try:
             statement_id = statements.create_monthly_statement(
-                db_path, apartment_id=resolved, settlement_month=month, actor=actor)
+                db, apartment_id=resolved, settlement_month=month, actor=actor)
         except ConflictError as exc:
             # A statement for the month already exists; that is a fine outcome.
             statement_id = exc.details.get("statement_id")
 
     completed_at = now_timestamp()
-    apartments.set_setting(db_path, SETUP_COMPLETED_SETTING, completed_at, actor=actor)
-    state = setup_state(db_path, resolved)
+    apartments.set_setting(db, SETUP_COMPLETED_SETTING, completed_at, actor=actor)
+    state = setup_state(db, resolved)
     return {**state, "statement_id": statement_id, "completed_at": completed_at}
 
 
-def reopen_setup(db_path, *, actor: str = "operator") -> dict[str, Any]:
+def reopen_setup(db: Database, *, actor: str = "operator") -> dict[str, Any]:
     """Clear the completion marker so the guided setup prompts again."""
-    with transaction(db_path) as conn:
-        conn.execute("DELETE FROM app_setting WHERE setting_key=?",
-                     (SETUP_COMPLETED_SETTING,))
-        audit.record(conn, entity_type="app_setting", entity_id=SETUP_COMPLETED_SETTING,
+    with db.transaction() as uow:
+        uow.setup.delete_setting(SETUP_COMPLETED_SETTING)
+        audit.record(uow, entity_type="app_setting", entity_id=SETUP_COMPLETED_SETTING,
                      action="delete", actor=actor, reason="guided setup reopened")
-    return setup_state(db_path)
+    return setup_state(db)

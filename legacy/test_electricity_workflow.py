@@ -1,7 +1,6 @@
-import sqlite3
-import tempfile
 import unittest
-from pathlib import Path
+
+import _root  # noqa: F401  (makes ``tests`` importable)
 
 from electricity_workflow import (
     ElectricityWorkflowError,
@@ -9,30 +8,30 @@ from electricity_workflow import (
     get_electricity_expense,
     initialize_database,
 )
+from tests.support import connect, drop_database, new_database
 
 
 class ElectricityWorkflowTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.db = Path(self.temp.name) / "apartment.sqlite"
+        self.db = new_database()
         initialize_database(self.db)
-        with sqlite3.connect(self.db) as conn:
+        with connect(self.db) as conn:
             conn.execute(
-                "INSERT INTO apartment (apartment_id, name, created_at) VALUES (?, ?, ?)",
+                "INSERT INTO apartment (apartment_id, name, created_at) VALUES (%s, %s, %s)",
                 ("home", "Test Flat", "2026-10-10T10:00:00+05:30"),
             )
-            conn.executemany(
+            conn.cursor().executemany(
                 """INSERT INTO resident (resident_id, apartment_id, display_name, is_active)
-                   VALUES (?, ?, ?, 1)""",
+                   VALUES (%s, %s, %s, 1)""",
                 [("alice", "home", "Alice"), ("bob", "home", "Bob")],
             )
 
     def tearDown(self):
-        self.temp.cleanup()
+        drop_database(self.db)
 
     def make_expense(self, **overrides):
         args = {
-            "db_path": self.db,
+            "db": self.db,
             "apartment_id": "home",
             "expense_id": "electricity-oct",
             "description": "October electricity bill",
@@ -57,9 +56,10 @@ class ElectricityWorkflowTests(unittest.TestCase):
 
     def test_initialize_database_is_safe_to_repeat(self):
         initialize_database(self.db)
-        with sqlite3.connect(self.db) as conn:
+        with connect(self.db) as conn:
             count = conn.execute(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='apartment'"
+                "SELECT COUNT(*) FROM information_schema.tables "
+                "WHERE table_schema=current_schema() AND table_name='apartment'"
             ).fetchone()[0]
         self.assertEqual(count, 1)
 
@@ -116,11 +116,11 @@ class ElectricityWorkflowTests(unittest.TestCase):
         self.assertIsNone(get_electricity_expense(self.db, "electricity-oct"))
 
     def test_cannot_attach_to_finalized_statement(self):
-        with sqlite3.connect(self.db) as conn:
+        with connect(self.db) as conn:
             conn.execute(
                 """INSERT INTO monthly_statement
                    (statement_id, apartment_id, settlement_month, status, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s)""",
                 ("final", "home", "2026-10", "closed", "2026-10-10T10:00:00+05:30"),
             )
         with self.assertRaisesRegex(ElectricityWorkflowError, "draft statement"):

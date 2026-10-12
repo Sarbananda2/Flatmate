@@ -5,11 +5,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query
 
-from ...db import new_id
+from ...ids import new_id
 from ...errors import AemError
 from ...schemas import AllocationPreviewRequest, ExpenseCreate, ExpenseUpdate
 from ...services import expenses
-from ..deps import ApartmentId, AppSettings, DbPath, csv_response, to_http
+from ..deps import ApartmentId, AppSettings, Db, csv_response, to_http
 
 router = APIRouter(prefix="/api/expenses", tags=["expenses"])
 
@@ -18,7 +18,7 @@ DATE = r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$"
 
 
 @router.post("/allocation-preview", summary="Calculate shares without saving")
-def allocation_preview(payload: AllocationPreviewRequest, db_path: DbPath,
+def allocation_preview(payload: AllocationPreviewRequest, db: Db,
                        apartment_id: ApartmentId) -> dict[str, Any]:
     """Show the allocation breakdown before saving, including who is excluded.
 
@@ -26,7 +26,7 @@ def allocation_preview(payload: AllocationPreviewRequest, db_path: DbPath,
     functions produce both, so the preview can never disagree with the save.
     """
     try:
-        return expenses.preview_allocation(db_path, apartment_id=apartment_id,
+        return expenses.preview_allocation(db, apartment_id=apartment_id,
                                            **payload.model_dump())
     except AemError as exc:
         raise to_http(exc) from exc
@@ -34,7 +34,7 @@ def allocation_preview(payload: AllocationPreviewRequest, db_path: DbPath,
 
 @router.get("", summary="List and filter expenses")
 def list_expenses(
-    db_path: DbPath, apartment_id: ApartmentId,
+    db: Db, apartment_id: ApartmentId,
     settlement_period: Annotated[str | None, Query(pattern=MONTH)] = None,
     service_period: Annotated[str | None, Query(pattern=MONTH)] = None,
     statement_id: Annotated[str | None, Query()] = None,
@@ -52,7 +52,7 @@ def list_expenses(
 ) -> dict[str, Any]:
     try:
         return expenses.list_expenses(
-            db_path, apartment_id=apartment_id, settlement_period=settlement_period,
+            db, apartment_id=apartment_id, settlement_period=settlement_period,
             service_period=service_period, statement_id=statement_id,
             resident_id=resident_id, expense_definition_id=expense_definition_id,
             expense_kind=expense_kind, category=category, search=search,
@@ -63,7 +63,7 @@ def list_expenses(
 
 
 @router.post("", status_code=201, summary="Record an expense")
-def create_expense(payload: ExpenseCreate, db_path: DbPath, apartment_id: ApartmentId,
+def create_expense(payload: ExpenseCreate, db: Db, apartment_id: ApartmentId,
                    settings: AppSettings) -> dict[str, Any]:
     """Create the expense and its allocations in one transaction.
 
@@ -76,23 +76,23 @@ def create_expense(payload: ExpenseCreate, db_path: DbPath, apartment_id: Apartm
     expense_id = data.pop("expense_id", None) or new_id("expense")
     try:
         created = expenses.create_expense(
-            db_path, apartment_id=apartment_id, expense_id=expense_id,
+            db, apartment_id=apartment_id, expense_id=expense_id,
             actor=settings.operator_name, **data)
-        return expenses.read_expense(db_path, created["expense_id"])
+        return expenses.read_expense(db, created["expense_id"])
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.get("/{expense_id}", summary="Read one expense")
-def read_expense(db_path: DbPath, expense_id: str = Path()) -> dict[str, Any]:
+def read_expense(db: Db, expense_id: str = Path()) -> dict[str, Any]:
     try:
-        return expenses.read_expense(db_path, expense_id)
+        return expenses.read_expense(db, expense_id)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.patch("/{expense_id}", summary="Edit an expense")
-def update_expense(payload: ExpenseUpdate, db_path: DbPath, apartment_id: ApartmentId,
+def update_expense(payload: ExpenseUpdate, db: Db, apartment_id: ApartmentId,
                    settings: AppSettings, expense_id: str = Path()) -> dict[str, Any]:
     """Editable while the statement is a draft. Inside the correction window a
     ``reason`` is required and the edit becomes a statement revision. Once the
@@ -100,32 +100,32 @@ def update_expense(payload: ExpenseUpdate, db_path: DbPath, apartment_id: Apartm
     data = payload.model_dump(exclude_unset=True)
     reason = data.pop("reason", None)
     try:
-        expenses.update_expense(db_path, expense_id, apartment_id=apartment_id,
+        expenses.update_expense(db, expense_id, apartment_id=apartment_id,
                                 actor=settings.operator_name, reason=reason, **data)
-        return expenses.read_expense(db_path, expense_id)
+        return expenses.read_expense(db, expense_id)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.delete("/{expense_id}", summary="Delete a draft expense")
-def delete_expense(db_path: DbPath, apartment_id: ApartmentId, settings: AppSettings,
+def delete_expense(db: Db, apartment_id: ApartmentId, settings: AppSettings,
                    expense_id: str = Path(),
                    reason: Annotated[str | None, Query(max_length=2000)] = None
                    ) -> dict[str, Any]:
     """Only an unattached or draft expense can be deleted, and only while no
     payment has been applied to its charges."""
     try:
-        return expenses.delete_expense(db_path, expense_id, apartment_id=apartment_id,
+        return expenses.delete_expense(db, expense_id, apartment_id=apartment_id,
                                        reason=reason, actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.get("/export/csv", summary="Export expenses as CSV")
-def export_expenses(db_path: DbPath, apartment_id: ApartmentId,
+def export_expenses(db: Db, apartment_id: ApartmentId,
                     settlement_period: Annotated[str | None, Query(pattern=MONTH)] = None):
     try:
-        rows = expenses.list_expenses(db_path, apartment_id=apartment_id,
+        rows = expenses.list_expenses(db, apartment_id=apartment_id,
                                       settlement_period=settlement_period,
                                       limit=500)["items"]
     except AemError as exc:

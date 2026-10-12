@@ -29,10 +29,9 @@ def _check(response, *expected):
 def test_the_whole_household_workflow(db, tmp_path):
     from fastapi.testclient import TestClient
 
-    settings = replace(get_settings(), database_path=db,
-                       auto_close_expired_statements=False)
+    settings = replace(get_settings(), auto_close_expired_statements=False)
 
-    with TestClient(create_app(settings)) as client:
+    with TestClient(create_app(settings, database=db)) as client:
         # ---------------------------------------------------------- setup ----
         assert _check(client.get("/health"))["apartment_count"] == 0
         _check(client.post("/api/apartments",
@@ -292,7 +291,7 @@ def test_the_whole_household_workflow(db, tmp_path):
         expected_positions = full["net_positions_paise_by_account"]
 
     # ------------------------------------------- survives a restart ----
-    with TestClient(create_app(settings)) as restarted:
+    with TestClient(create_app(settings, database=db)) as restarted:
         assert _check(restarted.get("/health"))["apartment_count"] == 1
         again = _check(restarted.get("/api/reconciliation"))
         assert again["totals"] == expected_totals
@@ -309,8 +308,8 @@ def test_expired_correction_windows_close_at_startup(db):
     """A window that elapses while the app is not running is closed on the next start."""
     from fastapi.testclient import TestClient
 
-    settings = replace(get_settings(), database_path=db)
-    with TestClient(create_app(settings)) as client:
+    settings = get_settings()
+    with TestClient(create_app(settings, database=db)) as client:
         _check(client.post("/api/apartments", json={"apartment_id": "home", "name": "Flat"}), 201)
         _check(client.post("/api/residents",
                            json={"resident_id": "alice", "display_name": "Alice"}), 201)
@@ -320,16 +319,14 @@ def test_expired_correction_windows_close_at_startup(db):
                            json={"finalized_by": "operator", "confirm": True}))
 
     # Backdate the deadline the way the passage of time would.
-    from aem.db import connect
+    from tests.support import connect
 
     past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds")
     with connect(db) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("UPDATE monthly_statement SET correction_deadline=? WHERE statement_id=?",
+        conn.execute("UPDATE monthly_statement SET correction_deadline=%s WHERE statement_id=%s",
                      (past, statement["statement_id"]))
-        conn.execute("COMMIT")
 
-    with TestClient(create_app(settings)) as restarted:
+    with TestClient(create_app(settings, database=db)) as restarted:
         row = _check(restarted.get(f"/api/statements/{statement['statement_id']}"))
         assert row["status"] == "closed"
         assert row["closed_by"] == "startup"

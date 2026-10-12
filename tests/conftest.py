@@ -5,6 +5,13 @@ broadband generated from recurring definitions, groceries under a
 previous-month rule, an electricity bill funded by a linked provider advance,
 partial payments, an overpayment, and a post-close adjustment. The accounting
 invariants are asserted against *that*, not against a single tidy expense.
+
+Every fixture hands tests a ``Database`` -- the handle services take -- backed
+by a throwaway, freshly migrated schema in the PostgreSQL *test* database. The
+schema is built by the migration role; the handle serves as the runtime role,
+which cannot change it. See
+``tests/support.py``. The test database must be running
+(``./scripts/local_postgres.sh start``); the suite never touches any other.
 """
 from __future__ import annotations
 
@@ -12,6 +19,7 @@ import sys
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable, Iterator
 
 import pytest
 
@@ -20,7 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from aem.config import get_settings  # noqa: E402
-from aem.migrations import migrate  # noqa: E402
+from aem.persistence import Database  # noqa: E402
 from aem.services import (  # noqa: E402
     adjustments,
     apartments,
@@ -33,20 +41,48 @@ from aem.services import (  # noqa: E402
     statements,
 )
 
+from tests import support  # noqa: E402
+
 APARTMENT = "home"
 RESIDENTS = (("alice", "Alice"), ("bob", "Bob"), ("chris", "Chris"))
 
 
+@pytest.fixture(scope="session")
+def test_database_config() -> support.TestTarget:
+    """Where the test database is, for both roles. Checked once: reachable, and
+    really a test database."""
+    try:
+        return support.test_config()
+    except RuntimeError as exc:
+        pytest.exit(str(exc), returncode=2)
+
+
 @pytest.fixture()
-def db(tmp_path: Path) -> Path:
+def database_factory(
+        test_database_config: support.TestTarget) -> Iterator[Callable[..., Database]]:
+    """Make further isolated databases inside a test: ``database_factory()`` for
+    a migrated one, ``database_factory(migrated=False)`` for an empty one. All
+    are dropped when the test ends."""
+    made: list[Database] = []
+
+    def make(*, migrated: bool = True) -> Database:
+        database = support.new_database(test_database_config, migrated=migrated)
+        made.append(database)
+        return database
+
+    yield make
+    for database in made:
+        support.drop_database(database)
+
+
+@pytest.fixture()
+def db(database_factory: Callable[..., Database]) -> Database:
     """An empty, migrated database."""
-    path = tmp_path / "household.sqlite"
-    migrate(path)
-    return path
+    return database_factory()
 
 
 @pytest.fixture()
-def apartment(db: Path) -> Path:
+def apartment(db: Database) -> Database:
     """A database with one apartment and three active residents."""
     apartments.create_apartment(db, apartment_id=APARTMENT, name="Flat 402")
     for resident_id, name in RESIDENTS:
@@ -56,7 +92,7 @@ def apartment(db: Path) -> Path:
 
 
 @pytest.fixture()
-def configured(apartment: Path) -> Path:
+def configured(apartment: Database) -> Database:
     """Expense definitions, with the period rules the household actually uses."""
     db = apartment
     definitions.create_expense_definition(
@@ -86,7 +122,7 @@ def configured(apartment: Path) -> Path:
 
 
 @pytest.fixture()
-def household(configured: Path) -> Path:
+def household(configured: Database) -> Database:
     """Two settled-up months with the awkward cases in them.
 
     September: rent and broadband generated; groceries (previous-month rule) paid
@@ -168,24 +204,23 @@ def household(configured: Path) -> Path:
 
 
 @pytest.fixture()
-def client(db: Path):
+def client(db: Database):
     """A FastAPI test client over an empty, migrated database."""
     from fastapi.testclient import TestClient
 
     from aem.main import create_app
 
-    settings = replace(get_settings(), database_path=db, auto_migrate=True)
-    with TestClient(create_app(settings)) as test_client:
+    settings = get_settings()
+    with TestClient(create_app(settings, database=db)) as test_client:
         yield test_client
 
 
 @pytest.fixture()
-def household_client(household: Path):
+def household_client(household: Database):
     from fastapi.testclient import TestClient
 
     from aem.main import create_app
 
-    settings = replace(get_settings(), database_path=household, auto_migrate=True,
-                       auto_close_expired_statements=False)
-    with TestClient(create_app(settings)) as test_client:
+    settings = replace(get_settings(), auto_close_expired_statements=False)
+    with TestClient(create_app(settings, database=household)) as test_client:
         yield test_client

@@ -5,7 +5,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Query
 
-from ...db import new_id
+from ...ids import new_id
 from ...errors import AemError
 from ...schemas import (
     ElectricityCreate,
@@ -14,7 +14,7 @@ from ...schemas import (
     TapoSyncRequest,
 )
 from ...services import electricity, tapo_sync
-from ..deps import ApartmentId, AppSettings, DbPath, csv_response, to_http
+from ..deps import ApartmentId, AppSettings, Db, csv_response, to_http
 
 router = APIRouter(prefix="/api/electricity", tags=["electricity"])
 
@@ -31,7 +31,7 @@ def _engine_payload(payload: Any) -> dict[str, Any]:
 
 
 @router.post("/preview", summary="Review an electricity calculation before committing it")
-def preview(payload: ElectricityPreviewRequest, db_path: DbPath,
+def preview(payload: ElectricityPreviewRequest, db: Db,
             apartment_id: ApartmentId) -> dict[str, Any]:
     """Run the engine and return the full breakdown without saving anything.
 
@@ -40,25 +40,25 @@ def preview(payload: ElectricityPreviewRequest, db_path: DbPath,
     whether both reconcile.
     """
     try:
-        return electricity.calculate_preview(db_path, apartment_id=apartment_id,
+        return electricity.calculate_preview(db, apartment_id=apartment_id,
                                              **_engine_payload(payload))
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.get("/bills", summary="List electricity bills")
-def list_bills(db_path: DbPath, apartment_id: ApartmentId,
+def list_bills(db: Db, apartment_id: ApartmentId,
                limit: Annotated[int, Query(ge=1, le=500)] = 50,
                offset: Annotated[int, Query(ge=0)] = 0) -> dict[str, Any]:
     try:
-        return electricity.list_electricity_bills(db_path, apartment_id, limit=limit,
+        return electricity.list_electricity_bills(db, apartment_id, limit=limit,
                                                   offset=offset)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.post("/bills", status_code=201, summary="Record an electricity bill")
-def create_bill(payload: ElectricityCreate, db_path: DbPath, apartment_id: ApartmentId,
+def create_bill(payload: ElectricityCreate, db: Db, apartment_id: ApartmentId,
                 settings: AppSettings) -> dict[str, Any]:
     """Persist the bill, its components, the readings, and the allocations atomically.
 
@@ -69,16 +69,16 @@ def create_bill(payload: ElectricityCreate, db_path: DbPath, apartment_id: Apart
     expense_id = data.pop("expense_id", None) or new_id("electricity")
     try:
         electricity.create_electricity_expense(
-            db_path, apartment_id=apartment_id, expense_id=expense_id,
+            db, apartment_id=apartment_id, expense_id=expense_id,
             actor=settings.operator_name, **data)
-        return electricity.get_electricity_expense(db_path, expense_id)
+        return electricity.get_electricity_expense(db, expense_id)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.get("/bills/{expense_id}", summary="Read one electricity bill")
-def read_bill(db_path: DbPath, expense_id: str = Path()) -> dict[str, Any]:
-    saved = electricity.get_electricity_expense(db_path, expense_id)
+def read_bill(db: Db, expense_id: str = Path()) -> dict[str, Any]:
+    saved = electricity.get_electricity_expense(db, expense_id)
     if saved is None:
         from ...errors import NotFoundError
         raise to_http(NotFoundError("Electricity bill not found.",
@@ -87,7 +87,7 @@ def read_bill(db_path: DbPath, expense_id: str = Path()) -> dict[str, Any]:
 
 
 @router.post("/bills/{expense_id}/recalculate", summary="Correct a saved electricity bill")
-def recalculate(payload: ElectricityRecalculate, db_path: DbPath, settings: AppSettings,
+def recalculate(payload: ElectricityRecalculate, db: Db, settings: AppSettings,
                 expense_id: str = Path()) -> dict[str, Any]:
     """Replace a saved calculation auditably. A reason is required, the previous
     calculation is written to the audit trail, and a closed statement is refused:
@@ -97,13 +97,13 @@ def recalculate(payload: ElectricityRecalculate, db_path: DbPath, settings: AppS
     data.pop("expense_id", None)
     try:
         return electricity.recalculate_electricity_expense(
-            db_path, expense_id, reason=reason, actor=settings.operator_name, **data)
+            db, expense_id, reason=reason, actor=settings.operator_name, **data)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.post("/sync-tapo", summary="Fetch smart-plug energy for a billing period")
-def sync_tapo(payload: TapoSyncRequest, db_path: DbPath, apartment_id: ApartmentId,
+def sync_tapo(payload: TapoSyncRequest, db: Db, apartment_id: ApartmentId,
               settings: AppSettings) -> dict[str, Any]:
     """Read each configured Tapo plug's energy for the period.
 
@@ -114,25 +114,25 @@ def sync_tapo(payload: TapoSyncRequest, db_path: DbPath, apartment_id: Apartment
     """
     try:
         return tapo_sync.sync_readings(
-            db_path, apartment_id=apartment_id, settings=settings,
+            db, apartment_id=apartment_id, settings=settings,
             period_start=payload.period_start, period_end=payload.period_end)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.get("/consumption", summary="Consumption and allocation history")
-def consumption(db_path: DbPath, apartment_id: ApartmentId) -> dict[str, Any]:
+def consumption(db: Db, apartment_id: ApartmentId) -> dict[str, Any]:
     try:
-        rows = electricity.consumption_history(db_path, apartment_id)
+        rows = electricity.consumption_history(db, apartment_id)
     except AemError as exc:
         raise to_http(exc) from exc
     return {"items": rows, "total": len(rows)}
 
 
 @router.get("/consumption/export/csv", summary="Export consumption history as CSV")
-def export_consumption(db_path: DbPath, apartment_id: ApartmentId):
+def export_consumption(db: Db, apartment_id: ApartmentId):
     try:
-        rows = electricity.consumption_history(db_path, apartment_id)
+        rows = electricity.consumption_history(db, apartment_id)
     except AemError as exc:
         raise to_http(exc) from exc
     return csv_response(rows, "electricity-consumption")

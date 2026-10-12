@@ -1,17 +1,17 @@
 """Interactive terminal entry for an electricity bill.
 
 Usage:
-  python electricity_entry_cli.py --db apartment.sqlite --apartment home
+  python electricity_entry_cli.py --apartment home
 
-The database and apartment/residents must already exist. The wizard collects
-bill information and smart-plug readings, then calls the transactional workflow.
+Works against the configured PostgreSQL database (the ``AEM_DB_*`` settings in
+the environment or ``.env.local``); there is no database file to name. The
+apartment/residents must already exist. The wizard collects bill information
+and smart-plug readings, then calls the transactional workflow.
 """
 from __future__ import annotations
 
 import argparse
-import sqlite3
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 
 from electricity_workflow import (
     ElectricityWorkflowError,
@@ -19,6 +19,13 @@ from electricity_workflow import (
     get_electricity_expense,
     initialize_database,
 )
+
+from aem.config import get_settings
+from aem.errors import NotFoundError
+from aem.persistence import Database, PersistenceError
+from aem.persistence.postgres import PostgresDatabase
+from aem.services.apartments import read_apartment
+from aem.services.residents import read_residents
 
 
 def rupees_to_paise(prompt: str) -> int:
@@ -63,29 +70,32 @@ def choose(prompt: str, options: list[str], allow_blank: bool = False) -> str | 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Enter and save an apartment electricity bill.")
-    parser.add_argument("--db", required=True, help="Path to the SQLite database")
+    parser = argparse.ArgumentParser(
+        description="Enter and save an apartment electricity bill in the configured "
+                    "PostgreSQL database (AEM_DB_* settings).")
     parser.add_argument("--apartment", required=True, help="Existing apartment ID")
     args = parser.parse_args()
-    db_path = Path(args.db)
-    if not db_path.exists():
-        print(f"Database not found: {db_path}")
+    db = PostgresDatabase(get_settings().database)
+    try:
+        return run(db, args)
+    finally:
+        db.close()
+
+
+def run(db: Database, args: argparse.Namespace) -> int:
+    try:
+        initialize_database(db)
+    except PersistenceError as exc:
+        print(f"Database not available: {db.describe()} ({exc})")
         print("Initialize the database and add the apartment/residents before using this wizard.")
         return 2
-    initialize_database(db_path)
 
-    with sqlite3.connect(str(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
-        apartment = conn.execute(
-            "SELECT name FROM apartment WHERE apartment_id = ?", (args.apartment,)
-        ).fetchone()
-        if not apartment:
-            print(f"Apartment ID {args.apartment!r} was not found.")
-            return 2
-        residents = conn.execute(
-            "SELECT resident_id, display_name FROM resident WHERE apartment_id = ? ORDER BY display_name",
-            (args.apartment,),
-        ).fetchall()
+    try:
+        apartment = read_apartment(db, args.apartment)
+    except NotFoundError:
+        print(f"Apartment ID {args.apartment!r} was not found.")
+        return 2
+    residents = read_residents(db, args.apartment)
     if not residents:
         print("No residents are registered for this apartment.")
         return 2
@@ -180,7 +190,7 @@ def main() -> int:
 
     try:
         result = create_electricity_expense(
-            db_path,
+            db,
             apartment_id=args.apartment,
             expense_id=expense_id,
             description=description,
@@ -196,7 +206,7 @@ def main() -> int:
         print(f"\nExpense was not saved: {exc}")
         return 1
 
-    saved = get_electricity_expense(db_path, expense_id)
+    saved = get_electricity_expense(db, expense_id)
     print("\nSaved successfully. Resident allocations:")
     for allocation in result.allocations:
         display = next((r["display_name"] for r in residents if r["resident_id"] == allocation.resident_id),

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Path, Query
 
 from ...errors import AemError
 from ...services import reports
-from ..deps import ApartmentId, DbPath, csv_response, to_http
+from ..deps import ApartmentId, Db, csv_response, to_http
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -39,13 +39,13 @@ def list_reports() -> dict[str, Any]:
 
 
 @router.get("/{kind}", summary="Run one report")
-def run_report(db_path: DbPath, apartment_id: ApartmentId, kind: str = Path(),
+def run_report(db: Db, apartment_id: ApartmentId, kind: str = Path(),
                settlement_period: Annotated[str | None, Query(pattern=MONTH)] = None,
                statement_id: Annotated[str | None, Query()] = None) -> dict[str, Any]:
     """Reads the same records every other screen reads, so a report figure always
     matches what the dashboard and the statement show."""
     try:
-        return reports.build_report(db_path, kind, apartment_id=apartment_id,
+        return reports.build_report(db, kind, apartment_id=apartment_id,
                                      settlement_period=settlement_period,
                                      statement_id=statement_id)
     except AemError as exc:
@@ -53,11 +53,11 @@ def run_report(db_path: DbPath, apartment_id: ApartmentId, kind: str = Path(),
 
 
 @router.get("/{kind}/csv", summary="Download one report as CSV")
-def download_report(db_path: DbPath, apartment_id: ApartmentId, kind: str = Path(),
+def download_report(db: Db, apartment_id: ApartmentId, kind: str = Path(),
                     settlement_period: Annotated[str | None, Query(pattern=MONTH)] = None,
                     statement_id: Annotated[str | None, Query()] = None):
     try:
-        report = reports.build_report(db_path, kind, apartment_id=apartment_id,
+        report = reports.build_report(db, kind, apartment_id=apartment_id,
                                        settlement_period=settlement_period,
                                        statement_id=statement_id)
     except AemError as exc:

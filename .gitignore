@@ -1,7 +1,14 @@
 # Application data. The database is the household's real accounts; it is never
-# committed, and neither are its backups.
+# committed, and neither are its backups. data/postgres/ is the local
+# PostgreSQL cluster.
 data/
 backups/
+*.dump
+
+# Local settings and secrets (the database password lives here).
+.env
+.env.local
+.env.*.local
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

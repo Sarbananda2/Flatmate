@@ -19,9 +19,9 @@ import json
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from ..db import connect
 from ..money import format_inr, paise_to_rupee_string
 from ..periods import parse_month
+from ..persistence import Database
 from .common import POOL_ACCOUNT_ID, get_apartment, get_statement
 from .reconciliation import reconcile
 from .statements import snapshot_hash, statement_snapshot
@@ -45,7 +45,7 @@ def upi_uri(*, upi_id: str, payee_name: str, amount_paise: int, note: str) -> st
     return f"upi://pay?{query}"
 
 
-def _paid_since(db_path, apartment_id: str,
+def _paid_since(db: Database, apartment_id: str,
                 snapshot: dict[str, Any]) -> dict[tuple[str, str], int]:
     """Money moved since the snapshot was taken, by (resident, payment kind).
 
@@ -56,7 +56,7 @@ def _paid_since(db_path, apartment_id: str,
     reopens the transfer it had settled. A snapshot too old to hold a total
     gives no evidence of payment, and its transfers stay pending.
     """
-    today = reconcile(db_path, apartment_id=apartment_id)
+    today = reconcile(db, apartment_id=apartment_id)
     paid: dict[tuple[str, str], int] = {}
     for kind, field in (("to_pool", "pool_payments_paise_by_resident"),
                         ("refund", "refunds_paise_by_resident")):
@@ -91,15 +91,13 @@ def _settled_flags(transfers: list[dict[str, Any]],
     return flags
 
 
-def whatsapp_summary(db_path, statement_id: str) -> dict[str, Any]:
-    with connect(db_path, read_only=True) as conn:
-        statement = get_statement(conn, statement_id)
-        apartment = get_apartment(conn, statement["apartment_id"])
+def whatsapp_summary(db: Database, statement_id: str) -> dict[str, Any]:
+    with db.read() as uow:
+        statement = get_statement(uow, statement_id)
+        apartment = get_apartment(uow, statement["apartment_id"])
         upi_ids = {
             row["resident_id"]: row["upi_id"]
-            for row in conn.execute(
-                "SELECT resident_id, upi_id FROM resident WHERE apartment_id=?",
-                (statement["apartment_id"],)).fetchall()
+            for row in uow.sharing.resident_upi_ids(statement["apartment_id"])
             if row["upi_id"]
         }
         stored = statement["snapshot_json"]
@@ -107,10 +105,10 @@ def whatsapp_summary(db_path, statement_id: str) -> dict[str, Any]:
     if stored:
         snapshot = json.loads(stored)
         sealed = True
-        paid = _paid_since(db_path, statement["apartment_id"], snapshot)
+        paid = _paid_since(db, statement["apartment_id"], snapshot)
         hash_matches = snapshot.get("snapshot_hash") == snapshot_hash(snapshot)
     else:
-        snapshot = statement_snapshot(db_path, statement_id)
+        snapshot = statement_snapshot(db, statement_id)
         sealed = False
         hash_matches = None
 

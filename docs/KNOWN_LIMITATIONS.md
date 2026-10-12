@@ -158,10 +158,163 @@ formats another one.
 
 ## Technical limitations
 
-### SQLite concurrency
+### What has and has not been validated on PostgreSQL 18
 
-One writer at a time, with a 15-second busy timeout. Entirely adequate for one
-operator; it is not a multi-user server.
+Validated on PostgreSQL 18.6, on the project's own cluster, on 2026-10-12:
+
+- `./scripts/dev.sh` end to end: cluster creation and start, migration as the
+  migration role, the API serving as the runtime role, `/health`, the Vite
+  proxy, and shutdown — PostgreSQL stopped when the launcher had started it and
+  left running when it had not, with no process left behind, on both Ctrl-C and
+  a terminate signal.
+- The whole Python suite: **488 tests passed**, each on its own schema in
+  `aem_test`, driving the services as the runtime role. The fixtures refused to
+  run against a database not named `*_test`.
+- `manage.py init`, `status`, `demo`, `check`, `backup`, and `restore` (into a
+  new empty test database, whose contents then matched the source), and both
+  seed scripts.
+- The role checks in the next section.
+- `manage.py import-sqlite --dry-run` against a *copy* of the household's
+  SQLite file, into an empty test database: every row verified, then rolled
+  back; the source file was byte-identical afterwards.
+- The real import on 2026-10-12 into the empty local `aem` database: **31 rows**
+  imported and compared column by column before commit. The source SHA-256 was
+  identical before and after (`ab8d4d3feed13b20cc164388d5b2f2065f9d86191a12cd018dc4fd94c7d77f38`).
+  Post-import `status` reported PostgreSQL 18.6 and the restricted runtime role;
+  `check` reported zero errors and warnings.
+
+Not yet done: any run against a managed PostgreSQL endpoint in AWS. The SQLite
+source remains in place as a rollback reference; the app uses PostgreSQL now.
+
+### What each database role can and cannot do
+
+Three roles, with the dangerous abilities split between them so that no role
+that handles requests can change the rules:
+
+| Role | Used by | Owns | Can change the schema |
+| --- | --- | --- | --- |
+| Bootstrap administrator (`aem_admin`) | `scripts/local_postgres.sh` only | the cluster | yes (superuser) |
+| Migration role (`aem_owner`) | `manage.py init`, `import-sqlite`, `restore`; test setup | the databases and every table | yes — that is its job |
+| Runtime role (`aem`) | the API, and every other command | nothing | **no** |
+
+**The runtime role**, confirmed on PostgreSQL 18.6, is refused all of:
+`CREATE TABLE`, `CREATE TEMP TABLE`, `CREATE SCHEMA`, `CREATE INDEX`,
+`CREATE TRIGGER`, `CREATE OR REPLACE FUNCTION`, `ALTER TABLE` (adding a column,
+dropping a constraint, disabling a trigger, changing the owner), `DROP TABLE`,
+`DROP TRIGGER`, `DROP FUNCTION`, `TRUNCATE`, `SET ROLE` to the migration role,
+and `SET session_replication_role`. It owns no object. What it is granted is
+row-level access to the tables, and less than that where less is enough:
+
+- `schema_migration` is read-only to it;
+- on the append-only tables — `audit_log`, `statement_revision`,
+  `ledger_adjustment`, `rent_receipt` — it may `SELECT` and `INSERT` only.
+  The triggers that forbid rewriting those tables are still there; the runtime
+  role is turned away before they are consulted.
+
+The grants are applied by the migration role every time it migrates, and set
+as default privileges so a table added later is covered.
+
+**The serving process cannot migrate.** It is not given the migration role's
+password (the launch scripts blank it before starting the server), and it no
+longer applies migrations at startup; `AEM_AUTO_MIGRATE` is gone. If the
+schema is behind, the app says so in its log and in `/health` and does not
+touch it.
+
+**The migration role** is not a superuser either. It cannot switch off
+foreign keys, cannot `SET session_replication_role`, and — because of the
+trigger guard (`scripts/sql/trigger_guard.sql`) — cannot
+`ALTER TABLE … DISABLE TRIGGER`. As the owner it can still change the schema
+with ordinary DDL, including dropping a trigger or a constraint: that is what
+a migration is. The protection is that this role is used only by reviewed
+migration files and the import, never by a request.
+
+The trigger guard needs a superuser to install. The local scripts do it. On a
+managed database it has to be applied once by the administrative user;
+`manage.py status` and `/health` say whether it is present, and also whether
+the role they are connected as owns anything or could change the schema.
+
+#### Workflows that need the migration role
+
+Everything else runs as the runtime role.
+
+| Workflow | Why it needs ownership |
+| --- | --- |
+| `manage.py init` (and so `dev.sh` and `run.sh`, which call it before serving) | creates and alters tables; grants the runtime role its access |
+| `manage.py import-sqlite` | creates the schema if missing, sets `row_seq` values and sequences, grants access |
+| `manage.py restore` | `pg_restore` creates the tables, which the restoring role then owns |
+| The test suite's setup and teardown | creates, migrates, and drops a schema per test; four tests also connect as the owner on purpose (to reach a trigger the runtime role may not approach, to remove a guard, or to tamper with `schema_migration`) |
+| `legacy/*_cli.py` — only when the schema is behind | they call `initialize_database`, which passes if the schema is current and otherwise tells the operator to run `manage.py init` |
+
+`manage.py backup` does **not** need it: `pg_dump` runs as the runtime role.
+
+### Behaviour that differs from the SQLite version
+
+Each difference introduced by the port was reviewed against the previous
+behaviour. Two were unrequested changes and have been reverted; one could not
+be kept and is explained.
+
+- **Reverted — a duplicate recurring expense.** A second generated expense for
+  the same definition and month is answered, as before, with a 422 "Could not
+  save expense". The first PostgreSQL draft turned this into the 409
+  `duplicate_recurring_expense` the code has always *tried* to raise — the
+  SQLite version looked for the index name in an error message that never
+  contained it, so that branch never ran. Making it run is a change in
+  behaviour nobody asked for (it would also make recurring generation skip the
+  line rather than stop), so the port does not make it. It is one condition in
+  `aem/services/expenses.py` if the household wants it; that is a product
+  decision.
+- **Reverted — a malformed date in the double-count check.** The
+  `possible_double_counted_advance` check asks whether an advance and an
+  expense are within seven days of each other. SQLite's date functions yielded
+  NULL for a value that was not a date, which quietly left that pair out. The
+  first draft cast the text to a date in SQL, which would have failed the whole
+  validation run — and with it reconciliation and the dashboard — on one bad
+  value. The comparison is now made in the service and leaves such a pair out,
+  as before.
+- **Kept, because it cannot be reproduced — electricity consumption history
+  with two bills in one service month.** For each resident and service month
+  the report shows energy and cost. The SQLite query summed the energy of
+  every bill in the month but took the cost from a column outside the
+  grouping, which SQLite resolves by picking one bill's value arbitrarily;
+  PostgreSQL rejects such a query outright. There is no faithful translation
+  of "an arbitrary one". The query now totals the cost of the same bills whose
+  energy it totals. With one bill per service month — every case the tests and
+  the sample data contain — the output is identical. No accounting figure
+  depends on this report: balances, statements, and reconciliation do not read
+  it.
+
+Smaller differences that remain, none of them a change in what is computed:
+
+- **Search is case-insensitive through `ILIKE`.** For ASCII this matches
+  SQLite's `LIKE`.
+- **Database error text is PostgreSQL's.** Messages that quote the database
+  ("Could not save expense: …") carry its wording, not SQLite's. Error codes
+  and HTTP statuses are unchanged.
+- **Rows that had no defined order now have one.** A few queries had no
+  `ORDER BY` and happened to return insertion order under SQLite (statements
+  closed in one pass, existing expenses for a recurring month); they now order
+  by insertion explicitly. Sorts on a column that can be NULL state where NULLs
+  go, matching SQLite.
+
+### One writer at a time
+
+Write transactions are serialized with an advisory lock, and a writer waits up
+to 15 seconds for its turn — the same behaviour SQLite's write lock gave.
+Entirely adequate for one operator; it is deliberately not tuned for many
+concurrent writers.
+
+### PostgreSQL 18 must be installed separately
+
+The scripts create and run the project's cluster but do not install
+PostgreSQL, and refuse any major version other than 18.
+
+### The legacy terminal CLIs lost their `--db` option
+
+`legacy/*_cli.py` work against the configured PostgreSQL database rather than
+a SQLite file named on the command line. The setup CLI writes through the
+services, so it now also records audit entries and the default-apartment
+setting, and its final writes are one transaction per record rather than one
+for the whole run.
 
 ### No automatic background jobs
 

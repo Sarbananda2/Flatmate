@@ -24,16 +24,27 @@ Written for: engineers maintaining or extending this application.
 │  aem/engine/           pure accounting       │
 │    no I/O, no state, no side effects         │
 ├──────────────────────────────────────────────┤
-│  aem/db.py             connections, txns     │
-│  aem/migrations/       versioned SQL         │
+│  aem/persistence/      the only door to data │
+│    unit_of_work.py     one transaction       │
+│    repositories/       all application SQL   │
+│    postgres/           driver, pool, schema  │
 └──────────────────────────────────────────────┘
                        │
-                  SQLite file
+        PostgreSQL 18  (local cluster, or a
+        managed endpoint — same code, different
+        connection settings)
 ```
 
 Each layer may call the one below it and never the one above. The engines know
-nothing about the database; the services know nothing about HTTP; the routers
-contain no arithmetic.
+nothing about the database; the services know nothing about HTTP or SQL; the
+routers contain no arithmetic.
+
+A request travels one way:
+
+```
+FastAPI route → application service → unit of work / repository
+              → PostgreSQL adapter → PostgreSQL
+```
 
 ---
 
@@ -84,36 +95,90 @@ Every mutating service validates its inputs, writes inside **one transaction**,
 and records an audit entry in that same transaction — so the trail cannot drift
 from the data.
 
+A service is given a `Database` and opens a unit of work on it. It never sees a
+connection, a cursor, or a line of SQL, and it imports no database driver:
+
+```python
+def set_setting(db: Database, key: str, value: str, *, actor: str = "operator") -> None:
+    ...
+    with db.transaction() as uow:
+        old = uow.apartments.get_setting(key)
+        uow.apartments.set_setting(key, value, updated_at=now_timestamp())
+        audit.record(uow, entity_type="app_setting", ...)
+```
+
+A helper that runs inside somebody else's transaction takes the `uow` instead
+of the `db`; that is how several services contribute to one atomic change.
+
 ### `aem/api/` — HTTP only
 
 Routers validate with `aem/schemas/`, call one service, and return what it
-returns. `deps.py` resolves the database path and the apartment, and translates
+returns. `deps.py` hands routes the `Database` and the apartment, and translates
 `AemError` into the HTTP envelope. There is no accounting logic here.
 
-### `aem/db.py` — persistence
+### `aem/persistence/` — the persistence boundary
 
-One connection per unit of work, opened and closed by a context manager. SQLite
-handles a single-operator local app comfortably, and short-lived connections
-keep transaction boundaries obvious.
+Everything that touches the database is in this package, in three parts.
 
-`transaction()` is the only sanctioned way to write. It opens an explicit
-`BEGIN IMMEDIATE`, commits on success, and rolls back on any exception — which
-is what makes a partially saved expense impossible.
+**`database.py` and `unit_of_work.py` — what services use.** `Database` offers
+two things: `transaction()`, a read-write unit of work that commits when its
+block ends and rolls back if it raises, and `read()`, a read-only one over a
+single consistent snapshot. The `UnitOfWork` they yield carries the
+repositories, all sharing that one transaction, plus `savepoint()` for the rare
+write that is allowed to fail.
 
-Every connection sets `foreign_keys = ON` (SQLite defaults it *off* per
-connection, and referential integrity depends on it), `busy_timeout`, and WAL
-mode for writers.
+**`repositories/` — all of the application's SQL.** One module per service
+module, with the same name (`uow.payments` holds the SQL for
+`services/payments.py`). Methods are named for what the application needs —
+`charges_for_resident`, `append_revision`, `mark_cycle_disbursed` — take and
+return plain values, and contain no business rules. There is deliberately no
+generic "run this query" or "update this table" method: a caller cannot reach
+the data except through an operation somebody wrote for the purpose. The SQL is
+explicit PostgreSQL; there is no ORM.
 
-### `aem/migrations/` — versioned, forward-only
+**`postgres/` — the adapter.** The only place a database driver (psycopg 3) is
+imported. It owns the connection pool, transaction mechanics, and the
+translation of every driver exception into an `aem.persistence` error
+(`UniqueViolation`, `GuardViolation`, `DatabaseUnavailableError`, …), so
+nothing above it handles a driver type.
 
-Numbered `NNNN_name.sql` files, each applied once inside its own transaction,
-recorded in `schema_migration` with a checksum. Nothing drops a table or a
-column, and a test asserts that mechanically.
+Three properties of the adapter are worth knowing:
 
-`executescript` is deliberately not used: it commits any open transaction
-first, which would defeat per-migration atomicity. Scripts are split into
-statements using SQLite's own completeness test, so a `CREATE TRIGGER` body's
-semicolons do not corrupt the split.
+- **Writers run one at a time.** A write transaction takes a transaction-level
+  advisory lock first. The services read a balance and then act on it, and
+  under SQLite `BEGIN IMMEDIATE` guaranteed nobody wrote in between; this keeps
+  that guarantee instead of asking every service to reason about concurrent
+  writers. A writer waits up to 15 seconds for the lock, as it did before.
+- **Reads are consistent.** `read()` is a `REPEATABLE READ, READ ONLY`
+  transaction, so a report assembled from several queries sees one moment in
+  time.
+- **Money stays an integer.** PostgreSQL returns `SUM()` of a `BIGINT` as
+  `NUMERIC`; the adapter hands whole numerics to the application as `int`, and
+  repositories cast sums to `BIGINT` as well.
+
+The adapter *connects* to a database. It does not start, stop, or provision
+one, and neither does anything else in `aem/`: see
+[Startup and shutdown](#startup-and-shutdown).
+
+`aem/persistence/sqlite_import/` is operational tooling, not part of the
+request path: the one-off importer for a database from when the application ran
+on SQLite, and the SQLite schema history it needs. See
+[`OPERATIONS.md`](OPERATIONS.md#moving-from-sqlite).
+
+### `aem/persistence/postgres/migrations/` — versioned, forward-only
+
+Numbered `NNNN_name.sql` files, each applied once inside its own transaction
+together with the `schema_migration` row that records it and its checksum.
+PostgreSQL DDL is transactional, so a migration either happened and is
+recorded, or did not happen at all. An advisory lock stops two starting
+processes migrating at once. Nothing drops a table or a column.
+
+`0001_baseline.sql` is the schema the application had reached under SQLite,
+carried over column for column — text IDs and ISO-8601 text dates, integer
+0/1 flags, `BIGINT` paise — so that existing data imports without any value
+being reinterpreted. It adds `row_seq`, an insertion-order column on every
+table, because the order of same-day charges and payments used to come from
+SQLite's implicit `rowid`.
 
 ---
 
@@ -237,13 +302,28 @@ is inside the transaction, so it exists if and only if the change does.
 
 ## Startup and shutdown
 
-**Startup** resolves settings, runs pending migrations so the database always
-matches the code, and closes any statement whose correction window elapsed
-while the application was stopped.
+**Startup** resolves settings, connects to the configured database, checks
+that the schema is the version the code expects, and closes any statement
+whose correction window elapsed while the application was stopped. It does not
+migrate: the application serves as a runtime role that owns nothing and cannot
+change the schema. Migrations are applied beforehand by `scripts/manage.py
+init`, as the migration role that owns the tables. A schema that is behind is
+reported, in the log and by `/health`, and left alone.
 
-**Shutdown** has no connection pool to drain — every unit of work opens and
-closes its own connection — so a shutdown cannot leave a transaction open. It
-performs a WAL checkpoint so the file on disk is complete and safe to copy.
+**Shutdown** closes the connection pool. Every unit of work commits or rolls
+back before it returns, so a shutdown cannot leave a transaction open.
+
+**The application never manages a database server.** FastAPI's startup and
+shutdown only open and close connections. Who runs PostgreSQL depends on where
+the application is:
+
+| Where | Who runs PostgreSQL | How the app finds it |
+| --- | --- | --- |
+| Local development | `scripts/dev.sh`, through `scripts/local_postgres.sh`: a project-scoped PostgreSQL 18 cluster in `data/postgres/`, started before the API and stopped after it — and only if that run started it | Defaults: `127.0.0.1:55432`, password from `.env.local` |
+| Deployment (AWS) | The managed PostgreSQL service. Nothing in this repository provisions it | `AEM_DATABASE_URL`, or `AEM_DB_HOST` and friends, with `AEM_DB_SSLMODE` |
+
+`scripts/run.sh` and `scripts/manage.py serve` are the deployment entry points:
+they connect and serve, nothing more.
 
 ---
 
@@ -254,12 +334,20 @@ performs a WAL checkpoint so the file on disk is complete and safe to copy.
 | `tests/test_invariants.py` | The twenty accounting invariants, against a realistic two-month household |
 | `tests/test_engine_and_periods.py` | The pure engines and the period rules, directly |
 | `tests/test_api.py` | The HTTP contract: envelope, guards, filters, exports |
-| `tests/test_migrations.py` | Upgrading a real prototype database without loss |
+| `tests/test_migrations.py` | The PostgreSQL migration runner, and upgrading and importing a real prototype SQLite database without loss |
 | `tests/test_end_to_end.py` | The complete operator journey, over HTTP, including a restart |
 | `tests/test_rent.py` | The lease, equal split, rent payments, payouts, receipts, and the contract term: timeline, renewal, notice |
 | `tests/test_opening_balances.py`, `tests/test_settlement_sharing_and_sync.py`, `tests/test_setup_wizard.py` | Opening balances, settlement sharing and smart-plug sync, the guided setup |
-| `legacy/test_*.py` | The original prototype suite, unchanged |
+| `legacy/test_*.py` | The original prototype suite; its two database modules ported to PostgreSQL |
 | `frontend/src/**/*.test.*` | Money formatting, UI guarantees, form interactions |
+
+Database tests run against PostgreSQL. Each test gets its own freshly migrated
+schema in a dedicated test database (`tests/support.py`), receives the same
+`Database` handle the API layer gives a service, and uses a raw connection only
+to inspect stored rows or to try to break a rule behind the services' backs.
+The schema is created by the migration role and the test then runs as the
+runtime role. What has been validated on PostgreSQL 18 is listed
+in [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md#what-has-and-has-not-been-validated-on-postgresql-18).
 
 The `household` fixture is deliberately awkward: three residents, two months,
 an expense that does not divide evenly, a linked provider advance, a partial

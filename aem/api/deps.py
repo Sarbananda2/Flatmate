@@ -4,7 +4,6 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Query, Request
@@ -12,6 +11,7 @@ from fastapi.responses import Response
 
 from ..config import Settings
 from ..errors import AemError, NotFoundError
+from ..persistence import Database
 from ..services import apartments
 
 logger = logging.getLogger("aem.api")
@@ -21,16 +21,19 @@ def get_settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-def get_db_path(request: Request) -> Path:
-    return request.app.state.settings.database_path
+def get_database(request: Request) -> Database:
+    """The database handle services are given. It exposes units of work, never
+    a connection or SQL, so a route cannot reach the database except through a
+    service."""
+    return request.app.state.database
 
 
-DbPath = Annotated[Path, Depends(get_db_path)]
+Db = Annotated[Database, Depends(get_database)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 
 
 def resolve_apartment_id(
-    db_path: DbPath,
+    db: Db,
     apartment_id: Annotated[str | None, Query(
         description="Omit to use the default apartment.")] = None,
 ) -> str:
@@ -41,7 +44,7 @@ def resolve_apartment_id(
     """
     if apartment_id:
         return apartment_id
-    resolved = apartments.default_apartment_id(db_path)
+    resolved = apartments.default_apartment_id(db)
     if not resolved:
         raise NotFoundError(
             "No apartment has been set up yet. Create one first.",

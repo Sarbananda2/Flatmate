@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query
 
 from ...errors import AemError
 from ...services import ledger_view
-from ..deps import ApartmentId, DbPath, csv_response, to_http
+from ..deps import ApartmentId, Db, csv_response, to_http
 
 router = APIRouter(prefix="/api/transactions", tags=["transactions"])
 
@@ -17,7 +17,7 @@ DATE = r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$"
 
 @router.get("", summary="Search the transaction ledger")
 def list_transactions(
-    db_path: DbPath, apartment_id: ApartmentId,
+    db: Db, apartment_id: ApartmentId,
     settlement_period: Annotated[str | None, Query(pattern=MONTH)] = None,
     resident_id: Annotated[str | None, Query()] = None,
     category: Annotated[str | None, Query()] = None,
@@ -37,7 +37,7 @@ def list_transactions(
     """
     try:
         return ledger_view.list_transactions(
-            db_path, apartment_id=apartment_id, settlement_period=settlement_period,
+            db, apartment_id=apartment_id, settlement_period=settlement_period,
             resident_id=resident_id, category=category,
             transaction_type=transaction_type, status=status, date_from=date_from,
             date_to=date_to, search=search, limit=limit, offset=offset, sort=sort)
@@ -46,23 +46,23 @@ def list_transactions(
 
 
 @router.get("/filter-options", summary="Values that appear in this apartment's data")
-def filter_options(db_path: DbPath, apartment_id: ApartmentId) -> dict[str, Any]:
+def filter_options(db: Db, apartment_id: ApartmentId) -> dict[str, Any]:
     try:
-        return ledger_view.filter_options(db_path, apartment_id)
+        return ledger_view.filter_options(db, apartment_id)
     except AemError as exc:
         raise to_http(exc) from exc
 
 
 @router.get("/export/csv", summary="Export the transaction ledger as CSV")
 def export_transactions(
-    db_path: DbPath, apartment_id: ApartmentId,
+    db: Db, apartment_id: ApartmentId,
     settlement_period: Annotated[str | None, Query(pattern=MONTH)] = None,
     resident_id: Annotated[str | None, Query()] = None,
     transaction_type: Annotated[str | None, Query()] = None,
 ):
     try:
         rows = ledger_view.list_transactions(
-            db_path, apartment_id=apartment_id, settlement_period=settlement_period,
+            db, apartment_id=apartment_id, settlement_period=settlement_period,
             resident_id=resident_id, transaction_type=transaction_type, limit=500)["items"]
     except AemError as exc:
         raise to_http(exc) from exc

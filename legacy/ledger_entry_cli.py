@@ -1,10 +1,16 @@
-"""Terminal workflow for general expenses, payments, and monthly statements."""
+"""Terminal workflow for general expenses, payments, and monthly statements.
+
+Usage:
+  python ledger_entry_cli.py --apartment home
+
+Works against the configured PostgreSQL database (the ``AEM_DB_*`` settings in
+the environment or ``.env.local``); there is no database file to name.
+"""
 from __future__ import annotations
 
 import argparse
-import sqlite3
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
+from typing import Any
 
 from electricity_workflow import initialize_database
 from ledger_workflow import (
@@ -19,6 +25,13 @@ from ledger_workflow import (
     statement_snapshot,
     close_expired_statements,
 )
+
+from aem.config import get_settings
+from aem.errors import NotFoundError
+from aem.persistence import Database, PersistenceError
+from aem.persistence.postgres import PostgresDatabase
+from aem.services.apartments import read_apartment
+from aem.services.residents import read_residents
 
 
 def required(prompt: str) -> str:
@@ -40,16 +53,11 @@ def money(prompt: str, *, positive: bool = False) -> int:
             print("Enter a valid rupee amount with at most two decimal places.")
 
 
-def residents(db: Path, apartment_id: str) -> list[dict[str, str]]:
-    with sqlite3.connect(db) as conn:
-        conn.row_factory = sqlite3.Row
-        return [dict(r) for r in conn.execute(
-            "SELECT resident_id, display_name FROM resident WHERE apartment_id=? ORDER BY display_name",
-            (apartment_id,),
-        ).fetchall()]
+def residents(db: Database, apartment_id: str) -> list[dict[str, Any]]:
+    return read_residents(db, apartment_id)
 
 
-def select_resident(people: list[dict[str, str]], prompt: str, optional: bool = False) -> str | None:
+def select_resident(people: list[dict[str, Any]], prompt: str, optional: bool = False) -> str | None:
     for i, person in enumerate(people, 1):
         print(f"  {i}. {person['display_name']} [{person['resident_id']}]")
     raw = input(prompt).strip()
@@ -61,7 +69,7 @@ def select_resident(people: list[dict[str, str]], prompt: str, optional: bool = 
         raise ValueError("Invalid resident selection.")
 
 
-def add_definition(db: Path, apartment_id: str) -> None:
+def add_definition(db: Database, apartment_id: str) -> None:
     create_expense_definition(
         db, apartment_id=apartment_id, definition_id=required("Definition ID: "),
         name=required("Expense name: "), category=required("Category: "),
@@ -72,14 +80,14 @@ def add_definition(db: Path, apartment_id: str) -> None:
     print("Expense definition created.")
 
 
-def add_statement(db: Path, apartment_id: str) -> None:
+def add_statement(db: Database, apartment_id: str) -> None:
     statement_id = create_monthly_statement(
         db, apartment_id=apartment_id, settlement_month=required("Settlement month (YYYY-MM): ")
     )
     print("Created draft statement:", statement_id)
 
 
-def add_expense(db: Path, apartment_id: str) -> None:
+def add_expense(db: Database, apartment_id: str) -> None:
     people = residents(db, apartment_id)
     if not people:
         print("No residents registered.")
@@ -119,7 +127,7 @@ def add_expense(db: Path, apartment_id: str) -> None:
     print("Saved expense:", result["expense_id"])
 
 
-def add_payment(db: Path, apartment_id: str) -> None:
+def add_payment(db: Database, apartment_id: str) -> None:
     people = residents(db, apartment_id)
     if not people:
         print("No residents registered.")
@@ -145,7 +153,7 @@ def add_payment(db: Path, apartment_id: str) -> None:
     print("Unapplied credit: ₹{:.2f}".format(result["unapplied_credit_paise"]/100))
 
 
-def add_adjustment(db: Path, apartment_id: str) -> None:
+def add_adjustment(db: Database, apartment_id: str) -> None:
     people = residents(db, apartment_id)
     if not people:
         print("No residents registered.")
@@ -166,7 +174,7 @@ def add_adjustment(db: Path, apartment_id: str) -> None:
     print("Recorded adjustment:", adjustment_id)
 
 
-def preview_statement(db: Path) -> None:
+def preview_statement(db: Database) -> None:
     statement_id = required("Statement ID: ")
     snapshot = statement_snapshot(db, statement_id)
     print(f"\nStatement {snapshot['settlement_month']} — {snapshot['status']}")
@@ -187,7 +195,7 @@ def preview_statement(db: Path) -> None:
     print("\nNote:", snapshot["warning"])
 
 
-def finalize(db: Path) -> None:
+def finalize(db: Database) -> None:
     result = finalize_statement(
         db, statement_id=required("Statement ID: "),
         finalized_by=required("Operator identifier: "),
@@ -197,19 +205,29 @@ def finalize(db: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Apartment Expense Manager — ledger workflow")
-    parser.add_argument("--db", required=True)
+    parser = argparse.ArgumentParser(
+        description="Apartment Expense Manager — ledger workflow, against the configured "
+                    "PostgreSQL database (AEM_DB_* settings)")
     parser.add_argument("--apartment", required=True)
     args = parser.parse_args()
-    db = Path(args.db)
-    if not db.exists():
-        print("Database not found. Run apartment_setup_cli.py first.")
+    db = PostgresDatabase(get_settings().database)
+    try:
+        return run(db, args)
+    finally:
+        db.close()
+
+
+def run(db: Database, args: argparse.Namespace) -> int:
+    try:
+        initialize_database(db)
+    except PersistenceError as exc:
+        print(f"Database not available: {db.describe()} ({exc})")
         return 2
-    initialize_database(db)
-    with sqlite3.connect(db) as conn:
-        if not conn.execute("SELECT 1 FROM apartment WHERE apartment_id=?", (args.apartment,)).fetchone():
-            print("Apartment not found.")
-            return 2
+    try:
+        read_apartment(db, args.apartment)
+    except NotFoundError:
+        print("Apartment not found.")
+        return 2
 
     actions = {
         "1": ("Create expense definition", lambda: add_definition(db, args.apartment)),
@@ -234,7 +252,7 @@ def main() -> int:
             continue
         try:
             actions[choice][1]()
-        except (LedgerWorkflowError, ValueError, sqlite3.Error) as exc:
+        except (LedgerWorkflowError, ValueError, PersistenceError) as exc:
             print("Operation failed:", exc)
 
 
