@@ -763,3 +763,20 @@ dl.kv dd { margin: 0; font-size: 0.875rem; }
   }
   body:has(.receipt-sheet) .receipt-sheet * { color: #000 !important; }
 }
+
+/* ------------------------------------------------------ theme transition -- */
+
+/* Continuous fluid theme ripple. The default cross-fade is switched off and
+   Layout animates a clip-path circle from the toggle instead. The incoming
+   theme is always on top, in both directions, so it is the one that grows. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 1;
+}
+::view-transition-new(root) {
+  z-index: 9999;
+}

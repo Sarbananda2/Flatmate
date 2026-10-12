@@ -12,6 +12,7 @@ import {
   useMemo,
   useState,
 } from 'react'
+import { flushSync } from 'react-dom'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   Building2,
@@ -182,6 +183,68 @@ export function Layout({ children }: { children: ReactNode }) {
   const degraded = Boolean(health.data && health.data.status !== 'ok')
   const section = sectionFor(location.pathname)
   const isDark = theme === 'dark'
+
+  /**
+   * Switch theme with a circle spreading from the toggle. Browsers without
+   * view transitions, and anyone who asked for reduced motion, get the plain
+   * instant switch.
+   */
+  const toggleTheme = (event: React.MouseEvent<HTMLButtonElement>) => {
+    const next: Theme = isDark ? 'light' : 'dark'
+    const root = document.documentElement
+    const startViewTransition = (
+      document as Document & {
+        startViewTransition?: (update: () => void) => { ready: Promise<void> }
+      }
+    ).startViewTransition
+    if (
+      !startViewTransition ||
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    ) {
+      setTheme(next)
+      return
+    }
+
+    // A keyboard press has no pointer position; start from the button itself.
+    const box = event.currentTarget.getBoundingClientRect()
+    const x = event.detail === 0 ? box.left + box.width / 2 : event.clientX
+    const y = event.detail === 0 ? box.top + box.height / 2 : event.clientY
+    const endRadius = Math.hypot(
+      Math.max(x, window.innerWidth - x),
+      Math.max(y, window.innerHeight - y),
+    )
+
+    const transition = startViewTransition.call(document, () => {
+      // The new snapshot is taken when this returns, so the theme must be on
+      // the page by then rather than after React's next effect pass.
+      flushSync(() => setTheme(next))
+      root.dataset.theme = next
+    })
+    void transition.ready
+      .then(() => {
+        // Continuous fluid wave: an energetic launch from the button that
+        // decelerates smoothly all the way into the far corners. One curve, no
+        // intermediate keyframes, so the speed never changes abruptly. The new
+        // theme always spreads outward over the old one.
+        root.animate(
+          {
+            clipPath: [
+              `circle(0px at ${x}px ${y}px)`,
+              `circle(${endRadius}px at ${x}px ${y}px)`,
+            ],
+          },
+          {
+            duration: 850,
+            easing: 'cubic-bezier(0.12, 0.8, 0.2, 1)',
+            fill: 'both',
+            pseudoElement: '::view-transition-new(root)',
+          },
+        )
+      })
+      .catch(() => {
+        // View transition aborted or unsupported; the theme has still changed.
+      })
+  }
   // Rent, electricity and setup have their own workflows; the generic
   // transaction form would only compete with them there.
   const showRecord = section !== 'services' && section !== 'settings'
@@ -247,7 +310,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
-              onClick={() => setTheme(isDark ? 'light' : 'dark')}
+              onClick={toggleTheme}
               className={ICON_BUTTON}
               title="Toggle theme"
               aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
