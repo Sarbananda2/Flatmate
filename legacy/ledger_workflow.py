@@ -9,6 +9,8 @@ keyword arguments for the features added since.
 expected error the application raises, so existing ``except``/``assertRaises``
 blocks keep catching what they caught before.
 """
+import _root  # noqa: F401  (makes ``aem`` importable)
+
 from aem.errors import AemError as LedgerWorkflowError  # noqa: F401
 from aem.services.adjustments import record_adjustment  # noqa: F401
 from aem.services.definitions import (  # noqa: F401

@@ -4,6 +4,8 @@ The engine moved to ``aem.engine.ledger`` when the application grew an API and
 a UI. This module re-exports it unchanged so existing scripts, the terminal
 CLIs, and the original test suite keep working against the same code.
 """
+import _root  # noqa: F401  (makes ``aem`` importable)
+
 from aem.engine.ledger import (  # noqa: F401
     Charge,
     PaymentAllocationResult,

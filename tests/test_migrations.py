@@ -17,7 +17,7 @@ from aem.migrations import MigrationError, current_version, discover, migrate, s
 from aem.services import expenses, payments, reconciliation, statements
 from tests.conftest import APARTMENT
 
-PROTOTYPE_SCHEMA = Path(__file__).resolve().parent.parent / "schema.sql"
+PROTOTYPE_SCHEMA = Path(__file__).resolve().parent.parent / "legacy" / "schema.sql"
 
 COUNTED_TABLES = ("apartment", "resident", "expense_definition", "monthly_statement",
                   "expense_instance", "expense_component", "allocation",

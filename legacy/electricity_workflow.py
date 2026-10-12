@@ -7,6 +7,8 @@ creates *or upgrades* the database, preserving existing data.
 ``ElectricityWorkflowError`` is ``aem.errors.AemError``, the base class of every
 expected error, so existing ``except`` blocks keep working.
 """
+import _root  # noqa: F401  (makes ``aem`` importable)
+
 from aem.errors import AemError as ElectricityWorkflowError  # noqa: F401
 from aem.migrations import initialize_database  # noqa: F401
 from aem.services.electricity import (  # noqa: F401
