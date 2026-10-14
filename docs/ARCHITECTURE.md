@@ -387,3 +387,36 @@ The `household` fixture is deliberately awkward: three residents, two months,
 an expense that does not divide evenly, a linked provider advance, a partial
 payment, an overpayment, a closed statement, and a post-close adjustment. An
 invariant that only holds for one tidy expense will not pass against it.
+
+---
+
+## User Interface & Design System Standards
+
+The frontend enforces strict UX, state-separation, and visual presentation invariants:
+
+### Rule U1: Read-Only by Default for Saved State (No Permanent Form Mode)
+* **Invariant:** Any entity, configuration, or record that has already been saved (e.g., Master Tenancy terms, Apartment settings, Deposit funding, Flatmate profiles) must be rendered in **Read-Only / Display Mode** by default.
+* **Prohibition:** Static configurations must **never** be permanently left open as active input fields, textboxes, dropdowns, or radio groups. Saved records must render as clean, structured key-value labels with typography and badge styling.
+* **Initial Setup Exception:** An input form is displayed by default only when the entity has never been configured (`null` / first-time setup). Once saved, it collapses immediately into Read-Only display mode.
+
+### Rule U2: Strict Mutual Exclusion of View and Editor
+* **Invariant:** The editor (form inputs, textboxes, dropdowns) and the saved read-only view must **never** be rendered on the screen simultaneously.
+* **Explicit Edit Action:** Entering edit mode requires an explicit user action (an "Edit" button or pencil shortcut).
+* **Edit Interaction Modes:**
+  1. **Modal / Dialog Mode (Preferred for cards and lists):** Clicking "Edit" opens a focused dialog containing the form inputs, keeping the background read-only view undisturbed until save/cancel.
+  2. **In-Place Toggle Mode:** Clicking "Edit" replaces the display view with the form inputs, along with explicit `Save Changes` and `Cancel` buttons. Canceling or saving restores the Read-Only display view.
+
+### Rule U3: Universal Table Header Center-Alignment
+* **Invariant:** In every data table across all screens, all column headers (`<th>`) must be center-aligned (`text-center`).
+
+### Rule U4: Mandatory Client-Side Validation
+* **Invariant:** Every form input must validate non-empty text, phone/email/PAN/IFSC syntax, non-negative amounts, and date bounds before submission.
+
+### Rule U5: Scoped Per-Card Editing & Concise Action Triggers
+* **Scoped Editing:** Every editable card/panel owns its own independent edit trigger. Entering edit mode on one section must **never** put the entire page or unrelated sections into edit mode.
+* **Concise Labels:** Edit action buttons must use a clean, uniform label: `<Pencil className="w-3.5 h-3.5" /> Edit` (or simply `Edit`). Do not repeat the card's title in the button label (e.g., avoid `Edit Tenancy Terms`, `Edit Settings`, `Edit Landlord Profile`). The visual context is already established by the card header.
+
+### Rule U6: Zero Dead Space for Empty Histories
+* **Invariant:** Historical archives and completed term logs must remain hidden or collapsed until at least one record exists. Do not render giant, empty full-width panels with placeholder text explaining that history has not occurred yet.
+
+

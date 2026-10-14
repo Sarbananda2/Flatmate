@@ -396,6 +396,8 @@ The API maps each marker to an HTTP 409 with the matching error code.
 | 0009 | `resident_exit_clearance` | One append-only record per move-out clearance: the deposit settled, the operating balance at the time, the net cash figure, and how it was settled |
 | 0010 | `household_room`; `household_deposit_slot.room_id` | The flat's rooms, their washroom and balcony, and who occupies each; an optional link from a deposit slot to its room |
 | 0011 | `household_contact`, `household_document` | The owner, broker, caretaker and other contacts; and the document vault, with each file stored as BYTEA beside its SHA-256 |
+| 0012 | `household_room.base_rent_paise` | Room base rent for tiered rent allocation; unique room-to-slot escrow constraint |
+| 0013 | `rent_lease_config.rent_split_mode` | Active rent allocation model (`equal` vs `room_tiered`) saved directly on the lease configuration |
 
 Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from a single `0001_baseline.sql` that carries all six, so its migration files are `0001` and then `0007` onward: the numbering continues the history above rather than restarting.
 
