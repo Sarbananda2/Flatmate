@@ -16,8 +16,9 @@ import {
   ErrorNotice,
   Modal,
 } from '../components/Primitives'
-import { TextField } from '../components/Form'
+import { SelectField, TextField } from '../components/Form'
 import { useToast } from '../components/Toast'
+import { EditButton } from '../components/ui'
 import { api } from '../api/client'
 import { useMutation, useResource } from '../lib/useApi'
 import { formatDateTime } from '../lib/format'
@@ -124,6 +125,17 @@ export default function SetupPage() {
         </AsyncSection>
       </Card>
 
+      {hasApartment && apartments.data && (
+        <SettingsCard
+          apartments={apartments.data.items}
+          defaultApartmentId={apartments.data.default_apartment_id}
+          onSaved={() => {
+            apartments.reload()
+            reloadApartment()
+          }}
+        />
+      )}
+
       {hasApartment && <StarterDefinitions />}
 
       {hasApartment && (
@@ -142,7 +154,7 @@ export default function SetupPage() {
       {hasApartment && (
         <Card
           title="Rent & Lease"
-          hint="The master lease: landlord, monthly rent, due day, PAN for HRA receipts, and whether the landlord issues receipts."
+          hint="The master lease and its terms live under Housing; how each month's rent is divided and collected lives on the Rent screen."
         >
           <div className="row">
             <Link className="btn btn--primary" to="/housing?tab=lease">
@@ -157,7 +169,7 @@ export default function SetupPage() {
 
       <Card
         title="Health and database"
-        hint="The database is a single SQLite file. Copy it while the app is stopped to take a backup."
+        hint="The household's PostgreSQL database. Take a backup with scripts/manage.py backup."
       >
         <AsyncSection resource={health}>
           {(data) => (
@@ -369,6 +381,181 @@ function CreateApartmentDialog({
             maxLength={64}
           />
         </div>
+      </form>
+    </Modal>
+  )
+}
+
+/* --------------------------------------------------------------- settings -- */
+
+interface OperatorSettings {
+  default_apartment_id: string | null
+  server: { operator_name?: string }
+}
+
+function SettingRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </>
+  )
+}
+
+/** The saved settings, read-only, with an explicit way into editing them. */
+export function SettingsCard({
+  apartments,
+  defaultApartmentId,
+  onSaved,
+}: {
+  apartments: Apartment[]
+  defaultApartmentId: string | null
+  onSaved: () => void
+}) {
+  const settings = useResource<OperatorSettings>('/api/settings')
+  const [editing, setEditing] = useState(false)
+  const current =
+    apartments.find((apartment) => apartment.apartment_id === defaultApartmentId) ??
+    apartments[0] ??
+    null
+
+  return (
+    <Card
+      title="Settings"
+      hint="The apartment the app opens on, and who is recorded as making changes."
+      actions={
+        current && <EditButton label="Edit settings" onClick={() => setEditing(true)} />
+      }
+    >
+      <dl className="kv" aria-label="Settings">
+        <SettingRow label="Default apartment">{current ? current.name : '—'}</SettingRow>
+        <SettingRow label="Currency">{current?.currency_code ?? '—'}</SettingRow>
+        <SettingRow label="Time zone">{current?.timezone ?? '—'}</SettingRow>
+        <SettingRow label="Operator">
+          {settings.data?.server.operator_name ?? '—'}
+          <span className="subtle"> · set on the server by AEM_OPERATOR_NAME</span>
+        </SettingRow>
+      </dl>
+      {editing && current && (
+        <EditSettingsDialog
+          apartments={apartments}
+          current={current}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false)
+            onSaved()
+          }}
+        />
+      )}
+    </Card>
+  )
+}
+
+function EditSettingsDialog({
+  apartments,
+  current,
+  onClose,
+  onSaved,
+}: {
+  apartments: Apartment[]
+  current: Apartment
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const toast = useToast()
+  const [defaultId, setDefaultId] = useState(current.apartment_id)
+  const chosen = apartments.find((apartment) => apartment.apartment_id === defaultId) ?? current
+  const [name, setName] = useState(chosen.name)
+  const [timezone, setTimezone] = useState(chosen.timezone)
+  const [submitted, setSubmitted] = useState(false)
+
+  const errors = {
+    name: !name.trim() ? 'A name is required.' : name.trim().length > 200 ? 'Keep it to 200 characters.' : null,
+    timezone: !timezone.trim() ? 'A time zone is required, e.g. Asia/Kolkata.' : null,
+  }
+  const valid = !errors.name && !errors.timezone
+
+  const save = useMutation(
+    async () => {
+      if (defaultId !== current.apartment_id) {
+        await api.put(`/api/settings/default-apartment/${encodeURIComponent(defaultId)}`)
+      }
+      const changes: Record<string, string> = {}
+      if (name.trim() !== chosen.name) changes.name = name.trim()
+      if (timezone.trim() !== chosen.timezone) changes.timezone = timezone.trim()
+      if (Object.keys(changes).length > 0) {
+        await api.patch(`/api/apartments/${encodeURIComponent(defaultId)}`, changes)
+      }
+    },
+    {
+      onSuccess: () => {
+        toast.success('Settings saved')
+        onSaved()
+      },
+    },
+  )
+
+  return (
+    <Modal
+      title="Edit Settings"
+      description="Changes apply as soon as they are saved."
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn" onClick={onClose} disabled={save.pending}>
+            Cancel
+          </button>
+          <button type="submit" form="edit-settings" className="btn btn--primary" disabled={save.pending}>
+            {save.pending ? 'Saving…' : 'Save Changes'}
+          </button>
+        </>
+      }
+    >
+      <form
+        id="edit-settings"
+        className="stack"
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault()
+          setSubmitted(true)
+          if (valid && !save.pending) void save.run(undefined)
+        }}
+      >
+        <ErrorNotice error={save.error} />
+        {apartments.length > 1 && (
+          <SelectField
+            label="Default apartment"
+            value={defaultId}
+            onChange={(id) => {
+              setDefaultId(id)
+              const next = apartments.find((apartment) => apartment.apartment_id === id)
+              if (next) {
+                setName(next.name)
+                setTimezone(next.timezone)
+              }
+            }}
+            options={apartments.map((apartment) => ({
+              value: apartment.apartment_id,
+              label: apartment.name,
+            }))}
+          />
+        )}
+        <TextField
+          label="Apartment name"
+          value={name}
+          onChange={setName}
+          required
+          maxLength={210}
+          error={submitted ? errors.name : null}
+        />
+        <TextField
+          label="Time zone"
+          value={timezone}
+          onChange={setTimezone}
+          required
+          placeholder="Asia/Kolkata"
+          error={submitted ? errors.timezone : null}
+        />
       </form>
     </Modal>
   )

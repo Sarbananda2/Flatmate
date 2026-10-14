@@ -842,6 +842,8 @@ export interface RentLeaseConfig {
   term_number: number
   /** Where the lease stands in its term today. Null until it has a start date. */
   lifecycle: LeaseLifecycle | null
+  /** The household's agreement model: how each month's rent is divided. */
+  rent_split_mode: RentSplitMode
 }
 
 export type EscalationType = 'percent' | 'fixed' | 'none'
@@ -895,6 +897,8 @@ export interface RentCycle {
   /** The due date of the residents' charges, which orders oldest-first payment. */
   charge_due_date: string | null
   total_rent_paise: number
+  /** How this month was divided: equally, or by each room's base rent. */
+  split_mode: RentSplitMode
   participant_count: number
   base_share_paise: number
   remainder_paise: number

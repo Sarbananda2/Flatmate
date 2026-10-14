@@ -26,7 +26,7 @@ import {
   Users,
 } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
-import { ReceiptPreferencesPanel, RentalAgreementStructurePanel } from './RentConfig'
+import { RentAgreementCard } from './RentAgreement'
 import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
 import { DateField, Field, MoneyInput, SelectField, TextField } from '../../components/Form'
 import { useToast } from '../../components/Toast'
@@ -55,7 +55,6 @@ import type {
   RentMonthOverview,
   RentParticipant,
   RentPreview,
-  RentSplitMode,
   RentReceipt,
   Resident,
 } from '../../api/types'
@@ -82,10 +81,8 @@ function percent(part: number, whole: number): string {
 export function RentMonth({ month }: { month: string }) {
   const toast = useToast()
   const [excluded, setExcluded] = useState<string[]>([])
-  const [splitMode, setSplitMode] = useState<RentSplitMode>('equal')
   const overview = useResource<RentMonthOverview>(`/api/rent/cycle/${month}`, {
     exclude: excluded.join(',') || undefined,
-    split_mode: splitMode === 'equal' ? undefined : splitMode,
   })
   const [dialog, setDialog] = useState<'payout' | 'attach' | null>(null)
   const [receiptFor, setReceiptFor] = useState<RentParticipant | null>(null)
@@ -94,8 +91,8 @@ export function RentMonth({ month }: { month: string }) {
   const generate = useMutation(
     () =>
       api.post<RentCycle>(`/api/rent/cycle/${month}/generate`, {
+        // The split is the household's agreement model, saved on the lease.
         excluded_resident_ids: excluded,
-        split_mode: splitMode,
       }),
     {
       onSuccess: (cycle) => {
@@ -106,7 +103,6 @@ export function RentMonth({ month }: { month: string }) {
             : `${formatInr(cycle.total_rent_paise)} split between ${cycle.participant_count}.`,
         )
         setExcluded([])
-        setSplitMode('equal')
         overview.reload()
       },
     },
@@ -186,8 +182,6 @@ export function RentMonth({ month }: { month: string }) {
                       month={month}
                       preview={preview}
                       excluded={excluded}
-                      splitMode={splitMode}
-                      onSplitMode={setSplitMode}
                       onToggle={(residentId, takesPart) =>
                         setExcluded((current) =>
                           takesPart
@@ -201,13 +195,13 @@ export function RentMonth({ month }: { month: string }) {
                     />
                   )
                 )}
-                {/* How this household divides and receipts its rent. */}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
-                  <RentalAgreementStructurePanel
-                    roomTieredAvailable={Boolean(preview?.room_tiered.available)}
-                  />
-                  <ReceiptPreferencesPanel config={config} onSaved={overview.reload} />
-                </div>
+                <RentAgreementCard
+                  config={config}
+                  cycle={cycle}
+                  preview={preview}
+                  month={month}
+                  onSaved={overview.reload}
+                />
                 <LandlordPanel
                   config={config}
                   cycle={cycle}
@@ -651,8 +645,6 @@ function PreviewPanel({
   month,
   preview,
   excluded,
-  splitMode,
-  onSplitMode,
   onToggle,
   generating,
   error,
@@ -661,8 +653,6 @@ function PreviewPanel({
   month: string
   preview: RentPreview
   excluded: string[]
-  splitMode: RentSplitMode
-  onSplitMode: (mode: RentSplitMode) => void
   onToggle: (residentId: string, takesPart: boolean) => void
   generating: boolean
   error: ReturnType<typeof useMutation>['error']
@@ -678,11 +668,9 @@ function PreviewPanel({
       takesPart: false,
     })),
   ].sort((a, b) => a.display_name.localeCompare(b.display_name))
-  const tiered = splitMode === 'room_tiered'
+  // The split follows the agreement model; it is changed on the agreement card.
+  const tiered = preview.split_mode === 'room_tiered'
   const rooms = new Map(preview.room_tiered.shares.map((row) => [row.resident_id, row.room_number]))
-  // Offered when the rooms' base rents add up to the lease rent, and kept while
-  // chosen so it can be switched back after a change makes it unavailable.
-  const offerSplit = !adopting && (preview.room_tiered.available || tiered)
 
   return (
     <Panel
@@ -721,40 +709,6 @@ function PreviewPanel({
           The recorded expense is {formatInr(preview.total_rent_paise)}, which differs from the
           lease. It is linked as recorded.
         </p>
-      )}
-      {offerSplit && (
-        <fieldset className="m-0 border-0 p-0 flex flex-wrap items-center gap-2" role="radiogroup">
-          <legend className="sr-only">Split mode</legend>
-          <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] mr-1">
-            Split mode
-          </span>
-          {(
-            [
-              ['equal', 'Equal Split'],
-              ['room_tiered', 'Room-Tiered'],
-            ] as Array<[RentSplitMode, string]>
-          ).map(([value, label]) => (
-            <label
-              key={value}
-              className={
-                splitMode === value
-                  ? 'inline-flex items-center gap-1.5 rounded-full border border-[var(--accent)] bg-[var(--accent-glow)] px-3 py-1 text-xs font-semibold cursor-pointer'
-                  : 'inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)] cursor-pointer'
-              }
-            >
-              <input
-                type="radio"
-                name="rent-split-mode"
-                className="w-auto"
-                value={value}
-                checked={splitMode === value}
-                disabled={generating}
-                onChange={() => onSplitMode(value)}
-              />
-              {label}
-            </label>
-          ))}
-        </fieldset>
       )}
       {preview.participant_count > 0 && !tiered && (
         <SplitRule

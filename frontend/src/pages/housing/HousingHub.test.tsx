@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HousingHub } from './HousingHub'
 import { ToastProvider } from '../../components/Toast'
@@ -76,6 +76,14 @@ const contacts = {
 
 const documents = { items: [], total: 0, total_bytes: 0, categories_on_file: [] }
 
+const apartment = {
+  apartment_id: 'flat',
+  name: 'Flat 1805, CG6, Supertech Capetown',
+  currency_code: 'INR',
+  timezone: 'Asia/Kolkata',
+  created_at: '2026-10-01T10:00:00+05:30',
+}
+
 function Where() {
   const location = useLocation()
   return <output aria-label="location">{location.pathname + location.search}</output>
@@ -98,7 +106,10 @@ function open(path = '/housing', overrides: Record<string, unknown> = {}) {
     <MemoryRouter initialEntries={[path]}>
       <ToastProvider>
         <Routes>
-          <Route path="/housing" element={<HousingHub apartmentName="Flat 1805, Supertech Capetown" />} />
+          <Route
+            path="/housing"
+            element={<HousingHub apartment={apartment} onApartmentChanged={() => {}} />}
+          />
         </Routes>
         <Where />
       </ToastProvider>
@@ -106,43 +117,22 @@ function open(path = '/housing', overrides: Record<string, unknown> = {}) {
   )
 }
 
-const tile = (name: string) => screen.getByRole('region', { name })
-
-describe('HousingHub summary', () => {
-  it('sums up the flat, the lease, the deposit and the owner', async () => {
+describe('HousingHub layout', () => {
+  it('goes straight from the title into the tabs, with no summary tiles', async () => {
     open()
     expect(screen.getByRole('heading', { level: 1, name: 'Housing' })).toBeInTheDocument()
-    expect(tile('Apartment')).toHaveTextContent('Flat 1805, Supertech Capetown')
-    expect(
-      await within(tile('Physical Space')).findByText('3 Rooms · 2 Occupied · 1 Vacant'),
-    ).toBeInTheDocument()
-    const lease = tile('Active Lease')
-    expect(await within(lease).findByText(/Monthly Rent:/)).toHaveTextContent('₹28,500.00')
-    expect(lease).toHaveTextContent('Term: Month 7 of 11')
-    expect(lease).toHaveTextContent('Expires: 28 Feb 2027')
-    const deposit = tile('Security Deposit')
-    expect(await within(deposit).findByText(/Escrow/)).toHaveTextContent('₹1,50,000.00')
-    expect(deposit).toHaveTextContent('Funding Mode: Primary Signatory')
-    expect(within(deposit).getByText('Balanced')).toBeInTheDocument()
-    const owner = tile('Landlord / Owner')
-    expect(await within(owner).findByText('Kumar Yadav')).toBeInTheDocument()
-    expect(within(owner).getByRole('link', { name: 'Call Kumar Yadav' })).toHaveAttribute(
-      'href',
-      'tel:+919876543210',
-    )
-    expect(owner).toHaveTextContent('kumar.yadav@okhdfcbank')
+    for (const name of ['Apartment', 'Physical Space', 'Active Lease', 'Security Deposit', 'Landlord / Owner']) {
+      expect(screen.queryByRole('region', { name })).toBeNull()
+    }
+    expect(screen.queryByLabelText('Housing summary')).toBeNull()
+    expect(screen.getByRole('tablist', { name: 'Housing' })).toBeInTheDocument()
   })
 
-  it('says what is not set up yet', async () => {
-    open('/housing', {
-      '/api/property/rooms': { ...rooms, total: 0, summary: { ...rooms.summary, total_rooms: 0 } },
-      '/api/rent/config': { config: null },
-      '/api/rent/deposits': { ...deposits, master_deposit_paise: null },
-      '/api/property/contacts': { items: [], total: 0, roles_on_file: [] },
-    })
-    for (const name of ['Physical Space', 'Active Lease', 'Security Deposit', 'Landlord / Owner']) {
-      expect(await within(tile(name)).findByText('Not set up')).toBeInTheDocument()
-    }
+  it('shows the apartment in full on the tenancy tab, with its own Edit', async () => {
+    open()
+    const profile = await screen.findByLabelText('Apartment profile')
+    expect(profile).toHaveTextContent('Flat 1805, CG6, Supertech Capetown')
+    expect(screen.getByRole('button', { name: 'Edit apartment' })).toBeInTheDocument()
   })
 })
 
@@ -158,7 +148,7 @@ describe('HousingHub tabs', () => {
       'Document Vault',
     ])
     expect(screen.getByRole('tab', { name: /Tenancy & Master Lease/ })).toHaveAttribute('aria-selected', 'true')
-    expect(await screen.findByText('Master Contract')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Edit tenancy terms' })).toBeInTheDocument()
 
     const expectations: Array<[RegExp, string, string]> = [
       [/Security Deposit/, '?tab=deposits', 'Household Security Deposit Setup'],

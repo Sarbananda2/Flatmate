@@ -424,6 +424,9 @@ class RentLeaseConfigSave(ApiModel):
     requires_landlord_receipt: bool = Field(
         False, description="Whether the landlord issues a receipt. When true, a paid month "
                            "shows its receipt as pending until one is attached.")
+    rent_split_mode: Literal["equal", "room_tiered"] | None = Field(
+        None, description="The household's agreement model: how each month's rent is "
+                          "divided. equal, or room_tiered by each room's base rent.")
     expense_definition_id: str | None = Field(
         None, max_length=120,
         description="The Housing definition rent is recorded under. Omit to use the "
@@ -748,9 +751,10 @@ class RentGenerateRequest(ApiModel):
         default_factory=list,
         description="Active residents who do not take part this month. Everyone else is "
                     "charged a full equal share; nothing is prorated.")
-    split_mode: Literal["equal", "room_tiered"] = Field(
-        "equal", description="equal, or room_tiered: each participant pays their room's "
-                             "base rent, which must add up to the lease rent exactly.")
+    split_mode: Literal["equal", "room_tiered"] | None = Field(
+        None, description="equal, or room_tiered: each participant pays their room's "
+                          "base rent, which must add up to the lease rent exactly. "
+                          "Omit to use the lease's agreement model.")
 
 
 class RentPaymentCreate(ApiModel):

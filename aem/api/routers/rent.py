@@ -89,9 +89,10 @@ def get_cycle(
     db: Db, apartment_id: ApartmentId, settlement_month: SettlementMonth,
     exclude: Annotated[str | None, Query(
         description="Comma-separated resident IDs to leave out of the preview.")] = None,
-    split_mode: Annotated[Literal["equal", "room_tiered"], Query(
-        description="equal, or room_tiered to preview each share as its room's base rent."
-    )] = "equal",
+    split_mode: Annotated[Literal["equal", "room_tiered"] | None, Query(
+        description="equal, or room_tiered to preview each share as its room's base rent. "
+                    "Omit to preview the lease's agreement model."
+    )] = None,
 ) -> dict[str, Any]:
     """The month's rent cycle with each resident's share and what they have
     paid. Before the rent is generated, ``cycle`` is null and ``preview`` shows

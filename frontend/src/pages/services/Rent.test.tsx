@@ -29,6 +29,7 @@ const config = {
   monthly_rent_paise: 4500000,
   due_day_of_month: 5,
   requires_landlord_receipt: false,
+  rent_split_mode: 'equal',
   created_at: '2026-10-01T09:00:00+05:30',
   updated_at: '2026-10-01T09:00:00+05:30',
 }
@@ -522,20 +523,75 @@ describe('RentMonth', () => {
     ).toHaveAttribute('href', '/housing?tab=lease')
   })
 
-  it('shows how the rent is divided and receipted on the Rent screen', async () => {
+  it('shows the rental agreement read-only, with no inputs on the page', async () => {
+    renderRent(overview({ cycle: null, preview }))
+    const agreement = await screen.findByLabelText('Rental agreement')
+    expect(agreement).toHaveTextContent('Single Master Lease (Equal Split)')
+    expect(agreement).toHaveTextContent('Equal share among 3 participants (₹15,000.00/resident)')
+    expect(agreement).toHaveTextContent('Requires Landlord Receipts: No')
+    // The choices only appear once the operator asks to change the model.
+    expect(screen.queryByRole('radiogroup', { name: 'Rental agreement structure' })).toBeNull()
+    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.queryByRole('radio', { name: 'Room-Tiered' })).toBeNull()
+  })
+
+  it('changes the agreement model and receipts in a dialog that saves only those', async () => {
     renderRent(overview({ cycle: null, preview: tieredPreview }), {
-      'POST /api/rent/config': { ...config, requires_landlord_receipt: true },
+      'POST /api/rent/config': { ...config, rent_split_mode: 'room_tiered' },
     })
-    const group = await screen.findByRole('radiogroup', { name: 'Rental agreement structure' })
-    expect(within(group).getByText('Default Model')).toBeInTheDocument()
-    // This month's room rents add up, so room-tiered is offered.
-    expect(within(group).getByText('Available This Month')).toBeInTheDocument()
-    const receipts = screen.getByRole('switch', { name: 'Do you receive receipts from the landlord?' })
-    expect(receipts).toHaveAttribute('aria-checked', 'false')
-    await userEvent.click(receipts)
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit agreement model' }))
+    const dialog = screen.getByRole('dialog')
+    const save = within(dialog).getByRole('button', { name: 'Save Model' })
+    expect(save).toBeDisabled()
+    const group = within(dialog).getByRole('radiogroup', { name: 'Rental agreement structure' })
+    expect(within(group).getByRole('radio', { name: 'Single Master Lease (Equal Split)' })).toBeChecked()
+    // This month's room rents add up, so room-tiered can be chosen.
+    expect(within(group).getByText('Room Rents Add Up')).toBeInTheDocument()
+    expect(within(group).getByRole('radio', { name: 'Square Footage / Floor-Area Ratio' })).toBeDisabled()
+    await userEvent.click(within(group).getByRole('radio', { name: 'Room-Tiered Fixed Pricing' }))
+    await userEvent.click(
+      within(dialog).getByRole('switch', { name: 'Do you receive receipts from the landlord?' }),
+    )
+    await userEvent.click(save)
     await waitFor(() => expect(posted('/api/rent/config')).toBeDefined())
-    // Only the preference is sent; the rest of the lease is left as it is.
-    expect(posted('/api/rent/config')!.body).toEqual({ requires_landlord_receipt: true })
+    expect(posted('/api/rent/config')!.body).toEqual({
+      rent_split_mode: 'room_tiered',
+      requires_landlord_receipt: true,
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('cancels a model change without saving', async () => {
+    renderRent(overview({ cycle: null, preview }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit agreement model' }))
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(posted('/api/rent/config')).toBeUndefined()
+  })
+
+  it('says why a room-tiered model cannot generate rent yet', async () => {
+    renderRent(
+      overview({
+        config: { ...config, rent_split_mode: 'room_tiered' },
+        cycle: null,
+        preview: {
+          ...preview,
+          split_mode: 'room_tiered',
+          can_generate: false,
+          blocked_reason: 'The sum of room rents (₹40,000.00) does not equal the monthly lease rent (₹45,000.00).',
+          room_tiered: {
+            ...preview.room_tiered,
+            blocked_reason:
+              'The sum of room rents (₹40,000.00) does not equal the monthly lease rent (₹45,000.00).',
+          },
+        },
+      }),
+    )
+    const agreement = await screen.findByLabelText('Rental agreement')
+    expect(agreement).toHaveTextContent('Room-Tiered Fixed Pricing')
+    expect(agreement).toHaveTextContent("Each resident pays their room's base rent.")
+    expect(agreement).toHaveTextContent('does not equal the monthly lease rent')
+    expect(screen.getByRole('button', { name: 'Generate October 2026 rent' })).toBeDisabled()
   })
 
   it('generates rent without the residents the operator left out', async () => {
@@ -545,33 +601,24 @@ describe('RentMonth', () => {
     )
     await userEvent.click(screen.getByRole('button', { name: 'Generate October 2026 rent' }))
     await waitFor(() => expect(posted('/generate')).toBeDefined())
-    expect(posted('/generate')!.body).toEqual({
-      excluded_resident_ids: ['chris'],
-      split_mode: 'equal',
-    })
+    // The split is the household's saved model, so none is sent.
+    expect(posted('/generate')!.body).toEqual({ excluded_resident_ids: ['chris'] })
   })
 
-  it('offers no split choice unless the room rents add up to the lease', async () => {
-    renderRent(overview({ cycle: null, preview }))
-    await screen.findByRole('button', { name: 'Generate October 2026 rent' })
-    expect(screen.queryByRole('radio', { name: 'Room-Tiered' })).toBeNull()
-  })
-
-  it('generates room-tiered rent when the operator chooses it', async () => {
-    renderRent(overview({ cycle: null, preview: tieredPreview }))
-    const tiered = await screen.findByRole('radio', { name: 'Room-Tiered' })
-    expect(screen.getByRole('radio', { name: 'Equal Split' })).toBeChecked()
-    await userEvent.click(tiered)
-    expect(tiered).toBeChecked()
-    // Each resident is shown with the room their share comes from.
+  it('shows each share with its room when the model is room-tiered', async () => {
+    renderRent(
+      overview({
+        config: { ...config, rent_split_mode: 'room_tiered' },
+        cycle: null,
+        preview: { ...tieredPreview, split_mode: 'room_tiered' },
+      }),
+    )
     expect(await screen.findByText('Room 1')).toBeInTheDocument()
     expect(screen.getByText(/charged their room's base rent/)).toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: 'Room-Tiered' })).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'Generate October 2026 rent' }))
     await waitFor(() => expect(posted('/generate')).toBeDefined())
-    expect(posted('/generate')!.body).toEqual({
-      excluded_resident_ids: [],
-      split_mode: 'room_tiered',
-    })
+    expect(posted('/generate')!.body).toEqual({ excluded_resident_ids: [] })
   })
 
   it('does not offer generation when the backend says it is blocked', async () => {

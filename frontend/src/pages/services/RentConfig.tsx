@@ -4,22 +4,28 @@
  * it on the Rent screen.
  */
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
 import {
-  ArrowRight,
   Building2,
   CalendarClock,
   FileText,
   History,
-  Layers,
-  ReceiptText,
+  Home,
   TrendingUp,
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import { AsyncSection, ErrorNotice } from '../../components/Primitives'
+import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
 import { DateField, Field, MoneyInput, SelectField, TextField } from '../../components/Form'
 import { useToast } from '../../components/Toast'
-import { BUTTON_PRIMARY, BUTTON_SECONDARY, Panel, Pill, Rupees } from '../../components/ui'
+import {
+  BUTTON_PRIMARY,
+  BUTTON_SECONDARY,
+  CopyButton,
+  EditButton,
+  Panel,
+  Pill,
+  Rupees,
+} from '../../components/ui'
+import { ContactModal, useContacts } from './PropertyContacts'
 import { LeaseNoticeBanner } from './LeaseLifecycle'
 import { api } from '../../api/client'
 import { useMutation, useResource } from '../../lib/useApi'
@@ -32,7 +38,7 @@ import {
   leaseEndIso,
   paiseToInput,
 } from '../../lib/format'
-import type { EscalationType, RentLeaseConfig, Resident } from '../../api/types'
+import type { Apartment, EscalationType, RentLeaseConfig, Resident } from '../../api/types'
 
 const DUE_DAYS = Array.from({ length: 28 }, (_, index) => {
   const day = String(index + 1)
@@ -44,47 +50,6 @@ const DUE_DAYS = Array.from({ length: 28 }, (_, index) => {
 // `items-start` keeps every input level with its label: without it a field
 // stretches to the tallest one in its row and its input sinks.
 const GRID_2 = 'grid grid-cols-1 md:grid-cols-2 gap-4 items-start'
-
-// How a household can contract and divide rent. Equal split is the default;
-// room-tiered is chosen month by month on the Rent screen; the rest are shown
-// so the direction is visible, and cannot be chosen.
-const RENTAL_MODELS = [
-  {
-    id: 'equal_split',
-    title: 'Single Master Lease (Equal Split)',
-    description:
-      'One joint lease to the landlord, divided equally among participating flatmates with zero-paisa drift.',
-    status: 'active',
-  },
-  {
-    id: 'room_tiered',
-    title: 'Room-Tiered Fixed Pricing',
-    description:
-      "Unequal fixed rent per bedroom based on room size, attached washroom, or balcony amenities. Chosen when a month's rent is generated.",
-    status: 'per_month',
-  },
-  {
-    id: 'sqft_ratio',
-    title: 'Square Footage / Floor-Area Ratio',
-    description:
-      'Mathematical allocation proportional to private bedroom carpet area plus shared common spaces.',
-    status: 'under_development',
-  },
-  {
-    id: 'unbundled_maintenance',
-    title: 'Unbundled (Rent + Society Maintenance)',
-    description:
-      'Bifurcated monthly cycle: base house rent to the owner (with HRA slips) and society maintenance.',
-    status: 'under_development',
-  },
-  {
-    id: 'individual_direct',
-    title: 'Individual Direct Contracts (PG / Co-Living)',
-    description:
-      'Landlord contracts with each resident directly; residents carry no collective pool liability.',
-    status: 'under_development',
-  },
-] as const
 
 const ESCALATION_CHOICES: Array<{ value: EscalationType; label: string }> = [
   { value: 'percent', label: 'Percentage Rate' },
@@ -108,9 +73,18 @@ function percentage(raw: string): number | null {
 
 
 /** The Tenancy & Master Lease tab of Housing: the master lease and its landlord. */
-export function LeaseContractSection() {
+export function LeaseContractSection({
+  apartment,
+  onApartmentChanged,
+}: {
+  /** The apartment the lease is for; its card is left out when not given. */
+  apartment?: Apartment | null
+  onApartmentChanged?: () => void
+} = {}) {
   const lease = useResource<{ config: RentLeaseConfig | null }>('/api/rent/config')
   const toast = useToast()
+  // A saved lease is shown, not edited, until the operator asks to edit it.
+  const [editing, setEditing] = useState(false)
   // Who would share a deposit refund if the household served notice.
   const residents = useResource<{ items: Resident[] }>('/api/residents', { active_only: true })
   const activeResidents = residents.data?.items.length ?? 0
@@ -129,15 +103,26 @@ export function LeaseContractSection() {
                   lease.reload()
                 }}
               />
-              <LandlordSummaryCard config={data.config} />
             </>
           )}
-          <LeaseForm
-            // Remount on save so the form always starts from what is stored.
-            key={data.config?.updated_at ?? 'new'}
-            config={data.config}
-            onSaved={lease.reload}
-          />
+          {apartment && (
+            <ApartmentProfileCard apartment={apartment} onSaved={onApartmentChanged ?? (() => {})} />
+          )}
+          {data.config && !editing ? (
+            <TenancyTermsCard config={data.config} onEdit={() => setEditing(true)} />
+          ) : (
+            <LeaseForm
+              // Remount on save so the form always starts from what is stored.
+              key={data.config?.updated_at ?? 'new'}
+              config={data.config}
+              onSaved={() => {
+                setEditing(false)
+                lease.reload()
+              }}
+              onCancel={data.config ? () => setEditing(false) : undefined}
+            />
+          )}
+          {data.config && <LandlordProfileCard config={data.config} onSaved={lease.reload} />}
           {data.config && <CompletedTermsPanel />}
         </div>
       )}
@@ -148,9 +133,12 @@ export function LeaseContractSection() {
 function LeaseForm({
   config,
   onSaved,
+  onCancel,
 }: {
   config: RentLeaseConfig | null
   onSaved: () => void
+  /** Leave the editor without saving; absent while the lease is first set up. */
+  onCancel?: () => void
 }) {
   const toast = useToast()
   const [rent, setRent] = useState(config ? paiseToInput(config.monthly_rent_paise) : '')
@@ -210,7 +198,7 @@ function LeaseForm({
       }),
     {
       onSuccess: () => {
-        toast.success(config ? 'Lease configuration saved' : 'Lease set up')
+        toast.success(config ? 'Tenancy terms saved' : 'Lease set up')
         onSaved()
       },
     },
@@ -459,9 +447,21 @@ function LeaseForm({
         <span className="text-xs text-[var(--text-secondary)]">
           {config && `Last saved ${formatDateTime(config.updated_at)}`}
         </span>
-        <button type="submit" className={BUTTON_PRIMARY} disabled={!valid || save.pending}>
-          {save.pending ? 'Saving…' : config ? 'Save Tenancy Terms' : 'Set Up Lease'}
-        </button>
+        <div className="flex flex-wrap items-center gap-2 ml-auto">
+          {onCancel && (
+            <button
+              type="button"
+              className={BUTTON_SECONDARY}
+              onClick={onCancel}
+              disabled={save.pending}
+            >
+              Cancel
+            </button>
+          )}
+          <button type="submit" className={BUTTON_PRIMARY} disabled={!valid || save.pending}>
+            {save.pending ? 'Saving…' : config ? 'Save Changes' : 'Set Up Lease'}
+          </button>
+        </div>
       </div>
     </form>
   )
@@ -508,88 +508,133 @@ function NumberField({
   )
 }
 
-/**
- * How the household divides the rent between flatmates. It belongs with the
- * rent cycle, not with the lease: the lease says what the flat costs, this
- * says who pays which part of it.
- */
-export function RentalAgreementStructurePanel({
-  roomTieredAvailable = false,
+function ProfileFact({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0 space-y-0.5">
+      <dt className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+        {label}
+      </dt>
+      <dd className="m-0 text-sm text-[var(--text-primary)] break-words">{children}</dd>
+    </div>
+  )
+}
+
+const NOT_RECORDED = <span className="text-[var(--text-tertiary)]">Not recorded</span>
+
+/** The flat itself. Its name is printed as the premises on HRA rent receipts. */
+export function ApartmentProfileCard({
+  apartment,
+  onSaved,
 }: {
-  /** Whether this month's room base rents add up to the lease rent. */
-  roomTieredAvailable?: boolean
+  apartment: Apartment
+  onSaved: () => void
 }) {
+  const [editing, setEditing] = useState(false)
   return (
     <Panel
-      title="Rental Agreement Structure"
-      icon={<Layers className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="How the household divides the rent between flatmates. Equal split is the default; room-tiered can be chosen for any month whose room rents add up to the lease rent."
+      title="Apartment Profile"
+      icon={<Home className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      actions={<EditButton label="Edit apartment" onClick={() => setEditing(true)} />}
     >
-      <div
-        role="radiogroup"
-        aria-label="Rental agreement structure"
-        className="grid grid-cols-1 md:grid-cols-2 gap-3"
-      >
-        {RENTAL_MODELS.map((model) => {
-          const active = model.status === 'active'
-          const perMonth = model.status === 'per_month'
-          return (
-            <div
-              key={model.id}
-              role="radio"
-              aria-checked={active}
-              aria-disabled={!active || undefined}
-              aria-label={model.title}
-              tabIndex={active ? 0 : undefined}
-              className={clsx(
-                'flex items-start gap-3 rounded-xl border p-3.5 min-w-0',
-                active
-                  ? 'border-[var(--accent)] bg-[var(--accent-glow)]'
-                  : perMonth
-                    ? 'border-[var(--border-medium)] bg-[var(--bg-elevated)]'
-                    : 'border-[var(--border-subtle)] bg-[var(--bg-elevated)] opacity-70 cursor-not-allowed',
-              )}
-            >
-              <span
-                className={clsx(
-                  'mt-0.5 flex w-4 h-4 shrink-0 items-center justify-center rounded-full border-2',
-                  active ? 'border-[var(--accent)]' : 'border-[var(--border-medium)]',
-                )}
-                aria-hidden="true"
-              >
-                {active && <span className="w-2 h-2 rounded-full bg-[var(--accent)]" />}
-              </span>
-              <span className="min-w-0 flex-1 space-y-1.5">
-                <span className="block text-sm font-bold text-[var(--text-primary)]">
-                  {model.title}
-                </span>
-                <span className="block text-xs text-[var(--text-secondary)]">
-                  {model.description}
-                </span>
-                {active ? (
-                  <Pill tone="success">Default Model</Pill>
-                ) : perMonth ? (
-                  <Pill tone={roomTieredAvailable ? 'accent' : 'warning'}>
-                    {roomTieredAvailable ? 'Available This Month' : 'Needs Room Base Rents'}
-                  </Pill>
-                ) : (
-                  <Pill>Under Development</Pill>
-                )}
-              </span>
-            </div>
-          )
-        })}
-      </div>
+      <dl className="m-0 grid grid-cols-1 md:grid-cols-3 gap-4" aria-label="Apartment profile">
+        <div className="md:col-span-2">
+          <ProfileFact label="Name & Address">
+            <span className="font-semibold">{apartment.name}</span>
+          </ProfileFact>
+        </div>
+        <ProfileFact label="Currency · Time Zone">
+          {`${apartment.currency_code} · ${apartment.timezone}`}
+        </ProfileFact>
+      </dl>
+      {editing && (
+        <EditApartmentDialog
+          apartment={apartment}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false)
+            onSaved()
+          }}
+        />
+      )}
     </Panel>
   )
 }
 
+function EditApartmentDialog({
+  apartment,
+  onClose,
+  onSaved,
+}: {
+  apartment: Apartment
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const toast = useToast()
+  const [name, setName] = useState(apartment.name)
+  const [submitted, setSubmitted] = useState(false)
+  const error = !name.trim()
+    ? 'Enter the apartment name and address.'
+    : name.trim().length > 200
+      ? 'Keep it to 200 characters.'
+      : null
+  const save = useMutation(
+    () =>
+      api.patch<Apartment>(`/api/apartments/${encodeURIComponent(apartment.apartment_id)}`, {
+        name: name.trim(),
+      }),
+    {
+      onSuccess: () => {
+        toast.success('Apartment saved')
+        onSaved()
+      },
+    },
+  )
+  return (
+    <Modal
+      title="Edit Apartment"
+      description="The name is printed as the premises on every HRA rent receipt, so include the address."
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className={BUTTON_SECONDARY} onClick={onClose} disabled={save.pending}>
+            Cancel
+          </button>
+          <button type="submit" form="edit-apartment" className={BUTTON_PRIMARY} disabled={save.pending}>
+            {save.pending ? 'Saving…' : 'Save Changes'}
+          </button>
+        </>
+      }
+    >
+      <form
+        id="edit-apartment"
+        className="stack"
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault()
+          setSubmitted(true)
+          if (!error && !save.pending) void save.run(undefined)
+        }}
+      >
+        {save.error && <ErrorNotice error={save.error} />}
+        <TextField
+          label="Name & address"
+          value={name}
+          onChange={setName}
+          required
+          maxLength={210}
+          placeholder="Flat 1805, CG6, Supertech Capetown, Sector 74, Noida"
+          error={submitted ? error : null}
+        />
+      </form>
+    </Modal>
+  )
+}
+
 /**
- * Whether the landlord issues a receipt for each payout. It is part of how the
- * month's rent is executed, so it lives on the Rent screen, and the switch
- * saves just this one setting.
+ * Who the rent goes to, in full. The details belong to the owner contact,
+ * which keeps the lease in step, so Edit opens that contact.
  */
-export function ReceiptPreferencesPanel({
+export function LandlordProfileCard({
   config,
   onSaved,
 }: {
@@ -597,96 +642,69 @@ export function ReceiptPreferencesPanel({
   onSaved: () => void
 }) {
   const toast = useToast()
-  const receipts = config.requires_landlord_receipt
-  const save = useMutation(
-    (next: boolean) =>
-      api.post<RentLeaseConfig>('/api/rent/config', { requires_landlord_receipt: next }),
-    {
-      onSuccess: (saved) => {
-        toast.success(
-          saved.requires_landlord_receipt ? 'Landlord receipts expected' : 'Reference only',
-        )
-        onSaved()
-      },
-    },
-  )
+  const contacts = useContacts()
+  const [editing, setEditing] = useState(false)
+  const owner = contacts.data?.items.find((contact) => contact.role === 'owner') ?? null
   return (
     <Panel
-      title="Receipt Preferences"
-      icon={<ReceiptText className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="The landlord's own receipt is separate from the HRA slips this app generates for residents, which are always available."
+      title="Landlord Profile & Payout"
+      icon={<Building2 className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint="The owner's details are kept on their contact under Stakeholders & Contacts, and in step with the lease."
+      actions={
+        contacts.data ? <EditButton label="Edit landlord" onClick={() => setEditing(true)} /> : undefined
+      }
     >
-      {save.error && <ErrorNotice error={save.error} />}
-      <div className="flex items-start justify-between gap-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
-        <div className="min-w-0">
-          <span id="landlord-receipts-label" className="block text-sm font-bold text-[var(--text-primary)]">
-            Do you receive receipts from the landlord?
-          </span>
-          <p
-            id="landlord-receipts-hint"
-            className="m-0 mt-1 text-xs text-[var(--text-secondary)]"
-            aria-live="polite"
-          >
-            {receipts
-              ? "Receipts enabled — A paid month displays a 'Receipt Pending' badge until attached. Payouts are never blocked."
-              : 'Reference only — Payouts require only date, funder, and UTR/reference. No landlord receipt is requested.'}
-          </p>
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={receipts}
-          aria-labelledby="landlord-receipts-label"
-          aria-describedby="landlord-receipts-hint"
-          disabled={save.pending}
-        onClick={() => void save.run(!receipts)}
-          className={clsx(
-            'relative w-10 h-6 rounded-full shrink-0 transition-colors cursor-pointer border border-[var(--border-medium)]',
-            receipts ? 'bg-[var(--accent)]' : 'bg-[var(--bg-surface)]',
+      <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4" aria-label="Landlord profile">
+        <ProfileFact label="Name">
+          <span className="font-semibold">{config.landlord_name}</span>
+        </ProfileFact>
+        <ProfileFact label="Phone">
+          {config.landlord_phone ? <span className="tabular">{config.landlord_phone}</span> : NOT_RECORDED}
+        </ProfileFact>
+        <ProfileFact label="Email">{config.landlord_email ?? NOT_RECORDED}</ProfileFact>
+        <ProfileFact label="PAN">
+          {config.landlord_pan ? <span className="tabular">{config.landlord_pan}</span> : NOT_RECORDED}
+        </ProfileFact>
+        <ProfileFact label="Bank Account">
+          {config.landlord_bank_account ? (
+            <span className="tabular">{config.landlord_bank_account}</span>
+          ) : (
+            NOT_RECORDED
           )}
-        >
-          <span
-            className={clsx(
-              'absolute top-0.5 left-0.5 w-[18px] h-[18px] rounded-full transition-transform',
-              receipts ? 'translate-x-4 bg-white' : 'bg-[var(--text-tertiary)]',
+        </ProfileFact>
+        <ProfileFact label="IFSC">
+          {config.landlord_bank_ifsc ? (
+            <span className="tabular">{config.landlord_bank_ifsc}</span>
+          ) : (
+            NOT_RECORDED
+          )}
+        </ProfileFact>
+        <div className="sm:col-span-2">
+          <ProfileFact label="UPI ID">
+            {config.landlord_upi_id ? (
+              <span className="inline-flex items-center gap-1.5 min-w-0">
+                <span className="tabular break-all">{config.landlord_upi_id}</span>
+                <CopyButton text={config.landlord_upi_id} label="Copy landlord UPI ID" iconOnly />
+              </span>
+            ) : (
+              NOT_RECORDED
             )}
-            aria-hidden="true"
-          />
-        </button>
-      </div>
+          </ProfileFact>
+        </div>
+      </dl>
+      {editing && (
+        <ContactModal
+          contact={owner}
+          onClose={() => setEditing(false)}
+          onDone={(saved) => {
+            setEditing(false)
+            contacts.reload()
+            onSaved()
+            toast.success(`${saved.name} saved`)
+          }}
+        />
+      )}
     </Panel>
-  )
-}
-
-/** Who the rent goes to. Edited once, on the owner contact, which keeps the lease in step. */
-export function LandlordSummaryCard({ config }: { config: RentLeaseConfig }) {
-  const bank = config.landlord_bank_account
-    ? `A/c ****${config.landlord_bank_account.slice(-4)}${config.landlord_bank_ifsc ? ` · ${config.landlord_bank_ifsc}` : ''}`
-    : null
-  return (
-    <section
-      aria-label="Landlord"
-      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4"
-    >
-      <div className="min-w-0 space-y-0.5">
-        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-          <Building2 className="w-3.5 h-3.5 shrink-0 text-[var(--accent)]" aria-hidden="true" />
-          Landlord
-        </div>
-        <div className="text-sm font-bold text-[var(--text-primary)] truncate">
-          {config.landlord_name}
-        </div>
-        <div className="text-xs text-[var(--text-secondary)] tabular">
-          {[config.landlord_phone, config.landlord_upi_id, bank, config.landlord_pan && `PAN ${config.landlord_pan}`]
-            .filter(Boolean)
-            .join(' · ') || 'No contact or payout details yet'}
-        </div>
-      </div>
-      <Link to="/housing?tab=contacts" className={BUTTON_SECONDARY}>
-        Edit in Stakeholders &amp; Contacts
-        <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-      </Link>
-    </section>
   )
 }
 
@@ -703,53 +721,145 @@ interface LeaseTermRecord {
 /** Every earlier term of the lease, as it was when it was renewed. */
 export function CompletedTermsPanel() {
   const terms = useResource<{ items: LeaseTermRecord[] }>('/api/rent/lease/terms')
+  // Nothing is shown until there is a completed term to show.
+  if (!terms.data || terms.data.items.length === 0) return null
   return (
     <Panel
       title="Completed Terms"
       icon={<History className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint="Each earlier term of the lease, kept when it was renewed."
     >
-      <AsyncSection
-        resource={terms}
-        isEmpty={(data) => data.items.length === 0}
-        empty={
-          <p className="m-0 text-xs text-[var(--text-secondary)]">
-            This is the first term. Renewing the lease records it here.
-          </p>
-        }
-      >
-        {(data) => (
-          <div className="overflow-x-auto min-w-0">
-            <table className="w-full text-xs min-w-[520px] border-collapse">
-              <caption className="sr-only">Completed lease terms</caption>
-              <thead>
-                <tr className="border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold">
-                  <th scope="col" className="pb-3 px-2 font-bold text-center">Term</th>
-                  <th scope="col" className="pb-3 px-2 font-bold text-center">From</th>
-                  <th scope="col" className="pb-3 px-2 font-bold text-center">To</th>
-                  <th scope="col" className="pb-3 px-2 font-bold text-center">Monthly Rent</th>
-                  <th scope="col" className="pb-3 px-2 font-bold text-center">Escalation</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-                {data.items.map((term) => (
-                  <tr key={term.term_id}>
-                    <th scope="row" className="py-2.5 px-2 text-center font-semibold">
-                      {term.term_number}
-                    </th>
-                    <td className="py-2.5 px-2 text-center">{formatDate(term.start_date)}</td>
-                    <td className="py-2.5 px-2 text-center">{formatDate(term.end_date)}</td>
-                    <td className="py-2.5 px-2 text-center">
-                      <Rupees paise={term.monthly_rent_paise} />
-                    </td>
-                    <td className="py-2.5 px-2 text-center">{`${term.escalation_applied_percent}%`}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <div className="overflow-x-auto min-w-0">
+        <table className="w-full text-xs min-w-[520px] border-collapse">
+          <caption className="sr-only">Completed lease terms</caption>
+          <thead>
+            <tr className="border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold">
+              <th scope="col" className="pb-3 px-2 font-bold text-center">Term</th>
+              <th scope="col" className="pb-3 px-2 font-bold text-center">From</th>
+              <th scope="col" className="pb-3 px-2 font-bold text-center">To</th>
+              <th scope="col" className="pb-3 px-2 font-bold text-center">Monthly Rent</th>
+              <th scope="col" className="pb-3 px-2 font-bold text-center">Escalation</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+            {terms.data.items.map((term) => (
+              <tr key={term.term_id}>
+                <th scope="row" className="py-2.5 px-2 text-center font-semibold">
+                  {term.term_number}
+                </th>
+                <td className="py-2.5 px-2 text-center">{formatDate(term.start_date)}</td>
+                <td className="py-2.5 px-2 text-center">{formatDate(term.end_date)}</td>
+                <td className="py-2.5 px-2 text-center">
+                  <Rupees paise={term.monthly_rent_paise} />
+                </td>
+                <td className="py-2.5 px-2 text-center">{`${term.escalation_applied_percent}%`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  )
+}
+
+/** `5` -> `5th`, `22` -> `22nd`. */
+function ordinal(day: number): string {
+  const teen = day % 100 >= 11 && day % 100 <= 13
+  const suffix = teen ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[day % 10] ?? 'th'
+  return `${day}${suffix}`
+}
+
+function TermFact({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0 space-y-1">
+      <dt className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+        {label}
+      </dt>
+      <dd className="m-0 text-xs text-[var(--text-secondary)] space-y-1">{children}</dd>
+    </div>
+  )
+}
+
+/** The saved tenancy terms, read-only, with the way into the editor. */
+export function TenancyTermsCard({
+  config,
+  onEdit,
+}: {
+  config: RentLeaseConfig
+  onEdit: () => void
+}) {
+  const lifecycle = config.lifecycle
+  // The backend's projection when the term is tracked; the same rule otherwise.
+  const projected =
+    lifecycle?.projected_renewal_rent_paise ??
+    (config.escalation_type === 'fixed'
+      ? (config.renewal_rent_paise ?? config.monthly_rent_paise)
+      : config.escalation_type === 'none'
+        ? config.monthly_rent_paise
+        : escalatedPaise(config.monthly_rent_paise, config.escalation_percent))
+  const escalation =
+    config.escalation_type === 'fixed'
+      ? 'Fixed renewed rent'
+      : config.escalation_type === 'none'
+        ? 'No escalation'
+        : `${config.escalation_percent}% increment on renewal`
+  const progress = !lifecycle
+    ? null
+    : lifecycle.is_expired
+      ? { tone: 'danger' as const, label: 'Term ended' }
+      : lifecycle.current_month_index === 0
+        ? { tone: 'neutral' as const, label: 'Not started' }
+        : {
+            tone: lifecycle.is_notice_window_active ? ('warning' as const) : ('accent' as const),
+            label: `Month ${Math.min(lifecycle.current_month_index, lifecycle.duration_months)} of ${lifecycle.duration_months}`,
+          }
+
+  return (
+    <Panel
+      title="Master Tenancy Terms"
+      icon={<FileText className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint={`Term ${config.term_number} of the master lease. How the rent is divided between flatmates is set on the Rent screen.`}
+      actions={
+        <EditButton label="Edit tenancy terms" onClick={onEdit} />
+      }
+    >
+      <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4" aria-label="Tenancy terms">
+        <TermFact label="Monthly Rent">
+          <div className="text-base font-bold text-[var(--text-primary)]">
+            <Rupees paise={config.monthly_rent_paise} />
           </div>
-        )}
-      </AsyncSection>
+          <div>{`Due on the ${ordinal(config.due_day_of_month)} of every month`}</div>
+        </TermFact>
+        <TermFact label="Contract Term">
+          {config.lease_start_date && config.lease_end_date ? (
+            <div className="font-semibold text-[var(--text-primary)]">
+              {`${formatDate(config.lease_start_date)} to ${formatDate(config.lease_end_date)}`}
+            </div>
+          ) : (
+            <div className="text-[var(--text-tertiary)]">Start date not entered</div>
+          )}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {`${config.duration_months} Months`}
+            {progress && <Pill tone={progress.tone}>{progress.label}</Pill>}
+            {config.lease_status === 'notice_served' && <Pill tone="warning">Notice served</Pill>}
+          </div>
+        </TermFact>
+        <TermFact label="Exit Protections">
+          <div className="font-semibold text-[var(--text-primary)]">
+            {`Notice Period: ${config.notice_period_days} Days`}
+          </div>
+          <div>
+            {`Lock-in: ${config.lock_in_months} Months`}
+            {lifecycle?.lock_in_end_date && ` (until ${formatDate(lifecycle.lock_in_end_date)})`}
+          </div>
+        </TermFact>
+        <TermFact label="Escalation Clause">
+          <div className="font-semibold text-[var(--text-primary)]">{escalation}</div>
+          <div>
+            Projected renewal: <Rupees paise={projected} />
+          </div>
+        </TermFact>
+      </dl>
     </Panel>
   )
 }

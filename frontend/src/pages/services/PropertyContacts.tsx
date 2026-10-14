@@ -316,7 +316,7 @@ function ContactCard({
 
 /* ----------------------------------------------------------------- modals -- */
 
-function ContactModal({
+export function ContactModal({
   contact,
   onClose,
   onDone,

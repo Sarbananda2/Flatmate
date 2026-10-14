@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { LeaseContractSection, RentalAgreementStructurePanel } from './RentConfig'
+import { LeaseContractSection } from './RentConfig'
 import { ToastProvider } from '../../components/Toast'
 import { installFetchStub, type Recorded } from '../../test/server'
 
@@ -51,7 +51,41 @@ afterEach(() => {
   stub = null
 })
 
-function renderPage(config: typeof saved | null) {
+const OWNER = {
+  contact_id: 'owner-1',
+  apartment_id: 'home',
+  role: 'owner',
+  name: 'Rajesh Kumar Sharma',
+  phone: '+91 98765 43210',
+  email: null,
+  pan: 'ABCPS1234K',
+  bank_account_no: '50100012348912',
+  bank_ifsc: 'HDFC0000128',
+  upi_id: 'rajeshsharma@okaxis',
+  agency_name: null,
+  fee_amount_paise: null,
+  fee_status: null,
+  fee_display: null,
+  responsibilities: null,
+  notes: null,
+  created_at: '2026-10-01T09:00:00+05:30',
+  updated_at: '2026-10-01T09:00:00+05:30',
+}
+
+const APARTMENT = {
+  apartment_id: 'home',
+  name: 'Flat 1805, CG6, Supertech Capetown',
+  currency_code: 'INR',
+  timezone: 'Asia/Kolkata',
+  created_at: '2026-10-01T09:00:00+05:30',
+}
+
+function renderPage(
+  config: typeof saved | null,
+  routes: Record<string, unknown> = {},
+  apartment: typeof APARTMENT | null = null,
+  onApartmentChanged = () => {},
+) {
   let current = config
   stub = installFetchStub({
     routes: {
@@ -74,12 +108,14 @@ function renderPage(config: typeof saved | null) {
         current = { ...saved, ...(body as object), updated_at: '2026-10-11T12:00:00+05:30' }
         return current
       },
+      '/api/property/contacts': { items: [OWNER], total: 1, roles_on_file: ['owner'] },
+      ...routes,
     } as never,
   })
   return render(
     <MemoryRouter>
       <ToastProvider>
-        <LeaseContractSection />
+        <LeaseContractSection apartment={apartment} onApartmentChanged={onApartmentChanged} />
       </ToastProvider>
     </MemoryRouter>,
   )
@@ -87,6 +123,10 @@ function renderPage(config: typeof saved | null) {
 
 const posted = () =>
   stub!.calls.find((call) => call.method === 'POST' && call.path === '/api/rent/config')
+
+/** A saved lease opens read-only; editing it starts here. */
+const editTerms = async () =>
+  userEvent.click(await screen.findByRole('button', { name: 'Edit tenancy terms' }))
 
 describe('LeaseContractSection', () => {
   it('sets up a new lease with its landlord, in integer paise', async () => {
@@ -121,33 +161,98 @@ describe('LeaseContractSection', () => {
       renewal_rent_paise: null,
     })
     expect(await screen.findByText('Lease set up')).toBeInTheDocument()
-    // The form reloads from what was stored.
-    expect(await screen.findByRole('button', { name: 'Save Tenancy Terms' })).toBeInTheDocument()
+    // Once saved, the lease is shown read-only rather than left in the form.
+    expect(await screen.findByRole('button', { name: 'Edit tenancy terms' })).toBeInTheDocument()
+    expect(screen.queryByLabelText(/Monthly rent/)).toBeNull()
   })
 
-  it('shows the landlord as a card that points to the owner contact', async () => {
+  it('shows the landlord in full on a card of its own', async () => {
     renderPage(saved)
-    const card = await screen.findByRole('region', { name: 'Landlord' })
-    expect(card).toHaveTextContent('Rajesh Kumar Sharma')
-    expect(card).toHaveTextContent('+91 98765 43210')
-    expect(card).toHaveTextContent('rajeshsharma@okaxis')
-    expect(card).toHaveTextContent('A/c ****8912 · HDFC0000128')
-    expect(card).toHaveTextContent('PAN ABCPS1234K')
-    expect(
-      within(card).getByRole('link', { name: /Edit in Stakeholders & Contacts/ }),
-    ).toHaveAttribute('href', '/housing?tab=contacts')
-    // No landlord inputs once the lease exists.
+    const card = await screen.findByLabelText('Landlord profile')
+    for (const text of [
+      'Rajesh Kumar Sharma',
+      '+91 98765 43210',
+      'ABCPS1234K',
+      '50100012348912',
+      'HDFC0000128',
+      'rajeshsharma@okaxis',
+    ]) {
+      expect(card).toHaveTextContent(text)
+    }
+    expect(within(card).getByRole('button', { name: 'Copy landlord UPI ID' })).toBeInTheDocument()
+    // No landlord inputs on the page itself.
     expect(screen.queryByLabelText(/Landlord name/)).toBeNull()
     expect(screen.queryByRole('link', { name: 'Open monthly rent' })).toBeNull()
   })
 
+  it('edits the landlord on the owner contact, leaving the other cards alone', async () => {
+    renderPage(saved, { 'PATCH /api/property/contacts/owner-1': { ...OWNER, phone: '9123456780' } })
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveTextContent('Edit Rajesh Kumar Sharma')
+    expect(within(dialog).getByLabelText(/PAN/)).toHaveValue('ABCPS1234K')
+    // Only the landlord is being edited: the tenancy terms stay read-only.
+    expect(screen.getByRole('button', { name: 'Edit tenancy terms' })).toBeInTheDocument()
+    expect(screen.queryByLabelText(/Monthly rent/)).toBeNull()
+    const phone = within(dialog).getByLabelText(/Phone/)
+    await userEvent.clear(phone)
+    await userEvent.type(phone, '9123456780')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Contact' }))
+    await waitFor(() =>
+      expect(stub!.calls.find((call) => call.method === 'PATCH')?.body).toMatchObject({
+        phone: '9123456780',
+      }),
+    )
+    expect(await screen.findByText('Rajesh Kumar Sharma saved')).toBeInTheDocument()
+  })
+
+  it('shows the apartment and edits only its name and address', async () => {
+    let reloaded = false
+    renderPage(
+      saved,
+      { 'PATCH /api/apartments/home': { ...APARTMENT, name: 'Flat 1805, CG6, Supertech Capetown, Noida' } },
+      APARTMENT,
+      () => {
+        reloaded = true
+      },
+    )
+    const profile = await screen.findByLabelText('Apartment profile')
+    expect(profile).toHaveTextContent('Flat 1805, CG6, Supertech Capetown')
+    expect(profile).toHaveTextContent('INR · Asia/Kolkata')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit apartment' }))
+    const dialog = screen.getByRole('dialog')
+    const name = within(dialog).getByLabelText(/Name & address/)
+    await userEvent.clear(name)
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    expect(within(dialog).getByText('Enter the apartment name and address.')).toBeInTheDocument()
+    await userEvent.type(name, 'Flat 1805, CG6, Supertech Capetown, Noida')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() =>
+      expect(stub!.calls.find((call) => call.method === 'PATCH')?.body).toEqual({
+        name: 'Flat 1805, CG6, Supertech Capetown, Noida',
+      }),
+    )
+    await waitFor(() => expect(reloaded).toBe(true))
+  })
+
+  it('leaves out the completed terms until there are some', async () => {
+    renderPage(saved, { '/api/rent/lease/terms': { items: [] } })
+    await screen.findByRole('button', { name: 'Edit tenancy terms' })
+    await waitFor(() =>
+      expect(stub!.calls.some((call) => call.path === '/api/rent/lease/terms')).toBe(true),
+    )
+    expect(screen.queryByText('Completed Terms')).toBeNull()
+    expect(screen.queryByRole('table', { name: 'Completed lease terms' })).toBeNull()
+  })
+
   it('saves only the tenancy terms, leaving the rest of the lease to the backend', async () => {
     renderPage(saved)
+    await editTerms()
     expect(await screen.findByLabelText(/Monthly rent/)).toHaveValue('45000.00')
     expect(screen.getByLabelText('Due day of month')).toHaveValue('5')
     expect(screen.queryByLabelText('Expense definition')).not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Save Tenancy Terms' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
     await waitFor(() => expect(posted()).toBeDefined())
     const body = posted()!.body as Record<string, unknown>
     expect(body).toMatchObject({ monthly_rent_paise: 4500000, expense_definition_id: null })
@@ -251,11 +356,12 @@ describe('LeaseContractSection', () => {
 
   it('loads the stored term and sends no renewal rent unless it is fixed', async () => {
     renderPage(saved)
+    await editTerms()
     expect(await screen.findByLabelText('Lease Start Date')).toHaveValue('2026-04-01')
     expect(screen.getByLabelText('Agreement Duration')).toHaveValue('11')
     expect(screen.getByText('Ends 28 Feb 2027.')).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Save Tenancy Terms' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
     await waitFor(() => expect(posted()).toBeDefined())
     expect(posted()!.body).toMatchObject({
       lease_start_date: '2026-04-01',
@@ -267,7 +373,8 @@ describe('LeaseContractSection', () => {
 
   it('explains each invalid field and keeps the save disabled until it is fixed', async () => {
     renderPage(saved)
-    const save = await screen.findByRole('button', { name: 'Save Tenancy Terms' })
+    await editTerms()
+    const save = await screen.findByRole('button', { name: 'Save Changes' })
     expect(save).toBeEnabled()
     // A stored lease opens with nothing flagged.
     expect(screen.queryByText(/is required|Enter a valid|must be greater/)).not.toBeInTheDocument()
@@ -318,7 +425,7 @@ describe('LeaseContractSection', () => {
 
   it('leaves how the rent is divided and receipted to the Rent screen', async () => {
     renderPage(saved)
-    await screen.findByRole('button', { name: /Save/ })
+    await editTerms()
     // The lease says what the flat costs; who pays which part is set with the rent.
     expect(screen.queryByRole('radiogroup', { name: 'Rental agreement structure' })).toBeNull()
     expect(screen.queryByText('Rental Agreement Structure')).toBeNull()
@@ -339,7 +446,8 @@ describe('LeaseContractSection', () => {
         },
       },
     })
-    await userEvent.click(await screen.findByRole('button', { name: 'Save Tenancy Terms' }))
+    await editTerms()
+    await userEvent.click(await screen.findByRole('button', { name: 'Save Changes' }))
     expect(
       await screen.findByText(
         'The rent category must be an active expense definition of this apartment.',
@@ -348,26 +456,63 @@ describe('LeaseContractSection', () => {
   })
 })
 
-describe('RentalAgreementStructurePanel', () => {
-  it('shows the equal split as the default and room-tiered as chosen per month', () => {
-    render(<RentalAgreementStructurePanel />)
-    const group = screen.getByRole('radiogroup', { name: 'Rental agreement structure' })
-    const models = within(group).getAllByRole('radio')
-    expect(models).toHaveLength(5)
-    expect(
-      within(group).getByRole('radio', { name: 'Single Master Lease (Equal Split)' }),
-    ).toBeChecked()
-    expect(within(group).getByText('Default Model')).toBeInTheDocument()
-    expect(within(group).getByText('Needs Room Base Rents')).toBeInTheDocument()
-    expect(within(group).getAllByText('Under Development')).toHaveLength(3)
-    for (const model of models.slice(1)) {
-      expect(model).not.toBeChecked()
-      expect(model).toHaveAttribute('aria-disabled', 'true')
+describe('the saved tenancy terms', () => {
+  it('open read-only, with no inputs on the page', async () => {
+    renderPage({
+      ...saved,
+      lifecycle: {
+        as_of_date: '2026-10-14',
+        term_number: 1,
+        current_month_index: 7,
+        duration_months: 11,
+        elapsed_percent: 60,
+        days_until_expiry: 137,
+        notice_deadline_date: '2027-01-29',
+        is_notice_window_active: false,
+        is_expired: false,
+        lock_in_end_date: '2026-10-01',
+        is_within_lock_in: false,
+        projected_renewal_rent_paise: 4725000,
+      },
+    } as never)
+    const terms = await screen.findByLabelText('Tenancy terms')
+    expect(terms).toHaveTextContent('₹45,000.00')
+    expect(terms).toHaveTextContent('Due on the 5th of every month')
+    expect(terms).toHaveTextContent('1 Apr 2026 to 28 Feb 2027')
+    expect(terms).toHaveTextContent('11 Months')
+    expect(within(terms).getByText('Month 7 of 11')).toBeInTheDocument()
+    expect(terms).toHaveTextContent('Notice Period: 30 Days')
+    expect(terms).toHaveTextContent('Lock-in: 6 Months (until 1 Oct 2026)')
+    expect(terms).toHaveTextContent('5% increment on renewal')
+    expect(terms).toHaveTextContent('Projected renewal: ₹47,250.00')
+    for (const label of [/Monthly rent/, 'Lease Start Date', 'Notice Period (Days)']) {
+      expect(screen.queryByLabelText(label)).toBeNull()
     }
+    expect(screen.queryByRole('button', { name: 'Save Changes' })).toBeNull()
   })
 
-  it('says room-tiered is available when the room rents add up', () => {
-    render(<RentalAgreementStructurePanel roomTieredAvailable />)
-    expect(screen.getByText('Available This Month')).toBeInTheDocument()
+  it('switch to the editor and back, never showing both', async () => {
+    renderPage(saved)
+    await editTerms()
+    expect(screen.getByLabelText(/Monthly rent/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit tenancy terms' })).toBeNull()
+    expect(screen.queryByLabelText('Tenancy terms')).toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByRole('button', { name: 'Edit tenancy terms' })).toBeInTheDocument()
+    expect(screen.queryByLabelText(/Monthly rent/)).toBeNull()
+    expect(posted()).toBeUndefined()
+  })
+
+  it('return to read-only once the changes are saved', async () => {
+    renderPage(saved)
+    await editTerms()
+    const notice = screen.getByLabelText('Notice Period (Days)')
+    await userEvent.clear(notice)
+    await userEvent.type(notice, '45')
+    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    expect(await screen.findByText('Tenancy terms saved')).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Edit tenancy terms' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Tenancy terms')).toHaveTextContent('Notice Period: 45 Days')
   })
 })

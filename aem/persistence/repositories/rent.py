@@ -14,7 +14,7 @@ _LEASE_COLUMNS = frozenset({
     "expense_definition_id", "lease_start_date", "lease_end_date", "duration_months",
     "notice_period_days", "lock_in_months", "security_deposit_paise", "escalation_type",
     "escalation_percent", "renewal_rent_paise", "lease_status", "notice_served_date",
-    "target_handover_date",
+    "target_handover_date", "rent_split_mode",
 })
 
 

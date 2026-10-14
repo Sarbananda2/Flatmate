@@ -83,7 +83,7 @@ PAN_REQUIRED_ABOVE_ANNUAL_PAISE = 10_000_000
 _CONFIG_FIELDS = ("landlord_name", "landlord_phone", "landlord_email", "landlord_pan",
                   "landlord_bank_account", "landlord_bank_ifsc", "landlord_upi_id",
                   "monthly_rent_paise", "due_day_of_month", "requires_landlord_receipt",
-                  "expense_definition_id")
+                  "expense_definition_id", "rent_split_mode")
 
 #: The contract term. A save that leaves one of these out keeps what the lease
 #: already has, so a client that only knows the landlord fields cannot wipe the
@@ -233,6 +233,8 @@ def _clean_config(payload: Mapping[str, Any],
         "monthly_rent_paise": rent,
         "due_day_of_month": due_day,
         "requires_landlord_receipt": requires,
+        # The household's agreement model: how each month's rent is divided.
+        "rent_split_mode": _split_mode(kept("rent_split_mode", "equal")),
         "expense_definition_id": optional_text(payload.get("expense_definition_id"),
                                                "expense_definition_id", max_length=120),
         **_clean_term(payload, existing),
@@ -589,6 +591,10 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
         "charge_due_date": expense["due_date"],
         "total_rent_paise": total,
         "participant_count": count,
+        # Rent is only ever split equally or by room here: a rent expense
+        # with its own amounts per resident came from a room-tiered month.
+        "split_mode": "equal" if expense.get("allocation_method") == "equal"
+        else "room_tiered",
         "base_share_paise": total // count if count else 0,
         "remainder_paise": total % count if count else 0,
         "allocated_paise": sum(p["share_paise"] for p in participants),
@@ -701,8 +707,10 @@ def _room_tiered(uow: UnitOfWork, apartment_id: str, chosen: Sequence[str], tota
 
 def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
              config: dict[str, Any], excluded_resident_ids: Sequence[str] | None,
-             split_mode: str = "equal") -> dict[str, Any]:
-    """What generating the month's rent would do, without doing it."""
+             split_mode: str | None = None) -> dict[str, Any]:
+    """What generating the month's rent would do, without doing it. The split
+    is the lease's agreement model unless ``split_mode`` says otherwise."""
+    split_mode = _split_mode(split_mode or config.get("rent_split_mode"))
     names = _names(uow, apartment_id)
     statement = _statement_row(uow, apartment_id, settlement_month)
     found = _existing_rent_expenses(uow, apartment_id, config["expense_definition_id"],
@@ -778,7 +786,7 @@ def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
 
 def rent_month_overview(db: Database, apartment_id: str, settlement_month: str, *,
                         excluded_resident_ids: Sequence[str] | None = None,
-                        split_mode: str = "equal") -> dict[str, Any]:
+                        split_mode: str | None = None) -> dict[str, Any]:
     """Everything the Rent screen needs for one month.
 
     ``cycle`` is the generated rent, when there is one. Otherwise ``preview``
@@ -786,7 +794,8 @@ def rent_month_overview(db: Database, apartment_id: str, settlement_month: str, 
     somebody left out, the exact share each remaining resident would be charged.
     """
     settlement_month = normalize_month(settlement_month, "settlement_month")
-    split_mode = _split_mode(split_mode)
+    if split_mode is not None:
+        split_mode = _split_mode(split_mode)
     with db.read() as uow:
         get_apartment(uow, apartment_id)
         config = _config_row(uow, apartment_id)
@@ -805,14 +814,14 @@ def rent_month_overview(db: Database, apartment_id: str, settlement_month: str, 
 def generate_monthly_rent_cycle(
     db: Database, apartment_id: str, settlement_month: str,
     excluded_resident_ids: Sequence[str] | None = None, *, actor: str = "operator",
-    split_mode: str = "equal",
+    split_mode: str | None = None,
 ) -> dict[str, Any]:
     """Charge the month's rent between the residents taking part.
 
-    ``split_mode`` is ``equal`` (the default), or ``room_tiered``: each
-    participant is charged their room's base rent, which needs every
-    participant in a room with a base rent and those rents to add up to the
-    lease rent exactly.
+    ``split_mode`` is ``equal`` or ``room_tiered``, and defaults to the lease's
+    agreement model. Under ``room_tiered`` each participant is charged their
+    room's base rent, which needs every participant in a room with a base rent
+    and those rents to add up to the lease rent exactly.
 
     Creates the rent expense -- service period and settlement period both the
     given month, due on the lease's due day -- with one allocation per
@@ -824,7 +833,8 @@ def generate_monthly_rent_cycle(
     changes nothing in the ledger.
     """
     settlement_month = normalize_month(settlement_month, "settlement_month")
-    split_mode = _split_mode(split_mode)
+    if split_mode is not None:
+        split_mode = _split_mode(split_mode)
     timestamp = now_timestamp()
     with db.transaction() as uow:
         get_apartment(uow, apartment_id)
@@ -832,6 +842,7 @@ def generate_monthly_rent_cycle(
         if config is None:
             raise ConflictError("Set up the lease before generating rent.",
                                 code="rent_not_configured")
+        split_mode = split_mode or config["rent_split_mode"]
         if _cycle_row(uow, apartment_id, settlement_month):
             raise ConflictError(
                 f"Rent for {month_label(settlement_month)} has already been generated.",
@@ -851,7 +862,7 @@ def generate_monthly_rent_cycle(
             if problem:
                 raise ConflictError(problem, code="rent_expense_not_adoptable",
                                     details={"expense_id": expense["expense_id"]})
-            if split_mode != "equal":
+            if split_mode != "equal" and split_mode != config["rent_split_mode"]:
                 raise ConflictError(
                     "Rent for this month already exists as an expense, so it keeps the split "
                     "recorded on it. Change it on the expense itself.",

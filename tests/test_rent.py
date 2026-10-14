@@ -1500,3 +1500,59 @@ def test_the_api_saves_part_of_the_lease(configured):
         assert body["requires_landlord_receipt"] is True
         assert body["landlord_bank_account"] == "50100012348912"
         assert client.post("/api/rent/config", json={"landlord_name": None}).status_code == 422
+
+
+# --------------------------------------------------------------------------- #
+# The household's agreement model
+# --------------------------------------------------------------------------- #
+
+def test_a_lease_starts_with_the_equal_split_model(configured):
+    assert _lease(configured)["rent_split_mode"] == "equal"
+
+
+def test_the_agreement_model_is_saved_on_its_own_and_drives_the_month(configured):
+    _lease(configured)
+    _rooms(configured)
+    saved = rent.save_lease_config(configured, APARTMENT, {"rent_split_mode": "room_tiered"})
+    assert saved["rent_split_mode"] == "room_tiered"
+    assert saved["landlord_name"] == "Rajesh Kumar Sharma"
+    # With no split asked for, the preview and the generated month follow the model.
+    preview = _preview_default(configured)
+    assert preview["split_mode"] == "room_tiered"
+    assert _shares(preview) == ROOM_RENTS
+    cycle = rent.generate_monthly_rent_cycle(configured, APARTMENT, MONTH)
+    assert cycle["split_mode"] == "room_tiered"
+    assert _shares(cycle) == ROOM_RENTS
+
+
+def test_a_month_can_still_be_split_another_way_than_the_model(configured):
+    _lease(configured)
+    _rooms(configured)
+    rent.save_lease_config(configured, APARTMENT, {"rent_split_mode": "room_tiered"})
+    cycle = rent.generate_monthly_rent_cycle(configured, APARTMENT, MONTH, split_mode="equal")
+    assert cycle["split_mode"] == "equal"
+    assert set(_shares(cycle).values()) == {1_500_000}
+
+
+def test_an_unknown_agreement_model_is_refused(configured):
+    _lease(configured)
+    with pytest.raises(ValidationError):
+        rent.save_lease_config(configured, APARTMENT, {"rent_split_mode": "sqft_ratio"})
+    assert rent.get_lease_config(configured, APARTMENT)["rent_split_mode"] == "equal"
+
+
+def test_a_room_tiered_model_that_does_not_add_up_blocks_generation_with_the_reason(configured):
+    _lease(configured)
+    rent.save_lease_config(configured, APARTMENT, {"rent_split_mode": "room_tiered"})
+    preview = _preview_default(configured)
+    assert not preview["can_generate"]
+    assert "All participating residents must occupy a room" in preview["blocked_reason"]
+
+
+def test_an_equal_month_reports_its_split(configured):
+    _lease(configured)
+    assert rent.generate_monthly_rent_cycle(configured, APARTMENT, MONTH)["split_mode"] == "equal"
+
+
+def _preview_default(db):
+    return rent.rent_month_overview(db, APARTMENT, MONTH)["preview"]

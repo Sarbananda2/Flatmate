@@ -6,7 +6,7 @@
  * truncated, and icons and pills never shrink.
  */
 import { type ReactNode, useEffect, useState } from 'react'
-import { Check, Copy } from 'lucide-react'
+import { Check, Copy, Pencil } from 'lucide-react'
 import { clsx } from 'clsx'
 import { formatInr } from '../lib/format'
 
@@ -272,5 +272,18 @@ export function EmptyBlock({
       )}
       {action && <div className="pt-1 flex justify-center">{action}</div>}
     </div>
+  )
+}
+
+/**
+ * The one Edit button every card uses: the word "Edit" on screen, and a name
+ * that says what it edits for anyone using a screen reader.
+ */
+export function EditButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" className={BUTTON_SECONDARY} onClick={onClick} aria-label={label} title={label}>
+      <Pencil className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+      Edit
+    </button>
   )
 }
