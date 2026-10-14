@@ -54,6 +54,11 @@ class RoomsRepository(Repository):
             (room_number, has_attached_washroom, has_balcony, assigned_resident_id,
              assigned_since, updated_at, room_id))
 
+    def link_slot(self, slot_id: str, room_id: str, *, updated_at: str) -> None:
+        self._s.execute(
+            "UPDATE household_deposit_slot SET room_id = %s, updated_at = %s WHERE slot_id = %s",
+            (room_id, updated_at, slot_id))
+
     def unlink_slots(self, room_id: str) -> None:
         self._s.execute(
             "UPDATE household_deposit_slot SET room_id = NULL WHERE room_id = %s", (room_id,))

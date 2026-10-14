@@ -253,6 +253,24 @@ def vacate_resident_in(uow: UnitOfWork, apartment_id: str, resident_id: str, *,
     return _present(before)
 
 
+def link_slot_to_room(db: Database, apartment_id: str, slot_id: str, room_id: str, *,
+                      actor: str = "operator") -> bool:
+    """Say which room a deposit slot belongs to. False if it already said so."""
+    with db.transaction() as uow:
+        room = _room(uow, room_id, apartment_id)
+        slot = uow.deposits.slot(slot_id)
+        if slot is None or slot["apartment_id"] != apartment_id:
+            raise NotFoundError("Deposit slot not found.", details={"slot_id": slot_id})
+        if slot.get("room_id") == room_id:
+            return False
+        uow.rooms.link_slot(slot_id, room_id, updated_at=now_timestamp())
+        audit.record(uow, entity_type="household_deposit_slot", entity_id=slot_id,
+                     action="link_room", actor=actor, apartment_id=apartment_id,
+                     old_value={"room_id": slot.get("room_id")},
+                     new_value={"room_id": room_id, "room_number": room["room_number"]})
+        return True
+
+
 def delete_room(db: Database, apartment_id: str, room_id: str, *,
                 actor: str = "operator") -> None:
     """Remove a room from the inventory. Only a vacant room can be removed."""

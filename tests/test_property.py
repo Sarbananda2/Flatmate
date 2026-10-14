@@ -334,3 +334,93 @@ def test_an_upload_without_a_file_or_title_is_refused(flat_client):
     assert flat_client.post("/api/property/documents",
                             files={"file": ("a.exe", PDF, "application/pdf")},
                             data={"title": "T", "category": "other"}).status_code == 422
+
+
+# ------------------------------------------------- the owner and the lease --
+
+LEASE = {"landlord_name": "Kumar Yadav", "landlord_phone": "+91 98765 43210",
+         "landlord_pan": "ABCPS1234K", "monthly_rent_paise": 2_850_000}
+
+
+def _lease_landlord(db):
+    from aem.services import rent
+    config = rent.get_lease_config(db, APARTMENT)
+    return {field: config[column] for field, column in household.OWNER_LEASE_FIELDS.items()}
+
+
+def test_owner_contact_syncs_to_lease(configured):
+    from aem.services import rent
+    rent.save_lease_config(configured, APARTMENT, LEASE)
+    [owner] = household.list_contacts(configured, APARTMENT)["items"]
+    updated = household.update_contact(configured, APARTMENT, owner["contact_id"], {
+        "name": "Kumar S. Yadav", "email": "kumar@example.com", "phone": "9123456780",
+        "bank_account_no": "123456789012", "bank_ifsc": "hdfc0001234",
+        "upi_id": "kumar@okhdfc", "pan": None})
+    assert _lease_landlord(configured) == {
+        "name": "Kumar S. Yadav", "phone": "9123456780", "email": "kumar@example.com",
+        "pan": None, "bank_account_no": "123456789012", "bank_ifsc": "HDFC0001234",
+        "upi_id": "kumar@okhdfc"}
+    assert updated["bank_ifsc"] == "HDFC0001234"
+    synced = _rows(configured, "SELECT field_name, reason FROM audit_log "
+                               "WHERE entity_type='rent_lease_config' AND reason IS NOT NULL")
+    assert {row["reason"] for row in synced} == {"synced from the owner contact"}
+    assert {row["field_name"] for row in synced} == {
+        "landlord_name", "landlord_phone", "landlord_email", "landlord_pan",
+        "landlord_bank_account", "landlord_bank_ifsc", "landlord_upi_id"}
+
+
+def test_a_new_owner_contact_fills_in_an_existing_lease(configured):
+    from aem.services import rent
+    rent.save_lease_config(configured, APARTMENT, LEASE)
+    [owner] = household.list_contacts(configured, APARTMENT)["items"]
+    household.delete_contact(configured, APARTMENT, owner["contact_id"])
+    _owner(configured)
+    assert _lease_landlord(configured)["upi_id"] == "kumar@okhdfc"
+    assert _lease_landlord(configured)["bank_account_no"] == "123456789012"
+
+
+def test_an_owner_contact_without_a_lease_touches_nothing_else(apartment):
+    _owner(apartment)
+    assert not _rows(apartment, "SELECT 1 FROM rent_lease_config")
+
+
+def test_other_roles_never_reach_the_lease(configured):
+    from aem.services import rent
+    rent.save_lease_config(configured, APARTMENT, LEASE)
+    household.create_contact(configured, APARTMENT, {"role": "broker", "name": "Ravi",
+                                                     "phone": "9000000000"})
+    assert _lease_landlord(configured)["name"] == "Kumar Yadav"
+    assert _lease_landlord(configured)["phone"] == "+91 98765 43210"
+
+
+def test_the_household_has_one_owner_contact(apartment):
+    from aem.errors import ConflictError
+    _owner(apartment)
+    with pytest.raises(ConflictError) as caught:
+        household.create_contact(apartment, APARTMENT, {"role": "owner", "name": "Someone"})
+    assert caught.value.code == "owner_exists"
+    broker = household.create_contact(apartment, APARTMENT, {"role": "broker", "name": "Ravi"})
+    with pytest.raises(ConflictError):
+        household.update_contact(apartment, APARTMENT, broker["contact_id"], {"role": "owner"})
+
+
+def test_a_refused_owner_change_leaves_the_lease_as_it_was(configured):
+    from aem.services import rent
+    rent.save_lease_config(configured, APARTMENT, LEASE)
+    [owner] = household.list_contacts(configured, APARTMENT)["items"]
+    with pytest.raises(ValidationError):
+        household.update_contact(configured, APARTMENT, owner["contact_id"],
+                                 {"name": "New Name", "phone": "123"})
+    assert _lease_landlord(configured)["name"] == "Kumar Yadav"
+
+
+def test_the_sync_does_not_loop(configured):
+    """A lease save writes the contact once; that write does not write the lease back."""
+    from aem.services import rent
+    rent.save_lease_config(configured, APARTMENT, LEASE)
+    lease_rows = len(_rows(configured, "SELECT 1 FROM audit_log "
+                                       "WHERE entity_type='rent_lease_config'"))
+    [owner] = household.list_contacts(configured, APARTMENT)["items"]
+    household.update_contact(configured, APARTMENT, owner["contact_id"], {"notes": "Hi"})
+    assert len(_rows(configured, "SELECT 1 FROM audit_log "
+                                 "WHERE entity_type='rent_lease_config'")) == lease_rows

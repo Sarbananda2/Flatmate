@@ -27,6 +27,12 @@ class PropertyRepository(Repository):
         return self._s.fetch_one(
             "SELECT * FROM household_contact WHERE contact_id = %s", (contact_id,))
 
+    def owner_contact(self, apartment_id: str) -> dict[str, Any] | None:
+        """The apartment's owner contact, the oldest if there were ever two."""
+        return self._s.fetch_one(
+            "SELECT * FROM household_contact WHERE apartment_id = %s AND role = 'owner' "
+            "ORDER BY row_seq LIMIT 1", (apartment_id,))
+
     def insert_contact(self, *, contact_id: str, apartment_id: str, created_at: str,
                        **fields: Any) -> None:
         columns = ("contact_id", "apartment_id", *CONTACT_COLUMNS, "created_at", "updated_at")

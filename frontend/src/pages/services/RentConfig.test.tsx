@@ -251,7 +251,7 @@ describe('RentConfigPage', () => {
 
     await check(/Landlord name/, '', 'Landlord name is required.', 'Kumar Yadav')
     await check(/Monthly rent/, '0', 'Monthly rent must be greater than zero.', '28500')
-    await check('Phone', '12345', 'Enter a valid 10 to 15 digit phone number.', '+91 98765 43210')
+    await check('Phone', '12345', 'Enter a phone number of 7 to 15 digits.', '+91 98765 43210')
     await check('Email', 'kumar@', 'Enter a valid email address.', 'kumar@example.com')
     await check('UPI ID', 'kumar', 'Enter a valid UPI ID (e.g. name@bank).', 'kumar.yadav@okhdfcbank')
     // Phone, email and UPI ID are optional: empty is fine.

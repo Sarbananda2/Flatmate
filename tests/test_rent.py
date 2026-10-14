@@ -1271,3 +1271,58 @@ def test_the_lease_endpoints_renew_and_serve_notice(household_client):
     assert [(t["term_number"], t["monthly_rent_paise"]) for t in terms] == [(1, 2_850_000)]
     assert client.post("/api/rent/lease/renew", json={
         "new_start_date": "2027-06-01"}).status_code == 422
+
+
+# --------------------------------------------------------------------------- #
+# The landlord is the household's owner contact
+# --------------------------------------------------------------------------- #
+
+def _owner_contacts(db):
+    from aem.services import property as household
+    return [c for c in household.list_contacts(db, APARTMENT)["items"] if c["role"] == "owner"]
+
+
+def test_lease_save_syncs_to_owner_contact(configured):
+    """With no owner on file, saving the lease creates one with its details."""
+    _lease(configured)
+    [owner] = _owner_contacts(configured)
+    assert (owner["name"], owner["phone"], owner["pan"], owner["bank_account_no"],
+            owner["bank_ifsc"], owner["upi_id"]) == (
+        "Rajesh Kumar Sharma", "+91 98765 43210", "ABCPS1234K", "50100012348912",
+        "HDFC0000128", "rajeshsharma@okaxis")
+    entry = _rows(configured, "SELECT * FROM audit_log WHERE entity_type='household_contact'")
+    assert [(e["action"], e["reason"]) for e in entry] == [("create", "synced from the lease")]
+
+
+def test_a_later_lease_save_updates_the_same_owner_contact(configured):
+    _lease(configured)
+    _lease(configured, landlord_name="Rajesh K. Sharma", landlord_email="rajesh@example.com",
+           landlord_upi_id=None)
+    [owner] = _owner_contacts(configured)
+    assert (owner["name"], owner["email"], owner["upi_id"]) == (
+        "Rajesh K. Sharma", "rajesh@example.com", None)
+    # What the owner contact holds that the lease does not is left alone.
+    from aem.services import property as household
+    household.update_contact(configured, APARTMENT, owner["contact_id"],
+                             {"notes": "Prefers calls after 6pm"})
+    _lease(configured, monthly_rent_paise=4_600_000)
+    assert _owner_contacts(configured)[0]["notes"] == "Prefers calls after 6pm"
+
+
+def test_saving_an_unchanged_landlord_does_not_touch_the_owner_contact(configured):
+    _lease(configured)
+    _lease(configured, monthly_rent_paise=4_600_000)
+    assert len(_rows(configured, "SELECT 1 FROM audit_log "
+                                 "WHERE entity_type='household_contact'")) == 1
+
+
+def test_the_lease_checks_landlord_details_by_the_owner_contacts_rules(configured):
+    for field, value in (("landlord_bank_account", "12345678"),
+                         ("landlord_phone", "call after six"),
+                         ("landlord_pan", "ABCPS1234"),
+                         ("landlord_email", "rajesh@example")):
+        with pytest.raises(ValidationError) as caught:
+            _lease(configured, **{field: value})
+        assert caught.value.details["field"] == field
+    assert rent.get_lease_config(configured, APARTMENT) is None
+    assert _owner_contacts(configured) == []

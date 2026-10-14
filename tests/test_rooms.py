@@ -293,3 +293,73 @@ def test_the_rooms_api_round_trip(client):
     assert client.delete(f"/api/property/rooms/{room_id}").status_code == 204
     assert client.get("/api/property/rooms").json()["total"] == 0
     assert client.post("/api/property/rooms/nope/vacate").status_code == 404
+
+
+# ------------------------------------------------------- the live seed script --
+
+def _seed_module():
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parent.parent / "scripts" / "seed_live_rooms.py"
+    spec = importlib.util.spec_from_file_location("seed_live_rooms", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture()
+def flatmates(apartment):
+    from aem.services import rent
+    for rid, name in (("rohan", "Rohan Das"), ("arnab", "Arnab Deka"),
+                      ("sarbananda", "Sarbananda Taw")):
+        residents.create_resident(apartment, apartment_id=APARTMENT, resident_id=rid,
+                                  display_name=name, active_from="2026-08-01")
+    rent.save_lease_config(apartment, APARTMENT, {
+        "landlord_name": "Kumar Yadav", "monthly_rent_paise": 2_850_000})
+    # The owner contact the lease created is removed, to show the script adds it.
+    from aem.services import property as household
+    for contact in household.list_contacts(apartment, APARTMENT)["items"]:
+        household.delete_contact(apartment, APARTMENT, contact["contact_id"])
+    return apartment
+
+
+def test_the_seed_script_houses_everyone_and_is_safe_to_run_again(flatmates):
+    from aem.services import property as household
+    seed = _seed_module()
+    assert any("would add Room 1" in line
+               for line in seed.seed(flatmates, APARTMENT, dry_run=True))
+    assert rooms.list_rooms(flatmates, APARTMENT)["total"] == 0
+
+    seed.seed(flatmates, APARTMENT, dry_run=False)
+    assert [(r["room_number"], r["assigned_resident_id"], r["assigned_since"])
+            for r in rooms.list_rooms(flatmates, APARTMENT)["items"]] == [
+        ("Room 1", "rohan", "2026-08-01"), ("Room 2", "arnab", "2026-08-01"),
+        ("Room 3", "sarbananda", "2026-08-01")]
+    [owner] = household.list_contacts(flatmates, APARTMENT)["items"]
+    assert (owner["role"], owner["name"]) == ("owner", "Kumar Yadav")
+
+    audit_rows = len(_rows(flatmates, "SELECT 1 FROM audit_log"))
+    again = seed.seed(flatmates, APARTMENT, dry_run=False)
+    assert "Room 1 already has Rohan Das" in again
+    assert len(_rows(flatmates, "SELECT 1 FROM audit_log")) == audit_rows
+
+
+def test_the_seed_script_refuses_to_reshuffle_an_occupied_room(flatmates):
+    seed = _seed_module()
+    _add(flatmates, "Room 1", assigned_resident_id="alice")
+    with pytest.raises(seed.PlanError, match="Room 1 is occupied by Alice"):
+        seed.seed(flatmates, APARTMENT, dry_run=False)
+    assert rooms.list_rooms(flatmates, APARTMENT)["total"] == 1
+
+
+def test_a_deposit_slot_is_linked_to_its_room(flatmates):
+    room = _add(flatmates, "Room 9")
+    with connect(flatmates) as conn:
+        conn.execute(
+            "INSERT INTO household_deposit_slot (slot_id, apartment_id, slot_number, "
+            "slot_label, target_deposit_paise, created_at, updated_at) "
+            "VALUES ('slot-9', %s, 9, 'Room 9', 100, 'now', 'now')", (APARTMENT,))
+    assert rooms.link_slot_to_room(flatmates, APARTMENT, "slot-9", room["room_id"]) is True
+    assert rooms.link_slot_to_room(flatmates, APARTMENT, "slot-9", room["room_id"]) is False
+    assert _rows(flatmates, "SELECT room_id FROM household_deposit_slot")[0]["room_id"] == \
+        room["room_id"]

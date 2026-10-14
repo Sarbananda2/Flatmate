@@ -54,6 +54,7 @@ from ..money import ensure_paise, paise_in_words
 from ..periods import normalize_month, parse_iso_date
 from ..persistence import Database, UnitOfWork
 from . import audit, definitions, expenses, payments
+from . import property as household
 from .allocation import plan_allocation
 from .common import (
     get_apartment,
@@ -75,10 +76,6 @@ MAX_LANDLORD_RECEIPT_BYTES = 5 * 1024 * 1024
 #: An employer asks for the landlord's PAN once rent passes ₹1,00,000 a year.
 PAN_REQUIRED_ABOVE_ANNUAL_PAISE = 10_000_000
 
-_PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
-_IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
-_UPI_RE = re.compile(r"^[A-Za-z0-9._-]{2,256}@[A-Za-z][A-Za-z0-9.-]{1,63}$")
-_ACCOUNT_RE = re.compile(r"^[0-9]{6,18}$")
 
 _CONFIG_FIELDS = ("landlord_name", "landlord_phone", "landlord_email", "landlord_pan",
                   "landlord_bank_account", "landlord_bank_ifsc", "landlord_upi_id",
@@ -110,19 +107,6 @@ def _reject_unknown(payload: Mapping[str, Any], allowed: Sequence[str], what: st
     if unknown:
         raise ValidationError(f"Unsupported {what} fields: {', '.join(unknown)}.",
                               details={"unsupported_fields": unknown})
-
-
-def _pattern(value: Any, label: str, pattern: re.Pattern[str], example: str, *,
-             upper: bool = False, max_length: int = 64) -> str | None:
-    text = optional_text(value, label, max_length=max_length)
-    if text is None:
-        return None
-    if upper:
-        text = text.upper().replace(" ", "")
-    if not pattern.match(text):
-        raise ValidationError(f"{label} does not look right. Expected something like {example}.",
-                              details={"field": label})
-    return text
 
 
 def _add_months(value: date, months: int) -> date:
@@ -217,25 +201,21 @@ def _clean_config(payload: Mapping[str, Any],
     if not isinstance(requires, bool):
         raise ValidationError("requires_landlord_receipt must be true or false.",
                               details={"field": "requires_landlord_receipt"})
-    email = optional_text(payload.get("landlord_email"), "landlord_email", max_length=254)
-    if email is not None and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
-        raise ValidationError("landlord_email does not look like an email address.",
-                              details={"field": "landlord_email"})
+    # The landlord's details are the owner contact's too, so both are checked
+    # by the same rules.
     return {
         "landlord_name": require_text(payload.get("landlord_name"), "landlord_name",
                                       max_length=200),
-        "landlord_phone": optional_text(payload.get("landlord_phone"), "landlord_phone",
-                                        max_length=40),
-        "landlord_email": email,
-        "landlord_pan": _pattern(payload.get("landlord_pan"), "landlord_pan", _PAN_RE,
-                                 "ABCPS1234K", upper=True),
-        "landlord_bank_account": _pattern(payload.get("landlord_bank_account"),
-                                          "landlord_bank_account", _ACCOUNT_RE,
-                                          "a 6 to 18 digit account number"),
-        "landlord_bank_ifsc": _pattern(payload.get("landlord_bank_ifsc"), "landlord_bank_ifsc",
-                                       _IFSC_RE, "HDFC0000128", upper=True),
-        "landlord_upi_id": _pattern(payload.get("landlord_upi_id"), "landlord_upi_id", _UPI_RE,
-                                    "name@bank", max_length=320),
+        "landlord_phone": household.phone_number(payload.get("landlord_phone"),
+                                                 "landlord_phone"),
+        "landlord_email": household.email_address(payload.get("landlord_email"),
+                                                  "landlord_email"),
+        "landlord_pan": household.pan_number(payload.get("landlord_pan"), "landlord_pan"),
+        "landlord_bank_account": household.bank_account(payload.get("landlord_bank_account"),
+                                                        "landlord_bank_account"),
+        "landlord_bank_ifsc": household.ifsc_code(payload.get("landlord_bank_ifsc"),
+                                                  "landlord_bank_ifsc"),
+        "landlord_upi_id": household.upi_id(payload.get("landlord_upi_id"), "landlord_upi_id"),
         "monthly_rent_paise": rent,
         "due_day_of_month": due_day,
         "requires_landlord_receipt": requires,
@@ -339,6 +319,9 @@ def save_lease_config(db: Database, apartment_id: str, payload: Mapping[str, Any
 
     Changing the rent does not touch a month that has already been generated:
     a cycle keeps the amount it was charged at.
+
+    The landlord's details are copied to the owner contact in the same
+    transaction, creating that contact if the household has none.
     """
     timestamp = now_timestamp()
 
@@ -387,6 +370,8 @@ def save_lease_config(db: Database, apartment_id: str, payload: Mapping[str, Any
                 uow, entity_type="rent_lease_config", entity_id=config_id, before=before,
                 after={**before, **values}, fields=list(values), actor=actor,
                 apartment_id=apartment_id)
+        # The landlord is the household's owner contact as well.
+        household.sync_owner_from_lease_in(uow, apartment_id, values, actor=actor)
         return _decode_config(uow, _config_row(uow, apartment_id))
 
 

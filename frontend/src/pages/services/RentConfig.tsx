@@ -107,9 +107,10 @@ function percentage(raw: string): number | null {
 
 const PAN_PATTERN = /^[A-Z]{5}[0-9]{4}[A-Z]$/
 const IFSC_PATTERN = /^[A-Z]{4}0[A-Z0-9]{6}$/
-const PHONE_PATTERN = /^[+]?[0-9\s-]{10,15}$/
+// The same rules as the owner contact, which holds the same details.
+const PHONE_PATTERN = /^\+?[0-9 ()-]+$/
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
-const UPI_PATTERN = /^[A-Za-z0-9._-]{2,256}@[A-Za-z][A-Za-z0-9.-]{1,63}$/
+const UPI_PATTERN = /^[A-Za-z0-9._-]{2,256}@[A-Za-z0-9.-]{2,64}$/
 
 export default function RentConfigPage() {
   const lease = useResource<{ config: RentLeaseConfig | null }>('/api/rent/config')
@@ -205,8 +206,8 @@ function LeaseForm({
       ? 'An IFSC is eleven characters: four letters, a zero, then six letters or digits.'
       : null
   const accountError =
-    account.trim() && !/^[0-9]{6,18}$/.test(account.trim())
-      ? 'An account number is 6 to 18 digits.'
+    account.trim() && !/^[0-9]{9,18}$/.test(account.trim())
+      ? 'An account number is 9 to 18 digits.'
       : null
 
   const save = useMutation(
@@ -245,8 +246,9 @@ function LeaseForm({
   const nameError = name.trim().length === 0 ? 'Landlord name is required.' : null
   const rentError = !rentOk || rentPaise <= 0 ? 'Monthly rent must be greater than zero.' : null
   const phoneError =
-    phone.trim() && !PHONE_PATTERN.test(phone.trim())
-      ? 'Enter a valid 10 to 15 digit phone number.'
+    phone.trim() &&
+    !(PHONE_PATTERN.test(phone.trim()) && /^\d{7,15}$/.test(phone.replace(/\D/g, '')))
+      ? 'Enter a phone number of 7 to 15 digits.'
       : null
   const emailError =
     email.trim() && !EMAIL_PATTERN.test(email.trim()) ? 'Enter a valid email address.' : null
