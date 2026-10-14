@@ -120,7 +120,7 @@ export function RentMonth({ month }: { month: string }) {
           <Page
             title={`Rent · ${formatMonth(month)}`}
             subtitle="What residents have paid towards this month's rent, and whether the landlord has been paid, under the master lease."
-            breadcrumbs={[{ label: 'Housing & Utilities', to: '/services' }, { label: 'Rent' }]}
+            breadcrumbs={[{ label: 'Services & Utilities', to: '/services' }, { label: 'Rent' }]}
           >
             {/* Status on the left, actions on the right, on a row of their own so
                 the two never wrap around the title. */}
@@ -131,7 +131,7 @@ export function RentMonth({ month }: { month: string }) {
                 {cycle && <LandlordReceiptPill status={cycle.landlord_receipt_status} />}
               </div>
               <div className="flex flex-wrap items-center gap-2 ml-auto">
-                <Link to="/services/rent/config" className={BUTTON_SECONDARY}>
+                <Link to="/housing?tab=lease" className={BUTTON_SECONDARY}>
                   <Settings className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                   Lease Settings
                 </Link>
@@ -157,7 +157,7 @@ export function RentMonth({ month }: { month: string }) {
                   title="No lease on file yet"
                   body="Enter the landlord and the monthly rent once. Each month's rent is then split equally between the residents taking part."
                   action={
-                    <Link to="/services/rent/config" className={BUTTON_PRIMARY}>
+                    <Link to="/housing?tab=lease" className={BUTTON_PRIMARY}>
                       <Settings className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                       Set up lease
                     </Link>
@@ -296,7 +296,7 @@ function DepositOverview({ config }: { config: RentLeaseConfig }) {
       icon={<ShieldCheck className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint="Held in escrow by the landlord for the length of the lease. Not part of this month's rent."
       actions={
-        <Link to="/services/deposits" className={BUTTON_SECONDARY}>
+        <Link to="/housing?tab=deposits" className={BUTTON_SECONDARY}>
           Manage Deposit Slots &amp; Escrow
           <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
         </Link>

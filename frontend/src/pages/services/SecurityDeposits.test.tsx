@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import SecurityDepositsPage, {
+import {
   ResidentDepositCard,
   SecurityDepositSection,
 } from './SecurityDeposits'
@@ -282,7 +282,7 @@ describe('deposit setup', () => {
     expect(await screen.findByText(/no security deposit amount yet/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Enter it in Lease Settings.' })).toHaveAttribute(
       'href',
-      '/services/rent/config',
+      '/housing?tab=lease',
     )
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
   })
@@ -292,31 +292,9 @@ describe('deposit setup', () => {
     expect(await screen.findByText('No lease on file yet')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Set up lease' })).toHaveAttribute(
       'href',
-      '/services/rent/config',
+      '/housing?tab=lease',
     )
     expect(screen.queryByRole('radio')).not.toBeInTheDocument()
-  })
-})
-
-describe('SecurityDepositsPage', () => {
-  it('is its own screen under Housing & Utilities', async () => {
-    stub = installFetchStub({ routes: { '/api/rent/deposits': summary() } as never })
-    render(
-      <MemoryRouter>
-        <SecurityDepositsPage />
-      </MemoryRouter>,
-    )
-    expect(
-      screen.getByRole('heading', { level: 1, name: 'Security Deposit Management' }),
-    ).toBeInTheDocument()
-    expect(screen.getByText(/Capital held in escrow with the landlord/)).toBeInTheDocument()
-    const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' })
-    expect(within(crumbs).getByRole('link', { name: 'Housing & Utilities' })).toHaveAttribute(
-      'href',
-      '/services',
-    )
-    expect(within(crumbs).getByText('Security Deposits')).toBeInTheDocument()
-    expect(await screen.findByRole('table', { name: 'Household deposit slots' })).toBeInTheDocument()
   })
 })
 
@@ -692,7 +670,7 @@ describe('ResidentDepositCard', () => {
     ).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open Security Deposits.' })).toHaveAttribute(
       'href',
-      '/services/deposits',
+      '/housing?tab=deposits',
     )
   })
 })

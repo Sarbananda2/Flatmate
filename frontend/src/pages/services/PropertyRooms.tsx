@@ -635,7 +635,7 @@ export function AssignedRoomCard({ residentId }: { residentId: string }) {
       title="Assigned Space / Room"
       icon={<BedDouble className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       actions={
-        <Link to="/services/property" className={BUTTON_SECONDARY}>
+        <Link to="/housing?tab=rooms" className={BUTTON_SECONDARY}>
           Manage Rooms
         </Link>
       }

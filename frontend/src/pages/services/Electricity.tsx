@@ -107,7 +107,7 @@ export default function ElectricityPage() {
     <Page
       title="Electricity"
       subtitle="The actual utility bill and its charges are authoritative. Smart-plug readings are allocation weights you enter; the engine never reconstructs a tariff from kWh."
-      breadcrumbs={[{ label: 'Housing & Utilities', to: '/services' }, { label: 'Electricity' }]}
+      breadcrumbs={[{ label: 'Services & Utilities', to: '/services' }, { label: 'Electricity' }]}
       actions={
         <>
           <button

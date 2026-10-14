@@ -1,8 +1,9 @@
 /**
- * Housing & Utilities.
+ * Services & Utilities.
  *
- * One card per recurring household service. Rent, electricity, deposits and
- * rooms are live and link to their own screens; the rest are placeholders for services that are
+ * One card per recurring household service. Rent and electricity are live and
+ * link to their own screens, and one card points to Housing for the lease,
+ * deposit, rooms and documents; the rest are placeholders for services that are
  * planned but not built. Every figure comes from `GET /api/services`.
  */
 import { type ReactNode } from 'react'
@@ -15,7 +16,6 @@ import {
   Flame,
   HandPlatter,
   type LucideIcon,
-  ShieldCheck,
   Wifi,
   Zap,
 } from 'lucide-react'
@@ -29,9 +29,8 @@ import {
 } from '../../components/ui'
 import { type Resource, useResource } from '../../lib/useApi'
 import { formatMonth, formatMonthShort } from '../../lib/format'
-import type { ContactRole, LeaseLifecycle, ServicesOverview } from '../../api/types'
+import type { LeaseLifecycle, ServicesOverview } from '../../api/types'
 import { useDocuments } from './DocumentVault'
-import { useContacts } from './PropertyContacts'
 import { useRooms } from './PropertyRooms'
 import { useDepositSummary } from './SecurityDeposits'
 
@@ -67,14 +66,13 @@ export function ServicesHub({ month }: { month: string }) {
   const overview = useResource<ServicesOverview>('/api/services', { month })
   return (
     <Page
-      title="Housing & Utilities"
-      subtitle="Central umbrella for all structured recurring apartment contracts, utility meters, and monthly execution cycles."
+      title="Services & Utilities"
+      subtitle="The household's monthly execution cycles: rent collection, utility meters and recurring services. The lease, deposit, rooms and documents live under Housing."
     >
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <RentCard month={month} overview={overview} />
         <ElectricityCard month={month} overview={overview} />
-        <SecurityDepositCard />
-        <HouseholdPropertyCard />
+        <HousingCard overview={overview} />
         {PLANNED_SERVICES.map((service) => (
           <ServiceCard
             key={service.title}
@@ -263,143 +261,62 @@ function TermProgress({
   )
 }
 
-/* ------------------------------------------------------ security deposits -- */
+/* ---------------------------------------------------------------- housing -- */
 
-const NOT_SET_UP = <span className="font-normal text-[var(--text-tertiary)]">Not set up</span>
-
-const FUNDING_MODE_LABELS = {
-  primary_signatory: 'Signatory fronted',
-  direct_co_tenants: 'Direct co-tenants',
-} as const
-
-/** The lease's deposit and its slots. Escrow, so it does not follow the month. */
-function SecurityDepositCard() {
-  const summary = useDepositSummary()
-  const data = summary.data
-  const occupied = data ? data.total_slots_count - data.vacant_slots_count : 0
-
-  return (
-    <ServiceCard
-      title="Security Deposits"
-      icon={ShieldCheck}
-      badge={
-        !data ? undefined : !data.is_lease_configured ? (
-          <Pill tone="warning">No lease</Pill>
-        ) : data.funding_mode ? (
-          <Pill tone="accent">{FUNDING_MODE_LABELS[data.funding_mode]}</Pill>
-        ) : (
-          <Pill tone="warning">Setup required</Pill>
-        )
-      }
-      actions={
-        <Link to="/services/deposits" className={BUTTON_PRIMARY}>
-          Manage Deposits
-          <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-        </Link>
-      }
-    >
-      <AsyncSection resource={summary} loadingLabel="Loading deposits…">
-        {(deposits) => (
-          <dl className="m-0 space-y-2">
-            <Fact label="Lease deposit">
-              {deposits.master_deposit_paise != null ? (
-                <Rupees paise={deposits.master_deposit_paise} />
-              ) : (
-                NOT_CONFIGURED
-              )}
-            </Fact>
-            <Fact label="Funded so far">
-              {deposits.total_slots_count > 0 ? (
-                <Rupees paise={deposits.total_funded_paise} />
-              ) : (
-                NOT_SET_UP
-              )}
-            </Fact>
-            <Fact label="Active slots">
-              {deposits.total_slots_count > 0
-                ? `${occupied} of ${deposits.total_slots_count} occupied`
-                : NOT_SET_UP}
-            </Fact>
-          </dl>
-        )}
-      </AsyncSection>
-    </ServiceCard>
-  )
-}
-
-/* ---------------------------------------------------- household & property -- */
-
-/** Rooms, contacts and documents. Inventory, so it does not follow the month. */
-function HouseholdPropertyCard() {
+/** The lease, deposit, rooms and documents, which live under Housing. */
+function HousingCard({ overview }: { overview: Resource<ServicesOverview> }) {
   const rooms = useRooms()
-  const contacts = useContacts()
+  const deposits = useDepositSummary()
   const documents = useDocuments()
-  const summary = rooms.data?.summary
-  const roles = contacts.data?.roles_on_file ?? []
-  const leaseOnFile = documents.data?.categories_on_file.includes('lease_agreement') ?? false
+  const leaseActive = Boolean(overview.data?.rent.config)
+  const deposit = deposits.data
+  const depositFunded =
+    !!deposit && deposit.total_slots_count > 0 && deposit.unfunded_gap_paise === 0
+  const roomCount = rooms.data?.summary.total_rooms ?? 0
+  const documentCount = documents.data?.total ?? 0
 
   return (
     <ServiceCard
-      title="Household & Property"
+      title="Housing Configuration"
       icon={BedDouble}
-      badge={
-        !summary ? undefined : summary.total_rooms === 0 ? (
-          <Pill tone="warning">Not set up</Pill>
-        ) : summary.vacant_rooms > 0 ? (
-          <Pill tone="warning">{summary.vacant_rooms} Vacant</Pill>
-        ) : (
-          <Pill tone="success">Fully occupied</Pill>
-        )
-      }
       actions={
-        <Link to="/services/property" className={BUTTON_PRIMARY}>
-          Manage Property
+        <Link to="/housing" className={BUTTON_PRIMARY}>
+          Manage Housing
           <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
         </Link>
       }
     >
-      <AsyncSection resource={rooms} loadingLabel="Loading property…">
-        {({ summary: counts }) => (
-          <dl className="m-0 space-y-2">
-            <Fact label="Rooms">
-              {counts.total_rooms > 0
-                ? `${counts.total_rooms} Room${counts.total_rooms === 1 ? '' : 's'} · ${counts.occupied_rooms} Occupied`
-                : NOT_SET_UP}
-            </Fact>
-            <Fact label="Amenities">
-              {counts.total_rooms > 0
-                ? `${counts.with_attached_washroom} with attached washroom · ${counts.with_balcony} with balcony`
-                : NOT_SET_UP}
-            </Fact>
-            <Fact label="Contacts">
-              {roles.length > 0
-                ? `${roles.map((role) => CONTACT_ROLE_SHORT[role]).join(', ')} on file`
-                : contacts.data
-                  ? 'None on file'
-                  : '—'}
-            </Fact>
-            <Fact label="Documents">
-              {!documents.data
-                ? '—'
-                : documents.data.total === 0
-                  ? 'None uploaded'
-                  : leaseOnFile
-                    ? `Lease agreement on file${documents.data.total > 1 ? ` · ${documents.data.total} documents` : ''}`
-                    : `${documents.data.total} document${documents.data.total === 1 ? '' : 's'} · no lease agreement`}
-            </Fact>
-          </dl>
+      <p className="m-0 text-xs text-[var(--text-secondary)]">
+        The lease contract, security deposit, rooms, contacts and documents.
+      </p>
+      <div className="flex flex-wrap gap-1.5" aria-label="Housing at a glance">
+        {overview.data && (
+          <Pill tone={leaseActive ? 'success' : 'warning'}>
+            {leaseActive ? 'Lease Active' : 'No lease'}
+          </Pill>
         )}
-      </AsyncSection>
+        {deposit && (
+          <Pill tone={depositFunded ? 'success' : 'warning'}>
+            {deposit.total_slots_count === 0
+              ? 'Deposit not set up'
+              : depositFunded
+                ? 'Deposit Funded'
+                : 'Deposit partly funded'}
+          </Pill>
+        )}
+        {rooms.data && (
+          <Pill>{roomCount ? `${roomCount} Room${roomCount === 1 ? '' : 's'}` : 'No rooms'}</Pill>
+        )}
+        {documents.data && (
+          <Pill>
+            {documentCount
+              ? `${documentCount} Document${documentCount === 1 ? '' : 's'} on file`
+              : 'No documents'}
+          </Pill>
+        )}
+      </div>
     </ServiceCard>
   )
-}
-
-const CONTACT_ROLE_SHORT: Record<ContactRole, string> = {
-  owner: 'Owner',
-  broker: 'Broker',
-  caretaker: 'Caretaker',
-  society_manager: 'Society manager',
-  emergency_utility: 'Utility line',
 }
 
 /* ------------------------------------------------------------ electricity -- */

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import RentConfigPage from './RentConfig'
+import { LeaseContractSection } from './RentConfig'
 import { ToastProvider } from '../../components/Toast'
 import { installFetchStub, type Recorded } from '../../test/server'
 
@@ -64,7 +64,7 @@ function renderPage(config: typeof saved | null) {
   return render(
     <MemoryRouter>
       <ToastProvider>
-        <RentConfigPage />
+        <LeaseContractSection />
       </ToastProvider>
     </MemoryRouter>,
   )
@@ -73,15 +73,14 @@ function renderPage(config: typeof saved | null) {
 const posted = () =>
   stub!.calls.find((call) => call.method === 'POST' && call.path === '/api/rent/config')
 
-describe('RentConfigPage', () => {
+describe('LeaseContractSection', () => {
   it('sets up a new lease with integer paise and normalised identifiers', async () => {
     renderPage(null)
-    expect(await screen.findByRole('heading', { name: 'Lease Configuration' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Housing & Utilities' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Open monthly rent' })).toHaveAttribute(
       'href',
-      '/services',
+      '/services/rent',
     )
-    const save = screen.getByRole('button', { name: 'Set Up Lease' })
+    const save = await screen.findByRole('button', { name: 'Set Up Lease' })
     expect(save).toBeDisabled()
 
     await userEvent.type(screen.getByLabelText(/Monthly rent/), '45,000.50')

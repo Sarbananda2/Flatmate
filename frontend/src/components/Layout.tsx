@@ -31,11 +31,12 @@ import type { Apartment, Health, SetupState } from '../api/types'
 import { ExpenseFormDialog } from '../pages/ExpenseForm'
 import { useToast } from './Toast'
 
-type Section = 'hub' | 'services' | 'ledger' | 'residents' | 'statements' | 'settings'
+type Section = 'hub' | 'housing' | 'services' | 'ledger' | 'residents' | 'statements' | 'settings'
 
 const NAV_TABS: Array<{ to: string; label: string; section: Section }> = [
   { to: '/', label: 'Month Hub', section: 'hub' },
-  { to: '/services', label: 'Housing & Utilities', section: 'services' },
+  { to: '/housing', label: 'Housing', section: 'housing' },
+  { to: '/services', label: 'Services & Utilities', section: 'services' },
   { to: '/transactions', label: 'Activity Ledger', section: 'ledger' },
   { to: '/residents', label: 'Residents', section: 'residents' },
   { to: '/statements', label: 'Statements', section: 'statements' },
@@ -44,6 +45,9 @@ const NAV_TABS: Array<{ to: string; label: string; section: Section }> = [
 // Every screen belongs to one ribbon destination, so the ribbon still shows
 // where the operator is on screens that have no tab of their own.
 const SECTION_PREFIXES: Array<[string, Section]> = [
+  ['/housing', 'housing'],
+  ['/property', 'housing'],
+  ['/deposits', 'housing'],
   ['/services', 'services'],
   ['/transactions', 'ledger'],
   ['/expenses', 'ledger'],
@@ -249,15 +253,14 @@ export function Layout({ children }: { children: ReactNode }) {
   // Rent, electricity and setup have their own workflows; the generic
   // transaction form would only compete with them there.
   const showRecord =
-    section !== 'services' && section !== 'settings' && section !== 'residents'
+    section !== 'services' &&
+    section !== 'housing' &&
+    section !== 'settings' &&
+    section !== 'residents'
   // The month means nothing on setup and configuration screens, so the picker
   // row is left out there altogether.
   const isConfigPage =
-    location.pathname === '/services/rent/config' ||
-    location.pathname === '/rent/config' ||
-    location.pathname === '/services/deposits' ||
-    location.pathname === '/deposits' ||
-    location.pathname === '/services/property' ||
+    section === 'housing' ||
     section === 'settings' ||
     section === 'residents'
   const showPeriodBar = !onWizard && !isConfigPage

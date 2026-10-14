@@ -136,36 +136,6 @@ describe('ServicesHub', () => {
     expect(within(rent).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '85')
   })
 
-  it('gives security deposits a card of their own, linking to their page', async () => {
-    renderHub(
-      { rent: { config, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
-      {
-        is_lease_configured: true,
-        master_deposit_paise: 15000000,
-        funding_mode: 'primary_signatory',
-        total_slots_count: 3,
-        vacant_slots_count: 1,
-        total_funded_paise: 7000000,
-      },
-    )
-    const card = screen.getByRole('region', { name: 'Security Deposits' })
-    expect(await within(card).findByText('₹1,50,000.00')).toBeInTheDocument()
-    expect(within(card).getByText('Signatory fronted')).toBeInTheDocument()
-    expect(within(card).getByText('2 of 3 occupied')).toBeInTheDocument()
-    expect(within(card).getByText('₹70,000.00')).toBeInTheDocument()
-    expect(within(card).getByRole('link', { name: 'Manage Deposits' })).toHaveAttribute(
-      'href',
-      '/services/deposits',
-    )
-  })
-
-  it('says when the deposit has no lease or no setup yet', async () => {
-    renderHub({ rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
-    const card = screen.getByRole('region', { name: 'Security Deposits' })
-    expect(await within(card).findByText('No lease')).toBeInTheDocument()
-    expect(within(card).getAllByText('Not set up')).toHaveLength(2)
-  })
-
   it('shows the planned services as placeholders with no actions', async () => {
     renderHub({
       rent: { config: null, cycle: null },
@@ -184,45 +154,34 @@ describe('ServicesHub', () => {
     expect(await screen.findByText('None entered yet')).toBeInTheDocument()
   })
 
-  it('summarises rooms, contacts and documents on one property card', async () => {
+  it('points to Housing for the lease, deposit, rooms and documents', async () => {
     renderHub(
-      { rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
-      noDeposits,
-      {
-        items: [],
-        total: 3,
-        summary: {
-          total_rooms: 3,
-          occupied_rooms: 2,
-          vacant_rooms: 1,
-          with_attached_washroom: 2,
-          with_balcony: 1,
-        },
-      },
-      { items: [], total: 3, roles_on_file: ['owner', 'broker', 'caretaker'] },
-      { items: [], total: 2, total_bytes: 2048, categories_on_file: ['lease_agreement', 'society_noc'] },
+      { rent: { config, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
+      { ...noDeposits, is_lease_configured: true, total_slots_count: 3, unfunded_gap_paise: 0 },
+      { ...noRooms, total: 3, summary: { ...noRooms.summary, total_rooms: 3 } },
+      noContacts,
+      { items: [], total: 3, total_bytes: 3000, categories_on_file: ['lease_agreement'] },
     )
-    const card = screen.getByRole('region', { name: 'Household & Property' })
-    expect(await within(card).findByText('3 Rooms · 2 Occupied')).toBeInTheDocument()
-    expect(within(card).getByText('1 Vacant')).toBeInTheDocument()
-    expect(
-      within(card).getByText('2 with attached washroom · 1 with balcony'),
-    ).toBeInTheDocument()
-    expect(await within(card).findByText('Owner, Broker, Caretaker on file')).toBeInTheDocument()
-    expect(
-      await within(card).findByText('Lease agreement on file · 2 documents'),
-    ).toBeInTheDocument()
-    expect(within(card).getByRole('link', { name: /Manage Property/ })).toHaveAttribute(
+    const card = screen.getByRole('region', { name: 'Housing Configuration' })
+    expect(await within(card).findByText('Lease Active')).toBeInTheDocument()
+    expect(await within(card).findByText('Deposit Funded')).toBeInTheDocument()
+    expect(await within(card).findByText('3 Rooms')).toBeInTheDocument()
+    expect(await within(card).findByText('3 Documents on file')).toBeInTheDocument()
+    expect(within(card).getByRole('link', { name: /Manage Housing/ })).toHaveAttribute(
       'href',
-      '/services/property',
+      '/housing',
     )
+    // Deposits and rooms are configuration, so they have no cards of their own here.
+    expect(screen.queryByRole('region', { name: 'Security Deposits' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Household & Property' })).toBeNull()
   })
 
-  it('says when nothing about the property is on file', async () => {
+  it('says what Housing is missing', async () => {
     renderHub({ rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
-    const card = screen.getByRole('region', { name: 'Household & Property' })
-    expect(await within(card).findAllByText('Not set up')).toHaveLength(3)
-    expect(await within(card).findByText('None on file')).toBeInTheDocument()
-    expect(await within(card).findByText('None uploaded')).toBeInTheDocument()
+    const card = screen.getByRole('region', { name: 'Housing Configuration' })
+    expect(await within(card).findByText('No lease')).toBeInTheDocument()
+    expect(await within(card).findByText('Deposit not set up')).toBeInTheDocument()
+    expect(await within(card).findByText('No rooms')).toBeInTheDocument()
+    expect(await within(card).findByText('No documents')).toBeInTheDocument()
   })
 })

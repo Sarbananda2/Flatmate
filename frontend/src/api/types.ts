@@ -1156,7 +1156,7 @@ export interface ExitClearance {
   created_at: string
 }
 
-/** `GET /api/services`: the Housing & Utilities hub's one summary call. */
+/** `GET /api/services`: the Services & Utilities hub's one summary call. */
 export interface ServicesOverview {
   settlement_month: string
   rent: { config: RentLeaseConfig | null; cycle: RentCycle | null }

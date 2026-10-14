@@ -145,7 +145,7 @@ export default function SetupPage() {
           hint="The master lease: landlord, monthly rent, due day, PAN for HRA receipts, and whether the landlord issues receipts."
         >
           <div className="row">
-            <Link className="btn btn--primary" to="/services/rent/config">
+            <Link className="btn btn--primary" to="/housing?tab=lease">
               Configure rent & lease
             </Link>
             <Link className="btn" to="/services/rent">

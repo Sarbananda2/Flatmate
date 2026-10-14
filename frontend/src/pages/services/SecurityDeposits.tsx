@@ -11,7 +11,6 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { BedDouble, Landmark, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
-import { Page } from '../../components/Layout'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
 import {
   DateField,
@@ -106,22 +105,6 @@ function slotName(slot: Pick<DepositSlot, 'slot_number' | 'slot_label'>): string
 
 /* --------------------------------------------------------------- the page -- */
 
-/** Security Deposit Management: its own screen under Housing & Utilities. */
-export default function SecurityDepositsPage() {
-  return (
-    <Page
-      title="Security Deposit Management"
-      subtitle="Capital held in escrow with the landlord: funding mode, permanent resident slots, and move-out clearances."
-      breadcrumbs={[
-        { label: 'Housing & Utilities', to: '/services' },
-        { label: 'Security Deposits' },
-      ]}
-    >
-      <SecurityDepositSection />
-    </Page>
-  )
-}
-
 /** Setup, or the escrow pool once slots exist. Before there is a lease, a pointer to it. */
 export function SecurityDepositSection() {
   const summary = useDepositSummary()
@@ -137,7 +120,7 @@ export function SecurityDepositSection() {
               title="No lease on file yet"
               body="The security deposit belongs to the lease. Enter the lease, including the deposit held by the landlord, and its slots can then be set up here."
               action={
-                <Link to="/services/rent/config" className={BUTTON_PRIMARY}>
+                <Link to="/housing?tab=lease" className={BUTTON_PRIMARY}>
                   Set up lease
                 </Link>
               }
@@ -355,7 +338,7 @@ function DepositSetupCard({
         {master === null ? (
           <p className="m-0 rounded-xl border border-dashed border-[var(--border-medium)] px-4 py-3 text-xs text-[var(--text-secondary)]">
             The lease has no security deposit amount yet, so there is nothing to divide into
-            slots. <Link to="/services/rent/config">Enter it in Lease Settings.</Link>
+            slots. <Link to="/housing?tab=lease">Enter it in Lease Settings.</Link>
           </p>
         ) : rows.length === 0 ? (
           <p className="m-0 text-xs text-[var(--text-secondary)]">
@@ -1297,7 +1280,7 @@ export function ResidentDepositCard({ residentId }: { residentId: string }) {
                   : data.slots.length === 0
                     ? 'The household deposit has not been set up yet.'
                     : 'This resident does not occupy a deposit slot.'}{' '}
-                <Link to="/services/deposits">Open Security Deposits.</Link>
+                <Link to="/housing?tab=deposits">Open Security Deposits.</Link>
               </p>
             )
           }

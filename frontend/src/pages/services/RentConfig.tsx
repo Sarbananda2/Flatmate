@@ -16,7 +16,6 @@ import {
   TrendingUp,
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import { Page } from '../../components/Layout'
 import { AsyncSection, ErrorNotice } from '../../components/Primitives'
 import { DateField, Field, MoneyInput, SelectField, TextField } from '../../components/Form'
 import { useToast } from '../../components/Toast'
@@ -112,25 +111,18 @@ const PHONE_PATTERN = /^\+?[0-9 ()-]+$/
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 const UPI_PATTERN = /^[A-Za-z0-9._-]{2,256}@[A-Za-z0-9.-]{2,64}$/
 
-export default function RentConfigPage() {
+/** The Lease & Contract tab of Housing: the master lease and its landlord. */
+export function LeaseContractSection() {
   const lease = useResource<{ config: RentLeaseConfig | null }>('/api/rent/config')
 
   return (
-    <Page
-      title="Lease Configuration"
-      subtitle="Landlord profile, contract rent, due dates, PAN, and receipt preferences for the master lease."
-      breadcrumbs={[
-        { label: 'Housing & Utilities', to: '/services' },
-        { label: 'Rent', to: '/services/rent' },
-        { label: 'Lease Configuration' },
-      ]}
-      actions={
+    <>
+      <div className="flex justify-end">
         <Link to="/services/rent" className={BUTTON_SECONDARY}>
           <ArrowUpRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
           Open monthly rent
         </Link>
-      }
-    >
+      </div>
       <AsyncSection resource={lease} loadingLabel="Loading lease…">
         {(data) => (
           <LeaseForm
@@ -141,7 +133,7 @@ export default function RentConfigPage() {
           />
         )}
       </AsyncSection>
-    </Page>
+    </>
   )
 }
 
