@@ -407,7 +407,10 @@ class OpeningBalanceItem(PassthroughModel):
 # --------------------------------------------------------------------------- #
 
 class RentLeaseConfigSave(ApiModel):
-    landlord_name: str = Field(min_length=1, max_length=200)
+    """The lease, in whole or in part: a field left out keeps what the lease
+    already says. Setting up a new lease needs the landlord's name and the rent."""
+
+    landlord_name: str | None = Field(None, min_length=1, max_length=200)
     landlord_phone: str | None = Field(None, max_length=40)
     landlord_email: str | None = Field(None, max_length=254)
     landlord_pan: str | None = Field(
@@ -415,7 +418,8 @@ class RentLeaseConfigSave(ApiModel):
     landlord_bank_account: str | None = Field(None, max_length=32)
     landlord_bank_ifsc: str | None = Field(None, max_length=16)
     landlord_upi_id: str | None = Field(None, max_length=320)
-    monthly_rent_paise: int = _money_field("The whole monthly rent on the lease.", ge=1)
+    monthly_rent_paise: int | None = _money_field("The whole monthly rent on the lease.",
+                                                  ge=1, default=None)
     due_day_of_month: int = Field(5, ge=1, le=28)
     requires_landlord_receipt: bool = Field(
         False, description="Whether the landlord issues a receipt. When true, a paid month "

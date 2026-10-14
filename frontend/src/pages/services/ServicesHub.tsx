@@ -1,16 +1,15 @@
 /**
  * Services & Utilities.
  *
- * One card per recurring household service. Rent and electricity are live and
- * link to their own screens, and one card points to Housing for the lease,
- * deposit, rooms and documents; the rest are placeholders for services that are
- * planned but not built. Every figure comes from `GET /api/services`.
+ * One card per recurring monthly bill. Rent and electricity are live and link
+ * to their own screens; the rest are placeholders for services that are
+ * planned but not built. The lease, deposit, rooms and documents are not here:
+ * they are the home itself, under Housing. Every figure comes from
+ * `GET /api/services`.
  */
 import { type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  ArrowRight,
-  BedDouble,
   Building2,
   Droplets,
   Flame,
@@ -30,9 +29,6 @@ import {
 import { type Resource, useResource } from '../../lib/useApi'
 import { formatMonth, formatMonthShort } from '../../lib/format'
 import type { LeaseLifecycle, ServicesOverview } from '../../api/types'
-import { useDocuments } from './DocumentVault'
-import { useRooms } from './PropertyRooms'
-import { useDepositSummary } from './SecurityDeposits'
 
 const PLANNED_SERVICES: Array<{ title: string; icon: LucideIcon; body: string }> = [
   {
@@ -67,12 +63,11 @@ export function ServicesHub({ month }: { month: string }) {
   return (
     <Page
       title="Services & Utilities"
-      subtitle="The household's monthly execution cycles: rent collection, utility meters and recurring services. The lease, deposit, rooms and documents live under Housing."
+      subtitle="The household's monthly bills: rent collection and payout, utility meters, and recurring services."
     >
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <RentCard month={month} overview={overview} />
         <ElectricityCard month={month} overview={overview} />
-        <HousingCard overview={overview} />
         {PLANNED_SERVICES.map((service) => (
           <ServiceCard
             key={service.title}
@@ -258,64 +253,6 @@ function TermProgress({
         />
       </div>
     </div>
-  )
-}
-
-/* ---------------------------------------------------------------- housing -- */
-
-/** The lease, deposit, rooms and documents, which live under Housing. */
-function HousingCard({ overview }: { overview: Resource<ServicesOverview> }) {
-  const rooms = useRooms()
-  const deposits = useDepositSummary()
-  const documents = useDocuments()
-  const leaseActive = Boolean(overview.data?.rent.config)
-  const deposit = deposits.data
-  const depositFunded =
-    !!deposit && deposit.total_slots_count > 0 && deposit.unfunded_gap_paise === 0
-  const roomCount = rooms.data?.summary.total_rooms ?? 0
-  const documentCount = documents.data?.total ?? 0
-
-  return (
-    <ServiceCard
-      title="Housing Configuration"
-      icon={BedDouble}
-      actions={
-        <Link to="/housing" className={BUTTON_PRIMARY}>
-          Manage Housing
-          <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-        </Link>
-      }
-    >
-      <p className="m-0 text-xs text-[var(--text-secondary)]">
-        The lease contract, security deposit, rooms, contacts and documents.
-      </p>
-      <div className="flex flex-wrap gap-1.5" aria-label="Housing at a glance">
-        {overview.data && (
-          <Pill tone={leaseActive ? 'success' : 'warning'}>
-            {leaseActive ? 'Lease Active' : 'No lease'}
-          </Pill>
-        )}
-        {deposit && (
-          <Pill tone={depositFunded ? 'success' : 'warning'}>
-            {deposit.total_slots_count === 0
-              ? 'Deposit not set up'
-              : depositFunded
-                ? 'Deposit Funded'
-                : 'Deposit partly funded'}
-          </Pill>
-        )}
-        {rooms.data && (
-          <Pill>{roomCount ? `${roomCount} Room${roomCount === 1 ? '' : 's'}` : 'No rooms'}</Pill>
-        )}
-        {documents.data && (
-          <Pill>
-            {documentCount
-              ? `${documentCount} Document${documentCount === 1 ? '' : 's'} on file`
-              : 'No documents'}
-          </Pill>
-        )}
-      </div>
-    </ServiceCard>
   )
 }
 

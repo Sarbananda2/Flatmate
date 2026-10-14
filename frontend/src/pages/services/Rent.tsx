@@ -26,6 +26,7 @@ import {
   Users,
 } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
+import { ReceiptPreferencesPanel, RentalAgreementStructurePanel } from './RentConfig'
 import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
 import { DateField, Field, MoneyInput, SelectField, TextField } from '../../components/Form'
 import { useToast } from '../../components/Toast'
@@ -131,10 +132,6 @@ export function RentMonth({ month }: { month: string }) {
                 {cycle && <LandlordReceiptPill status={cycle.landlord_receipt_status} />}
               </div>
               <div className="flex flex-wrap items-center gap-2 ml-auto">
-                <Link to="/housing?tab=lease" className={BUTTON_SECONDARY}>
-                  <Settings className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  Lease Settings
-                </Link>
                 {pending && (
                   <button
                     type="button"
@@ -174,6 +171,7 @@ export function RentMonth({ month }: { month: string }) {
                     overview.reload()
                   }}
                 />
+                <MasterTenancyCard config={config} />
                 <Metrics config={config} cycle={cycle} preview={preview} month={month} />
                 {cycle ? (
                   <CyclePanel
@@ -203,6 +201,13 @@ export function RentMonth({ month }: { month: string }) {
                     />
                   )
                 )}
+                {/* How this household divides and receipts its rent. */}
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
+                  <RentalAgreementStructurePanel
+                    roomTieredAvailable={Boolean(preview?.room_tiered.available)}
+                  />
+                  <ReceiptPreferencesPanel config={config} onSaved={overview.reload} />
+                </div>
                 <LandlordPanel
                   config={config}
                   cycle={cycle}
@@ -1213,7 +1218,7 @@ function PayoutModal({
             </dl>
           ) : (
             <p className="m-0 text-xs text-[var(--text-secondary)]">
-              No bank account or UPI ID is on the lease. Add them in Lease Settings to see them
+              No bank account or UPI ID is on the lease. Add them under Housing, Tenancy &amp; Master Lease, to see them
               here.
             </p>
           )}
@@ -1464,5 +1469,40 @@ function ReceiptSheet({ receipt }: { receipt: RentReceipt }) {
         </div>
       </footer>
     </article>
+  )
+}
+
+/**
+ * The tenancy the rent is charged under, in one line, with the way to the
+ * terms themselves. The terms are edited under Housing; this only reads them.
+ */
+function MasterTenancyCard({ config }: { config: RentLeaseConfig }) {
+  const lifecycle = config.lifecycle
+  const term =
+    config.lease_start_date && config.lease_end_date
+      ? `${formatDate(config.lease_start_date)} – ${formatDate(config.lease_end_date)}`
+      : 'Term not entered'
+  const progress =
+    lifecycle && lifecycle.current_month_index > 0
+      ? ` (Month ${Math.min(lifecycle.current_month_index, lifecycle.duration_months)} of ${lifecycle.duration_months})`
+      : ''
+  return (
+    <section
+      aria-label="Master tenancy"
+      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3"
+    >
+      <div className="min-w-0 text-xs text-[var(--text-secondary)]">
+        <span className="font-bold text-[var(--text-primary)]">Master Tenancy</span>
+        {' · '}
+        <span className="tabular">{term + progress}</span>
+        {' · '}Landlord: {config.landlord_name}
+        {config.notice_period_days != null && ` · ${config.notice_period_days}-day notice`}
+      </div>
+      <Link to="/housing?tab=lease" className={BUTTON_SECONDARY}>
+        <Settings className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        Manage Master Tenancy &amp; Renewal
+        <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+      </Link>
+    </section>
   )
 }

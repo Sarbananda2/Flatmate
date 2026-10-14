@@ -128,8 +128,9 @@ export function SecurityDepositSection() {
           </Panel>
         ) : data.slots.length === 0 ? (
           <DepositSetupCard
-            // Remount once the mode is saved, so the form starts from what is stored.
-            key={data.funding_mode ?? 'unset'}
+            // Remount once the mode or the deposit is saved, so the form starts
+            // from what is stored and the proposal follows the new amount.
+            key={`${data.funding_mode ?? 'unset'}:${data.master_deposit_paise ?? 'none'}`}
             summary={data}
             onSaved={summary.reload}
           />
@@ -335,12 +336,9 @@ function DepositSetupCard({
           </>
         )}
 
-        {master === null ? (
-          <p className="m-0 rounded-xl border border-dashed border-[var(--border-medium)] px-4 py-3 text-xs text-[var(--text-secondary)]">
-            The lease has no security deposit amount yet, so there is nothing to divide into
-            slots. <Link to="/housing?tab=lease">Enter it in Lease Settings.</Link>
-          </p>
-        ) : rows.length === 0 ? (
+        <DepositAmountForm master={master} onSaved={onSaved} />
+
+        {master === null ? null : rows.length === 0 ? (
           <p className="m-0 text-xs text-[var(--text-secondary)]">
             There are no current residents to propose slots for.
           </p>
@@ -1451,5 +1449,87 @@ function RoomLinkModal({ slot, summary, onClose, onDone }: SlotModalProps) {
         </AsyncSection>
       </form>
     </Modal>
+  )
+}
+
+/**
+ * The deposit the landlord holds, entered here with the rest of the deposit.
+ * It can be changed until slots divide it up; after that the slots' targets
+ * must keep adding up to it, so it is shown but not edited here.
+ */
+function DepositAmountForm({
+  master,
+  onSaved,
+}: {
+  master: number | null
+  onSaved: () => void
+}) {
+  const [editing, setEditing] = useState(master === null)
+  const amount = useMoney(master)
+  const error = amount.empty
+    ? 'Enter the deposit held by the landlord.'
+    : !amount.ok
+      ? null // the money input says what is wrong with the text
+      : amount.paise <= 0
+        ? 'The deposit must be more than zero.'
+        : null
+  const save = useMutation(
+    () => api.post('/api/rent/config', { security_deposit_paise: amount.paise }),
+    {
+      onSuccess: () => {
+        setEditing(false)
+        onSaved()
+      },
+    },
+  )
+
+  if (!editing && master !== null) {
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3">
+        <span className="text-xs text-[var(--text-secondary)]">
+          Deposit held by the landlord:{' '}
+          <Rupees paise={master} className="font-bold text-[var(--text-primary)]" />
+        </span>
+        <button type="button" className={BUTTON_QUIET} onClick={() => setEditing(true)}>
+          Change amount
+        </button>
+      </div>
+    )
+  }
+  return (
+    <form
+      aria-label="Security deposit amount"
+      className="flex flex-wrap items-end gap-3"
+      noValidate
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (!error && amount.ok && !save.pending) void save.run(undefined)
+      }}
+    >
+      {save.error && <ErrorNotice error={save.error} />}
+      <div className="max-w-sm flex-1 min-w-[14rem]">
+        <MoneyInput
+          label="Security Deposit Held by Landlord"
+          required
+          value={amount.raw}
+          placeholder="e.g. 1,50,000"
+          onChange={(raw) => amount.setRaw(raw)}
+          error={amount.empty && master === null ? null : error}
+          hint="The refundable deposit on the lease. The slots below divide it between the rooms."
+        />
+      </div>
+      <button
+        type="submit"
+        className={BUTTON_PRIMARY}
+        disabled={save.pending || Boolean(error) || !amount.ok}
+      >
+        {save.pending ? 'Saving…' : 'Save Deposit'}
+      </button>
+      {master !== null && (
+        <button type="button" className={BUTTON_SECONDARY} onClick={() => setEditing(false)}>
+          Cancel
+        </button>
+      )}
+    </form>
   )
 }

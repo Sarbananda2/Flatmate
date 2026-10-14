@@ -1446,3 +1446,57 @@ def test_the_rent_api_previews_and_generates_tiered_rent(configured):
                            json={"split_mode": "room_tiered"})
         assert made.status_code == 201, made.text
         assert _shares(made.json()) == ROOM_RENTS
+
+
+# --------------------------------------------------------------------------- #
+# Saving part of the lease
+# --------------------------------------------------------------------------- #
+
+def test_a_partial_save_changes_only_the_fields_sent(configured):
+    _lease(configured, security_deposit_paise=9_000_000, requires_landlord_receipt=True,
+           lease_start_date="2026-04-01")
+    before = rent.get_lease_config(configured, APARTMENT)
+    after = rent.save_lease_config(configured, APARTMENT, {"notice_period_days": 45})
+    assert after["notice_period_days"] == 45
+    for field in ("landlord_name", "landlord_phone", "landlord_pan", "landlord_bank_account",
+                  "landlord_bank_ifsc", "landlord_upi_id", "monthly_rent_paise",
+                  "due_day_of_month", "requires_landlord_receipt", "security_deposit_paise",
+                  "lease_start_date", "duration_months"):
+        assert after[field] == before[field], field
+
+
+def test_the_receipt_preference_and_deposit_can_be_saved_on_their_own(configured):
+    _lease(configured)
+    assert rent.save_lease_config(configured, APARTMENT, {"requires_landlord_receipt": True})[
+        "requires_landlord_receipt"] is True
+    saved = rent.save_lease_config(configured, APARTMENT, {"security_deposit_paise": 9_000_000})
+    assert saved["security_deposit_paise"] == 9_000_000
+    assert saved["requires_landlord_receipt"] is True
+    assert saved["landlord_name"] == "Rajesh Kumar Sharma"
+
+
+def test_sending_null_still_clears_a_field(configured):
+    _lease(configured)
+    assert rent.save_lease_config(configured, APARTMENT, {"landlord_upi_id": None})[
+        "landlord_upi_id"] is None
+
+
+def test_a_new_lease_still_needs_the_landlord_and_the_rent(configured):
+    with pytest.raises(ValidationError):
+        rent.save_lease_config(configured, APARTMENT, {"monthly_rent_paise": 4_500_000})
+    with pytest.raises(ValidationError):
+        rent.save_lease_config(configured, APARTMENT, {"landlord_name": "Rajesh"})
+    assert rent.get_lease_config(configured, APARTMENT) is None
+
+
+def test_the_api_saves_part_of_the_lease(configured):
+    from fastapi.testclient import TestClient
+    from aem.main import create_app
+    _lease(configured)
+    with TestClient(create_app(get_settings(), database=configured)) as client:
+        saved = client.post("/api/rent/config", json={"requires_landlord_receipt": True})
+        assert saved.status_code == 200, saved.text
+        body = saved.json()
+        assert body["requires_landlord_receipt"] is True
+        assert body["landlord_bank_account"] == "50100012348912"
+        assert client.post("/api/rent/config", json={"landlord_name": None}).status_code == 422

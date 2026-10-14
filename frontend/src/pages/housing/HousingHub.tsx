@@ -34,7 +34,7 @@ import { DocumentVaultSection } from '../services/DocumentVault'
 import { telHref } from '../ResidentProfile'
 
 export const HOUSING_TABS = [
-  { value: 'lease', label: 'Lease & Contract', icon: FileSignature },
+  { value: 'lease', label: 'Tenancy & Master Lease', icon: FileSignature },
   { value: 'deposits', label: 'Security Deposit', icon: ShieldCheck },
   { value: 'rooms', label: 'Rooms Inventory', icon: BedDouble },
   { value: 'contacts', label: 'Stakeholders & Contacts', icon: Users },

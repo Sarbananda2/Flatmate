@@ -90,6 +90,7 @@ function open(path = '/housing', overrides: Record<string, unknown> = {}) {
       '/api/property/contacts': contacts,
       '/api/property/documents': documents,
       '/api/residents': { items: [], total: 0 },
+      '/api/rent/lease/terms': { items: [] },
       ...overrides,
     } as never,
   })
@@ -150,14 +151,14 @@ describe('HousingHub tabs', () => {
     open()
     const tabs = screen.getAllByRole('tab').map((tab) => tab.textContent)
     expect(tabs).toEqual([
-      'Lease & Contract',
+      'Tenancy & Master Lease',
       'Security Deposit',
       'Rooms Inventory',
       'Stakeholders & Contacts',
       'Document Vault',
     ])
-    expect(screen.getByRole('tab', { name: /Lease & Contract/ })).toHaveAttribute('aria-selected', 'true')
-    expect(await screen.findByRole('link', { name: 'Open monthly rent' })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Tenancy & Master Lease/ })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByText('Master Contract')).toBeInTheDocument()
 
     const expectations: Array<[RegExp, string, string]> = [
       [/Security Deposit/, '?tab=deposits', 'Household Security Deposit Setup'],
@@ -171,7 +172,7 @@ describe('HousingHub tabs', () => {
       expect(screen.getByLabelText('location')).toHaveTextContent(`/housing${query}`)
       expect(await screen.findAllByText(marker)).not.toHaveLength(0)
     }
-    await userEvent.click(screen.getByRole('tab', { name: /Lease & Contract/ }))
+    await userEvent.click(screen.getByRole('tab', { name: /Tenancy & Master Lease/ }))
     expect(screen.getByLabelText('location')).toHaveTextContent(/^\/housing$/)
   })
 
@@ -187,6 +188,6 @@ describe('HousingHub tabs', () => {
 
   it('treats an unknown tab as the lease', () => {
     open('/housing?tab=nonsense')
-    expect(screen.getByRole('tab', { name: /Lease & Contract/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: /Tenancy & Master Lease/ })).toHaveAttribute('aria-selected', 'true')
   })
 })

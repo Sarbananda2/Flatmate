@@ -38,9 +38,11 @@ def get_config(db: Db, apartment_id: ApartmentId) -> dict[str, Any]:
 def save_config(payload: RentLeaseConfigSave, db: Db, apartment_id: ApartmentId,
                 settings: AppSettings) -> dict[str, Any]:
     """Landlord details, the monthly rent, the due day, and whether the
-    landlord issues receipts. A month already generated keeps its amount."""
+    landlord issues receipts. Only the fields sent are changed, so one screen
+    can save just its part of the lease. A month already generated keeps its
+    amount."""
     try:
-        # Only what was sent: a contract-term field left out keeps its value.
+        # Only what was sent: a field left out keeps its value.
         return rent.save_lease_config(db, apartment_id,
                                       payload.model_dump(exclude_unset=True),
                                       actor=settings.operator_name)

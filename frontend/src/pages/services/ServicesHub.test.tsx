@@ -154,34 +154,12 @@ describe('ServicesHub', () => {
     expect(await screen.findByText('None entered yet')).toBeInTheDocument()
   })
 
-  it('points to Housing for the lease, deposit, rooms and documents', async () => {
-    renderHub(
-      { rent: { config, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
-      { ...noDeposits, is_lease_configured: true, total_slots_count: 3, unfunded_gap_paise: 0 },
-      { ...noRooms, total: 3, summary: { ...noRooms.summary, total_rooms: 3 } },
-      noContacts,
-      { items: [], total: 3, total_bytes: 3000, categories_on_file: ['lease_agreement'] },
-    )
-    const card = screen.getByRole('region', { name: 'Housing Configuration' })
-    expect(await within(card).findByText('Lease Active')).toBeInTheDocument()
-    expect(await within(card).findByText('Deposit Funded')).toBeInTheDocument()
-    expect(await within(card).findByText('3 Rooms')).toBeInTheDocument()
-    expect(await within(card).findByText('3 Documents on file')).toBeInTheDocument()
-    expect(within(card).getByRole('link', { name: /Manage Housing/ })).toHaveAttribute(
-      'href',
-      '/housing',
-    )
-    // Deposits and rooms are configuration, so they have no cards of their own here.
-    expect(screen.queryByRole('region', { name: 'Security Deposits' })).toBeNull()
-    expect(screen.queryByRole('region', { name: 'Household & Property' })).toBeNull()
-  })
-
-  it('says what Housing is missing', async () => {
-    renderHub({ rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
-    const card = screen.getByRole('region', { name: 'Housing Configuration' })
-    expect(await within(card).findByText('No lease')).toBeInTheDocument()
-    expect(await within(card).findByText('Deposit not set up')).toBeInTheDocument()
-    expect(await within(card).findByText('No rooms')).toBeInTheDocument()
-    expect(await within(card).findByText('No documents')).toBeInTheDocument()
+  it('lists only monthly bills, with nothing that loops back to Housing', async () => {
+    renderHub({ rent: { config, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
+    await screen.findByRole('region', { name: 'Rent' })
+    for (const name of ['Housing Configuration', 'Security Deposits', 'Household & Property']) {
+      expect(screen.queryByRole('region', { name })).toBeNull()
+    }
+    expect(screen.queryByRole('link', { name: /Housing/ })).toBeNull()
   })
 })

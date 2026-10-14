@@ -277,14 +277,29 @@ describe('deposit setup', () => {
     expect(posted('/config')).toBeUndefined()
   })
 
-  it('points to Lease Settings when the lease has no deposit amount', async () => {
-    renderSection({ ...unconfigured, master_deposit_paise: null, proposal: [] })
-    expect(await screen.findByText(/no security deposit amount yet/)).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Enter it in Lease Settings.' })).toHaveAttribute(
-      'href',
-      '/housing?tab=lease',
-    )
+  it('takes the deposit amount here when the lease has none yet', async () => {
+    renderSection({ ...unconfigured, master_deposit_paise: null, proposal: [] }, {
+      'POST /api/rent/config': {},
+    })
+    const form = await screen.findByRole('form', { name: 'Security deposit amount' })
+    const save = within(form).getByRole('button', { name: 'Save Deposit' })
+    expect(save).toBeDisabled()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
+    await userEvent.type(within(form).getByLabelText(/Security Deposit Held by Landlord/), '0')
+    expect(within(form).getByText('The deposit must be more than zero.')).toBeInTheDocument()
+    await userEvent.clear(within(form).getByLabelText(/Security Deposit Held by Landlord/))
+    await userEvent.type(within(form).getByLabelText(/Security Deposit Held by Landlord/), '1,50,000')
+    await userEvent.click(save)
+    await waitFor(() => expect(posted('/api/rent/config')).toBeDefined())
+    // Only the deposit is sent; the rest of the lease is left as it is.
+    expect(posted('/api/rent/config')!.body).toEqual({ security_deposit_paise: 15000000 })
+  })
+
+  it('shows the deposit with a way to change it until slots divide it', async () => {
+    renderSection(unconfigured)
+    expect(await screen.findByText(/Deposit held by the landlord:/)).toHaveTextContent('₹1,50,000.00')
+    await userEvent.click(screen.getByRole('button', { name: 'Change amount' }))
+    expect(screen.getByLabelText(/Security Deposit Held by Landlord/)).toHaveValue('150000.00')
   })
 
   it('points to the lease before there is one', async () => {

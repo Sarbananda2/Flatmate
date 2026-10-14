@@ -194,31 +194,42 @@ def _clean_term(payload: Mapping[str, Any],
 def _clean_config(payload: Mapping[str, Any],
                   existing: Mapping[str, Any] | None = None) -> dict[str, Any]:
     _reject_unknown(payload, (*_CONFIG_FIELDS, *_TERM_DEFAULTS), "lease")
-    rent = ensure_paise(payload.get("monthly_rent_paise"), "monthly_rent_paise", allow_zero=False)
-    due_day = payload.get("due_day_of_month", 5)
+
+    # A field left out keeps what the lease already says, so a screen that
+    # edits part of the lease (the tenancy terms, the receipt preference, the
+    # deposit) never clears the rest. Sending null still clears a field.
+    def kept(field: str, default: Any = None) -> Any:
+        if field in payload:
+            return payload[field]
+        return existing[field] if existing else default
+
+    rent = ensure_paise(kept("monthly_rent_paise"), "monthly_rent_paise", allow_zero=False)
+    due_day = kept("due_day_of_month", 5)
     if isinstance(due_day, bool) or not isinstance(due_day, int) or not 1 <= due_day <= 28:
         raise ValidationError(
             "due_day_of_month must be between 1 and 28 so every month has that day.",
             details={"field": "due_day_of_month"})
-    requires = payload.get("requires_landlord_receipt", False)
+    requires = kept("requires_landlord_receipt", False)
+    if existing and "requires_landlord_receipt" not in payload:
+        requires = bool(requires)
     if not isinstance(requires, bool):
         raise ValidationError("requires_landlord_receipt must be true or false.",
                               details={"field": "requires_landlord_receipt"})
     # The landlord's details are the owner contact's too, so both are checked
     # by the same rules.
     return {
-        "landlord_name": require_text(payload.get("landlord_name"), "landlord_name",
+        "landlord_name": require_text(kept("landlord_name"), "landlord_name",
                                       max_length=200),
-        "landlord_phone": household.phone_number(payload.get("landlord_phone"),
+        "landlord_phone": household.phone_number(kept("landlord_phone"),
                                                  "landlord_phone"),
-        "landlord_email": household.email_address(payload.get("landlord_email"),
+        "landlord_email": household.email_address(kept("landlord_email"),
                                                   "landlord_email"),
-        "landlord_pan": household.pan_number(payload.get("landlord_pan"), "landlord_pan"),
-        "landlord_bank_account": household.bank_account(payload.get("landlord_bank_account"),
+        "landlord_pan": household.pan_number(kept("landlord_pan"), "landlord_pan"),
+        "landlord_bank_account": household.bank_account(kept("landlord_bank_account"),
                                                         "landlord_bank_account"),
-        "landlord_bank_ifsc": household.ifsc_code(payload.get("landlord_bank_ifsc"),
+        "landlord_bank_ifsc": household.ifsc_code(kept("landlord_bank_ifsc"),
                                                   "landlord_bank_ifsc"),
-        "landlord_upi_id": household.upi_id(payload.get("landlord_upi_id"), "landlord_upi_id"),
+        "landlord_upi_id": household.upi_id(kept("landlord_upi_id"), "landlord_upi_id"),
         "monthly_rent_paise": rent,
         "due_day_of_month": due_day,
         "requires_landlord_receipt": requires,

@@ -1,13 +1,14 @@
 /**
- * The lease form sends money and identifiers to the backend, so these tests
- * pin the body it posts: integer paise, normalised PAN and IFSC, and the
- * receipts preference exactly as the operator set it.
+ * The Tenancy & Master Lease tab. Its form sends only the tenancy terms, in
+ * integer paise: the landlord's details are edited on the owner contact, the
+ * deposit on the Deposit tab and the receipt preference on the Rent screen,
+ * and the backend keeps whatever a save leaves out.
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { LeaseContractSection } from './RentConfig'
+import { LeaseContractSection, RentalAgreementStructurePanel } from './RentConfig'
 import { ToastProvider } from '../../components/Toast'
 import { installFetchStub, type Recorded } from '../../test/server'
 
@@ -55,6 +56,20 @@ function renderPage(config: typeof saved | null) {
   stub = installFetchStub({
     routes: {
       '/api/rent/config': () => ({ config: current }),
+      '/api/residents': { items: [], total: 0 },
+      '/api/rent/lease/terms': {
+        items: [
+          {
+            term_id: 'term-1',
+            term_number: 1,
+            start_date: '2025-04-01',
+            end_date: '2026-02-28',
+            monthly_rent_paise: 2700000,
+            escalation_applied_percent: 5,
+            archived_at: '2026-03-01T10:00:00+05:30',
+          },
+        ],
+      },
       'POST /api/rent/config': (body: unknown) => {
         current = { ...saved, ...(body as object), updated_at: '2026-10-11T12:00:00+05:30' }
         return current
@@ -74,37 +89,26 @@ const posted = () =>
   stub!.calls.find((call) => call.method === 'POST' && call.path === '/api/rent/config')
 
 describe('LeaseContractSection', () => {
-  it('sets up a new lease with integer paise and normalised identifiers', async () => {
+  it('sets up a new lease with its landlord, in integer paise', async () => {
     renderPage(null)
-    expect(screen.getByRole('link', { name: 'Open monthly rent' })).toHaveAttribute(
-      'href',
-      '/services/rent',
-    )
     const save = await screen.findByRole('button', { name: 'Set Up Lease' })
     expect(save).toBeDisabled()
+    // Nothing that belongs elsewhere is asked for.
+    for (const label of ['PAN', 'IFSC code', 'UPI ID', 'Security Deposit Held by Landlord']) {
+      expect(screen.queryByLabelText(label)).toBeNull()
+    }
+    expect(screen.queryByRole('switch')).toBeNull()
 
     await userEvent.type(screen.getByLabelText(/Monthly rent/), '45,000.50')
-    await userEvent.type(screen.getByLabelText(/Landlord name/), 'Rajesh Kumar Sharma')
-    await userEvent.type(screen.getByLabelText('PAN'), 'abcps1234k')
-    await userEvent.type(screen.getByLabelText('IFSC code'), 'hdfc0000128')
+    await userEvent.type(screen.getByLabelText(/Landlord name/), ' Rajesh Kumar Sharma ')
     await userEvent.selectOptions(screen.getByLabelText('Due day of month'), '7')
-    await userEvent.click(
-      screen.getByRole('switch', { name: 'Do you receive receipts from the landlord?' }),
-    )
     await userEvent.click(save)
 
     await waitFor(() => expect(posted()).toBeDefined())
     expect(posted()!.body).toEqual({
       landlord_name: 'Rajesh Kumar Sharma',
-      landlord_phone: null,
-      landlord_email: null,
-      landlord_pan: 'ABCPS1234K',
-      landlord_bank_account: null,
-      landlord_bank_ifsc: 'HDFC0000128',
-      landlord_upi_id: null,
       monthly_rent_paise: 4500050,
       due_day_of_month: 7,
-      requires_landlord_receipt: true,
       // A new lease leaves the rent category to the backend.
       expense_definition_id: null,
       // The term's defaults; the end date is left to the backend.
@@ -112,32 +116,69 @@ describe('LeaseContractSection', () => {
       duration_months: 11,
       notice_period_days: 30,
       lock_in_months: 6,
-      security_deposit_paise: null,
       escalation_type: 'percent',
       escalation_percent: 5,
       renewal_rent_paise: null,
     })
     expect(await screen.findByText('Lease set up')).toBeInTheDocument()
     // The form reloads from what was stored.
-    expect(await screen.findByRole('button', { name: 'Save Configuration' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Save Tenancy Terms' })).toBeInTheDocument()
   })
 
-  it('loads the stored lease and leaves its rent category to the backend', async () => {
+  it('shows the landlord as a card that points to the owner contact', async () => {
+    renderPage(saved)
+    const card = await screen.findByRole('region', { name: 'Landlord' })
+    expect(card).toHaveTextContent('Rajesh Kumar Sharma')
+    expect(card).toHaveTextContent('+91 98765 43210')
+    expect(card).toHaveTextContent('rajeshsharma@okaxis')
+    expect(card).toHaveTextContent('A/c ****8912 · HDFC0000128')
+    expect(card).toHaveTextContent('PAN ABCPS1234K')
+    expect(
+      within(card).getByRole('link', { name: /Edit in Stakeholders & Contacts/ }),
+    ).toHaveAttribute('href', '/housing?tab=contacts')
+    // No landlord inputs once the lease exists.
+    expect(screen.queryByLabelText(/Landlord name/)).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Open monthly rent' })).toBeNull()
+  })
+
+  it('saves only the tenancy terms, leaving the rest of the lease to the backend', async () => {
     renderPage(saved)
     expect(await screen.findByLabelText(/Monthly rent/)).toHaveValue('45000.00')
-    expect(screen.getByLabelText(/Landlord name/)).toHaveValue('Rajesh Kumar Sharma')
-    expect(screen.getByLabelText('PAN')).toHaveValue('ABCPS1234K')
     expect(screen.getByLabelText('Due day of month')).toHaveValue('5')
-    expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false')
-
     expect(screen.queryByLabelText('Expense definition')).not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Save Configuration' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save Tenancy Terms' }))
     await waitFor(() => expect(posted()).toBeDefined())
-    expect(posted()!.body).toMatchObject({ expense_definition_id: null })
+    const body = posted()!.body as Record<string, unknown>
+    expect(body).toMatchObject({ monthly_rent_paise: 4500000, expense_definition_id: null })
+    for (const field of [
+      'landlord_name',
+      'landlord_phone',
+      'landlord_pan',
+      'landlord_bank_account',
+      'landlord_bank_ifsc',
+      'landlord_upi_id',
+      'requires_landlord_receipt',
+      'security_deposit_paise',
+    ]) {
+      expect(body).not.toHaveProperty(field)
+    }
   })
 
-  it('saves the contract term with the deposit in integer paise', async () => {
+  it('lists the completed terms', async () => {
+    renderPage(saved)
+    const table = await screen.findByRole('table', { name: 'Completed lease terms' })
+    for (const header of within(table).getAllByRole('columnheader')) {
+      expect(header).toHaveClass('text-center')
+    }
+    const row = within(table).getByRole('row', { name: /1/ })
+    expect(row).toHaveTextContent('1 Apr 2025')
+    expect(row).toHaveTextContent('28 Feb 2026')
+    expect(row).toHaveTextContent('₹27,000.00')
+    expect(row).toHaveTextContent('5%')
+  })
+
+  it('saves the contract term', async () => {
     renderPage(null)
     await userEvent.type(await screen.findByLabelText(/Monthly rent/), '28500')
     await userEvent.type(screen.getByLabelText(/Landlord name/), 'Kumar Yadav')
@@ -158,7 +199,6 @@ describe('LeaseContractSection', () => {
     await userEvent.type(notice, '45')
     await userEvent.clear(screen.getByLabelText('Lock-in Period (Months)'))
     await userEvent.type(screen.getByLabelText('Lock-in Period (Months)'), '3')
-    await userEvent.type(screen.getByLabelText('Security Deposit Held by Landlord'), '1,35,000.50')
     await userEvent.click(save)
 
     await waitFor(() => expect(posted()).toBeDefined())
@@ -167,7 +207,6 @@ describe('LeaseContractSection', () => {
       duration_months: 12,
       notice_period_days: 45,
       lock_in_months: 3,
-      security_deposit_paise: 13500050,
     })
     expect(posted()!.body).not.toHaveProperty('lease_end_date')
   })
@@ -214,14 +253,12 @@ describe('LeaseContractSection', () => {
     renderPage(saved)
     expect(await screen.findByLabelText('Lease Start Date')).toHaveValue('2026-04-01')
     expect(screen.getByLabelText('Agreement Duration')).toHaveValue('11')
-    expect(screen.getByLabelText('Security Deposit Held by Landlord')).toHaveValue('135000.00')
     expect(screen.getByText('Ends 28 Feb 2027.')).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Save Configuration' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save Tenancy Terms' }))
     await waitFor(() => expect(posted()).toBeDefined())
     expect(posted()!.body).toMatchObject({
       lease_start_date: '2026-04-01',
-      security_deposit_paise: 13500000,
       escalation_type: 'percent',
       escalation_percent: 5,
       renewal_rent_paise: null,
@@ -230,7 +267,7 @@ describe('LeaseContractSection', () => {
 
   it('explains each invalid field and keeps the save disabled until it is fixed', async () => {
     renderPage(saved)
-    const save = await screen.findByRole('button', { name: 'Save Configuration' })
+    const save = await screen.findByRole('button', { name: 'Save Tenancy Terms' })
     expect(save).toBeEnabled()
     // A stored lease opens with nothing flagged.
     expect(screen.queryByText(/is required|Enter a valid|must be greater/)).not.toBeInTheDocument()
@@ -248,26 +285,28 @@ describe('LeaseContractSection', () => {
       expect(save).toBeEnabled()
     }
 
-    await check(/Landlord name/, '', 'Landlord name is required.', 'Kumar Yadav')
     await check(/Monthly rent/, '0', 'Monthly rent must be greater than zero.', '28500')
-    await check('Phone', '12345', 'Enter a phone number of 7 to 15 digits.', '+91 98765 43210')
-    await check('Email', 'kumar@', 'Enter a valid email address.', 'kumar@example.com')
-    await check('UPI ID', 'kumar', 'Enter a valid UPI ID (e.g. name@bank).', 'kumar.yadav@okhdfcbank')
-    // Phone, email and UPI ID are optional: empty is fine.
-    await check('Email', 'x', 'Enter a valid email address.', '')
-    // A half-typed amount gets the money input's own, more specific message.
-    await check(
-      'Security Deposit Held by Landlord',
-      '1.234',
-      'At most two decimal places (paise).',
-      '',
-    )
+    await check('Notice Period (Days)', '400', 'Enter a whole number of days, 0 to 365.', '30')
+    await check('Lock-in Period (Months)', '61', 'Enter a whole number of months, 0 to 60.', '6')
 
     await userEvent.click(screen.getByRole('radio', { name: 'Fixed Amount' }))
     expect(save).toBeDisabled()
     expect(screen.queryByText('Enter the agreed renewed rent.')).not.toBeInTheDocument()
     await check(/Agreed Renewed Rent/, '0', 'Enter the agreed renewed rent.', '30000')
     expect(posted()).toBeUndefined()
+  })
+
+  it('needs the landlord name to set up a new lease', async () => {
+    renderPage(null)
+    const save = await screen.findByRole('button', { name: 'Set Up Lease' })
+    await userEvent.type(screen.getByLabelText(/Monthly rent/), '28500')
+    const name = screen.getByLabelText(/Landlord name/)
+    await userEvent.type(name, 'x')
+    await userEvent.clear(name)
+    expect(screen.getByText('Landlord name is required.')).toBeInTheDocument()
+    expect(save).toBeDisabled()
+    await userEvent.type(name, 'Kumar Yadav')
+    expect(save).toBeEnabled()
   })
 
   it('does not flag a new lease before anything is typed', async () => {
@@ -277,44 +316,14 @@ describe('LeaseContractSection', () => {
     expect(screen.queryByText('Monthly rent must be greater than zero.')).not.toBeInTheDocument()
   })
 
-  it('shows the equal split as the one live rental model', async () => {
+  it('leaves how the rent is divided and receipted to the Rent screen', async () => {
     renderPage(saved)
-    const group = await screen.findByRole('radiogroup', { name: 'Rental agreement structure' })
-    const models = within(group).getAllByRole('radio')
-    expect(models).toHaveLength(5)
-    expect(
-      within(group).getByRole('radio', { name: 'Single Master Lease (Equal Split)' }),
-    ).toBeChecked()
-    expect(within(group).getByText('Active Model')).toBeInTheDocument()
-    expect(within(group).getAllByText('Under Development')).toHaveLength(4)
-    for (const model of models.slice(1)) {
-      expect(model).not.toBeChecked()
-      expect(model).toHaveAttribute('aria-disabled', 'true')
-    }
-  })
-
-  it('refuses a malformed PAN or IFSC before saving', async () => {
-    renderPage(saved)
-    const pan = await screen.findByLabelText('PAN')
-    const save = screen.getByRole('button', { name: 'Save Configuration' })
-    expect(save).toBeEnabled()
-
-    await userEvent.clear(pan)
-    await userEvent.type(pan, 'abc123')
-    expect(pan).toHaveValue('ABC123')
-    expect(screen.getByText(/A PAN is ten characters/)).toBeInTheDocument()
-    expect(save).toBeDisabled()
-
-    await userEvent.clear(pan)
-    expect(save).toBeEnabled()
-    const ifsc = screen.getByLabelText('IFSC code')
-    await userEvent.clear(ifsc)
-    expect(save).toBeEnabled()
-    await userEvent.type(ifsc, 'hdfc1')
-    expect(ifsc).toHaveValue('HDFC1')
-    expect(screen.getByText(/An IFSC is eleven characters/)).toBeInTheDocument()
-    expect(save).toBeDisabled()
-    expect(posted()).toBeUndefined()
+    await screen.findByRole('button', { name: /Save/ })
+    // The lease says what the flat costs; who pays which part is set with the rent.
+    expect(screen.queryByRole('radiogroup', { name: 'Rental agreement structure' })).toBeNull()
+    expect(screen.queryByText('Rental Agreement Structure')).toBeNull()
+    expect(screen.queryByText('Receipt Preferences')).toBeNull()
+    expect(screen.getByText('Master Contract')).toBeInTheDocument()
   })
 
   it('shows the server message when the save is refused', async () => {
@@ -330,11 +339,35 @@ describe('LeaseContractSection', () => {
         },
       },
     })
-    await userEvent.click(await screen.findByRole('button', { name: 'Save Configuration' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Save Tenancy Terms' }))
     expect(
       await screen.findByText(
         'The rent category must be an active expense definition of this apartment.',
       ),
     ).toBeInTheDocument()
+  })
+})
+
+describe('RentalAgreementStructurePanel', () => {
+  it('shows the equal split as the default and room-tiered as chosen per month', () => {
+    render(<RentalAgreementStructurePanel />)
+    const group = screen.getByRole('radiogroup', { name: 'Rental agreement structure' })
+    const models = within(group).getAllByRole('radio')
+    expect(models).toHaveLength(5)
+    expect(
+      within(group).getByRole('radio', { name: 'Single Master Lease (Equal Split)' }),
+    ).toBeChecked()
+    expect(within(group).getByText('Default Model')).toBeInTheDocument()
+    expect(within(group).getByText('Needs Room Base Rents')).toBeInTheDocument()
+    expect(within(group).getAllByText('Under Development')).toHaveLength(3)
+    for (const model of models.slice(1)) {
+      expect(model).not.toBeChecked()
+      expect(model).toHaveAttribute('aria-disabled', 'true')
+    }
+  })
+
+  it('says room-tiered is available when the room rents add up', () => {
+    render(<RentalAgreementStructurePanel roomTieredAvailable />)
+    expect(screen.getByText('Available This Month')).toBeInTheDocument()
   })
 })

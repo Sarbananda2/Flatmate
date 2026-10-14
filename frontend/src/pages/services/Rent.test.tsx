@@ -489,16 +489,53 @@ describe('RentMonth', () => {
     expect(stub!.calls.some((call) => call.path === '/api/rent/deposits')).toBe(false)
   })
 
-  it('sends lease setup and lease settings to the configuration page', async () => {
+  it('sends lease setup and the tenancy terms to Housing', async () => {
     renderRent(overview({ config: null, cycle: null }))
     expect(await screen.findByRole('link', { name: 'Set up lease' })).toHaveAttribute(
       'href',
       '/housing?tab=lease',
     )
-    expect(screen.getByRole('link', { name: 'Lease Settings' })).toHaveAttribute(
-      'href',
-      '/housing?tab=lease',
+    // With no lease there is no rent to divide yet.
+    expect(screen.queryByRole('radiogroup', { name: 'Rental agreement structure' })).toBeNull()
+  })
+
+  it('shows the master tenancy in one line, with the way to its terms', async () => {
+    renderRent(
+      overview({
+        config: {
+          ...config,
+          lease_start_date: '2026-04-01',
+          lease_end_date: '2027-02-28',
+          notice_period_days: 30,
+          lifecycle: { current_month_index: 7, duration_months: 11 },
+        },
+        cycle: null,
+        preview,
+      }),
     )
+    const card = await screen.findByRole('region', { name: 'Master tenancy' })
+    expect(card).toHaveTextContent('1 Apr 2026 – 28 Feb 2027 (Month 7 of 11)')
+    expect(card).toHaveTextContent('Landlord: Rajesh Kumar Sharma')
+    expect(card).toHaveTextContent('30-day notice')
+    expect(
+      within(card).getByRole('link', { name: /Manage Master Tenancy & Renewal/ }),
+    ).toHaveAttribute('href', '/housing?tab=lease')
+  })
+
+  it('shows how the rent is divided and receipted on the Rent screen', async () => {
+    renderRent(overview({ cycle: null, preview: tieredPreview }), {
+      'POST /api/rent/config': { ...config, requires_landlord_receipt: true },
+    })
+    const group = await screen.findByRole('radiogroup', { name: 'Rental agreement structure' })
+    expect(within(group).getByText('Default Model')).toBeInTheDocument()
+    // This month's room rents add up, so room-tiered is offered.
+    expect(within(group).getByText('Available This Month')).toBeInTheDocument()
+    const receipts = screen.getByRole('switch', { name: 'Do you receive receipts from the landlord?' })
+    expect(receipts).toHaveAttribute('aria-checked', 'false')
+    await userEvent.click(receipts)
+    await waitFor(() => expect(posted('/api/rent/config')).toBeDefined())
+    // Only the preference is sent; the rest of the lease is left as it is.
+    expect(posted('/api/rent/config')!.body).toEqual({ requires_landlord_receipt: true })
   })
 
   it('generates rent without the residents the operator left out', async () => {
