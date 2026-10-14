@@ -56,6 +56,7 @@ from ..persistence import Database, UnitOfWork
 from . import audit, definitions, expenses, payments
 from . import property as household
 from .allocation import plan_allocation
+from .apartments import premises_address
 from .common import (
     get_apartment,
     get_expense,
@@ -1267,7 +1268,7 @@ def get_resident_rent_receipt(db: Database, *, apartment_id: str, settlement_mon
         "month_label": month_label(settlement_month),
         "resident_id": resident_id,
         "resident_name": resident["display_name"],
-        "premises": apartment["name"],
+        "premises": premises_address(apartment),
         "amount_paise": receipt["amount_paise"],
         "amount_in_words": paise_in_words(receipt["amount_paise"]),
         "total_rent_paise": cycle["total_rent_paise"],

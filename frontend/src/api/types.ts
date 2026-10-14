@@ -36,6 +36,16 @@ export interface Apartment {
   currency_code: string
   timezone: string
   created_at: string
+  /** The postal address, part by part; each is null until recorded. */
+  flat_number?: string | null
+  tower_block?: string | null
+  society_name?: string | null
+  locality_street?: string | null
+  city?: string | null
+  state?: string | null
+  pincode?: string | null
+  /** The parts on one line, as HRA receipts print it; the name when none are set. */
+  premises_address?: string
 }
 
 export interface Resident {

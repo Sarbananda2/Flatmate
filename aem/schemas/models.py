@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 DATE_PATTERN = r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$"
 MONTH_PATTERN = r"^\d{4}-(0[1-9]|1[0-2])$"
+PINCODE_PATTERN = r"^[1-9][0-9]{5}$"
 
 AllocationMethod = Literal["equal", "weighted", "custom", "measured", "host_guest"]
 PlannableMethod = Literal["equal", "weighted", "custom"]
@@ -92,9 +93,35 @@ class ApartmentCreate(ApiModel):
 
 
 class ApartmentUpdate(ApiModel):
+    """A field left out is kept; an address part sent as null is cleared."""
+
     name: str | None = Field(None, min_length=1, max_length=200)
     currency_code: str | None = Field(None, min_length=3, max_length=3)
     timezone: str | None = Field(None, min_length=1, max_length=64)
+    flat_number: str | None = Field(None, max_length=50)
+    tower_block: str | None = Field(None, max_length=50)
+    society_name: str | None = Field(None, max_length=150)
+    locality_street: str | None = Field(None, max_length=200)
+    city: str | None = Field(None, max_length=100)
+    state: str | None = Field(None, max_length=100)
+    pincode: str | None = Field(None, pattern=PINCODE_PATTERN)
+
+
+class ApartmentResponse(PassthroughModel):
+    apartment_id: str
+    name: str
+    currency_code: str
+    timezone: str
+    created_at: str
+    flat_number: str | None
+    tower_block: str | None
+    society_name: str | None
+    locality_street: str | None
+    city: str | None
+    state: str | None
+    pincode: str | None
+    # The address parts in Indian postal order; the name when none are set.
+    premises_address: str
 
 
 class ResidentCreate(ApiModel):
@@ -916,7 +943,8 @@ class RecurringGenerateRequest(ApiModel):
 
 __all__ = [
     "AdjustmentCreate", "AdjustmentReverse", "AllocationMethod", "OpeningBalanceCreate", "OpeningBalanceItem",
-    "AllocationPreviewRequest", "ApartmentCreate", "ApartmentUpdate", "ApiModel",
+    "AllocationPreviewRequest", "ApartmentCreate", "ApartmentResponse", "ApartmentUpdate",
+    "ApiModel", "PINCODE_PATTERN",
     "BillComponentInput", "CreditApplyRequest", "DATE_PATTERN", "DefinitionCreate",
     "DefinitionUpdate", "ElectricityCreate", "ElectricityPreviewRequest",
     "ElectricityRecalculate", "EngineAllocationMethod", "ErrorBody", "ErrorResponse",

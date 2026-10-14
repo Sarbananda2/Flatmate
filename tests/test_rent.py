@@ -20,6 +20,7 @@ from aem.config import get_settings
 from aem.errors import ConflictError, NotFoundError, ValidationError
 from aem.money import paise_in_words
 from aem.services import (
+    apartments,
     expenses,
     payments,
     reconciliation,
@@ -805,6 +806,18 @@ def test_each_participant_gets_a_verifiable_receipt_for_their_share(leased):
                                        settlement_month=MONTH, resident_id="chris")
     amounts = _rows(leased, "SELECT SUM(amount_paise) AS total, COUNT(*) AS n FROM rent_receipt")
     assert amounts == [{"total": 4_500_000, "n": 2}], "the receipts account for all the rent"
+
+
+def test_a_receipt_states_the_premises_by_its_postal_address(leased):
+    _generate(leased)
+    _disburse(leased, "pool")
+    apartments.update_apartment(leased, APARTMENT, flat_number="402", tower_block="B",
+                                society_name="Green Meadows", city="Pune",
+                                state="Maharashtra", pincode="411045")
+    receipt = rent.get_resident_rent_receipt(leased, apartment_id=APARTMENT,
+                                             settlement_month=MONTH, resident_id="alice")
+    assert receipt["premises"] == "402, B, Green Meadows, Pune, Maharashtra - 411045"
+    assert receipt["hash_matches"] is True, "the address is not part of what was hashed"
 
 
 def test_a_receipt_keeps_the_landlord_details_it_was_issued_with(leased):

@@ -521,7 +521,25 @@ function ProfileFact({ label, children }: { label: string; children: React.React
 
 const NOT_RECORDED = <span className="text-[var(--text-tertiary)]">Not recorded</span>
 
-/** The flat itself. Its name is printed as the premises on HRA rent receipts. */
+/** A PIN code: six digits, the first never 0. The backend checks the same. */
+const PINCODE_PATTERN = /^[1-9][0-9]{5}$/
+
+/** The address parts, in postal order, with what each is called and may hold. */
+const ADDRESS_PARTS = [
+  { field: 'flat_number', label: 'Flat Number', maxLength: 50, placeholder: '1805' },
+  { field: 'tower_block', label: 'Tower / Wing / Block', maxLength: 50, placeholder: 'CG6' },
+  { field: 'society_name', label: 'Society / Complex Name', maxLength: 150, placeholder: 'Supertech Capetown' },
+  { field: 'locality_street', label: 'Locality / Sector / Street', maxLength: 200, placeholder: 'Sector 74' },
+  { field: 'city', label: 'City', maxLength: 100, placeholder: 'Noida' },
+  { field: 'state', label: 'State', maxLength: 100, placeholder: 'Uttar Pradesh' },
+] as const
+
+type AddressField = (typeof ADDRESS_PARTS)[number]['field'] | 'pincode'
+
+/**
+ * The flat itself, by its postal address. The parts are printed, in order, as
+ * the premises on HRA rent receipts.
+ */
 export function ApartmentProfileCard({
   apartment,
   onSaved,
@@ -530,24 +548,28 @@ export function ApartmentProfileCard({
   onSaved: () => void
 }) {
   const [editing, setEditing] = useState(false)
+  const cityState = [apartment.city, apartment.state].filter(Boolean).join(', ')
+  const fact = (value: string | null | undefined) => value || NOT_RECORDED
   return (
     <Panel
-      title="Apartment Profile"
+      title="Apartment & Property Details"
       icon={<Home className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       actions={<EditButton label="Edit apartment" onClick={() => setEditing(true)} />}
     >
-      <dl className="m-0 grid grid-cols-1 md:grid-cols-3 gap-4" aria-label="Apartment profile">
-        <div className="md:col-span-2">
-          <ProfileFact label="Name & Address">
-            <span className="font-semibold">{apartment.name}</span>
-          </ProfileFact>
-        </div>
-        <ProfileFact label="Currency · Time Zone">
-          {`${apartment.currency_code} · ${apartment.timezone}`}
+      <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4" aria-label="Apartment profile">
+        <ProfileFact label="Flat / Unit">
+          {apartment.flat_number ? <span className="font-semibold">{apartment.flat_number}</span> : NOT_RECORDED}
+        </ProfileFact>
+        <ProfileFact label="Tower / Block">{fact(apartment.tower_block)}</ProfileFact>
+        <ProfileFact label="Society / Complex">{fact(apartment.society_name)}</ProfileFact>
+        <ProfileFact label="Locality / Sector">{fact(apartment.locality_street)}</ProfileFact>
+        <ProfileFact label="City & State">{fact(cityState)}</ProfileFact>
+        <ProfileFact label="PIN Code">
+          {apartment.pincode ? <span className="tabular">{apartment.pincode}</span> : NOT_RECORDED}
         </ProfileFact>
       </dl>
       {editing && (
-        <EditApartmentDialog
+        <EditApartmentModal
           apartment={apartment}
           onClose={() => setEditing(false)}
           onSaved={() => {
@@ -560,7 +582,7 @@ export function ApartmentProfileCard({
   )
 }
 
-function EditApartmentDialog({
+function EditApartmentModal({
   apartment,
   onClose,
   onSaved,
@@ -570,18 +592,34 @@ function EditApartmentDialog({
   onSaved: () => void
 }) {
   const toast = useToast()
-  const [name, setName] = useState(apartment.name)
+  const [values, setValues] = useState<Record<AddressField, string>>(() => ({
+    flat_number: apartment.flat_number ?? '',
+    tower_block: apartment.tower_block ?? '',
+    society_name: apartment.society_name ?? '',
+    locality_street: apartment.locality_street ?? '',
+    city: apartment.city ?? '',
+    state: apartment.state ?? '',
+    pincode: apartment.pincode ?? '',
+  }))
   const [submitted, setSubmitted] = useState(false)
-  const error = !name.trim()
-    ? 'Enter the apartment name and address.'
-    : name.trim().length > 200
-      ? 'Keep it to 200 characters.'
-      : null
+  const set = (field: AddressField) => (value: string) => setValues((now) => ({ ...now, [field]: value }))
+  const errors: Partial<Record<AddressField, string>> = {}
+  for (const { field, maxLength } of ADDRESS_PARTS) {
+    if (values[field].trim().length > maxLength) errors[field] = `Keep it to ${maxLength} characters.`
+  }
+  const pincode = values.pincode.trim()
+  // Checked as it is typed, unlike the rest, so a mistyped PIN shows at once.
+  const pincodeError =
+    pincode && !PINCODE_PATTERN.test(pincode) ? 'A PIN code is 6 digits and does not start with 0.' : null
+  const valid = Object.keys(errors).length === 0 && !pincodeError
   const save = useMutation(
     () =>
-      api.patch<Apartment>(`/api/apartments/${encodeURIComponent(apartment.apartment_id)}`, {
-        name: name.trim(),
-      }),
+      api.patch<Apartment>(
+        `/api/apartments/${encodeURIComponent(apartment.apartment_id)}`,
+        Object.fromEntries(
+          (Object.keys(values) as AddressField[]).map((field) => [field, values[field].trim() || null]),
+        ),
+      ),
     {
       onSuccess: () => {
         toast.success('Apartment saved')
@@ -591,8 +629,8 @@ function EditApartmentDialog({
   )
   return (
     <Modal
-      title="Edit Apartment"
-      description="The name is printed as the premises on every HRA rent receipt, so include the address."
+      title="Edit Apartment & Property Details"
+      description="The address is printed, part by part, as the premises on every HRA rent receipt."
       onClose={onClose}
       footer={
         <>
@@ -612,19 +650,33 @@ function EditApartmentDialog({
         onSubmit={(event) => {
           event.preventDefault()
           setSubmitted(true)
-          if (!error && !save.pending) void save.run(undefined)
+          if (valid && !save.pending) void save.run(undefined)
         }}
       >
         {save.error && <ErrorNotice error={save.error} />}
-        <TextField
-          label="Name & address"
-          value={name}
-          onChange={setName}
-          required
-          maxLength={210}
-          placeholder="Flat 1805, CG6, Supertech Capetown, Sector 74, Noida"
-          error={submitted ? error : null}
-        />
+        <div className={GRID_2}>
+          {ADDRESS_PARTS.map(({ field, label, maxLength, placeholder }) => (
+            <TextField
+              key={field}
+              label={label}
+              value={values[field]}
+              onChange={set(field)}
+              maxLength={maxLength + 10}
+              placeholder={placeholder}
+              error={submitted ? (errors[field] ?? null) : null}
+            />
+          ))}
+          <TextField
+            label="PIN Code"
+            value={values.pincode}
+            onChange={set('pincode')}
+            inputMode="numeric"
+            maxLength={6}
+            placeholder="201301"
+            hint="6 digits"
+            error={pincodeError}
+          />
+        </div>
       </form>
     </Modal>
   )

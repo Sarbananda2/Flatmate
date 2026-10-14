@@ -1,7 +1,8 @@
 """Apartment records and operator settings."""
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Mapping
 
 from ..errors import ConflictError, ValidationError
 from ..ids import now_timestamp
@@ -10,6 +11,41 @@ from . import audit
 from .common import apartment_exists, get_apartment, optional_text, require_text
 
 DEFAULT_APARTMENT_SETTING = "default_apartment_id"
+
+# The postal address, part by part, in Indian postal order, with each part's
+# longest allowed length. The PIN code follows them, after a dash.
+ADDRESS_FIELDS = (("flat_number", 50), ("tower_block", 50), ("society_name", 150),
+                  ("locality_street", 200), ("city", 100), ("state", 100))
+PINCODE_RE = re.compile(r"^[1-9][0-9]{5}$")
+EDITABLE_FIELDS = ["name", "currency_code", "timezone",
+                   *(field for field, _ in ADDRESS_FIELDS), "pincode"]
+
+
+def premises_address(apartment: Mapping[str, Any]) -> str:
+    """The apartment's address on one line, as HRA rent receipts print it.
+
+    The parts that are set, in postal order -- "1805, CG6, Supertech Capetown,
+    Sector 74, Noida, Uttar Pradesh - 201301". An apartment with no address
+    parts recorded falls back to its name, which until migration 0014 was where
+    the address was written.
+    """
+    line = ", ".join(apartment[field] for field, _ in ADDRESS_FIELDS if apartment.get(field))
+    pincode = apartment.get("pincode")
+    if pincode:
+        line = f"{line} - {pincode}" if line else pincode
+    return line or apartment["name"]
+
+
+def _present(apartment: dict[str, Any]) -> dict[str, Any]:
+    return {**apartment, "premises_address": premises_address(apartment)}
+
+
+def _pincode(value: Any) -> str | None:
+    pincode = optional_text(value, "pincode", max_length=50)
+    if pincode is not None and not PINCODE_RE.match(pincode):
+        raise ValidationError("The PIN code must be 6 digits and cannot start with 0.",
+                              code="invalid_pincode", details={"field": "pincode"})
+    return pincode
 
 
 def create_apartment(db: Database, *, apartment_id: str, name: str,
@@ -34,34 +70,47 @@ def create_apartment(db: Database, *, apartment_id: str, name: str,
                                 "timezone": timezone})
         if _get_setting(uow, DEFAULT_APARTMENT_SETTING) is None:
             _set_setting(uow, DEFAULT_APARTMENT_SETTING, apartment_id)
-        return get_apartment(uow, apartment_id)
+        return _present(get_apartment(uow, apartment_id))
 
 
-def update_apartment(db: Database, apartment_id: str, *, name: str | None = None,
-                     currency_code: str | None = None, timezone: str | None = None,
-                     actor: str = "operator") -> dict[str, Any]:
+def update_apartment(db: Database, apartment_id: str, *, actor: str = "operator",
+                     **changes: Any) -> dict[str, Any]:
+    """Change the apartment's name, settings or address.
+
+    ``name``, ``currency_code`` and ``timezone`` are kept when left out or
+    given as ``None``. An address part that is given is set, and ``None`` or an
+    empty string clears it.
+    """
+    unknown = sorted(set(changes) - set(EDITABLE_FIELDS))
+    if unknown:
+        raise ValidationError(f"Unsupported apartment fields: {', '.join(unknown)}.",
+                              details={"unsupported_fields": unknown,
+                                       "editable_fields": EDITABLE_FIELDS})
     with db.transaction() as uow:
         before = get_apartment(uow, apartment_id)
         after = dict(before)
-        if name is not None:
-            after["name"] = require_text(name, "name", max_length=200)
-        if currency_code is not None:
-            after["currency_code"] = require_text(currency_code, "currency_code", max_length=3).upper()
-        if timezone is not None:
-            after["timezone"] = require_text(timezone, "timezone", max_length=64)
-        uow.apartments.update(apartment_id, name=after["name"],
-                              currency_code=after["currency_code"],
-                              timezone=after["timezone"])
+        if changes.get("name") is not None:
+            after["name"] = require_text(changes["name"], "name", max_length=200)
+        if changes.get("currency_code") is not None:
+            after["currency_code"] = require_text(changes["currency_code"], "currency_code",
+                                                  max_length=3).upper()
+        if changes.get("timezone") is not None:
+            after["timezone"] = require_text(changes["timezone"], "timezone", max_length=64)
+        for field, max_length in ADDRESS_FIELDS:
+            if field in changes:
+                after[field] = optional_text(changes[field], field, max_length=max_length)
+        if "pincode" in changes:
+            after["pincode"] = _pincode(changes["pincode"])
+        uow.apartments.update(apartment_id, **{field: after[field] for field in EDITABLE_FIELDS})
         audit.record_field_changes(
             uow, entity_type="apartment", entity_id=apartment_id, before=before,
-            after=after, fields=["name", "currency_code", "timezone"],
-            actor=actor, apartment_id=apartment_id)
-        return get_apartment(uow, apartment_id)
+            after=after, fields=EDITABLE_FIELDS, actor=actor, apartment_id=apartment_id)
+        return _present(get_apartment(uow, apartment_id))
 
 
 def list_apartments(db: Database) -> list[dict[str, Any]]:
     with db.read() as uow:
-        return uow.apartments.list_all()
+        return [_present(apartment) for apartment in uow.apartments.list_all()]
 
 
 def count_apartments(db: Database) -> int:
@@ -71,7 +120,7 @@ def count_apartments(db: Database) -> int:
 
 def read_apartment(db: Database, apartment_id: str) -> dict[str, Any]:
     with db.read() as uow:
-        return get_apartment(uow, apartment_id)
+        return _present(get_apartment(uow, apartment_id))
 
 
 def _get_setting(uow: UnitOfWork, key: str) -> str | None:

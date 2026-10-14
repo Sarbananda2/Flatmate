@@ -82,6 +82,17 @@ The container for everything. A household normally has one.
 | `currency_code` | TEXT | `INR` by default |
 | `timezone` | TEXT | `Asia/Kolkata` by default |
 | `created_at` | TEXT | |
+| `flat_number` | TEXT, nullable | Added in 0014, as are the address parts below |
+| `tower_block` | TEXT, nullable | Tower, wing or block |
+| `society_name` | TEXT, nullable | Society or complex |
+| `locality_street` | TEXT, nullable | Locality, sector or street |
+| `city` | TEXT, nullable | |
+| `state` | TEXT, nullable | |
+| `pincode` | TEXT, nullable | `CHECK` six digits, not starting with 0 |
+
+The API adds `premises_address`, the parts that are set joined in postal order
+(`1805, CG6, Supertech Capetown, Sector 74, Noida, Uttar Pradesh - 201301`), or
+the name when none are. HRA rent receipts print it as the premises.
 
 ### `resident`
 
@@ -398,6 +409,7 @@ The API maps each marker to an HTTP 409 with the matching error code.
 | 0011 | `household_contact`, `household_document` | The owner, broker, caretaker and other contacts; and the document vault, with each file stored as BYTEA beside its SHA-256 |
 | 0012 | `household_room.base_rent_paise` | Room base rent for tiered rent allocation; unique room-to-slot escrow constraint |
 | 0013 | `rent_lease_config.rent_split_mode` | Active rent allocation model (`equal` vs `room_tiered`) saved directly on the lease configuration |
+| 0014 | `apartment` atomic address | Atomic Indian residential address fields (`flat_number`, `tower_block`, `society_name`, `locality_street`, `city`, `state`, `pincode`) |
 
 Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from a single `0001_baseline.sql` that carries all six, so its migration files are `0001` and then `0007` onward: the numbering continues the history above rather than restarting.
 

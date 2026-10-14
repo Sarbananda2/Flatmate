@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Path, Query
 from ...errors import AemError
 from ...schemas import (
     ApartmentCreate,
+    ApartmentResponse,
     ApartmentUpdate,
     SetupApartmentRequest,
     SetupCategoriesRequest,
@@ -28,7 +29,8 @@ def list_apartments(db: Db) -> dict[str, Any]:
             "default_apartment_id": apartments.default_apartment_id(db)}
 
 
-@router.post("/apartments", status_code=201, summary="Create an apartment")
+@router.post("/apartments", status_code=201, response_model=ApartmentResponse,
+             summary="Create an apartment")
 def create_apartment(payload: ApartmentCreate, db: Db,
                      settings: AppSettings) -> dict[str, Any]:
     try:
@@ -38,7 +40,8 @@ def create_apartment(payload: ApartmentCreate, db: Db,
         raise to_http(exc) from exc
 
 
-@router.get("/apartments/{apartment_id}", summary="Read one apartment")
+@router.get("/apartments/{apartment_id}", response_model=ApartmentResponse,
+            summary="Read one apartment")
 def read_apartment(db: Db, apartment_id: str = Path()) -> dict[str, Any]:
     try:
         return apartments.read_apartment(db, apartment_id)
@@ -46,7 +49,8 @@ def read_apartment(db: Db, apartment_id: str = Path()) -> dict[str, Any]:
         raise to_http(exc) from exc
 
 
-@router.patch("/apartments/{apartment_id}", summary="Update an apartment")
+@router.patch("/apartments/{apartment_id}", response_model=ApartmentResponse,
+              summary="Update an apartment")
 def update_apartment(payload: ApartmentUpdate, db: Db, settings: AppSettings,
                      apartment_id: str = Path()) -> dict[str, Any]:
     try:

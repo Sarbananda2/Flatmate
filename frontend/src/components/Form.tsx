@@ -72,6 +72,7 @@ export function TextField({
   maxLength,
   disabled,
   autoComplete,
+  inputMode,
 }: {
   label: ReactNode
   value: string
@@ -84,6 +85,7 @@ export function TextField({
   maxLength?: number
   disabled?: boolean
   autoComplete?: string
+  inputMode?: 'numeric' | 'tel' | 'email'
 }) {
   return (
     <Field label={label} hint={hint} error={error} required={required}>
@@ -96,6 +98,7 @@ export function TextField({
           maxLength={maxLength}
           disabled={disabled}
           autoComplete={autoComplete}
+          inputMode={inputMode}
           aria-describedby={describedBy}
           aria-invalid={invalid || undefined}
           required={required}

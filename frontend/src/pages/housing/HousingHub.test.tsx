@@ -82,6 +82,14 @@ const apartment = {
   currency_code: 'INR',
   timezone: 'Asia/Kolkata',
   created_at: '2026-10-01T10:00:00+05:30',
+  flat_number: '1805',
+  tower_block: 'CG6',
+  society_name: 'Supertech Capetown',
+  locality_street: 'Sector 74',
+  city: 'Noida',
+  state: 'Uttar Pradesh',
+  pincode: '201301',
+  premises_address: '1805, CG6, Supertech Capetown, Sector 74, Noida, Uttar Pradesh - 201301',
 }
 
 function Where() {
@@ -131,7 +139,11 @@ describe('HousingHub layout', () => {
   it('shows the apartment in full on the tenancy tab, with its own Edit', async () => {
     open()
     const profile = await screen.findByLabelText('Apartment profile')
-    expect(profile).toHaveTextContent('Flat 1805, CG6, Supertech Capetown')
+    for (const text of ['Flat / Unit', '1805', 'Tower / Block', 'CG6', 'Supertech Capetown',
+      'Sector 74', 'Noida, Uttar Pradesh', 'PIN Code', '201301']) {
+      expect(profile).toHaveTextContent(text)
+    }
+    expect(profile).not.toHaveTextContent(/Currency|Time Zone|Asia\/Kolkata/)
     expect(screen.getByRole('button', { name: 'Edit apartment' })).toBeInTheDocument()
   })
 })

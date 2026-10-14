@@ -22,11 +22,17 @@ class ApartmentsRepository(Repository):
                VALUES (%s,%s,%s,%s,%s)""",
             (apartment_id, name, currency_code, timezone, created_at))
 
-    def update(self, apartment_id: str, *, name: str, currency_code: str,
-               timezone: str) -> None:
+    def update(self, apartment_id: str, *, name: str, currency_code: str, timezone: str,
+               flat_number: str | None, tower_block: str | None, society_name: str | None,
+               locality_street: str | None, city: str | None, state: str | None,
+               pincode: str | None) -> None:
         self._s.execute(
-            "UPDATE apartment SET name=%s, currency_code=%s, timezone=%s WHERE apartment_id=%s",
-            (name, currency_code, timezone, apartment_id))
+            """UPDATE apartment SET name=%s, currency_code=%s, timezone=%s, flat_number=%s,
+                                    tower_block=%s, society_name=%s, locality_street=%s,
+                                    city=%s, state=%s, pincode=%s
+               WHERE apartment_id=%s""",
+            (name, currency_code, timezone, flat_number, tower_block, society_name,
+             locality_street, city, state, pincode, apartment_id))
 
     def list_all(self) -> list[dict[str, Any]]:
         return self._s.fetch_all("SELECT * FROM apartment ORDER BY name, apartment_id")

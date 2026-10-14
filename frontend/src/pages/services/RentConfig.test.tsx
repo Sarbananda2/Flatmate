@@ -78,6 +78,14 @@ const APARTMENT = {
   currency_code: 'INR',
   timezone: 'Asia/Kolkata',
   created_at: '2026-10-01T09:00:00+05:30',
+  flat_number: '1805',
+  tower_block: 'CG6',
+  society_name: 'Supertech Capetown',
+  locality_street: null as string | null,
+  city: 'Noida',
+  state: 'Uttar Pradesh',
+  pincode: '201301',
+  premises_address: '1805, CG6, Supertech Capetown, Noida, Uttar Pradesh - 201301',
 }
 
 function renderPage(
@@ -206,33 +214,90 @@ describe('LeaseContractSection', () => {
     expect(await screen.findByText('Rajesh Kumar Sharma saved')).toBeInTheDocument()
   })
 
-  it('shows the apartment and edits only its name and address', async () => {
+  it('shows the apartment address part by part, without currency or time zone', async () => {
+    renderPage(saved, {}, APARTMENT)
+    const profile = await screen.findByLabelText('Apartment profile')
+    const facts = Object.fromEntries(
+      within(profile)
+        .getAllByRole('term')
+        .map((term) => [term.textContent, term.nextElementSibling?.textContent]),
+    )
+    expect(facts).toEqual({
+      'Flat / Unit': '1805',
+      'Tower / Block': 'CG6',
+      'Society / Complex': 'Supertech Capetown',
+      'Locality / Sector': 'Not recorded',
+      'City & State': 'Noida, Uttar Pradesh',
+      'PIN Code': '201301',
+    })
+    expect(screen.getByText('Apartment & Property Details')).toBeInTheDocument()
+    expect(profile).not.toHaveTextContent(/Currency|Time Zone|INR|Asia\/Kolkata/)
+  })
+
+  it('edits the address in a modal, checking the PIN code as it is typed', async () => {
     let reloaded = false
     renderPage(
       saved,
-      { 'PATCH /api/apartments/home': { ...APARTMENT, name: 'Flat 1805, CG6, Supertech Capetown, Noida' } },
+      { 'PATCH /api/apartments/home': { ...APARTMENT, locality_street: 'Sector 74' } },
       APARTMENT,
       () => {
         reloaded = true
       },
     )
-    const profile = await screen.findByLabelText('Apartment profile')
-    expect(profile).toHaveTextContent('Flat 1805, CG6, Supertech Capetown')
-    expect(profile).toHaveTextContent('INR · Asia/Kolkata')
-    await userEvent.click(screen.getByRole('button', { name: 'Edit apartment' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit apartment' }))
     const dialog = screen.getByRole('dialog')
-    const name = within(dialog).getByLabelText(/Name & address/)
-    await userEvent.clear(name)
+    for (const label of [
+      'Flat Number',
+      'Tower / Wing / Block',
+      'Society / Complex Name',
+      'Locality / Sector / Street',
+      'City',
+      'State',
+    ]) {
+      expect(within(dialog).getByLabelText(label)).toBeInTheDocument()
+    }
+    expect(within(dialog).getByLabelText('Flat Number')).toHaveValue('1805')
+    await userEvent.type(within(dialog).getByLabelText('Locality / Sector / Street'), 'Sector 74')
+
+    const pincode = within(dialog).getByLabelText(/PIN Code/)
+    await userEvent.clear(pincode)
+    await userEvent.type(pincode, '012345')
+    expect(within(dialog).getByText('A PIN code is 6 digits and does not start with 0.')).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
-    expect(within(dialog).getByText('Enter the apartment name and address.')).toBeInTheDocument()
-    await userEvent.type(name, 'Flat 1805, CG6, Supertech Capetown, Noida')
+    expect(stub!.calls.some((call) => call.method === 'PATCH')).toBe(false)
+
+    await userEvent.clear(pincode)
+    await userEvent.type(pincode, '201301')
+    expect(within(dialog).queryByText('A PIN code is 6 digits and does not start with 0.')).toBeNull()
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     await waitFor(() =>
       expect(stub!.calls.find((call) => call.method === 'PATCH')?.body).toEqual({
-        name: 'Flat 1805, CG6, Supertech Capetown, Noida',
+        flat_number: '1805',
+        tower_block: 'CG6',
+        society_name: 'Supertech Capetown',
+        locality_street: 'Sector 74',
+        city: 'Noida',
+        state: 'Uttar Pradesh',
+        pincode: '201301',
       }),
     )
     await waitFor(() => expect(reloaded).toBe(true))
+  })
+
+  it('sends a cleared address part as null and Cancel saves nothing', async () => {
+    renderPage(saved, { 'PATCH /api/apartments/home': { ...APARTMENT, tower_block: null } }, APARTMENT)
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit apartment' }))
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(stub!.calls.some((call) => call.method === 'PATCH')).toBe(false)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit apartment' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.clear(within(dialog).getByLabelText('Tower / Wing / Block'))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() =>
+      expect(stub!.calls.find((call) => call.method === 'PATCH')?.body).toMatchObject({ tower_block: null }),
+    )
   })
 
   it('leaves out the completed terms until there are some', async () => {
