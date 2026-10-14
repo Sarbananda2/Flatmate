@@ -611,6 +611,49 @@ class FlatmateStatementList(PassthroughModel):
     items: list[ResidentMonthlyStatement]
 
 
+class RoomCreate(ApiModel):
+    room_number: str = Field(min_length=1, max_length=50,
+                             description="Unique in the flat, ignoring case.")
+    has_attached_washroom: bool = False
+    has_balcony: bool = False
+    assigned_resident_id: str | None = Field(
+        None, max_length=64, description="An active resident without a room. Omit for vacant.")
+    effective_date: str | None = Field(
+        None, pattern=DATE_PATTERN,
+        description="When the occupant moved in. Defaults to today; never in the future.")
+
+
+class RoomUpdate(ApiModel):
+    room_number: str | None = Field(None, min_length=1, max_length=50)
+    has_attached_washroom: bool | None = None
+    has_balcony: bool | None = None
+    assigned_resident_id: str | None = Field(
+        None, max_length=64, description="A resident to assign, or null to vacate the room.")
+    effective_date: str | None = Field(None, pattern=DATE_PATTERN)
+
+
+class RoomAssignRequest(ApiModel):
+    resident_id: str = Field(min_length=1, max_length=64)
+    effective_date: str = Field(pattern=DATE_PATTERN,
+                                description="When they moved in. Never in the future.")
+
+
+class RoomVacateRequest(ApiModel):
+    reason: str | None = Field(None, max_length=2000)
+
+
+class RoomResponse(PassthroughModel):
+    room_id: str
+    apartment_id: str
+    room_number: str
+    has_attached_washroom: bool
+    has_balcony: bool
+    assigned_resident_id: str | None
+    assigned_display_name: str | None
+    assigned_since: str | None
+    status: Literal["occupied", "vacant"]
+
+
 class RentGenerateRequest(ApiModel):
     excluded_resident_ids: list[str] = Field(
         default_factory=list,
@@ -787,6 +830,7 @@ __all__ = [
     "LandlordReceiptUpload", "RentDisburseRequest", "RentGenerateRequest",
     "ExitClearanceExecuteRequest", "ExitClearancePreview", "ExitClearanceResponse",
     "FlatmateStatementList", "ResidentMonthlyPaymentItem", "ResidentMonthlyStatement",
+    "RoomAssignRequest", "RoomCreate", "RoomResponse", "RoomUpdate", "RoomVacateRequest",
     "ResidentMonthlyStatementItem",
     "DepositConfigUpdate", "DepositSlotFundingRequest", "DepositSlotInitRequest",
     "DepositSlotItem", "DepositSlotVacateRequest",

@@ -33,14 +33,28 @@ const noDeposits = {
   total_funded_paise: 0,
 }
 
+const noRooms = {
+  items: [],
+  total: 0,
+  summary: {
+    total_rooms: 0,
+    occupied_rooms: 0,
+    vacant_rooms: 0,
+    with_attached_washroom: 0,
+    with_balcony: 0,
+  },
+}
+
 function renderHub(
   overview: { rent: unknown; electricity: unknown },
   deposits: Record<string, unknown> = noDeposits,
+  rooms: Record<string, unknown> = noRooms,
 ) {
   stub = installFetchStub({
     routes: {
       '/api/services': { settlement_month: MONTH, ...overview },
       '/api/rent/deposits': deposits,
+      '/api/property/rooms': rooms,
     },
   })
   render(
@@ -161,5 +175,40 @@ describe('ServicesHub', () => {
     expect(within(rent).getAllByText('Not configured')).toHaveLength(4)
     expect(screen.queryByRole('link', { name: 'Config' })).toBeNull()
     expect(await screen.findByText('None entered yet')).toBeInTheDocument()
+  })
+
+  it('summarises the rooms and their occupancy', async () => {
+    renderHub(
+      { rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
+      noDeposits,
+      {
+        items: [],
+        total: 3,
+        summary: {
+          total_rooms: 3,
+          occupied_rooms: 2,
+          vacant_rooms: 1,
+          with_attached_washroom: 2,
+          with_balcony: 1,
+        },
+      },
+    )
+    const card = screen.getByRole('region', { name: 'Property & Rooms' })
+    expect(await within(card).findByText('3 Rooms')).toBeInTheDocument()
+    expect(within(card).getByText('2 of 3 Occupied')).toBeInTheDocument()
+    expect(within(card).getByText('1 Vacant')).toBeInTheDocument()
+    expect(
+      within(card).getByText('2 with attached washroom · 1 with balcony'),
+    ).toBeInTheDocument()
+    expect(within(card).getByRole('link', { name: /Manage Rooms/ })).toHaveAttribute(
+      'href',
+      '/services/rooms',
+    )
+  })
+
+  it('says when no rooms have been added', async () => {
+    renderHub({ rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
+    const card = screen.getByRole('region', { name: 'Property & Rooms' })
+    expect(await within(card).findAllByText('Not set up')).toHaveLength(4)
   })
 })

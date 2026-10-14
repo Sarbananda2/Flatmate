@@ -28,6 +28,7 @@ import type { OpeningBalanceItem, ResidentDetail } from '../api/types'
 import { ClearanceSlipPanel, ExitClearanceModal } from './ExitClearanceModal'
 import { ContactCard, EditProfileDialog, UpiCard } from './ResidentProfile'
 import { MonthlyStatementCard } from './ResidentStatement'
+import { AssignedRoomCard } from './services/PropertyRooms'
 import { ResidentDepositCard } from './services/SecurityDeposits'
 
 export default function ResidentDetailPage() {
@@ -219,6 +220,8 @@ function Body({
         <ContactCard resident={data.resident} onEdit={() => setEditingProfile(true)} />
         <UpiCard resident={data.resident} />
       </div>
+
+      <AssignedRoomCard residentId={residentId} />
 
       <ResidentDepositCard residentId={residentId} />
 

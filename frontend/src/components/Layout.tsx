@@ -257,6 +257,8 @@ export function Layout({ children }: { children: ReactNode }) {
     location.pathname === '/rent/config' ||
     location.pathname === '/services/deposits' ||
     location.pathname === '/deposits' ||
+    location.pathname === '/services/rooms' ||
+    location.pathname === '/rooms' ||
     section === 'settings' ||
     section === 'residents'
   const showPeriodBar = !onWizard && !isConfigPage

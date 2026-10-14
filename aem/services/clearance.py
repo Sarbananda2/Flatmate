@@ -37,7 +37,7 @@ from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, format_inr
 from ..periods import parse_iso_date
 from ..persistence import Database, UnitOfWork
-from . import audit, deposits, reconciliation
+from . import audit, deposits, reconciliation, rooms
 from .common import get_apartment, get_resident, optional_text
 from .payments import _record_payment
 from .residents import update_resident_in
@@ -333,7 +333,9 @@ def execute_clearance(db: Database, apartment_id: str, resident_id: str,
                     "Nothing was saved.", code="clearance_not_zeroed",
                     details={"balance_before_paise": balance, "balance_after_paise": after})
 
-        # 3. The resident has moved out.
+        # 3. The resident has moved out, and their room is free.
+        rooms.vacate_resident_in(uow, apartment_id, resident_id, actor=actor,
+                                 reason="exit clearance")
         update_resident_in(uow, resident_id, apartment_id=apartment_id, actor=actor,
                            reason="exit clearance", is_active=False, active_until=move_out)
 

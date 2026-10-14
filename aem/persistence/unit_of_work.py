@@ -33,6 +33,7 @@ from .repositories.recurring import RecurringRepository
 from .repositories.rent import RentRepository
 from .repositories.reports import ReportsRepository
 from .repositories.residents import ResidentsRepository
+from .repositories.rooms import RoomsRepository
 from .repositories.setup import SetupRepository
 from .repositories.sharing import SharingRepository
 from .repositories.statements import StatementsRepository
@@ -82,6 +83,11 @@ class UnitOfWork:
     @cached_property
     def deposits(self) -> DepositsRepository:
         return DepositsRepository(self._session)
+
+
+    @cached_property
+    def rooms(self) -> RoomsRepository:
+        return RoomsRepository(self._session)
 
 
     @cached_property

@@ -1239,3 +1239,30 @@ export interface FlatmateStatementList {
     net_due_paise: number
   }
 }
+
+/** A room in the flat, and who occupies it. */
+export interface Room {
+  room_id: string
+  apartment_id: string
+  room_number: string
+  has_attached_washroom: boolean
+  has_balcony: boolean
+  assigned_resident_id: string | null
+  assigned_display_name: string | null
+  assigned_since: string | null
+  status: 'occupied' | 'vacant'
+  created_at: string
+  updated_at: string
+}
+
+export interface RoomList {
+  items: Room[]
+  total: number
+  summary: {
+    total_rooms: number
+    occupied_rooms: number
+    vacant_rooms: number
+    with_attached_washroom: number
+    with_balcony: number
+  }
+}

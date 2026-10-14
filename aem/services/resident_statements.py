@@ -185,9 +185,13 @@ def _build(uow: UnitOfWork, apartment_id: str, settlement_month: str,
 
     lease = uow.rent.active_lease(apartment_id)
     signatory = residents.get(lease["deposit_primary_signatory_resident_id"]) if lease else None
+    # The room they live in, or failing that the deposit slot they hold.
     rooms = {slot["assigned_resident_id"]: slot["slot_label"]
              for slot in uow.deposits.slots_for_apartment(apartment_id)
              if slot["assigned_resident_id"]}
+    rooms.update({room["assigned_resident_id"]: room["room_number"]
+                  for room in uow.rooms.list_for_apartment(apartment_id)
+                  if room["assigned_resident_id"]})
 
     statements: list[dict[str, Any]] = []
     for rid, resident in residents.items():

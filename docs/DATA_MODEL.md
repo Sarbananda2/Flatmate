@@ -394,6 +394,7 @@ The API maps each marker to an HTTP 409 with the matching error code.
 | 0007 | `resident_profile_extensions` | Emergency contact on `resident`: name, phone and relationship |
 | 0008 | `household_security_deposits` | Deposit funding mode and primary signatory on `rent_lease_config`; the household's permanent deposit slots (`household_deposit_slot`) and their transactions (`household_deposit_transaction`) |
 | 0009 | `resident_exit_clearance` | One append-only record per move-out clearance: the deposit settled, the operating balance at the time, the net cash figure, and how it was settled |
+| 0010 | `household_room`; `household_deposit_slot.room_id` | The flat's rooms, their washroom and balcony, and who occupies each; an optional link from a deposit slot to its room |
 
 Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from a single `0001_baseline.sql` that carries all six, so its migration files are `0001` and then `0007` onward: the numbering continues the history above rather than restarting.
 
@@ -456,6 +457,19 @@ The record of a resident's move-out settlement, written once and never edited (t
 | `clearing_payment_id` | TEXT FK → payment | The ledger payment that took their balance to zero, if there was one |
 
 `net_settlement_paise` is always `deposit_funded_paise - deposit_deductions_paise`, plus `ledger_credit_paise - ledger_outstanding_paise` when the offset was applied.
+
+### `household_room`
+The physical inventory of the flat: one row per room. Not money: nothing here touches the ledger.
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `room_number` | TEXT | e.g. "Room 1". Unique in the apartment; the application also refuses one that differs only in case |
+| `has_attached_washroom`, `has_balcony` | INTEGER 0/1 | The room's amenities |
+| `assigned_resident_id`, `assigned_since` | TEXT | The current occupant and the date they moved in; both null while vacant |
+
+A room holds at most one resident, and `UNIQUE (apartment_id, assigned_resident_id)` stops a resident holding two. Only an active resident can be assigned, and a move-out clearance frees the leaver's room in its own transaction. Only a vacant room can be deleted. Every change is in the audit log under `entity_type = 'household_room'`.
+
+`household_deposit_slot.room_id` may name a slot's room. Nothing sets it yet; a slot keeps its own `slot_label`.
 
 ### `rent_cycle`
 State of a month's rent: links `settlement_month` to its `expense_instance`. Tracks `disbursement_status` (`pending` vs `disbursed`), funder (`disbursed_by` = `pool` vs `resident_advance`), and funding payment ID.

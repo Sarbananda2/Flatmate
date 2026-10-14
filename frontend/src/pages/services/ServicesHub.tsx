@@ -1,14 +1,15 @@
 /**
  * Housing & Utilities.
  *
- * One card per recurring household service. Rent and electricity are live and
- * link to their own hubs; the rest are placeholders for services that are
+ * One card per recurring household service. Rent, electricity, deposits and
+ * rooms are live and link to their own screens; the rest are placeholders for services that are
  * planned but not built. Every figure comes from `GET /api/services`.
  */
 import { type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
+  BedDouble,
   Building2,
   Droplets,
   Flame,
@@ -29,6 +30,7 @@ import {
 import { type Resource, useResource } from '../../lib/useApi'
 import { formatMonth, formatMonthShort } from '../../lib/format'
 import type { LeaseLifecycle, ServicesOverview } from '../../api/types'
+import { useRooms } from './PropertyRooms'
 import { useDepositSummary } from './SecurityDeposits'
 
 const PLANNED_SERVICES: Array<{ title: string; icon: LucideIcon; body: string }> = [
@@ -70,6 +72,7 @@ export function ServicesHub({ month }: { month: string }) {
         <RentCard month={month} overview={overview} />
         <ElectricityCard month={month} overview={overview} />
         <SecurityDepositCard />
+        <PropertyRoomsCard />
         {PLANNED_SERVICES.map((service) => (
           <ServiceCard
             key={service.title}
@@ -313,6 +316,57 @@ function SecurityDepositCard() {
             <Fact label="Active slots">
               {deposits.total_slots_count > 0
                 ? `${occupied} of ${deposits.total_slots_count} occupied`
+                : NOT_SET_UP}
+            </Fact>
+          </dl>
+        )}
+      </AsyncSection>
+    </ServiceCard>
+  )
+}
+
+/* -------------------------------------------------------- property & rooms -- */
+
+/** The flat's rooms and how many are occupied. Inventory, so it does not follow the month. */
+function PropertyRoomsCard() {
+  const rooms = useRooms()
+  const summary = rooms.data?.summary
+  return (
+    <ServiceCard
+      title="Property & Rooms"
+      icon={BedDouble}
+      badge={
+        !summary ? undefined : summary.total_rooms === 0 ? (
+          <Pill tone="warning">Not set up</Pill>
+        ) : summary.vacant_rooms > 0 ? (
+          <Pill tone="warning">{summary.vacant_rooms} Vacant</Pill>
+        ) : (
+          <Pill tone="success">Fully occupied</Pill>
+        )
+      }
+      actions={
+        <Link to="/services/rooms" className={BUTTON_PRIMARY}>
+          Manage Rooms
+          <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        </Link>
+      }
+    >
+      <AsyncSection resource={rooms} loadingLabel="Loading rooms…">
+        {({ summary: counts }) => (
+          <dl className="m-0 space-y-2">
+            <Fact label="Rooms">
+              {counts.total_rooms > 0
+                ? `${counts.total_rooms} Room${counts.total_rooms === 1 ? '' : 's'}`
+                : NOT_SET_UP}
+            </Fact>
+            <Fact label="Occupancy">
+              {counts.total_rooms > 0
+                ? `${counts.occupied_rooms} of ${counts.total_rooms} Occupied`
+                : NOT_SET_UP}
+            </Fact>
+            <Fact label="Amenities">
+              {counts.total_rooms > 0
+                ? `${counts.with_attached_washroom} with attached washroom · ${counts.with_balcony} with balcony`
                 : NOT_SET_UP}
             </Fact>
           </dl>
