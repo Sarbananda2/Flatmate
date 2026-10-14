@@ -419,4 +419,18 @@ The frontend enforces strict UX, state-separation, and visual presentation invar
 ### Rule U6: Zero Dead Space for Empty Histories
 * **Invariant:** Historical archives and completed term logs must remain hidden or collapsed until at least one record exists. Do not render giant, empty full-width panels with placeholder text explaining that history has not occurred yet.
 
+---
+
+## Domain Modeling & Field Atomicity Standards
+
+The backend, database schemas, and frontend forms enforce strict domain field atomicity:
+
+### Rule D1: Strict Field Atomicity (Zero Compound String Blobs)
+* **Invariant:** Real-world entities, physical structures, legal identities, and financial references must **never** be compressed or stored as a single unstructured, multi-part string blob (e.g., storing flat number, tower, society, sector, city, and pincode in a single `"name"` or `"address"` column).
+* **Dedicated Columns & Types:** Every distinct real-world attribute must be modeled as an independent, strongly-typed column with its own dedicated syntax validator (regex, enum, or range check).
+* **Derived / Compiled Representations:** When a compound string is required (such as the premises address on an HRA rent receipt, or an account display label), it must be **dynamically compiled** from the underlying atomic attributes. The compound string is never the source of truth.
+* **Granular Input Interfaces:** Form and modal interfaces must provide dedicated, individual input fields for each atomic attribute, complete with client-side syntax validation (e.g., 6-digit Indian PIN code `^[1-9][0-9]{5}$`, 10-character PAN `^[A-Z]{5}[0-9]{4}[A-Z]$`). Free-text textareas or generic catch-all inputs for structured domain entities are strictly prohibited.
+* **Future Extension Enforcement:** Any future entity introduced into the system (e.g., vehicle parking slots, domestic help contracts, grocery pantry items) must adhere strictly to Rule D1. Multi-part composite data must be decomposed into atomic fields at schema design time.
+
+
 
