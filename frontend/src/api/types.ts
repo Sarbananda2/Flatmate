@@ -959,6 +959,26 @@ export interface RentPreview {
   blocked_reason: string | null
   matches_lease_rent: boolean
   statement: RentStatementRef | null
+  /** The split this preview was worked out for. */
+  split_mode: RentSplitMode
+  /** Whether the rent can be split by room, and each participant's room rent. */
+  room_tiered: RoomTieredPlan
+}
+
+export type RentSplitMode = 'equal' | 'room_tiered'
+
+export interface RoomTieredPlan {
+  available: boolean
+  blocked_reason: string | null
+  room_total_paise: number
+  lease_rent_paise: number
+  shares: Array<{
+    resident_id: string
+    display_name: string
+    room_id: string | null
+    room_number: string | null
+    base_rent_paise: number | null
+  }>
 }
 
 export interface RentMonthOverview {
@@ -1016,6 +1036,12 @@ export interface DepositSlot {
   paid_to_display_name: string | null
   is_primary_signatory: boolean
   transactions: DepositTransaction[]
+  /** The room the slot backs; all null while it is linked to none. */
+  room_id: string | null
+  room_number: string | null
+  has_attached_washroom: boolean | null
+  has_balcony: boolean | null
+  base_rent_paise: number | null
 }
 
 /** A slot as proposed or as sent to `POST /api/rent/deposits/slots`. */
@@ -1247,10 +1273,21 @@ export interface Room {
   room_number: string
   has_attached_washroom: boolean
   has_balcony: boolean
+  /** This room's share of the rent for a room-tiered split; null until set. */
+  base_rent_paise: number | null
   assigned_resident_id: string | null
   assigned_display_name: string | null
   assigned_since: string | null
   status: 'occupied' | 'vacant'
+  /** The deposit slot that backs the room, if any. */
+  linked_deposit_slot: {
+    slot_id: string
+    slot_number: number
+    slot_label: string
+    target_deposit_paise: number
+    funded_amount_paise: number
+    status: DepositSlotStatus
+  } | null
   created_at: string
   updated_at: string
 }
@@ -1264,6 +1301,9 @@ export interface RoomList {
     vacant_rooms: number
     with_attached_washroom: number
     with_balcony: number
+    rooms_with_base_rent: number
+    total_base_rent_paise: number
+    linked_slots: number
   }
 }
 

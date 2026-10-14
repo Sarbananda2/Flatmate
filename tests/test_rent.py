@@ -1326,3 +1326,123 @@ def test_the_lease_checks_landlord_details_by_the_owner_contacts_rules(configure
         assert caught.value.details["field"] == field
     assert rent.get_lease_config(configured, APARTMENT) is None
     assert _owner_contacts(configured) == []
+
+
+# --------------------------------------------------------------------------- #
+# Room-tiered rent
+# --------------------------------------------------------------------------- #
+
+ROOM_RENTS = {"alice": 2_000_000, "bob": 1_500_000, "chris": 1_000_000}   # = ₹45,000
+
+
+def _rooms(db, rents=ROOM_RENTS):
+    from aem.services import rooms
+    for index, (rid, rent_paise) in enumerate(rents.items(), start=1):
+        rooms.create_room(db, APARTMENT, {"room_number": f"Room {index}",
+                                          "assigned_resident_id": rid,
+                                          "base_rent_paise": rent_paise})
+
+
+def _preview(db, split_mode="equal", excluded=None):
+    return rent.rent_month_overview(db, APARTMENT, MONTH, split_mode=split_mode,
+                                    excluded_resident_ids=excluded)["preview"]
+
+
+def test_room_tiered_rent_charges_each_resident_their_rooms_rent(configured):
+    _lease(configured)
+    _rooms(configured)
+    preview = _preview(configured, "room_tiered")
+    assert preview["can_generate"] and preview["split_mode"] == "room_tiered"
+    assert _shares(preview) == ROOM_RENTS
+    assert [row["room_number"] for row in preview["room_tiered"]["shares"]] == [
+        "Room 1", "Room 2", "Room 3"]
+
+    cycle = rent.generate_monthly_rent_cycle(configured, APARTMENT, MONTH,
+                                             split_mode="room_tiered")
+    assert _shares(cycle) == ROOM_RENTS
+    assert sum(_shares(cycle).values()) == 4_500_000
+    expense = _rows(configured, "SELECT allocation_method FROM expense_instance "
+                                "WHERE expense_id=%s", (cycle["expense_id"],))[0]
+    assert expense["allocation_method"] == "custom"
+    # The ledger charges exactly those shares.
+    charges = reconciliation.reconcile(configured, apartment_id=APARTMENT)[
+        "allocated_charges_paise_by_resident"]
+    assert charges == ROOM_RENTS
+
+
+def test_the_preview_says_tiered_rent_is_available_without_choosing_it(configured):
+    _lease(configured)
+    _rooms(configured)
+    preview = _preview(configured)
+    assert preview["split_mode"] == "equal"
+    assert set(_shares(preview).values()) == {1_500_000}
+    assert preview["room_tiered"]["available"] is True
+    assert preview["room_tiered"]["room_total_paise"] == 4_500_000
+
+
+def test_tiered_rent_is_refused_when_someone_has_no_room(configured):
+    _lease(configured)
+    _rooms(configured, {"alice": 2_500_000, "bob": 2_000_000})
+    preview = _preview(configured, "room_tiered")
+    assert not preview["can_generate"]
+    assert "All participating residents must occupy a room with a configured base rent" \
+        in preview["blocked_reason"]
+    assert "Chris" in preview["blocked_reason"]
+    with pytest.raises(ValidationError) as caught:
+        rent.generate_monthly_rent_cycle(configured, APARTMENT, MONTH, split_mode="room_tiered")
+    assert caught.value.code == "room_tiered_unavailable"
+    assert not _rows(configured, "SELECT 1 FROM rent_cycle")
+
+
+def test_tiered_rent_is_refused_when_a_room_has_no_base_rent(configured):
+    _lease(configured)
+    _rooms(configured, {"alice": 2_000_000, "bob": 1_500_000, "chris": None})
+    with pytest.raises(ValidationError, match="Not set for: Chris"):
+        rent.generate_monthly_rent_cycle(configured, APARTMENT, MONTH, split_mode="room_tiered")
+
+
+def test_tiered_rent_is_refused_when_the_rooms_do_not_add_up(configured):
+    _lease(configured)
+    _rooms(configured, {"alice": 2_000_000, "bob": 1_500_000, "chris": 900_000})
+    with pytest.raises(ValidationError) as caught:
+        rent.generate_monthly_rent_cycle(configured, APARTMENT, MONTH, split_mode="room_tiered")
+    assert str(caught.value) == ("The sum of room rents (₹44,000.00) does not equal the "
+                                 "monthly lease rent (₹45,000.00).")
+
+
+def test_leaving_someone_out_breaks_the_room_balance(configured):
+    _lease(configured)
+    _rooms(configured)
+    preview = _preview(configured, "room_tiered", excluded=["chris"])
+    assert not preview["can_generate"]
+    assert "does not equal the monthly lease rent" in preview["blocked_reason"]
+
+
+def test_an_unknown_split_mode_is_refused(configured):
+    _lease(configured)
+    with pytest.raises(ValidationError):
+        rent.generate_monthly_rent_cycle(configured, APARTMENT, MONTH, split_mode="weighted")
+
+
+def test_paying_the_landlord_leaves_tiered_shares_alone(configured):
+    _lease(configured)
+    _rooms(configured)
+    rent.generate_monthly_rent_cycle(configured, APARTMENT, MONTH, split_mode="room_tiered")
+    result = _disburse(configured, mode="resident_advance", funding_resident_id="bob")
+    assert _shares(rent.rent_month_overview(configured, APARTMENT, MONTH)["cycle"]) == ROOM_RENTS
+    assert not any("divide evenly" in w for w in result.get("warnings", []))
+
+
+def test_the_rent_api_previews_and_generates_tiered_rent(configured):
+    from fastapi.testclient import TestClient
+    from aem.main import create_app
+    _lease(configured)
+    _rooms(configured)
+    with TestClient(create_app(get_settings(), database=configured)) as client:
+        preview = client.get(f"/api/rent/cycle/{MONTH}?split_mode=room_tiered").json()["preview"]
+        assert _shares(preview) == ROOM_RENTS
+        assert client.get(f"/api/rent/cycle/{MONTH}?split_mode=nope").status_code == 422
+        made = client.post(f"/api/rent/cycle/{MONTH}/generate",
+                           json={"split_mode": "room_tiered"})
+        assert made.status_code == 201, made.text
+        assert _shares(made.json()) == ROOM_RENTS

@@ -631,3 +631,83 @@ def test_the_deposit_endpoints_run_the_whole_lifecycle(client):
     lease = client.post("/api/rent/config", json=LEASE).json()
     assert (lease["deposit_funding_mode"], lease["deposit_primary_signatory_resident_id"]) == (
         "primary_signatory", "alice")
+
+
+# ------------------------------------------------------- the rooms slots back --
+
+def _room(db, number, **fields):
+    from aem.services import rooms
+    return rooms.create_room(db, APARTMENT, {"room_number": number, **fields})
+
+
+def test_a_slot_shows_the_room_it_backs(signatory):
+    room = _room(signatory, "Room 1", has_attached_washroom=True, base_rent_paise=1_200_000)
+    slot = _slot(_summary(signatory), 1)
+    assert (slot["room_number"], slot["base_rent_paise"]) == (None, None)
+    summary = deposits.link_slot_room(signatory, APARTMENT, slot["slot_id"], room["room_id"])
+    linked = _slot(summary, 1)
+    assert (linked["room_id"], linked["room_number"], linked["has_attached_washroom"],
+            linked["has_balcony"], linked["base_rent_paise"]) == (
+        room["room_id"], "Room 1", True, False, 1_200_000)
+    entry = _rows(signatory, "SELECT * FROM audit_log WHERE action='link_room'")[0]
+    assert entry["entity_id"] == slot["slot_id"]
+
+
+def test_a_slot_can_be_unlinked(signatory):
+    room = _room(signatory, "Room 1")
+    slot_id = _slot(_summary(signatory), 1)["slot_id"]
+    deposits.link_slot_room(signatory, APARTMENT, slot_id, room["room_id"])
+    summary = deposits.link_slot_room(signatory, APARTMENT, slot_id, None)
+    assert _slot(summary, 1)["room_id"] is None
+    assert _rows(signatory, "SELECT action FROM audit_log WHERE entity_id=%s "
+                            "ORDER BY row_seq DESC LIMIT 1", (slot_id,))[0]["action"] == \
+        "unlink_room"
+
+
+def test_two_slots_cannot_back_one_room(signatory):
+    room = _room(signatory, "Room 1")
+    summary = _summary(signatory)
+    deposits.link_slot_room(signatory, APARTMENT, _slot(summary, 1)["slot_id"], room["room_id"])
+    with pytest.raises(ConflictError) as caught:
+        deposits.link_slot_room(signatory, APARTMENT, _slot(summary, 2)["slot_id"],
+                                room["room_id"])
+    assert caught.value.code == "room_has_slot"
+    assert _slot(_summary(signatory), 2)["room_id"] is None
+
+
+def test_saving_slots_can_set_their_rooms_and_otherwise_leaves_them(signatory):
+    room = _room(signatory, "Room 2")
+    _assign(signatory, 2, "bob", room_id=room["room_id"])
+    assert _slot(_summary(signatory), 2)["room_number"] == "Room 2"
+    # A later save that does not mention the room keeps the link.
+    _assign(signatory, 2, "bob")
+    assert _slot(_summary(signatory), 2)["room_number"] == "Room 2"
+    _assign(signatory, 2, "bob", room_id=None)
+    assert _slot(_summary(signatory), 2)["room_id"] is None
+
+
+def test_a_room_from_another_flat_cannot_be_linked(signatory):
+    from aem.services import apartments, rooms
+    apartments.create_apartment(signatory, apartment_id="other", name="Other")
+    other = rooms.create_room(signatory, "other", {"room_number": "Room 1"})
+    with pytest.raises(NotFoundError):
+        deposits.link_slot_room(signatory, APARTMENT, _slot(_summary(signatory), 1)["slot_id"],
+                                other["room_id"])
+
+
+def test_the_link_room_api(signatory):
+    from fastapi.testclient import TestClient
+    from aem.config import get_settings
+    from aem.main import create_app
+    room = _room(signatory, "Room 3")
+    slot_id = _slot(_summary(signatory), 3)["slot_id"]
+    with TestClient(create_app(get_settings(), database=signatory)) as client:
+        linked = client.post(f"/api/rent/deposits/slots/{slot_id}/link-room",
+                             json={"room_id": room["room_id"]})
+        assert linked.status_code == 200, linked.text
+        assert _slot(linked.json(), 3)["room_number"] == "Room 3"
+        assert client.post(f"/api/rent/deposits/slots/{slot_id}/link-room",
+                           json={"room_id": "nope"}).status_code == 404
+        unlinked = client.post(f"/api/rent/deposits/slots/{slot_id}/link-room",
+                               json={"room_id": None})
+        assert _slot(unlinked.json(), 3)["room_id"] is None

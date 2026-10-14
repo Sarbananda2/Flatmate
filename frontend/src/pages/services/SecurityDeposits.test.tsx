@@ -41,6 +41,11 @@ function slot(number: number, id: string | null, name: string | null, overrides:
     paid_to_display_name: null,
     is_primary_signatory: false,
     transactions: [],
+    room_id: null,
+    room_number: null,
+    has_attached_washroom: null,
+    has_balcony: null,
+    base_rent_paise: null,
     ...overrides,
   }
 }
@@ -363,12 +368,18 @@ describe('the escrow pool', () => {
         .queryAllByRole('button')
         .map((button) => button.textContent)
     // The signatory fronted their own slot: it is settled with the landlord.
-    expect(actions(/Room 1/)).toEqual([])
+    // Every slot can be linked to the room it backs.
+    expect(actions(/Room 1/)).toEqual(['Link Room'])
     // Nothing paid yet: it can be paid, vacated, or handed to someone else.
-    expect(actions(/Room 2/)).toEqual(['Record Payment', 'Vacate & Settle', 'Reassign Occupant'])
+    expect(actions(/Room 2/)).toEqual([
+      'Record Payment',
+      'Vacate & Settle',
+      'Reassign Occupant',
+      'Link Room',
+    ])
     // Funded: it has to be settled before anyone else can take it.
-    expect(actions(/Room 3/)).toEqual(['Vacate & Settle'])
-    expect(actions(/Room 4/)).toEqual(['Assign Occupant'])
+    expect(actions(/Room 3/)).toEqual(['Vacate & Settle', 'Link Room'])
+    expect(actions(/Room 4/)).toEqual(['Assign Occupant', 'Link Room'])
     expect(within(table).getByRole('row', { name: /Room 4/ })).toHaveTextContent('Vacant')
     expect(screen.getByRole('region', { name: 'Capital exposure' })).toHaveTextContent(
       'Vacant / Unfunded Gap₹1,00,000.001 slot vacant',
@@ -683,5 +694,83 @@ describe('ResidentDepositCard', () => {
       'href',
       '/services/deposits',
     )
+  })
+})
+
+describe('the rooms slots back', () => {
+  const rooms = {
+    items: [
+      { room_id: 'room-1', room_number: 'Room 1', has_attached_washroom: true, has_balcony: true },
+      { room_id: 'room-2', room_number: 'Room 2', has_attached_washroom: false, has_balcony: false },
+      { room_id: 'room-3', room_number: 'Room 3', has_attached_washroom: false, has_balcony: true },
+    ],
+    total: 3,
+    summary: {},
+  }
+
+  it('shows the room a slot backs, with its amenities', async () => {
+    renderSection(
+      summary({
+        slots: [
+          slot(1, 'alice', 'Alice', {
+            room_id: 'room-1',
+            room_number: 'Room 1',
+            has_attached_washroom: true,
+            has_balcony: true,
+          }),
+          slot(2, 'bob', 'Bob'),
+        ],
+      }),
+    )
+    const table = await screen.findByRole('table', { name: 'Household deposit slots' })
+    const first = within(table).getAllByRole('row')[1]
+    expect(within(first).getByLabelText('attached washroom')).toBeInTheDocument()
+    expect(within(first).getByLabelText('balcony')).toBeInTheDocument()
+    expect(within(first).getByRole('button', { name: /Change the room for Room 1/ })).toBeInTheDocument()
+    const second = within(table).getAllByRole('row')[2]
+    expect(within(second).getByRole('button', { name: /Link a room to Room 2/ })).toBeInTheDocument()
+  })
+
+  it('links a slot to a room no other slot backs', async () => {
+    renderSection(
+      summary({
+        slots: [slot(1, 'alice', 'Alice', { room_id: 'room-1', room_number: 'Room 1' }), slot(2, 'bob', 'Bob')],
+      }),
+      {
+        '/api/property/rooms': rooms,
+        'POST /api/rent/deposits/slots/slot-2/link-room': summary(),
+      },
+    )
+    await userEvent.click(await screen.findByRole('button', { name: /Link a room to Room 2/ }))
+    const dialog = screen.getByRole('dialog')
+    const select = await within(dialog).findByLabelText(/Room/)
+    // Room 1 is already backed by slot 1, so it is not offered.
+    expect(within(select).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'No room',
+      'Room 2',
+      'Room 3 · balcony',
+    ])
+    const save = within(dialog).getByRole('button', { name: 'Unlink Room' })
+    expect(save).toBeDisabled()
+    await userEvent.selectOptions(select, 'room-3')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Room' }))
+    await waitFor(() => expect(posted('/slots/slot-2/link-room')).toBeDefined())
+    expect(posted('/slots/slot-2/link-room')!.body).toEqual({ room_id: 'room-3' })
+  })
+
+  it('unlinks a slot from its room', async () => {
+    renderSection(
+      summary({ slots: [slot(1, 'alice', 'Alice', { room_id: 'room-1', room_number: 'Room 1' })] }),
+      {
+        '/api/property/rooms': rooms,
+        'POST /api/rent/deposits/slots/slot-1/link-room': summary(),
+      },
+    )
+    await userEvent.click(await screen.findByRole('button', { name: /Change the room for Room 1/ }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.selectOptions(await within(dialog).findByLabelText(/Room/), '')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Unlink Room' }))
+    await waitFor(() => expect(posted('/slots/slot-1/link-room')).toBeDefined())
+    expect(posted('/slots/slot-1/link-room')!.body).toEqual({ room_id: null })
   })
 })

@@ -1,7 +1,7 @@
 """Rent: the master lease, each month's equal-split rent, and HRA receipts."""
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Path, Query
 from fastapi.responses import Response
@@ -87,6 +87,9 @@ def get_cycle(
     db: Db, apartment_id: ApartmentId, settlement_month: SettlementMonth,
     exclude: Annotated[str | None, Query(
         description="Comma-separated resident IDs to leave out of the preview.")] = None,
+    split_mode: Annotated[Literal["equal", "room_tiered"], Query(
+        description="equal, or room_tiered to preview each share as its room's base rent."
+    )] = "equal",
 ) -> dict[str, Any]:
     """The month's rent cycle with each resident's share and what they have
     paid. Before the rent is generated, ``cycle`` is null and ``preview`` shows
@@ -94,7 +97,8 @@ def get_cycle(
     excluded = [rid.strip() for rid in (exclude or "").split(",") if rid.strip()]
     try:
         return rent.rent_month_overview(db, apartment_id, settlement_month,
-                                        excluded_resident_ids=excluded)
+                                        excluded_resident_ids=excluded,
+                                        split_mode=split_mode)
     except AemError as exc:
         raise to_http(exc) from exc
 
@@ -108,7 +112,7 @@ def generate_cycle(payload: RentGenerateRequest, db: Db, apartment_id: Apartment
     try:
         return rent.generate_monthly_rent_cycle(
             db, apartment_id, settlement_month, payload.excluded_resident_ids,
-            actor=settings.operator_name)
+            actor=settings.operator_name, split_mode=payload.split_mode)
     except AemError as exc:
         raise to_http(exc) from exc
 

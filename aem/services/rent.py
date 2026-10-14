@@ -50,7 +50,7 @@ from typing import Any, Mapping, Sequence
 
 from ..errors import ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
-from ..money import ensure_paise, paise_in_words
+from ..money import ensure_paise, format_inr, paise_in_words
 from ..periods import normalize_month, parse_iso_date
 from ..persistence import Database, UnitOfWork
 from . import audit, definitions, expenses, payments
@@ -68,6 +68,9 @@ from .common import (
 
 RENT_CATEGORY = "Housing"
 DISBURSEMENT_MODES = ("pool", "resident_advance")
+#: How a month's rent is divided: equally, or by the base rent of each
+#: participant's room.
+SPLIT_MODES = ("equal", "room_tiered")
 
 #: What a landlord's receipt can be: a PDF or a photo of a paper slip.
 LANDLORD_RECEIPT_TYPES = ("application/pdf", "image/jpeg", "image/png", "image/webp")
@@ -642,9 +645,52 @@ def _participants(uow: UnitOfWork, apartment_id: str,
     return chosen, excluded
 
 
+def _split_mode(value: Any) -> str:
+    mode = value or "equal"
+    if mode not in SPLIT_MODES:
+        raise ValidationError("split_mode must be equal or room_tiered.",
+                              details={"field": "split_mode", "allowed": list(SPLIT_MODES)})
+    return mode
+
+
+def _room_tiered(uow: UnitOfWork, apartment_id: str, chosen: Sequence[str], total: int,
+                 names: Mapping[str, str]) -> dict[str, Any]:
+    """Each participant's share from the base rent of the room they occupy.
+
+    It can be used only when every participant occupies a room with a base rent
+    above zero and those rents add up to the month's rent exactly: nothing is
+    scaled, rounded or made up.
+    """
+    rooms = {room["assigned_resident_id"]: room
+             for room in uow.rooms.list_for_apartment(apartment_id)
+             if room["assigned_resident_id"]}
+    shares, missing = [], []
+    for rid in sorted(chosen, key=lambda r: (names.get(r, r), r)):
+        room = rooms.get(rid)
+        rent_paise = room["base_rent_paise"] if room else None
+        if not rent_paise:
+            missing.append(names.get(rid, rid))
+        shares.append({"resident_id": rid, "display_name": names.get(rid, rid),
+                       "room_id": room["room_id"] if room else None,
+                       "room_number": room["room_number"] if room else None,
+                       "base_rent_paise": rent_paise})
+    room_total = sum(row["base_rent_paise"] or 0 for row in shares)
+    problem = None
+    if not chosen:
+        problem = "Nobody is taking part. At least one active resident must share the rent."
+    elif missing:
+        problem = ("All participating residents must occupy a room with a configured base "
+                   f"rent. Not set for: {', '.join(missing)}.")
+    elif room_total != total:
+        problem = (f"The sum of room rents ({format_inr(room_total)}) does not equal the "
+                   f"monthly lease rent ({format_inr(total)}).")
+    return {"available": problem is None, "blocked_reason": problem,
+            "room_total_paise": room_total, "lease_rent_paise": total, "shares": shares}
+
+
 def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
              config: dict[str, Any], excluded_resident_ids: Sequence[str] | None,
-             ) -> dict[str, Any]:
+             split_mode: str = "equal") -> dict[str, Any]:
     """What generating the month's rent would do, without doing it."""
     names = _names(uow, apartment_id)
     statement = _statement_row(uow, apartment_id, settlement_month)
@@ -674,10 +720,17 @@ def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
                 if rid not in {c["resident_id"] for c in charges}],
             "can_generate": problem is None, "blocked_reason": problem,
             "matches_lease_rent": total == config["monthly_rent_paise"],
+            # The rent already exists as an expense, so its split is already decided.
+            "split_mode": "equal",
+            "room_tiered": {"available": False, "blocked_reason":
+                            "Rent for this month already exists as an expense, so it keeps "
+                            "the split recorded on it.", "room_total_paise": 0,
+                            "lease_rent_paise": total, "shares": []},
         }
 
     chosen, excluded = _participants(uow, apartment_id, excluded_resident_ids)
     total = config["monthly_rent_paise"]
+    tiered = _room_tiered(uow, apartment_id, chosen, total, names)
     problem = None
     shares: dict[str, int] = {}
     if statement and statement["status"] != "draft":
@@ -685,6 +738,10 @@ def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
                    "longer be added to it.")
     elif not chosen:
         problem = "Nobody is taking part. At least one active resident must share the rent."
+    elif split_mode == "room_tiered":
+        problem = tiered["blocked_reason"]
+        if problem is None:
+            shares = {row["resident_id"]: row["base_rent_paise"] for row in tiered["shares"]}
     else:
         shares = plan_allocation(amount_paise=total, method="equal",
                                  all_residents=resident_ids(uow, apartment_id),
@@ -703,11 +760,14 @@ def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
                                for rid in sorted(excluded, key=lambda r: (names.get(r, r), r))],
         "can_generate": problem is None, "blocked_reason": problem,
         "matches_lease_rent": True,
+        "split_mode": split_mode,
+        "room_tiered": tiered,
     }
 
 
 def rent_month_overview(db: Database, apartment_id: str, settlement_month: str, *,
-                        excluded_resident_ids: Sequence[str] | None = None) -> dict[str, Any]:
+                        excluded_resident_ids: Sequence[str] | None = None,
+                        split_mode: str = "equal") -> dict[str, Any]:
     """Everything the Rent screen needs for one month.
 
     ``cycle`` is the generated rent, when there is one. Otherwise ``preview``
@@ -715,6 +775,7 @@ def rent_month_overview(db: Database, apartment_id: str, settlement_month: str, 
     somebody left out, the exact share each remaining resident would be charged.
     """
     settlement_month = normalize_month(settlement_month, "settlement_month")
+    split_mode = _split_mode(split_mode)
     with db.read() as uow:
         get_apartment(uow, apartment_id)
         config = _config_row(uow, apartment_id)
@@ -725,15 +786,22 @@ def rent_month_overview(db: Database, apartment_id: str, settlement_month: str, 
             "config": _decode_config(uow, config) if config else None,
             "cycle": _summarize(uow, cycle, config) if cycle else None,
             "preview": _preview(uow, apartment_id, settlement_month, config,
-                                excluded_resident_ids) if config and not cycle else None,
+                                excluded_resident_ids, split_mode)
+            if config and not cycle else None,
         }
 
 
 def generate_monthly_rent_cycle(
     db: Database, apartment_id: str, settlement_month: str,
     excluded_resident_ids: Sequence[str] | None = None, *, actor: str = "operator",
+    split_mode: str = "equal",
 ) -> dict[str, Any]:
-    """Charge the month's rent, split equally between the residents taking part.
+    """Charge the month's rent between the residents taking part.
+
+    ``split_mode`` is ``equal`` (the default), or ``room_tiered``: each
+    participant is charged their room's base rent, which needs every
+    participant in a room with a base rent and those rents to add up to the
+    lease rent exactly.
 
     Creates the rent expense -- service period and settlement period both the
     given month, due on the lease's due day -- with one allocation per
@@ -745,6 +813,7 @@ def generate_monthly_rent_cycle(
     changes nothing in the ledger.
     """
     settlement_month = normalize_month(settlement_month, "settlement_month")
+    split_mode = _split_mode(split_mode)
     timestamp = now_timestamp()
     with db.transaction() as uow:
         get_apartment(uow, apartment_id)
@@ -771,6 +840,11 @@ def generate_monthly_rent_cycle(
             if problem:
                 raise ConflictError(problem, code="rent_expense_not_adoptable",
                                     details={"expense_id": expense["expense_id"]})
+            if split_mode != "equal":
+                raise ConflictError(
+                    "Rent for this month already exists as an expense, so it keeps the split "
+                    "recorded on it. Change it on the expense itself.",
+                    code="rent_expense_exists", details={"expense_id": expense["expense_id"]})
             if excluded_resident_ids:
                 raise ConflictError(
                     "Rent for this month already exists as an expense, so its participants "
@@ -794,12 +868,28 @@ def generate_monthly_rent_cycle(
             recurrence = uow.rent.definition_recurrence(config["expense_definition_id"])
             expense_id, adopted = new_id("rent"), False
             total, count = config["monthly_rent_paise"], len(chosen)
+            split: dict[str, Any] = {"allocation_method": "equal", "participants": chosen}
+            if split_mode == "room_tiered":
+                tiered = _room_tiered(uow, apartment_id, chosen, total,
+                                      _names(uow, apartment_id))
+                if not tiered["available"]:
+                    raise ValidationError(tiered["blocked_reason"], code="room_tiered_unavailable",
+                                          details={"field": "split_mode",
+                                                   "room_total_paise": tiered["room_total_paise"],
+                                                   "lease_rent_paise": total})
+                rents = {row["resident_id"]: row["base_rent_paise"] for row in tiered["shares"]}
+                split = {"allocation_method": "custom",
+                         "allocations_paise": {rid: rents.get(rid, 0)
+                                               for rid in resident_ids(uow, apartment_id)},
+                         "allocation_basis": {
+                             "method": "custom", "split_mode": "room_tiered",
+                             "rooms": {row["resident_id"]: row["room_number"]
+                                       for row in tiered["shares"]}}}
             # No payer yet: who funds the payout is only known when it is made.
             expenses._create_expense(
                 uow, apartment_id=apartment_id, expense_id=expense_id,
                 description=f"Rent for {month_label(settlement_month)}",
-                amount_paise=total, expense_date=f"{settlement_month}-01",
-                allocation_method="equal", participants=chosen,
+                amount_paise=total, expense_date=f"{settlement_month}-01", **split,
                 provider_name=config["landlord_name"],
                 expense_definition_id=config["expense_definition_id"],
                 statement_id=statement["statement_id"] if statement else None,
@@ -818,7 +908,8 @@ def generate_monthly_rent_cycle(
                      actor=actor, apartment_id=apartment_id,
                      new_value={"settlement_month": settlement_month, "expense_id": expense_id,
                                 "total_rent_paise": total, "participant_count": count,
-                                "adopted_existing_expense": adopted})
+                                "adopted_existing_expense": adopted,
+                                "split_mode": "equal" if adopted else split_mode})
         summary = _summarize(uow, _cycle_row(uow, apartment_id, settlement_month), config)
     summary["adopted_existing_expense"] = adopted
     return summary
@@ -1026,7 +1117,8 @@ def record_landlord_disbursement(
                              "linked_advance_paise": linked})
         else:
             get_resident(uow, funding_resident_id, apartment_id)
-            if statement_edit_mode(uow, expense["statement_id"]) == "free":
+            if statement_edit_mode(uow, expense["statement_id"]) == "free" \
+                    and expense.get("allocation_method") == "equal":
                 current = {c["resident_id"]: c["share_paise"]
                            for c in _charges(uow, expense["expense_id"])}
                 plan = plan_allocation(

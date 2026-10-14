@@ -34,7 +34,7 @@ from ..ids import new_id, now_timestamp
 from ..money import ensure_paise
 from ..periods import parse_iso_date
 from ..persistence import Database, UnitOfWork
-from . import audit
+from . import audit, rooms
 from .common import get_apartment, get_resident, optional_text, require_text
 
 FUNDING_MODES = ("primary_signatory", "direct_co_tenants")
@@ -111,6 +111,7 @@ def _summary(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
     master = lease["security_deposit_paise"] if lease else None
     residents = {row["resident_id"]: row
                  for row in uow.residents.list_for_apartment(apartment_id)}
+    rooms = {row["room_id"]: row for row in uow.rooms.list_for_apartment(apartment_id)}
 
     def name(resident_id: str | None) -> str | None:
         return (residents.get(resident_id) or {}).get("display_name")
@@ -181,9 +182,20 @@ def _summary(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
              "outstanding_paise": (slot["target_deposit_paise"] - slot["funded_amount_paise"]
                                    if slot["assigned_resident_id"] else 0),
              "paid_to_display_name": name(slot["paid_to_resident_id"]),
+             # The room the slot backs, if it is linked to one.
+             **_room_details(rooms.get(slot.get("room_id"))),
              "transactions": history.get(slot["slot_id"], [])}
             for slot in slots
         ],
+    }
+
+
+def _room_details(room: Mapping[str, Any] | None) -> dict[str, Any]:
+    return {
+        "room_number": room["room_number"] if room else None,
+        "has_attached_washroom": bool(room["has_attached_washroom"]) if room else None,
+        "has_balcony": bool(room["has_balcony"]) if room else None,
+        "base_rent_paise": room["base_rent_paise"] if room else None,
     }
 
 
@@ -277,6 +289,10 @@ def _clean_slot_definitions(definitions: Sequence[Mapping[str, Any]]) -> list[di
                 allow_zero=False),
             "assigned_resident_id": resident_id,
         })
+        # The room the slot backs. Left out, the link is untouched; null unlinks.
+        if "room_id" in item:
+            cleaned[-1]["room_id"] = optional_text(item["room_id"], f"slots[{index}].room_id",
+                                                   max_length=64)
     return cleaned
 
 
@@ -351,6 +367,8 @@ def initialize_or_update_slots(db: Database, apartment_id: str,
                 audit.record(uow, entity_type=ENTITY, entity_id=slot_id, action="create",
                              actor=actor, apartment_id=apartment_id,
                              new_value={**item, "funded_amount_paise": funded})
+                if "room_id" in item:
+                    rooms.link_slot_in(uow, apartment_id, slot_id, item["room_id"], actor=actor)
             else:
                 if not keeps_occupant and existing["funded_amount_paise"] > 0:
                     raise ConflictError(
@@ -380,6 +398,9 @@ def initialize_or_update_slots(db: Database, apartment_id: str,
                     uow, entity_type=ENTITY, entity_id=existing["slot_id"], before=existing,
                     after={**existing, **changes}, fields=list(changes), actor=actor,
                     apartment_id=apartment_id)
+                if "room_id" in item:
+                    rooms.link_slot_in(uow, apartment_id, existing["slot_id"], item["room_id"],
+                                       actor=actor)
             targets[number] = target
 
         total = sum(targets.values())
@@ -389,6 +410,17 @@ def initialize_or_update_slots(db: Database, apartment_id: str,
                 details={"field": "slots", "total_target_paise": total,
                          "master_deposit_paise": master,
                          "difference_paise": total - master})
+        return _summary(uow, apartment_id)
+
+
+def link_slot_room(db: Database, apartment_id: str, slot_id: str, room_id: str | None, *,
+                   actor: str = "operator") -> dict[str, Any]:
+    """Say which room a slot backs, or with ``None`` that it backs none."""
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        _slot(uow, slot_id, apartment_id)
+        rooms.link_slot_in(uow, apartment_id, slot_id,
+                           optional_text(room_id, "room_id", max_length=64), actor=actor)
         return _summary(uow, apartment_id)
 
 

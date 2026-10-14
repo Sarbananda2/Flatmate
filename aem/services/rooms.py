@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 from ..errors import ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
+from ..money import ensure_paise
 from ..periods import parse_iso_date
 from ..persistence import Database, UnitOfWork
 from . import audit
@@ -24,7 +25,9 @@ from .common import get_apartment, get_resident, require_text
 
 ENTITY = "household_room"
 EARLIEST_DATE = "2000-01-01"
-_FIELDS = ("room_number", "has_attached_washroom", "has_balcony", "assigned_resident_id")
+_FIELDS = ("room_number", "has_attached_washroom", "has_balcony", "base_rent_paise",
+           "assigned_resident_id")
+_EXTRA_FIELDS = ("effective_date", "linked_slot_id")
 
 
 # ------------------------------------------------------------------- helpers --
@@ -36,10 +39,16 @@ def _present(row: dict[str, Any]) -> dict[str, Any]:
         "room_number": row["room_number"],
         "has_attached_washroom": bool(row["has_attached_washroom"]),
         "has_balcony": bool(row["has_balcony"]),
+        "base_rent_paise": row["base_rent_paise"],
         "assigned_resident_id": row["assigned_resident_id"],
         "assigned_display_name": row["assigned_display_name"],
         "assigned_since": row["assigned_since"],
         "status": "occupied" if row["assigned_resident_id"] else "vacant",
+        "linked_deposit_slot": ({
+            "slot_id": row["slot_id"], "slot_number": row["slot_number"],
+            "slot_label": row["slot_label"], "target_deposit_paise": row["slot_target_paise"],
+            "funded_amount_paise": row["slot_funded_paise"], "status": row["slot_status"],
+        } if row.get("slot_id") else None),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -49,6 +58,7 @@ def _audit_value(row: Mapping[str, Any]) -> dict[str, Any]:
     return {"room_number": row["room_number"],
             "has_attached_washroom": bool(row["has_attached_washroom"]),
             "has_balcony": bool(row["has_balcony"]),
+            "base_rent_paise": row["base_rent_paise"],
             "assigned_resident_id": row["assigned_resident_id"],
             "assigned_since": row["assigned_since"]}
 
@@ -58,6 +68,12 @@ def _room(uow: UnitOfWork, room_id: str, apartment_id: str) -> dict[str, Any]:
     if row is None or row["apartment_id"] != apartment_id:
         raise NotFoundError("Room not found.", details={"room_id": room_id})
     return row
+
+
+def _base_rent(value: Any) -> int | None:
+    if value is None:
+        return None
+    return ensure_paise(value, "base_rent_paise")
 
 
 def _flag(value: Any, field: str) -> int:
@@ -115,7 +131,7 @@ def _save(uow: UnitOfWork, before: dict[str, Any], after: dict[str, Any], *,
     uow.rooms.update(
         before["room_id"], room_number=after["room_number"],
         has_attached_washroom=after["has_attached_washroom"],
-        has_balcony=after["has_balcony"],
+        has_balcony=after["has_balcony"], base_rent_paise=after["base_rent_paise"],
         assigned_resident_id=after["assigned_resident_id"],
         assigned_since=after["assigned_since"], updated_at=now_timestamp())
     audit.record(uow, entity_type=ENTITY, entity_id=before["room_id"], action=action,
@@ -133,6 +149,9 @@ def summarize(rooms: list[dict[str, Any]]) -> dict[str, int]:
         "vacant_rooms": sum(1 for room in rooms if room["status"] == "vacant"),
         "with_attached_washroom": sum(1 for room in rooms if room["has_attached_washroom"]),
         "with_balcony": sum(1 for room in rooms if room["has_balcony"]),
+        "rooms_with_base_rent": sum(1 for room in rooms if room["base_rent_paise"] is not None),
+        "total_base_rent_paise": sum(room["base_rent_paise"] or 0 for room in rooms),
+        "linked_slots": sum(1 for room in rooms if room["linked_deposit_slot"]),
     }
 
 
@@ -156,10 +175,11 @@ def room_for_resident(db: Database, apartment_id: str,
 
 def create_room(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
                 actor: str = "operator") -> dict[str, Any]:
-    unknown = sorted(set(payload) - {*_FIELDS, "effective_date"})
+    unknown = sorted(set(payload) - {*_FIELDS, *_EXTRA_FIELDS})
     if unknown:
         raise ValidationError(f"Unsupported room fields: {', '.join(unknown)}.",
                               details={"unsupported_fields": unknown})
+    base_rent = _base_rent(payload.get("base_rent_paise"))
     with db.transaction() as uow:
         get_apartment(uow, apartment_id)
         number = _room_number(uow, apartment_id, payload.get("room_number"))
@@ -174,24 +194,32 @@ def create_room(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
             has_attached_washroom=_flag(payload.get("has_attached_washroom", False),
                                         "has_attached_washroom"),
             has_balcony=_flag(payload.get("has_balcony", False), "has_balcony"),
-            assigned_resident_id=occupant, assigned_since=since, created_at=now_timestamp())
+            base_rent_paise=base_rent, assigned_resident_id=occupant, assigned_since=since,
+            created_at=now_timestamp())
         row = uow.rooms.get(room_id)
         audit.record(uow, entity_type=ENTITY, entity_id=room_id, action="create",
                      actor=actor, apartment_id=apartment_id, new_value=_audit_value(row))
-        return _present(row)
+        if payload.get("linked_slot_id"):
+            link_slot_in(uow, apartment_id, payload["linked_slot_id"], room_id, actor=actor)
+        return _present(uow.rooms.get(room_id))
 
 
 def update_room(db: Database, apartment_id: str, room_id: str,
                 changes: Mapping[str, Any], *, actor: str = "operator") -> dict[str, Any]:
     """Change the number or amenities. ``assigned_resident_id`` set to a resident
     assigns them; set to null, it vacates the room."""
-    unknown = sorted(set(changes) - {*_FIELDS, "effective_date"})
+    unknown = sorted(set(changes) - {*_FIELDS, *_EXTRA_FIELDS})
     if unknown:
         raise ValidationError(f"Unsupported room fields: {', '.join(unknown)}.",
                               details={"unsupported_fields": unknown})
     with db.transaction() as uow:
         before = _room(uow, room_id, apartment_id)
+        if "linked_slot_id" in changes:
+            _set_room_slot(uow, apartment_id, room_id, changes["linked_slot_id"], actor)
+            before = _room(uow, room_id, apartment_id)
         after = dict(before)
+        if "base_rent_paise" in changes:
+            after["base_rent_paise"] = _base_rent(changes["base_rent_paise"])
         if "room_number" in changes:
             after["room_number"] = _room_number(uow, apartment_id, changes["room_number"],
                                                 room_id)
@@ -253,22 +281,51 @@ def vacate_resident_in(uow: UnitOfWork, apartment_id: str, resident_id: str, *,
     return _present(before)
 
 
-def link_slot_to_room(db: Database, apartment_id: str, slot_id: str, room_id: str, *,
+def link_slot_in(uow: UnitOfWork, apartment_id: str, slot_id: str, room_id: str | None, *,
+                 actor: str = "operator") -> bool:
+    """Say which room a deposit slot belongs to, or that it belongs to none,
+    inside the caller's transaction. A room is backed by one slot at most.
+    False when nothing changed."""
+    slot = uow.deposits.slot(slot_id)
+    if slot is None or slot["apartment_id"] != apartment_id:
+        raise NotFoundError("Deposit slot not found.",
+                            details={"field": "linked_slot_id", "slot_id": slot_id})
+    room = _room(uow, room_id, apartment_id) if room_id else None
+    if slot.get("room_id") == room_id:
+        return False
+    if room is not None:
+        holder = uow.rooms.slot_for_room(room_id)
+        if holder is not None and holder["slot_id"] != slot_id:
+            raise ConflictError(
+                f"{room['room_number']} is already backed by deposit slot "
+                f"{holder['slot_number']} ({holder['slot_label']}). Unlink that slot first.",
+                code="room_has_slot",
+                details={"field": "room_id", "slot_id": holder["slot_id"]})
+    uow.rooms.link_slot(slot_id, room_id, updated_at=now_timestamp())
+    audit.record(uow, entity_type="household_deposit_slot", entity_id=slot_id,
+                 action="link_room" if room_id else "unlink_room", actor=actor,
+                 apartment_id=apartment_id, old_value={"room_id": slot.get("room_id")},
+                 new_value={"room_id": room_id,
+                            "room_number": room["room_number"] if room else None})
+    return True
+
+
+def _set_room_slot(uow: UnitOfWork, apartment_id: str, room_id: str,
+                   slot_id: str | None, actor: str) -> None:
+    """Back a room with this slot, or with none."""
+    current = uow.rooms.slot_for_room(room_id)
+    if current is not None and current["slot_id"] != slot_id:
+        link_slot_in(uow, apartment_id, current["slot_id"], None, actor=actor)
+    if slot_id:
+        link_slot_in(uow, apartment_id, slot_id, room_id, actor=actor)
+
+
+def link_slot_to_room(db: Database, apartment_id: str, slot_id: str, room_id: str | None, *,
                       actor: str = "operator") -> bool:
-    """Say which room a deposit slot belongs to. False if it already said so."""
+    """Say which room a deposit slot belongs to (None unlinks it). False if it
+    already said so."""
     with db.transaction() as uow:
-        room = _room(uow, room_id, apartment_id)
-        slot = uow.deposits.slot(slot_id)
-        if slot is None or slot["apartment_id"] != apartment_id:
-            raise NotFoundError("Deposit slot not found.", details={"slot_id": slot_id})
-        if slot.get("room_id") == room_id:
-            return False
-        uow.rooms.link_slot(slot_id, room_id, updated_at=now_timestamp())
-        audit.record(uow, entity_type="household_deposit_slot", entity_id=slot_id,
-                     action="link_room", actor=actor, apartment_id=apartment_id,
-                     old_value={"room_id": slot.get("room_id")},
-                     new_value={"room_id": room_id, "room_number": room["room_number"]})
-        return True
+        return link_slot_in(uow, apartment_id, slot_id, room_id, actor=actor)
 
 
 def delete_room(db: Database, apartment_id: str, room_id: str, *,

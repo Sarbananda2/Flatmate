@@ -117,6 +117,30 @@ const preview = {
   blocked_reason: null,
   matches_lease_rent: true,
   statement: null,
+  split_mode: 'equal',
+  room_tiered: {
+    available: false,
+    blocked_reason: 'All participating residents must occupy a room with a configured base rent.',
+    room_total_paise: 0,
+    lease_rent_paise: 4500000,
+    shares: [],
+  },
+}
+
+/** A preview where the rooms' base rents add up to the lease rent. */
+const tieredPreview = {
+  ...preview,
+  room_tiered: {
+    available: true,
+    blocked_reason: null,
+    room_total_paise: 4500000,
+    lease_rent_paise: 4500000,
+    shares: [
+      { resident_id: 'alice', display_name: 'Alice', room_id: 'r1', room_number: 'Room 1', base_rent_paise: 2000000 },
+      { resident_id: 'bob', display_name: 'Bob', room_id: 'r2', room_number: 'Room 2', base_rent_paise: 1500000 },
+      { resident_id: 'chris', display_name: 'Chris', room_id: 'r3', room_number: 'Room 3', base_rent_paise: 1000000 },
+    ],
+  },
 }
 
 function overview(overrides: Record<string, unknown> = {}) {
@@ -484,7 +508,33 @@ describe('RentMonth', () => {
     )
     await userEvent.click(screen.getByRole('button', { name: 'Generate October 2026 rent' }))
     await waitFor(() => expect(posted('/generate')).toBeDefined())
-    expect(posted('/generate')!.body).toEqual({ excluded_resident_ids: ['chris'] })
+    expect(posted('/generate')!.body).toEqual({
+      excluded_resident_ids: ['chris'],
+      split_mode: 'equal',
+    })
+  })
+
+  it('offers no split choice unless the room rents add up to the lease', async () => {
+    renderRent(overview({ cycle: null, preview }))
+    await screen.findByRole('button', { name: 'Generate October 2026 rent' })
+    expect(screen.queryByRole('radio', { name: 'Room-Tiered' })).toBeNull()
+  })
+
+  it('generates room-tiered rent when the operator chooses it', async () => {
+    renderRent(overview({ cycle: null, preview: tieredPreview }))
+    const tiered = await screen.findByRole('radio', { name: 'Room-Tiered' })
+    expect(screen.getByRole('radio', { name: 'Equal Split' })).toBeChecked()
+    await userEvent.click(tiered)
+    expect(tiered).toBeChecked()
+    // Each resident is shown with the room their share comes from.
+    expect(await screen.findByText('Room 1')).toBeInTheDocument()
+    expect(screen.getByText(/charged their room's base rent/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Generate October 2026 rent' }))
+    await waitFor(() => expect(posted('/generate')).toBeDefined())
+    expect(posted('/generate')!.body).toEqual({
+      excluded_resident_ids: [],
+      split_mode: 'room_tiered',
+    })
   })
 
   it('does not offer generation when the backend says it is blocked', async () => {

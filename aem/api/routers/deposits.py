@@ -10,6 +10,7 @@ from ...schemas import (
     DepositConfigUpdate,
     DepositSlotFundingRequest,
     DepositSlotInitRequest,
+    DepositSlotLinkRoomRequest,
     DepositSlotVacateRequest,
 )
 from ...services import deposits
@@ -51,8 +52,19 @@ def save_slots(payload: DepositSlotInitRequest, db: Db, apartment_id: ApartmentI
     a vacant slot. All targets together must equal the deposit on the lease."""
     try:
         return deposits.initialize_or_update_slots(
-            db, apartment_id, [slot.model_dump() for slot in payload.slots],
+            db, apartment_id, [slot.model_dump(exclude_unset=True) for slot in payload.slots],
             actor=settings.operator_name)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.post("/slots/{slot_id}/link-room", summary="Link a slot to the room it backs")
+def link_room(payload: DepositSlotLinkRoomRequest, db: Db, apartment_id: ApartmentId,
+              settings: AppSettings, slot_id: str = Path()) -> dict[str, Any]:
+    """``room_id: null`` unlinks it. A room is backed by one slot at most."""
+    try:
+        return deposits.link_slot_room(db, apartment_id, slot_id, payload.room_id,
+                                       actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
 

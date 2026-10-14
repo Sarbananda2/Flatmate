@@ -25,10 +25,12 @@ function room(overrides: Partial<Room>): Room {
     room_number: 'Room X',
     has_attached_washroom: false,
     has_balcony: false,
+    base_rent_paise: null,
     assigned_resident_id: null,
     assigned_display_name: null,
     assigned_since: null,
     status: 'vacant',
+    linked_deposit_slot: null,
     created_at: '2026-10-01T10:00:00+05:30',
     updated_at: '2026-10-01T10:00:00+05:30',
     ...overrides,
@@ -44,6 +46,15 @@ const ROOM_1 = room({
   assigned_display_name: 'Alice',
   assigned_since: '2026-08-01',
   status: 'occupied',
+  base_rent_paise: 1800000,
+  linked_deposit_slot: {
+    slot_id: 'slot-1',
+    slot_number: 1,
+    slot_label: 'Room 1',
+    target_deposit_paise: 5000000,
+    funded_amount_paise: 5000000,
+    status: 'occupied_funded',
+  },
 })
 const ROOM_2 = room({ room_id: 'room-2', room_number: 'Room 2', has_attached_washroom: true })
 
@@ -56,7 +67,45 @@ const listing: RoomList = {
     vacant_rooms: 1,
     with_attached_washroom: 2,
     with_balcony: 1,
+    rooms_with_base_rent: 1,
+    total_base_rent_paise: 1800000,
+    linked_slots: 1,
   },
+}
+
+function depositSlot(overrides: Record<string, unknown>) {
+  return {
+    slot_id: 'slot-x',
+    slot_number: 9,
+    slot_label: 'Slot',
+    target_deposit_paise: 5000000,
+    assigned_resident_id: null,
+    assigned_display_name: null,
+    assigned_since: null,
+    status: 'vacant',
+    funded_amount_paise: 0,
+    outstanding_paise: 0,
+    funded_date: null,
+    payment_method: null,
+    payment_reference: null,
+    paid_to_resident_id: null,
+    paid_to_display_name: null,
+    is_primary_signatory: false,
+    transactions: [],
+    room_id: null,
+    room_number: null,
+    has_attached_washroom: null,
+    has_balcony: null,
+    base_rent_paise: null,
+    ...overrides,
+  }
+}
+
+const deposits = {
+  slots: [
+    depositSlot({ slot_id: 'slot-1', slot_number: 1, slot_label: 'Room 1', room_id: 'room-1' }),
+    depositSlot({ slot_id: 'slot-2', slot_number: 2, slot_label: 'Room 2' }),
+  ],
 }
 
 const residents = {
@@ -79,6 +128,7 @@ function open(extra: Record<string, unknown> = {}) {
     routes: {
       '/api/property/rooms': listing,
       '/api/residents': residents,
+      '/api/rent/deposits': deposits,
       ...extra,
     } as never,
   })
@@ -101,10 +151,11 @@ describe('RoomsInventory', () => {
     const headers = within(table).getAllByRole('columnheader')
     expect(headers.map((header) => header.textContent)).toEqual([
       'Room Number',
+      'Base Rent',
       'Attached Washroom',
       'Balcony',
       'Current Occupant',
-      'Occupied Since',
+      'Linked Escrow Slot',
       'Actions',
     ])
     for (const header of headers) expect(header).toHaveClass('text-center')
@@ -115,11 +166,14 @@ describe('RoomsInventory', () => {
       'href',
       '/residents/alice',
     )
-    expect(first).toHaveTextContent('1 Aug 2026')
+    expect(first).toHaveTextContent('Since 1 Aug 2026')
+    expect(first).toHaveTextContent('₹18,000.00')
+    expect(within(first).getByText('Slot 1: ₹50,000.00')).toBeInTheDocument()
     expect(within(first).getByRole('button', { name: 'Vacate Room 1' })).toBeInTheDocument()
 
     const second = within(table).getByRole('row', { name: /Room 2/ })
     expect(within(second).getByText('Vacant')).toBeInTheDocument()
+    expect(within(second).getByText('Unlinked')).toBeInTheDocument()
     expect(within(second).getByText('No')).toBeInTheDocument()
     expect(second).toHaveTextContent('—')
     expect(within(second).getByRole('button', { name: 'Remove Room 2' })).toBeInTheDocument()
@@ -151,6 +205,8 @@ describe('RoomsInventory', () => {
       room_number: 'Room 3',
       has_attached_washroom: false,
       has_balcony: true,
+      base_rent_paise: null,
+      linked_slot_id: null,
       assigned_resident_id: null,
       effective_date: null,
     })
@@ -226,6 +282,7 @@ describe('RoomsInventory', () => {
       room_number: 'Room 1',
       has_attached_washroom: true,
       has_balcony: false,
+      base_rent_paise: 1800000,
     })
   })
 
@@ -289,5 +346,61 @@ describe('AssignedRoomCard', () => {
   it('says when the resident has no room', async () => {
     show('bob')
     expect(await screen.findByText(/No room assigned\. 1 room is vacant\./)).toBeInTheDocument()
+  })
+})
+
+describe('RoomsInventory base rent and deposit slot', () => {
+  it('sets a base rent in paise and links a free slot', async () => {
+    open({ 'POST /api/property/rooms': room({ room_number: 'Room 3' }) })
+    await screen.findByRole('table', { name: 'Rooms' })
+    await userEvent.click(screen.getByRole('button', { name: 'Add Room' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText(/Room Number/), 'Room 3')
+    // Only the slot not already backing a room is offered.
+    const slotSelect = within(dialog).getByLabelText(/Deposit Slot/)
+    await waitFor(() =>
+      expect(within(slotSelect).getAllByRole('option').map((o) => o.textContent)).toEqual([
+        'No slot',
+        'Slot 2 (Room 2) · ₹50,000.00',
+      ]),
+    )
+    await userEvent.selectOptions(slotSelect, 'slot-2')
+    await userEvent.type(within(dialog).getByLabelText(/Base Rent/), '12500.50')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Add Room' }))
+    await waitFor(() => expect(sent('POST', '/api/property/rooms')).toBeDefined())
+    expect(sent('POST', '/api/property/rooms')!.body).toMatchObject({
+      room_number: 'Room 3',
+      base_rent_paise: 1250050,
+      linked_slot_id: 'slot-2',
+    })
+  })
+
+  it('refuses a base rent that is not an amount', async () => {
+    open()
+    await screen.findByRole('table', { name: 'Rooms' })
+    await userEvent.click(screen.getByRole('button', { name: 'Add Room' }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText(/Room Number/), 'Room 3')
+    await userEvent.type(within(dialog).getByLabelText(/Base Rent/), '12.345')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Add Room' }))
+    expect(within(dialog).getByLabelText(/Base Rent/)).toHaveAttribute('aria-invalid', 'true')
+    expect(sent('POST', '/api/property/rooms')).toBeUndefined()
+  })
+
+  it('unlinks a room from its slot when edited to none', async () => {
+    open({ 'PATCH /api/property/rooms/room-1': ROOM_1 })
+    await screen.findByRole('table', { name: 'Rooms' })
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Room 1' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByLabelText(/Base Rent/)).toHaveValue('18000.00')
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText(/Deposit Slot/)).toHaveValue('slot-1'),
+    )
+    await userEvent.selectOptions(within(dialog).getByLabelText(/Deposit Slot/), '')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Room' }))
+    await waitFor(() => expect(sent('PATCH', '/api/property/rooms/room-1')).toBeDefined())
+    expect(sent('PATCH', '/api/property/rooms/room-1')!.body).toMatchObject({
+      linked_slot_id: null,
+    })
   })
 })

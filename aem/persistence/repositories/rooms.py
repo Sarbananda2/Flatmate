@@ -5,9 +5,13 @@ from typing import Any
 
 from .base import Repository
 
-_SELECT = """SELECT h.*, r.display_name AS assigned_display_name
+_SELECT = """SELECT h.*, r.display_name AS assigned_display_name,
+                    s.slot_id AS slot_id, s.slot_number AS slot_number,
+                    s.slot_label AS slot_label, s.target_deposit_paise AS slot_target_paise,
+                    s.funded_amount_paise AS slot_funded_paise, s.status AS slot_status
                FROM household_room h
-               LEFT JOIN resident r ON r.resident_id = h.assigned_resident_id"""
+               LEFT JOIN resident r ON r.resident_id = h.assigned_resident_id
+               LEFT JOIN household_deposit_slot s ON s.room_id = h.room_id"""
 
 
 class RoomsRepository(Repository):
@@ -32,29 +36,35 @@ class RoomsRepository(Repository):
             (apartment_id, room_number))
 
     def insert(self, *, room_id: str, apartment_id: str, room_number: str,
-               has_attached_washroom: int, has_balcony: int,
+               has_attached_washroom: int, has_balcony: int, base_rent_paise: int | None,
                assigned_resident_id: str | None, assigned_since: str | None,
                created_at: str) -> None:
         self._s.execute(
             """INSERT INTO household_room (room_id, apartment_id, room_number,
-                   has_attached_washroom, has_balcony, assigned_resident_id,
-                   assigned_since, created_at, updated_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   has_attached_washroom, has_balcony, base_rent_paise,
+                   assigned_resident_id, assigned_since, created_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (room_id, apartment_id, room_number, has_attached_washroom, has_balcony,
-             assigned_resident_id, assigned_since, created_at, created_at))
+             base_rent_paise, assigned_resident_id, assigned_since, created_at, created_at))
 
     def update(self, room_id: str, *, room_number: str, has_attached_washroom: int,
-               has_balcony: int, assigned_resident_id: str | None,
-               assigned_since: str | None, updated_at: str) -> None:
+               has_balcony: int, base_rent_paise: int | None,
+               assigned_resident_id: str | None, assigned_since: str | None,
+               updated_at: str) -> None:
         self._s.execute(
             """UPDATE household_room
                   SET room_number = %s, has_attached_washroom = %s, has_balcony = %s,
-                      assigned_resident_id = %s, assigned_since = %s, updated_at = %s
+                      base_rent_paise = %s, assigned_resident_id = %s,
+                      assigned_since = %s, updated_at = %s
                 WHERE room_id = %s""",
-            (room_number, has_attached_washroom, has_balcony, assigned_resident_id,
-             assigned_since, updated_at, room_id))
+            (room_number, has_attached_washroom, has_balcony, base_rent_paise,
+             assigned_resident_id, assigned_since, updated_at, room_id))
 
-    def link_slot(self, slot_id: str, room_id: str, *, updated_at: str) -> None:
+    def slot_for_room(self, room_id: str) -> dict[str, Any] | None:
+        return self._s.fetch_one(
+            "SELECT * FROM household_deposit_slot WHERE room_id = %s", (room_id,))
+
+    def link_slot(self, slot_id: str, room_id: str | None, *, updated_at: str) -> None:
         self._s.execute(
             "UPDATE household_deposit_slot SET room_id = %s, updated_at = %s WHERE slot_id = %s",
             (room_id, updated_at, slot_id))

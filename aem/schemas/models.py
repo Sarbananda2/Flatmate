@@ -481,6 +481,14 @@ class DepositSlotItem(ApiModel):
     target_deposit_paise: int = _money_field("This slot's share of the deposit.", ge=1)
     assigned_resident_id: str | None = Field(
         None, max_length=64, description="The occupant. Omit for a vacant slot.")
+    room_id: str | None = Field(
+        None, max_length=64,
+        description="The room the slot backs. Omit to leave the link as it is; null unlinks.")
+
+
+class DepositSlotLinkRoomRequest(ApiModel):
+    room_id: str | None = Field(None, max_length=64,
+                                description="The room the slot backs, or null for none.")
 
 
 class DepositSlotInitRequest(ApiModel):
@@ -616,6 +624,10 @@ class RoomCreate(ApiModel):
                              description="Unique in the flat, ignoring case.")
     has_attached_washroom: bool = False
     has_balcony: bool = False
+    base_rent_paise: int | None = _money_field(
+        "This room's share of the rent, for a room-tiered split.", default=None)
+    linked_slot_id: str | None = Field(None, max_length=64,
+                                       description="The deposit slot that backs the room.")
     assigned_resident_id: str | None = Field(
         None, max_length=64, description="An active resident without a room. Omit for vacant.")
     effective_date: str | None = Field(
@@ -627,6 +639,8 @@ class RoomUpdate(ApiModel):
     room_number: str | None = Field(None, min_length=1, max_length=50)
     has_attached_washroom: bool | None = None
     has_balcony: bool | None = None
+    base_rent_paise: int | None = _money_field("Null clears it.", default=None)
+    linked_slot_id: str | None = Field(None, max_length=64, description="Null unlinks.")
     assigned_resident_id: str | None = Field(
         None, max_length=64, description="A resident to assign, or null to vacate the room.")
     effective_date: str | None = Field(None, pattern=DATE_PATTERN)
@@ -652,6 +666,8 @@ class RoomResponse(PassthroughModel):
     assigned_display_name: str | None
     assigned_since: str | None
     status: Literal["occupied", "vacant"]
+    base_rent_paise: int | None
+    linked_deposit_slot: dict[str, Any] | None
 
 
 ContactRole = Literal["owner", "broker", "caretaker", "society_manager", "emergency_utility"]
@@ -728,6 +744,9 @@ class RentGenerateRequest(ApiModel):
         default_factory=list,
         description="Active residents who do not take part this month. Everyone else is "
                     "charged a full equal share; nothing is prorated.")
+    split_mode: Literal["equal", "room_tiered"] = Field(
+        "equal", description="equal, or room_tiered: each participant pays their room's "
+                             "base rent, which must add up to the lease rent exactly.")
 
 
 class RentPaymentCreate(ApiModel):
@@ -899,7 +918,7 @@ __all__ = [
     "LandlordReceiptUpload", "RentDisburseRequest", "RentGenerateRequest",
     "ExitClearanceExecuteRequest", "ExitClearancePreview", "ExitClearanceResponse",
     "FlatmateStatementList", "ResidentMonthlyPaymentItem", "ResidentMonthlyStatement",
-    "RoomAssignRequest", "RoomCreate", "RoomResponse", "RoomUpdate", "RoomVacateRequest",
+    "DepositSlotLinkRoomRequest", "RoomAssignRequest", "RoomCreate", "RoomResponse", "RoomUpdate", "RoomVacateRequest",
     "ContactCreate", "ContactResponse", "ContactRole", "ContactUpdate", "DocumentCategory",
     "DocumentMetadataResponse",
     "ResidentMonthlyStatementItem",

@@ -11,7 +11,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BedDouble, DoorOpen, Pencil, Plus, Trash2, UserPlus } from 'lucide-react'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
-import { CheckboxField, DateField, SelectField, TextField } from '../../components/Form'
+import { CheckboxField, DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
 import {
   Avatar,
   BUTTON_PRIMARY,
@@ -20,12 +20,14 @@ import {
   EmptyBlock,
   Panel,
   Pill,
+  Rupees,
 } from '../../components/ui'
 import { useToast } from '../../components/Toast'
 import { api } from '../../api/client'
 import { type Resource, useMutation, useResource } from '../../lib/useApi'
-import { formatDate, todayIso } from '../../lib/format'
-import type { Resident, Room, RoomList } from '../../api/types'
+import { formatDate, formatInr, paiseToInput, parseRupees, todayIso } from '../../lib/format'
+import type { DepositSlot, Resident, Room, RoomList } from '../../api/types'
+import { useDepositSummary } from './SecurityDeposits'
 
 export const ROOMS = '/api/property/rooms'
 const EARLIEST_DATE = '2000-01-01'
@@ -45,6 +47,21 @@ function dateError(value: string): string | null {
   if (value > todayIso()) return 'The date cannot be in the future.'
   if (value < EARLIEST_DATE) return 'That date is too far in the past.'
   return null
+}
+
+/** The deposit slot behind a room: green once funded, amber while owed, grey if none. */
+function LinkedSlot({ room }: { room: Room }) {
+  const slot = room.linked_deposit_slot
+  if (!slot) return <Pill>Unlinked</Pill>
+  const tone =
+    slot.status === 'occupied_funded' ? 'success' : slot.status === 'occupied_pending' ? 'warning' : 'neutral'
+  return (
+    <span title={`${slot.slot_label}: ${formatInr(slot.funded_amount_paise)} of ${formatInr(slot.target_deposit_paise)} funded`}>
+      <Pill tone={tone}>
+        {`Slot ${slot.slot_number}: ${formatInr(slot.target_deposit_paise)}`}
+      </Pill>
+    </span>
+  )
 }
 
 /** "Yes" in green, "No" in a quiet grey. */
@@ -78,6 +95,7 @@ type Dialog =
 export function RoomsInventory() {
   const rooms = useRooms()
   const residents = useResource<{ items: Resident[] }>('/api/residents', { active_only: true })
+  const deposits = useDepositSummary()
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const toast = useToast()
 
@@ -131,10 +149,11 @@ export function RoomsInventory() {
                 <thead>
                   <tr className={TABLE_HEAD}>
                     <th scope="col" className={TH}>Room Number</th>
+                    <th scope="col" className={TH}>Base Rent</th>
                     <th scope="col" className={TH}>Attached Washroom</th>
                     <th scope="col" className={TH}>Balcony</th>
                     <th scope="col" className={TH}>Current Occupant</th>
-                    <th scope="col" className={TH}>Occupied Since</th>
+                    <th scope="col" className={TH}>Linked Escrow Slot</th>
                     <th scope="col" className={TH}>Actions</th>
                   </tr>
                 </thead>
@@ -144,6 +163,9 @@ export function RoomsInventory() {
                       <th scope="row" className="py-3 px-2 text-left font-bold whitespace-nowrap">
                         {room.room_number}
                       </th>
+                      <td className="py-3 px-2 text-center font-semibold">
+                        {room.base_rent_paise != null ? <Rupees paise={room.base_rent_paise} /> : '—'}
+                      </td>
                       <td className="py-3 px-2 text-center">
                         <YesNo value={room.has_attached_washroom} />
                       </td>
@@ -157,7 +179,14 @@ export function RoomsInventory() {
                             className="flex items-center gap-2 min-w-0 font-semibold"
                           >
                             <Avatar name={room.assigned_display_name ?? room.assigned_resident_id} />
-                            <span className="truncate">{room.assigned_display_name}</span>
+                            <span className="min-w-0">
+                              <span className="block truncate">{room.assigned_display_name}</span>
+                              {room.assigned_since && (
+                                <span className="block text-[11px] font-normal text-[var(--text-tertiary)]">
+                                  {`Since ${formatDate(room.assigned_since)}`}
+                                </span>
+                              )}
+                            </span>
                           </Link>
                         ) : (
                           <div className="text-center">
@@ -165,8 +194,8 @@ export function RoomsInventory() {
                           </div>
                         )}
                       </td>
-                      <td className="py-3 px-2 text-center whitespace-nowrap">
-                        {room.assigned_since ? formatDate(room.assigned_since) : '—'}
+                      <td className="py-3 px-2 text-center">
+                        <LinkedSlot room={room} />
                       </td>
                       <td className="py-3 px-2">
                         <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
@@ -225,6 +254,7 @@ export function RoomsInventory() {
           room={dialog.kind === 'edit' ? dialog.room : null}
           rooms={rooms.data?.items ?? []}
           residents={residents.data?.items ?? []}
+          slots={deposits.data?.slots ?? []}
           onClose={() => setDialog(null)}
           onDone={(room) =>
             done(dialog.kind === 'add' ? `${room.room_number} added` : `${room.room_number} saved`)
@@ -309,16 +339,21 @@ function RoomModal({
   room,
   rooms,
   residents,
+  slots,
   onClose,
   onDone,
 }: {
   room: Room | null
   rooms: Room[]
   residents: Resident[]
+  slots: DepositSlot[]
   onClose: () => void
   onDone: (room: Room) => void
 }) {
   const [number, setNumber] = useState(room?.room_number ?? '')
+  const [rentRaw, setRentRaw] = useState(paiseToInput(room?.base_rent_paise))
+  const currentSlot = room?.linked_deposit_slot?.slot_id ?? ''
+  const [slotId, setSlotId] = useState(currentSlot)
   const [washroom, setWashroom] = useState(room?.has_attached_washroom ?? false)
   const [balcony, setBalcony] = useState(room?.has_balcony ?? false)
   const [occupant, setOccupant] = useState(room?.assigned_resident_id ?? '')
@@ -332,6 +367,7 @@ function RoomModal({
       other.room_number.trim().toLowerCase() === trimmed.toLowerCase(),
   )
   const occupantChanged = occupant !== (room?.assigned_resident_id ?? '')
+  const rent = parseRupees(rentRaw, { allowEmpty: true })
   const errors = {
     number: !trimmed
       ? 'Enter the room number.'
@@ -341,8 +377,18 @@ function RoomModal({
           ? `${clash.room_number} already exists.`
           : null,
     since: occupant && occupantChanged ? dateError(since) : null,
+    rent: rentRaw.trim() && !rent.ok ? (rent.error ?? 'Enter the rent in rupees.') : null,
   }
-  const valid = !errors.number && !errors.since
+  const valid = !errors.number && !errors.since && !errors.rent
+  const basePaise = rentRaw.trim() ? rent.paise : null
+  const slotChanged = slotId !== currentSlot
+  // Slots that back no room yet, and the one that backs this room.
+  const slotOptions = slots
+    .filter((slot) => !slot.room_id || slot.room_id === room?.room_id)
+    .map((slot) => ({
+      value: slot.slot_id,
+      label: `Slot ${slot.slot_number} (${slot.slot_label}) · ${formatInr(slot.target_deposit_paise)}`,
+    }))
   const formId = room ? 'room-edit-form' : 'room-add-form'
 
   const save = useMutation(
@@ -352,6 +398,8 @@ function RoomModal({
             room_number: trimmed,
             has_attached_washroom: washroom,
             has_balcony: balcony,
+            base_rent_paise: basePaise,
+            ...(slotChanged ? { linked_slot_id: slotId || null } : {}),
             ...(occupantChanged
               ? { assigned_resident_id: occupant || null, effective_date: occupant ? since : null }
               : {}),
@@ -360,6 +408,8 @@ function RoomModal({
             room_number: trimmed,
             has_attached_washroom: washroom,
             has_balcony: balcony,
+            base_rent_paise: basePaise,
+            linked_slot_id: slotId || null,
             assigned_resident_id: occupant || null,
             effective_date: occupant ? since : null,
           }),
@@ -403,6 +453,21 @@ function RoomModal({
         />
         <CheckboxField label="Attached Washroom" checked={washroom} onChange={setWashroom} />
         <CheckboxField label="Balcony" checked={balcony} onChange={setBalcony} />
+        <MoneyInput
+          label="Base Rent"
+          value={rentRaw}
+          onChange={(raw) => setRentRaw(raw)}
+          hint="Optional. This room's share of the monthly rent, for a room-tiered split."
+          error={submitted ? errors.rent : null}
+        />
+        <SelectField
+          label="Deposit Slot"
+          value={slotId}
+          onChange={setSlotId}
+          placeholder="No slot"
+          options={slotOptions}
+          hint="The security deposit slot that backs this room. Slots backing another room are not listed."
+        />
         <SelectField
           label="Occupant"
           value={occupant}

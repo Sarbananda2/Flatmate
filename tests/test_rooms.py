@@ -56,7 +56,9 @@ def test_rooms_are_listed_in_order_with_their_occupants_and_counts(flat):
         ("Room 1", "occupied", "Alice"), ("Room 2", "occupied", "Bob"),
         ("Room 3", "vacant", None)]
     assert listing["summary"] == {"total_rooms": 3, "occupied_rooms": 2, "vacant_rooms": 1,
-                                  "with_attached_washroom": 2, "with_balcony": 1}
+                                  "with_attached_washroom": 2, "with_balcony": 1,
+                                  "rooms_with_base_rent": 0, "total_base_rent_paise": 0,
+                                  "linked_slots": 0}
     first = listing["items"][0]
     assert (first["has_attached_washroom"], first["has_balcony"],
             first["assigned_since"]) == (True, True, "2026-08-01")
@@ -363,3 +365,82 @@ def test_a_deposit_slot_is_linked_to_its_room(flatmates):
     assert rooms.link_slot_to_room(flatmates, APARTMENT, "slot-9", room["room_id"]) is False
     assert _rows(flatmates, "SELECT room_id FROM household_deposit_slot")[0]["room_id"] == \
         room["room_id"]
+
+
+# --------------------------------------------------------- base rent and slots --
+
+def _slot(db, number, *, room_id=None):
+    with connect(db) as conn:
+        conn.execute(
+            "INSERT INTO household_deposit_slot (slot_id, apartment_id, slot_number, "
+            "slot_label, target_deposit_paise, funded_amount_paise, status, room_id, "
+            "created_at, updated_at) VALUES (%s, %s, %s, %s, 5000000, 0, "
+            "'vacant', %s, 'now', 'now')",
+            (f"slot-{number}", APARTMENT, number, f"Room {number}", room_id))
+    return f"slot-{number}"
+
+
+def test_a_room_carries_a_base_rent(flat):
+    room = _add(flat, "Room 4", base_rent_paise=1_200_000)
+    assert room["base_rent_paise"] == 1_200_000
+    changed = rooms.update_room(flat, APARTMENT, room["room_id"], {"base_rent_paise": 1_250_000})
+    assert changed["base_rent_paise"] == 1_250_000
+    cleared = rooms.update_room(flat, APARTMENT, room["room_id"], {"base_rent_paise": None})
+    assert cleared["base_rent_paise"] is None
+    rooms.update_room(flat, APARTMENT, _room(flat, "Room 1")["room_id"],
+                      {"base_rent_paise": 1_000_000})
+    summary = rooms.list_rooms(flat, APARTMENT)["summary"]
+    assert (summary["rooms_with_base_rent"], summary["total_base_rent_paise"]) == (1, 1_000_000)
+
+
+@pytest.mark.parametrize("rent", [-1, 12.5, True, "1000"])
+def test_a_base_rent_must_be_whole_non_negative_paise(flat, rent):
+    with pytest.raises(ValidationError):
+        _add(flat, "Room 4", base_rent_paise=rent)
+
+
+def test_a_room_lists_the_deposit_slot_that_backs_it(flat):
+    room_id = _room(flat, "Room 1")["room_id"]
+    slot_id = _slot(flat, 1)
+    linked = rooms.update_room(flat, APARTMENT, room_id, {"linked_slot_id": slot_id})
+    assert linked["linked_deposit_slot"] == {
+        "slot_id": slot_id, "slot_number": 1, "slot_label": "Room 1",
+        "target_deposit_paise": 5_000_000, "funded_amount_paise": 0, "status": "vacant"}
+    assert rooms.list_rooms(flat, APARTMENT)["summary"]["linked_slots"] == 1
+    unlinked = rooms.update_room(flat, APARTMENT, room_id, {"linked_slot_id": None})
+    assert unlinked["linked_deposit_slot"] is None
+
+
+def test_a_new_room_can_be_linked_to_a_slot_as_it_is_added(flat):
+    slot_id = _slot(flat, 4)
+    room = _add(flat, "Room 4", linked_slot_id=slot_id)
+    assert room["linked_deposit_slot"]["slot_id"] == slot_id
+
+
+def test_a_room_is_backed_by_one_slot_at_most(flat):
+    room_id = _room(flat, "Room 1")["room_id"]
+    _slot(flat, 1, room_id=room_id)
+    second = _slot(flat, 2)
+    with pytest.raises(ConflictError) as caught:
+        rooms.link_slot_to_room(flat, APARTMENT, second, room_id)
+    assert caught.value.code == "room_has_slot"
+    # Choosing another slot for the room from the room's side moves the link.
+    moved = rooms.update_room(flat, APARTMENT, room_id, {"linked_slot_id": second})
+    assert moved["linked_deposit_slot"]["slot_id"] == second
+    assert _rows(flat, "SELECT room_id FROM household_deposit_slot WHERE slot_id='slot-1'"
+                 )[0]["room_id"] is None
+
+
+def test_the_database_refuses_two_slots_for_one_room(flat):
+    room_id = _room(flat, "Room 1")["room_id"]
+    _slot(flat, 1, room_id=room_id)
+    with pytest.raises(DatabaseRefusal):
+        _slot(flat, 2, room_id=room_id)
+
+
+def test_a_refused_link_to_an_unknown_slot_changes_nothing(flat):
+    room_id = _room(flat, "Room 1")["room_id"]
+    with pytest.raises(NotFoundError):
+        rooms.update_room(flat, APARTMENT, room_id,
+                          {"linked_slot_id": "nope", "base_rent_paise": 5})
+    assert _room(flat, "Room 1")["base_rent_paise"] is None

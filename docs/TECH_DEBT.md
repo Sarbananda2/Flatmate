@@ -26,11 +26,19 @@ This register documents architectural trade-offs, deferred features, and legal/d
                                        │
                                        ▼
 ┌───────────────────────────────────────────────────────────────────────────────┐
-│ Next Phase: Space Allocation Linking (DEBT-006) [READY TO EXECUTE]            │
-│   • Link flatmates directly to rooms & bed slots within the household        │
-│   • Connect physical rooms directly to `household_deposit_slot`               │
-│   • Unlock Model 2 (Room-tiered rent pricing) & Model 3 (Sq.ft ratio)         │
-│   • Reconcile / Synchronize Owner Contact with Lease Landlord details         │
+│ Post-Household Phase: Space Allocation Linking (DEBT-006) [COMPLETED]         │
+│   • [x] Link flatmates directly to rooms & bed slots within the household    │
+│   • [x] Connect physical rooms directly to `household_deposit_slot`           │
+│   • [x] Unlock Model 2 (Room-tiered rent pricing) & base rent attributes      │
+│   • [x] Reconcile / Synchronize Owner Contact with Lease Landlord details     │
+└──────────────────────────────────────┬────────────────────────────────────────┘
+                                       │
+                                       ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│ Upcoming Milestones & Backlog Options                                         │
+│   • DEBT-001: Single-Signatory Master Lease HRA Receipt Scrutiny              │
+│   • DEBT-002: Move-In / Move-Out Daily Proration Policy                       │
+│   • DEBT-004: Vehicle & Parking Slot Allocation                               │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -39,11 +47,12 @@ This register documents architectural trade-offs, deferred features, and legal/d
 ## High-Priority Backlog Items
 
 ### DEBT-006: Space Allocation (Apartment Room & Bed Inventory)
-- **Status:** Ready to Execute (Next Priority).
-- **Domain Context:** Space allocation (which flatmate sleeps in which room or bed, and which parking slot is assigned) must **not** be modeled as loose, unvalidated string labels directly on the `resident` table. 
-- **Architectural Rationale:** The physical apartment floor plan (e.g. 3BHK with Master Bedroom + Balcony, Common Bedroom, 1 Car Parking Slot) outlives individual flatmates. Modeling rooms and beds as first-class physical assets under the `apartment` aggregate prevents double-occupancy conflicts, enables seamless room turnover, and serves as the prerequisite foundation for **Model 2 (Room-Tiered Rent)** and **Model 3 (Square-Footage Allocation)**.
-- **Deposit Slot Bridge:** In Pillar B, the security deposit is structured as `household_deposit_slot` owned by the Household/Lease. `household_deposit_slot.room_id` column was introduced in Migration 0010; now it needs active association in the UI and services so that slot labels, room occupancy, and deposit tracking form an unbroken chain.
-- **Prerequisite:** Completed Phase 2 (Migration 0010 & 0011).
+- **Status:** [COMPLETED]
+- **Resolution:**
+  - `household_deposit_slot.room_id` linked and displayed across Rooms Inventory (`/services/property`) and Security Deposits (`/services/deposits`).
+  - Migration 0012 added `base_rent_paise` to `household_room` and enforced unique room-slot pairs.
+  - Rent generation engine updated to support `split_mode: "room_tiered"` alongside `"equal"`.
+  - Bi-directional synchronization between `household_contact` (Owner) and `rent_lease_config` established.
 
 ---
 

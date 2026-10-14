@@ -10,7 +10,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { clsx } from 'clsx'
-import { Landmark, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
+import { BedDouble, Landmark, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
 import { Page } from '../../components/Layout'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
 import {
@@ -42,6 +42,7 @@ import type {
   DepositSlot,
   DepositTransaction,
   HouseholdDepositSummary,
+  RoomList,
 } from '../../api/types'
 
 const DEPOSITS = '/api/rent/deposits'
@@ -449,7 +450,7 @@ function DepositSetupCard({
 
 /* ------------------------------------------------------------ escrow pool -- */
 
-type DialogKind = 'fund' | 'vacate' | 'assign'
+type DialogKind = 'fund' | 'vacate' | 'assign' | 'room'
 type Dialog = { kind: DialogKind; slot: DepositSlot } | null
 
 function EscrowPoolCard({
@@ -562,6 +563,7 @@ function EscrowPoolCard({
                   <span className="block text-[11px] font-normal text-[var(--text-tertiary)]">
                     Slot {slot.slot_number}
                   </span>
+                  <SlotRoom slot={slot} />
                 </th>
                 <td className="py-3 px-2 text-center font-bold text-[var(--text-primary)]">
                   <Rupees paise={slot.target_deposit_paise} />
@@ -717,7 +719,13 @@ function SlotActions({
       className: BUTTON_QUIET,
     })
   }
-  if (actions.length === 0) return <span className="text-[var(--text-tertiary)]">—</span>
+  actions.push({
+    kind: 'room',
+    label: slot.room_id ? 'Change Room' : 'Link Room',
+    describe: `${slot.room_id ? 'Change the room for' : 'Link a room to'} ${slot.slot_label}`,
+    icon: BedDouble,
+    className: BUTTON_QUIET,
+  })
 
   // Always one line, so every row is the same height. A lone action has room
   // for its name; several do not, so they show as icons, each still named for
@@ -758,7 +766,28 @@ function SlotDialog({
   const props = { slot: dialog.slot, summary, onClose, onDone }
   if (dialog.kind === 'fund') return <FundingModal {...props} />
   if (dialog.kind === 'vacate') return <VacateModal {...props} />
+  if (dialog.kind === 'room') return <RoomLinkModal {...props} />
   return <AssignModal {...props} />
+}
+
+/** The room a slot backs, with its amenities, under the slot's name. */
+function SlotRoom({ slot }: { slot: DepositSlot }) {
+  if (!slot.room_number) return null
+  const amenities = [
+    slot.has_attached_washroom && 'attached washroom',
+    slot.has_balcony && 'balcony',
+  ].filter(Boolean)
+  return (
+    <span
+      className="mt-1 inline-flex items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold text-[var(--text-secondary)]"
+      title={amenities.length ? `With ${amenities.join(' and ')}` : 'No private amenities'}
+    >
+      <BedDouble className="w-3 h-3 shrink-0" aria-hidden="true" />
+      {slot.room_number}
+      {slot.has_attached_washroom && <span aria-label="attached washroom">🚿</span>}
+      {slot.has_balcony && <span aria-label="balcony">🌅</span>}
+    </span>
+  )
 }
 
 /* ----------------------------------------------------------------- modals -- */
@@ -1358,4 +1387,86 @@ function PaidTo({ slot }: { slot: DepositSlot }) {
     slot.payment_reference ? `(${slot.payment_reference})` : null,
   ].filter(Boolean)
   return <>{parts.join(' ')}</>
+}
+
+/** Choose the room a slot backs, or none. A room is backed by one slot at most. */
+function RoomLinkModal({ slot, summary, onClose, onDone }: SlotModalProps) {
+  const rooms = useResource<RoomList>('/api/property/rooms')
+  const [roomId, setRoomId] = useState(slot.room_id ?? '')
+  const taken = new Set(
+    summary.slots
+      .filter((other) => other.slot_id !== slot.slot_id && other.room_id)
+      .map((other) => other.room_id),
+  )
+  const options = (rooms.data?.items ?? [])
+    .filter((room) => !taken.has(room.room_id))
+    .map((room) => ({
+      value: room.room_id,
+      label: [
+        room.room_number,
+        room.has_attached_washroom ? 'attached washroom' : null,
+        room.has_balcony ? 'balcony' : null,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    }))
+  const unchanged = roomId === (slot.room_id ?? '')
+
+  const save = useMutation(
+    () =>
+      api.post<HouseholdDepositSummary>(
+        `${DEPOSITS}/slots/${encodeURIComponent(slot.slot_id)}/link-room`,
+        { room_id: roomId || null },
+      ),
+    { onSuccess: onDone },
+  )
+
+  return (
+    <Modal
+      title={slot.room_id ? 'Change Room' : 'Link Room'}
+      description={`Which room ${slotName(slot)} is the deposit for. A room is backed by one slot at most.`}
+      onClose={onClose}
+      footer={
+        <ModalFooter
+          form="deposit-room-form"
+          pending={save.pending}
+          valid={!unchanged}
+          label={roomId ? 'Save Room' : 'Unlink Room'}
+          pendingLabel="Saving…"
+          onClose={onClose}
+        />
+      }
+    >
+      <form
+        id="deposit-room-form"
+        className="stack"
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault()
+          if (!unchanged && !save.pending) void save.run(undefined)
+        }}
+      >
+        {save.error && <ErrorNotice error={save.error} />}
+        <AsyncSection resource={rooms} loadingLabel="Loading rooms…">
+          {() =>
+            options.length === 0 && !slot.room_id ? (
+              <p className="m-0 text-xs text-[var(--text-secondary)]" role="status">
+                Every room is already backed by a slot, or no rooms have been added. Add rooms
+                under Household &amp; Property.
+              </p>
+            ) : (
+              <SelectField
+                label="Room"
+                value={roomId}
+                onChange={setRoomId}
+                placeholder="No room"
+                options={options}
+                hint="Rooms already backed by another slot are not listed."
+              />
+            )
+          }
+        </AsyncSection>
+      </form>
+    </Modal>
+  )
 }

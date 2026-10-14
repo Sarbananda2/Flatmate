@@ -54,6 +54,7 @@ import type {
   RentMonthOverview,
   RentParticipant,
   RentPreview,
+  RentSplitMode,
   RentReceipt,
   Resident,
 } from '../../api/types'
@@ -80,8 +81,10 @@ function percent(part: number, whole: number): string {
 export function RentMonth({ month }: { month: string }) {
   const toast = useToast()
   const [excluded, setExcluded] = useState<string[]>([])
+  const [splitMode, setSplitMode] = useState<RentSplitMode>('equal')
   const overview = useResource<RentMonthOverview>(`/api/rent/cycle/${month}`, {
     exclude: excluded.join(',') || undefined,
+    split_mode: splitMode === 'equal' ? undefined : splitMode,
   })
   const [dialog, setDialog] = useState<'payout' | 'attach' | null>(null)
   const [receiptFor, setReceiptFor] = useState<RentParticipant | null>(null)
@@ -91,6 +94,7 @@ export function RentMonth({ month }: { month: string }) {
     () =>
       api.post<RentCycle>(`/api/rent/cycle/${month}/generate`, {
         excluded_resident_ids: excluded,
+        split_mode: splitMode,
       }),
     {
       onSuccess: (cycle) => {
@@ -101,6 +105,7 @@ export function RentMonth({ month }: { month: string }) {
             : `${formatInr(cycle.total_rent_paise)} split between ${cycle.participant_count}.`,
         )
         setExcluded([])
+        setSplitMode('equal')
         overview.reload()
       },
     },
@@ -183,6 +188,8 @@ export function RentMonth({ month }: { month: string }) {
                       month={month}
                       preview={preview}
                       excluded={excluded}
+                      splitMode={splitMode}
+                      onSplitMode={setSplitMode}
                       onToggle={(residentId, takesPart) =>
                         setExcluded((current) =>
                           takesPart
@@ -639,6 +646,8 @@ function PreviewPanel({
   month,
   preview,
   excluded,
+  splitMode,
+  onSplitMode,
   onToggle,
   generating,
   error,
@@ -647,6 +656,8 @@ function PreviewPanel({
   month: string
   preview: RentPreview
   excluded: string[]
+  splitMode: RentSplitMode
+  onSplitMode: (mode: RentSplitMode) => void
   onToggle: (residentId: string, takesPart: boolean) => void
   generating: boolean
   error: ReturnType<typeof useMutation>['error']
@@ -662,6 +673,11 @@ function PreviewPanel({
       takesPart: false,
     })),
   ].sort((a, b) => a.display_name.localeCompare(b.display_name))
+  const tiered = splitMode === 'room_tiered'
+  const rooms = new Map(preview.room_tiered.shares.map((row) => [row.resident_id, row.room_number]))
+  // Offered when the rooms' base rents add up to the lease rent, and kept while
+  // chosen so it can be switched back after a change makes it unavailable.
+  const offerSplit = !adopting && (preview.room_tiered.available || tiered)
 
   return (
     <Panel
@@ -670,7 +686,9 @@ function PreviewPanel({
       hint={
         adopting
           ? 'Rent for this month is already recorded as an expense. Generating links it here; it is not charged a second time.'
-          : 'Everyone taking part is charged a full equal share. A partial month never reduces a share.'
+          : tiered
+            ? "Each resident taking part is charged their room's base rent. A partial month never reduces a share."
+            : 'Everyone taking part is charged a full equal share. A partial month never reduces a share.'
       }
       actions={
         <button
@@ -699,7 +717,41 @@ function PreviewPanel({
           lease. It is linked as recorded.
         </p>
       )}
-      {preview.participant_count > 0 && (
+      {offerSplit && (
+        <fieldset className="m-0 border-0 p-0 flex flex-wrap items-center gap-2" role="radiogroup">
+          <legend className="sr-only">Split mode</legend>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] mr-1">
+            Split mode
+          </span>
+          {(
+            [
+              ['equal', 'Equal Split'],
+              ['room_tiered', 'Room-Tiered'],
+            ] as Array<[RentSplitMode, string]>
+          ).map(([value, label]) => (
+            <label
+              key={value}
+              className={
+                splitMode === value
+                  ? 'inline-flex items-center gap-1.5 rounded-full border border-[var(--accent)] bg-[var(--accent-glow)] px-3 py-1 text-xs font-semibold cursor-pointer'
+                  : 'inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)] cursor-pointer'
+              }
+            >
+              <input
+                type="radio"
+                name="rent-split-mode"
+                className="w-auto"
+                value={value}
+                checked={splitMode === value}
+                disabled={generating}
+                onChange={() => onSplitMode(value)}
+              />
+              {label}
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {preview.participant_count > 0 && !tiered && (
         <SplitRule
           total={preview.total_rent_paise}
           count={preview.participant_count}
@@ -722,6 +774,11 @@ function PreviewPanel({
               <tr key={row.resident_id} className="align-middle">
                 <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
                   {row.display_name}
+                  {tiered && row.takesPart && (
+                    <span className="block text-[11px] font-normal text-[var(--text-tertiary)]">
+                      {rooms.get(row.resident_id) ?? 'No room'}
+                    </span>
+                  )}
                 </th>
                 <td className="py-3 pr-3">
                   {adopting ? (
@@ -736,7 +793,11 @@ function PreviewPanel({
                         onChange={(event) => onToggle(row.resident_id, event.target.checked)}
                         aria-label={`${row.display_name} takes part in ${formatMonth(month)} rent`}
                       />
-                      {excluded.includes(row.resident_id) ? 'Left out' : 'Full share'}
+                      {excluded.includes(row.resident_id)
+                        ? 'Left out'
+                        : tiered
+                          ? 'Room rent'
+                          : 'Full share'}
                     </label>
                   )}
                 </td>
