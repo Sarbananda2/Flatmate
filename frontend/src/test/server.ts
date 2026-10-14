@@ -33,7 +33,20 @@ export function installFetchStub(options: StubOptions): { calls: Recorded[]; res
     const url = typeof input === 'string' ? input : input.toString()
     const path = url.split('?')[0]
     const method = (init?.method ?? 'GET').toUpperCase()
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined
+    // A multipart form is recorded field by field; a file as its name, type and size.
+    const body =
+      init?.body instanceof FormData
+        ? Object.fromEntries(
+            [...init.body.entries()].map(([key, value]) => [
+              key,
+              typeof value === 'string'
+                ? value
+                : { name: value.name, type: value.type, size: value.size },
+            ]),
+          )
+        : init?.body
+          ? JSON.parse(String(init.body))
+          : undefined
     calls.push({ method, path, body })
 
     const failure = options.errors?.[`${method} ${path}`]

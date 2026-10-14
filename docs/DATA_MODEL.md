@@ -395,6 +395,7 @@ The API maps each marker to an HTTP 409 with the matching error code.
 | 0008 | `household_security_deposits` | Deposit funding mode and primary signatory on `rent_lease_config`; the household's permanent deposit slots (`household_deposit_slot`) and their transactions (`household_deposit_transaction`) |
 | 0009 | `resident_exit_clearance` | One append-only record per move-out clearance: the deposit settled, the operating balance at the time, the net cash figure, and how it was settled |
 | 0010 | `household_room`; `household_deposit_slot.room_id` | The flat's rooms, their washroom and balcony, and who occupies each; an optional link from a deposit slot to its room |
+| 0011 | `household_contact`, `household_document` | The owner, broker, caretaker and other contacts; and the document vault, with each file stored as BYTEA beside its SHA-256 |
 
 Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from a single `0001_baseline.sql` that carries all six, so its migration files are `0001` and then `0007` onward: the numbering continues the history above rather than restarting.
 
@@ -470,6 +471,21 @@ The physical inventory of the flat: one row per room. Not money: nothing here to
 A room holds at most one resident, and `UNIQUE (apartment_id, assigned_resident_id)` stops a resident holding two. Only an active resident can be assigned, and a move-out clearance frees the leaver's room in its own transaction. Only a vacant room can be deleted. Every change is in the audit log under `entity_type = 'household_room'`.
 
 `household_deposit_slot.room_id` may name a slot's room. Nothing sets it yet; a slot keeps its own `slot_label`.
+
+### `household_contact`
+The people the household deals with. `role` is `owner`, `broker`, `caretaker`, `society_manager` or `emergency_utility`. Everyone has `name`, `phone`, `email` and `notes`; the rest belong to particular roles, and the application refuses them for any other:
+
+| Columns | Roles | Meaning |
+| --- | --- | --- |
+| `pan`, `bank_account_no`, `bank_ifsc` | owner | For HRA proof and rent payouts. PAN and IFSC are checked by shape in the schema too |
+| `upi_id` | all but emergency utility | Where to pay them |
+| `agency_name`, `fee_amount_paise`, `fee_status` | broker | The brokerage fee in BIGINT paise, and whether it is `paid`, `pending` or `na` |
+| `responsibilities` | caretaker, society manager, emergency utility | What they look after: plumbing, gate passes, NOCs |
+
+Changing a contact's role clears the fields the new role does not use. Creating, changing and removing a contact are audited under `entity_type = 'household_contact'`.
+
+### `household_document`
+The document vault. Each file is stored in the row itself, as `content BYTEA`, so a database backup restores the agreements along with the ledger. `sha256` is taken when the file arrives, written to the audit log on upload and on deletion, and checked again every time the file is read; a file that no longer matches is refused, not served. `size_bytes` must equal the stored length. `category` is `lease_agreement`, `society_noc`, `police_verification`, `inventory_handover` or `other`. Files are at most 10 MB, and the accepted types (PDF, PNG, JPEG, WebP, Word, text) are decided by the file's extension. Listings never select `content`.
 
 ### `rent_cycle`
 State of a month's rent: links `settlement_month` to its `expense_instance`. Tracks `disbursement_status` (`pending` vs `disbursed`), funder (`disbursed_by` = `pool` vs `resident_advance`), and funding payment ID.

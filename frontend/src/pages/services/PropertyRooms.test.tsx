@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import PropertyRoomsPage, { AssignedRoomCard } from './PropertyRooms'
+import { AssignedRoomCard, RoomsInventory } from './PropertyRooms'
 import { ToastProvider } from '../../components/Toast'
 import { installFetchStub, type Recorded } from '../../test/server'
 import { todayIso } from '../../lib/format'
@@ -85,7 +85,7 @@ function open(extra: Record<string, unknown> = {}) {
   render(
     <MemoryRouter>
       <ToastProvider>
-        <PropertyRoomsPage />
+        <RoomsInventory />
       </ToastProvider>
     </MemoryRouter>,
   )
@@ -94,7 +94,7 @@ function open(extra: Record<string, unknown> = {}) {
 const sent = (method: string, path: string) =>
   stub!.calls.find((call) => call.method === method && call.path === path)
 
-describe('PropertyRoomsPage', () => {
+describe('RoomsInventory', () => {
   it('lists the rooms with centred headers, amenities and occupants', async () => {
     open()
     const table = await screen.findByRole('table', { name: 'Rooms' })
@@ -254,7 +254,7 @@ describe('PropertyRoomsPage', () => {
     render(
       <MemoryRouter>
         <ToastProvider>
-          <PropertyRoomsPage />
+          <RoomsInventory />
         </ToastProvider>
       </MemoryRouter>,
     )

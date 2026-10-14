@@ -5,7 +5,7 @@ import AuditPage from './pages/Audit'
 import DashboardPage from './pages/Dashboard'
 import DefinitionsPage from './pages/Definitions'
 import ElectricityPage from './pages/services/Electricity'
-import PropertyRoomsPage from './pages/services/PropertyRooms'
+import PropertyHubPage from './pages/services/PropertyHub'
 import ExpensesPage from './pages/Expenses'
 import PaymentsPage from './pages/Payments'
 import ReconciliationPage from './pages/Reconciliation'
@@ -36,13 +36,15 @@ export default function App() {
           <Route path="/services/rent/config" element={<RentConfigPage />} />
           <Route path="/services/electricity" element={<ElectricityPage />} />
           <Route path="/services/deposits" element={<SecurityDepositsPage />} />
-          <Route path="/services/rooms" element={<PropertyRoomsPage />} />
+          <Route path="/services/property" element={<PropertyHubPage />} />
+          <Route path="/services/rooms" element={<Navigate to="/services/property" replace />} />
           {/* The addresses these pages had before they moved under /services. */}
           <Route path="/rent" element={<Navigate to="/services/rent" replace />} />
           <Route path="/rent/config" element={<Navigate to="/services/rent/config" replace />} />
           <Route path="/electricity" element={<Navigate to="/services/electricity" replace />} />
           <Route path="/deposits" element={<Navigate to="/services/deposits" replace />} />
-          <Route path="/rooms" element={<Navigate to="/services/rooms" replace />} />
+          <Route path="/rooms" element={<Navigate to="/services/property" replace />} />
+          <Route path="/property" element={<Navigate to="/services/property" replace />} />
           <Route path="/expenses" element={<ExpensesPage />} />
           <Route path="/payments" element={<PaymentsPage />} />
           <Route path="/statements" element={<StatementsPage />} />

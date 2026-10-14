@@ -46,11 +46,19 @@ async function request<T>(method: string, path: string, options: {
   signal?: AbortSignal
 } = {}): Promise<T> {
   let response: Response
+  // A form is sent as it is, so the browser sets the multipart boundary itself.
+  const form = options.body instanceof FormData
   try {
     response = await fetch(buildUrl(path, options.query), {
       method,
-      headers: options.body === undefined ? {} : { 'Content-Type': 'application/json' },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      headers:
+        options.body === undefined || form ? {} : { 'Content-Type': 'application/json' },
+      body:
+        options.body === undefined
+          ? undefined
+          : form
+            ? (options.body as FormData)
+            : JSON.stringify(options.body),
       signal: options.signal,
     })
   } catch (cause) {
@@ -99,6 +107,9 @@ export const api = {
   put: <T>(path: string, body?: unknown, query?: Query) =>
     request<T>('PUT', path, { body, query }),
   delete: <T>(path: string, query?: Query) => request<T>('DELETE', path, { query }),
+  /** A multipart form, for file uploads. */
+  upload: <T>(path: string, form: FormData, query?: Query) =>
+    request<T>('POST', path, { body: form, query }),
 }
 
 /** Open a CSV download in a new tab. The backend sets the filename. */

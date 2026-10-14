@@ -29,7 +29,9 @@ import {
 } from '../../components/ui'
 import { type Resource, useResource } from '../../lib/useApi'
 import { formatMonth, formatMonthShort } from '../../lib/format'
-import type { LeaseLifecycle, ServicesOverview } from '../../api/types'
+import type { ContactRole, LeaseLifecycle, ServicesOverview } from '../../api/types'
+import { useDocuments } from './DocumentVault'
+import { useContacts } from './PropertyContacts'
 import { useRooms } from './PropertyRooms'
 import { useDepositSummary } from './SecurityDeposits'
 
@@ -72,7 +74,7 @@ export function ServicesHub({ month }: { month: string }) {
         <RentCard month={month} overview={overview} />
         <ElectricityCard month={month} overview={overview} />
         <SecurityDepositCard />
-        <PropertyRoomsCard />
+        <HouseholdPropertyCard />
         {PLANNED_SERVICES.map((service) => (
           <ServiceCard
             key={service.title}
@@ -325,15 +327,20 @@ function SecurityDepositCard() {
   )
 }
 
-/* -------------------------------------------------------- property & rooms -- */
+/* ---------------------------------------------------- household & property -- */
 
-/** The flat's rooms and how many are occupied. Inventory, so it does not follow the month. */
-function PropertyRoomsCard() {
+/** Rooms, contacts and documents. Inventory, so it does not follow the month. */
+function HouseholdPropertyCard() {
   const rooms = useRooms()
+  const contacts = useContacts()
+  const documents = useDocuments()
   const summary = rooms.data?.summary
+  const roles = contacts.data?.roles_on_file ?? []
+  const leaseOnFile = documents.data?.categories_on_file.includes('lease_agreement') ?? false
+
   return (
     <ServiceCard
-      title="Property & Rooms"
+      title="Household & Property"
       icon={BedDouble}
       badge={
         !summary ? undefined : summary.total_rooms === 0 ? (
@@ -345,23 +352,18 @@ function PropertyRoomsCard() {
         )
       }
       actions={
-        <Link to="/services/rooms" className={BUTTON_PRIMARY}>
-          Manage Rooms
+        <Link to="/services/property" className={BUTTON_PRIMARY}>
+          Manage Property
           <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
         </Link>
       }
     >
-      <AsyncSection resource={rooms} loadingLabel="Loading rooms…">
+      <AsyncSection resource={rooms} loadingLabel="Loading property…">
         {({ summary: counts }) => (
           <dl className="m-0 space-y-2">
             <Fact label="Rooms">
               {counts.total_rooms > 0
-                ? `${counts.total_rooms} Room${counts.total_rooms === 1 ? '' : 's'}`
-                : NOT_SET_UP}
-            </Fact>
-            <Fact label="Occupancy">
-              {counts.total_rooms > 0
-                ? `${counts.occupied_rooms} of ${counts.total_rooms} Occupied`
+                ? `${counts.total_rooms} Room${counts.total_rooms === 1 ? '' : 's'} · ${counts.occupied_rooms} Occupied`
                 : NOT_SET_UP}
             </Fact>
             <Fact label="Amenities">
@@ -369,11 +371,35 @@ function PropertyRoomsCard() {
                 ? `${counts.with_attached_washroom} with attached washroom · ${counts.with_balcony} with balcony`
                 : NOT_SET_UP}
             </Fact>
+            <Fact label="Contacts">
+              {roles.length > 0
+                ? `${roles.map((role) => CONTACT_ROLE_SHORT[role]).join(', ')} on file`
+                : contacts.data
+                  ? 'None on file'
+                  : '—'}
+            </Fact>
+            <Fact label="Documents">
+              {!documents.data
+                ? '—'
+                : documents.data.total === 0
+                  ? 'None uploaded'
+                  : leaseOnFile
+                    ? `Lease agreement on file${documents.data.total > 1 ? ` · ${documents.data.total} documents` : ''}`
+                    : `${documents.data.total} document${documents.data.total === 1 ? '' : 's'} · no lease agreement`}
+            </Fact>
           </dl>
         )}
       </AsyncSection>
     </ServiceCard>
   )
+}
+
+const CONTACT_ROLE_SHORT: Record<ContactRole, string> = {
+  owner: 'Owner',
+  broker: 'Broker',
+  caretaker: 'Caretaker',
+  society_manager: 'Society manager',
+  emergency_utility: 'Utility line',
 }
 
 /* ------------------------------------------------------------ electricity -- */

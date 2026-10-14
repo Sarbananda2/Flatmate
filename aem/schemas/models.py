@@ -654,6 +654,75 @@ class RoomResponse(PassthroughModel):
     status: Literal["occupied", "vacant"]
 
 
+ContactRole = Literal["owner", "broker", "caretaker", "society_manager", "emergency_utility"]
+DocumentCategory = Literal["lease_agreement", "society_noc", "police_verification",
+                           "inventory_handover", "other"]
+
+
+class ContactCreate(ApiModel):
+    role: ContactRole
+    name: str = Field(min_length=1, max_length=200)
+    phone: str | None = Field(None, max_length=30, description="7 to 15 digits.")
+    email: str | None = Field(None, max_length=320)
+    notes: str | None = Field(None, max_length=2000)
+    pan: str | None = Field(None, max_length=10, description="Owner only. e.g. ABCDE1234F.")
+    bank_account_no: str | None = Field(None, max_length=18, description="Owner only.")
+    bank_ifsc: str | None = Field(None, max_length=11, description="Owner only.")
+    upi_id: str | None = Field(None, max_length=320)
+    agency_name: str | None = Field(None, max_length=200, description="Broker only.")
+    fee_amount_paise: int | None = _money_field(
+        "Broker only. The brokerage fee.", default=None)
+    fee_status: Literal["paid", "pending", "na"] | None = Field(
+        None, description="Broker only. Defaults to pending when a fee is given.")
+    responsibilities: str | None = Field(
+        None, max_length=500,
+        description="Caretaker, society manager or utility: what they look after.")
+
+
+class ContactUpdate(ApiModel):
+    role: ContactRole | None = None
+    name: str | None = Field(None, min_length=1, max_length=200)
+    phone: str | None = Field(None, max_length=30)
+    email: str | None = Field(None, max_length=320)
+    notes: str | None = Field(None, max_length=2000)
+    pan: str | None = Field(None, max_length=10)
+    bank_account_no: str | None = Field(None, max_length=18)
+    bank_ifsc: str | None = Field(None, max_length=11)
+    upi_id: str | None = Field(None, max_length=320)
+    agency_name: str | None = Field(None, max_length=200)
+    fee_amount_paise: int | None = _money_field("The brokerage fee.", default=None)
+    fee_status: Literal["paid", "pending", "na"] | None = None
+    responsibilities: str | None = Field(None, max_length=500)
+
+
+class ContactResponse(PassthroughModel):
+    contact_id: str
+    apartment_id: str
+    role: ContactRole
+    name: str
+    phone: str | None
+    email: str | None
+    fee_amount_paise: int | None
+    fee_status: str | None
+    fee_display: str | None
+
+
+class DocumentMetadataResponse(ApiModel):
+    """A stored document's details. Never its contents."""
+
+    doc_id: str
+    apartment_id: str
+    title: str
+    category: DocumentCategory
+    filename: str
+    content_type: str
+    size_bytes: int
+    sha256: str
+    uploaded_at: str
+    uploaded_by_resident_id: str | None
+    notes: str | None
+
+
 class RentGenerateRequest(ApiModel):
     excluded_resident_ids: list[str] = Field(
         default_factory=list,
@@ -831,6 +900,8 @@ __all__ = [
     "ExitClearanceExecuteRequest", "ExitClearancePreview", "ExitClearanceResponse",
     "FlatmateStatementList", "ResidentMonthlyPaymentItem", "ResidentMonthlyStatement",
     "RoomAssignRequest", "RoomCreate", "RoomResponse", "RoomUpdate", "RoomVacateRequest",
+    "ContactCreate", "ContactResponse", "ContactRole", "ContactUpdate", "DocumentCategory",
+    "DocumentMetadataResponse",
     "ResidentMonthlyStatementItem",
     "DepositConfigUpdate", "DepositSlotFundingRequest", "DepositSlotInitRequest",
     "DepositSlotItem", "DepositSlotVacateRequest",

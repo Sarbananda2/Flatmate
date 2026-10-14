@@ -13,6 +13,8 @@ dependencies = [
     "pydantic>=2.8",
     # The PostgreSQL driver and its connection pool. "binary" bundles libpq.
     "psycopg[binary,pool]>=3.2",
+    # Multipart form parsing, for document uploads.
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

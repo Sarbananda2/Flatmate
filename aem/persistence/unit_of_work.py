@@ -28,6 +28,7 @@ from .repositories.expenses import ExpensesRepository
 from .repositories.ledger_view import LedgerViewRepository
 from .repositories.opening_balances import OpeningBalancesRepository
 from .repositories.payments import PaymentsRepository
+from .repositories.property import PropertyRepository
 from .repositories.reconciliation import ReconciliationRepository
 from .repositories.recurring import RecurringRepository
 from .repositories.rent import RentRepository
@@ -88,6 +89,11 @@ class UnitOfWork:
     @cached_property
     def rooms(self) -> RoomsRepository:
         return RoomsRepository(self._session)
+
+
+    @cached_property
+    def property(self) -> PropertyRepository:
+        return PropertyRepository(self._session)
 
 
     @cached_property

@@ -1266,3 +1266,62 @@ export interface RoomList {
     with_balcony: number
   }
 }
+
+export type ContactRole = 'owner' | 'broker' | 'caretaker' | 'society_manager' | 'emergency_utility'
+
+/** Someone the household deals with. Role-specific fields are null for other roles. */
+export interface HouseholdContact {
+  contact_id: string
+  apartment_id: string
+  role: ContactRole
+  name: string
+  phone: string | null
+  email: string | null
+  pan: string | null
+  bank_account_no: string | null
+  bank_ifsc: string | null
+  upi_id: string | null
+  agency_name: string | null
+  fee_amount_paise: number | null
+  fee_status: 'paid' | 'pending' | 'na' | null
+  fee_display: string | null
+  responsibilities: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ContactList {
+  items: HouseholdContact[]
+  total: number
+  roles_on_file: ContactRole[]
+}
+
+export type DocumentCategory =
+  | 'lease_agreement'
+  | 'society_noc'
+  | 'police_verification'
+  | 'inventory_handover'
+  | 'other'
+
+/** A stored document's details. The file itself is only ever downloaded. */
+export interface HouseholdDocument {
+  doc_id: string
+  apartment_id: string
+  title: string
+  category: DocumentCategory
+  filename: string
+  content_type: string
+  size_bytes: number
+  sha256: string
+  uploaded_by_resident_id: string | null
+  notes: string | null
+  uploaded_at: string
+}
+
+export interface DocumentList {
+  items: HouseholdDocument[]
+  total: number
+  total_bytes: number
+  categories_on_file: DocumentCategory[]
+}

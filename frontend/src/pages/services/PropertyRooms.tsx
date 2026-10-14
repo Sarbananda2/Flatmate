@@ -1,5 +1,5 @@
 /**
- * Property & Rooms: the physical inventory of the flat.
+ * The Rooms tab of Household & Property: the physical inventory of the flat.
  *
  * Each room, whether it has its own washroom or a balcony, and who lives in it
  * now. A room holds at most one resident and a resident holds at most one room;
@@ -10,7 +10,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BedDouble, DoorOpen, Pencil, Plus, Trash2, UserPlus } from 'lucide-react'
-import { Page } from '../../components/Layout'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
 import { CheckboxField, DateField, SelectField, TextField } from '../../components/Form'
 import {
@@ -75,7 +74,8 @@ type Dialog =
   | { kind: 'vacate'; room: Room }
   | { kind: 'delete'; room: Room }
 
-export default function PropertyRoomsPage() {
+/** The Rooms tab of the Household & Property hub. */
+export function RoomsInventory() {
   const rooms = useRooms()
   const residents = useResource<{ items: Resident[] }>('/api/residents', { active_only: true })
   const [dialog, setDialog] = useState<Dialog | null>(null)
@@ -88,20 +88,7 @@ export default function PropertyRoomsPage() {
   }
 
   return (
-    <Page
-      title="Property & Rooms"
-      subtitle="Physical inventory of the household: room amenities, washroom access, balcony, and current occupant assignments."
-      breadcrumbs={[
-        { label: 'Housing & Utilities', to: '/services' },
-        { label: 'Property & Rooms' },
-      ]}
-      actions={
-        <button type="button" className={BUTTON_PRIMARY} onClick={() => setDialog({ kind: 'add' })}>
-          <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-          Add Room
-        </button>
-      }
-    >
+    <>
       <Panel
         title="Rooms Directory"
         icon={<BedDouble className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
@@ -109,6 +96,13 @@ export default function PropertyRoomsPage() {
           rooms.data
             ? `${rooms.data.summary.total_rooms} rooms · ${rooms.data.summary.occupied_rooms} occupied · ${rooms.data.summary.vacant_rooms} vacant`
             : undefined
+        }
+     
+        actions={
+          <button type="button" className={BUTTON_PRIMARY} onClick={() => setDialog({ kind: 'add' })}>
+            <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            Add Room
+          </button>
         }
       >
         <AsyncSection
@@ -268,7 +262,7 @@ export default function PropertyRoomsPage() {
           onDone={() => done(`${dialog.room.room_number} removed`)}
         />
       )}
-    </Page>
+    </>
   )
 }
 
@@ -576,7 +570,7 @@ export function AssignedRoomCard({ residentId }: { residentId: string }) {
       title="Assigned Space / Room"
       icon={<BedDouble className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       actions={
-        <Link to="/services/rooms" className={BUTTON_SECONDARY}>
+        <Link to="/services/property" className={BUTTON_SECONDARY}>
           Manage Rooms
         </Link>
       }
