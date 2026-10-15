@@ -295,11 +295,21 @@ describe('deposit setup', () => {
     expect(posted('/api/rent/config')!.body).toEqual({ security_deposit_paise: 15000000 })
   })
 
-  it('shows the deposit with a way to change it until slots divide it', async () => {
-    renderSection(unconfigured)
+  it('shows the deposit, and edits it in a dialog until slots divide it', async () => {
+    renderSection(unconfigured, { 'POST /api/rent/config': {} })
     expect(await screen.findByText(/Deposit held by the landlord:/)).toHaveTextContent('₹1,50,000.00')
-    await userEvent.click(screen.getByRole('button', { name: 'Change amount' }))
-    expect(screen.getByLabelText(/Security Deposit Held by Landlord/)).toHaveValue('150000.00')
+    // Shown, not edited, on the page.
+    expect(screen.queryByLabelText(/Security Deposit Held by Landlord/)).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Edit deposit amount' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: 'Deposit held by the landlord' })).toBeInTheDocument()
+    const amount = within(dialog).getByLabelText(/Security Deposit Held by Landlord/)
+    expect(amount).toHaveValue('150000.00')
+    await userEvent.clear(amount)
+    await userEvent.type(amount, '1,60,000')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() => expect(posted('/api/rent/config')).toBeDefined())
+    expect(posted('/api/rent/config')!.body).toEqual({ security_deposit_paise: 16000000 })
   })
 
   it('points to the lease before there is one', async () => {

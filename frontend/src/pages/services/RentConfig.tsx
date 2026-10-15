@@ -3,7 +3,7 @@
  * issues receipts. One lease per apartment; each month's rent is generated from
  * it on the Rent screen.
  */
-import { Fragment, useId, useState } from 'react'
+import { useId, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
@@ -147,19 +147,24 @@ export function LeaseContractSection({
           {apartment && (
             <ApartmentProfileCard apartment={apartment} onSaved={onApartmentChanged ?? (() => {})} />
           )}
-          {data.config && !editing ? (
-            <TenancyTermsCard config={data.config} onEdit={() => setEditing(true)} />
+          {data.config ? (
+            <>
+              <TenancyTermsCard config={data.config} onEdit={() => setEditing(true)} />
+              {editing && (
+                <LeaseForm
+                  // Remount on save so the form always starts from what is stored.
+                  key={data.config.updated_at}
+                  config={data.config}
+                  onSaved={() => {
+                    setEditing(false)
+                    lease.reload()
+                  }}
+                  onCancel={() => setEditing(false)}
+                />
+              )}
+            </>
           ) : (
-            <LeaseForm
-              // Remount on save so the form always starts from what is stored.
-              key={data.config?.updated_at ?? 'new'}
-              config={data.config}
-              onSaved={() => {
-                setEditing(false)
-                lease.reload()
-              }}
-              onCancel={data.config ? () => setEditing(false) : undefined}
-            />
+            <LeaseForm config={null} onSaved={lease.reload} />
           )}
           {data.config && <LandlordProfileCard config={data.config} onSaved={lease.reload} />}
           {data.config && <CompletedTermsPanel />}
@@ -264,11 +269,11 @@ function LeaseForm({
   const current = TENANCY_STEPS[stepIndex]
   const ids = useId()
   const tabId = (id: TenancyStep) => `${ids}-step-${id}`
-  const saveButton = (
-    <button type="submit" className={BUTTON_PRIMARY} disabled={!valid || save.pending}>
-      {save.pending ? 'Saving…' : config ? 'Save Changes' : 'Set Up Lease'}
-    </button>
-  )
+  const formId = `${ids}-lease-form`
+  // In the dialog the fields sit one under another, so it stays narrow; set
+  // up on the page, they sit two to a row across the wider card.
+  const inDialog = Boolean(config && onCancel)
+  const fieldLayout = inDialog ? 'stack' : GRID_2
 
   // A required field is only called out once it has been edited, so a new
   // lease does not open covered in errors. While an amount is half typed and
@@ -295,263 +300,290 @@ function LeaseForm({
           : null
   const showProjection = rentOk && rentPaise > 0 && projectedPaise !== null
 
-  return (
+  const form = (
     <form
+      id={formId}
+      className="space-y-4"
       noValidate
       onSubmit={(event) => {
         event.preventDefault()
         if (valid && !save.pending) void save.run(undefined)
       }}
     >
-      <Panel
-        // The card keeps its name while it is being edited.
-        title="Master Tenancy Terms"
-        icon={<FileText className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-        hint={config ? `Last saved ${formatDateTime(config.updated_at)}` : undefined}
-        actions={
-          <>
-            {onCancel && (
-              <button type="button" className={BUTTON_SECONDARY} onClick={onCancel} disabled={save.pending}>
-                Cancel
-              </button>
-            )}
-            {saveButton}
-          </>
-        }
-      >
-        <StepPills
-          steps={TENANCY_STEPS}
-          current={step}
-          flagged={invalidSteps}
-          onSelect={setStep}
-          label="Edit steps"
-          tabId={tabId}
-          panelId={`${ids}-step-panel`}
-          className="pb-3 border-b border-[var(--border-subtle)]"
-        />
+      <StepPills
+        steps={TENANCY_STEPS}
+        current={step}
+        flagged={invalidSteps}
+        onSelect={setStep}
+        label="Edit steps"
+        tabId={tabId}
+        panelId={`${ids}-step-panel`}
+        className="pb-3 border-b border-[var(--border-subtle)]"
+      />
 
-        <div
-          id={`${ids}-step-panel`}
-          role="tabpanel"
-          aria-labelledby={tabId(step)}
-          className="space-y-4"
-        >
-          {save.error && <ErrorNotice error={save.error} />}
-          <p className="m-0 text-xs text-[var(--text-secondary)]">{current.hint}</p>
-          {step === 'contract' && (
-            <div className={GRID_2}>
-              {!config && (
-                <TextField
-                  label="Landlord name"
-                  required
-                  value={name}
-                  onChange={(value) => {
-                    touch('name')
-                    setName(value)
-                  }}
-                  maxLength={200}
-                  error={shownNameError}
-                  hint="Their phone, PAN and bank details are added to the owner under Stakeholders & Contacts."
-                />
-              )}
-              <MoneyInput
-                label="Monthly rent"
-                error={shownRentError}
+      <div
+        id={`${ids}-step-panel`}
+        role="tabpanel"
+        aria-labelledby={tabId(step)}
+        className="space-y-4"
+      >
+        {save.error && <ErrorNotice error={save.error} />}
+        <p className="m-0 text-xs text-[var(--text-secondary)]">{current.hint}</p>
+        {step === 'contract' && (
+          <div className={fieldLayout}>
+            {!config && (
+              <TextField
+                label="Landlord name"
                 required
-                value={rent}
-                placeholder="e.g. 28,500"
-                hint="The whole rent on the lease, in rupees. A month already generated keeps the amount it was charged at."
-                onChange={(raw, parsed) => {
-                  touch('rent')
-                  setRent(raw)
-                  setRentPaise(parsed.paise)
-                  setRentOk(parsed.ok)
+                value={name}
+                onChange={(value) => {
+                  touch('name')
+                  setName(value)
                 }}
+                maxLength={200}
+                error={shownNameError}
+                hint="Their phone, PAN and bank details are added to the owner under Stakeholders & Contacts."
               />
-              <SelectField
-                label="Due day of month"
-                value={dueDay}
-                options={DUE_DAYS}
-                onChange={setDueDay}
-                hint="Rent is paid in advance, on or before this day."
-              />
+            )}
+            <MoneyInput
+              label="Monthly rent"
+              error={shownRentError}
+              required
+              value={rent}
+              placeholder="e.g. 28,500"
+              hint="The whole rent on the lease, in rupees. A month already generated keeps the amount it was charged at."
+              onChange={(raw, parsed) => {
+                touch('rent')
+                setRent(raw)
+                setRentPaise(parsed.paise)
+                setRentOk(parsed.ok)
+              }}
+            />
+            <SelectField
+              label="Due day of month"
+              value={dueDay}
+              options={DUE_DAYS}
+              onChange={setDueDay}
+              hint="Rent is paid in advance, on or before this day."
+            />
+          </div>
+        )}
+        {step === 'term' && (
+          <div className={fieldLayout}>
+            <DateField
+              label="Lease Start Date"
+              value={startDate}
+              onChange={setStartDate}
+              hint="Leave empty if you do not want the term tracked."
+            />
+            <SelectField
+              label="Agreement Duration"
+              value={duration}
+              options={durationOptions}
+              onChange={setDuration}
+              hint={
+                endDate ? `Ends ${formatDate(endDate)}.` : 'The end date is worked out from the start date.'
+              }
+            />
+          </div>
+        )}
+        {step === 'exit' && (
+          <div className={fieldLayout}>
+            <NumberField
+              label="Notice Period (Days)"
+              value={noticeDays}
+              onChange={setNoticeDays}
+              error={noticeValue === null ? 'Enter a whole number of days, 0 to 365.' : null}
+            />
+            <NumberField
+              label="Lock-in Period (Months)"
+              value={lockIn}
+              onChange={setLockIn}
+              error={lockInValue === null ? 'Enter a whole number of months, 0 to 60.' : null}
+            />
+          </div>
+        )}
+        {step === 'escalation' && (
+          <>
+            <div role="radiogroup" aria-label="Escalation Method" className="flex flex-wrap gap-2">
+              {ESCALATION_CHOICES.map((choice) => {
+                const selected = escalation === choice.value
+                return (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setEscalation(choice.value)}
+                    className={clsx(
+                      'rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors cursor-pointer',
+                      selected
+                        ? 'bg-[var(--accent)] border-[var(--accent)] text-white'
+                        : 'bg-[var(--bg-surface)] border-[var(--border-medium)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
+                    )}
+                  >
+                    {choice.label}
+                  </button>
+                )
+              })}
             </div>
-          )}
-          {step === 'term' && (
-            <div className={GRID_2}>
-              <DateField
-                label="Lease Start Date"
-                value={startDate}
-                onChange={setStartDate}
-                hint="Leave empty if you do not want the term tracked."
-              />
-              <SelectField
-                label="Agreement Duration"
-                value={duration}
-                options={durationOptions}
-                onChange={setDuration}
-                hint={
-                  endDate ? `Ends ${formatDate(endDate)}.` : 'The end date is worked out from the start date.'
-                }
-              />
-            </div>
-          )}
-          {step === 'exit' && (
-            <div className={GRID_2}>
-              <NumberField
-                label="Notice Period (Days)"
-                value={noticeDays}
-                onChange={setNoticeDays}
-                error={noticeValue === null ? 'Enter a whole number of days, 0 to 365.' : null}
-              />
-              <NumberField
-                label="Lock-in Period (Months)"
-                value={lockIn}
-                onChange={setLockIn}
-                error={lockInValue === null ? 'Enter a whole number of months, 0 to 60.' : null}
-              />
-            </div>
-          )}
-          {step === 'escalation' && (
-            <>
-              <div role="radiogroup" aria-label="Escalation Method" className="flex flex-wrap gap-2">
-                {ESCALATION_CHOICES.map((choice) => {
-                  const selected = escalation === choice.value
-                  return (
-                    <button
-                      key={choice.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      onClick={() => setEscalation(choice.value)}
-                      className={clsx(
-                        'rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors cursor-pointer',
-                        selected
-                          ? 'bg-[var(--accent)] border-[var(--accent)] text-white'
-                          : 'bg-[var(--bg-surface)] border-[var(--border-medium)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
-                      )}
-                    >
-                      {choice.label}
-                    </button>
-                  )
-                })}
+            {escalation === 'percent' && (
+              <div className={fieldLayout}>
+                <NumberField
+                  label="Renewal Escalation Rate (%)"
+                  value={percent}
+                  onChange={setPercent}
+                  suffix="%"
+                  decimal
+                  error={percentValue === null ? 'Enter a rate from 0 to 100, up to two decimals.' : null}
+                />
               </div>
-              {escalation === 'percent' && (
-                <div className="max-w-sm">
-                  <NumberField
-                    label="Renewal Escalation Rate (%)"
-                    value={percent}
-                    onChange={setPercent}
-                    suffix="%"
-                    decimal
-                    error={percentValue === null ? 'Enter a rate from 0 to 100, up to two decimals.' : null}
-                  />
+            )}
+            {escalation === 'fixed' && (
+              <div className={fieldLayout}>
+                <MoneyInput
+                  label="Agreed Renewed Rent"
+                  error={shownRenewalError}
+                  required
+                  value={renewalRent}
+                  placeholder="e.g. 30,000"
+                  hint="The whole monthly rent for the next term."
+                  onChange={(raw, parsed) => {
+                    touch('renewal')
+                    setRenewalRent(raw)
+                    setRenewalPaise(parsed.paise)
+                    setRenewalOk(parsed.ok)
+                  }}
+                />
+              </div>
+            )}
+            {showProjection && (
+              <div
+                className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4 space-y-2.5"
+                role="status"
+                aria-label="Projected renewal rent"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+                    Projected Renewal Rent
+                  </span>
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-[var(--accent-glow)] text-[var(--accent)] border border-blue-500/20">
+                    {escalation === 'percent'
+                      ? `+${Number.isInteger(percentValue) ? percentValue!.toFixed(1) : percentValue}% escalation`
+                      : escalation === 'fixed'
+                        ? 'Fixed renewal rent'
+                        : 'No escalation'}
+                  </span>
                 </div>
-              )}
-              {escalation === 'fixed' && (
-                <div className="max-w-sm">
-                  <MoneyInput
-                    label="Agreed Renewed Rent"
-                    error={shownRenewalError}
-                    required
-                    value={renewalRent}
-                    placeholder="e.g. 30,000"
-                    hint="The whole monthly rent for the next term."
-                    onChange={(raw, parsed) => {
-                      touch('renewal')
-                      setRenewalRent(raw)
-                      setRenewalPaise(parsed.paise)
-                      setRenewalOk(parsed.ok)
-                    }}
-                  />
-                </div>
-              )}
-              {showProjection && (
-                <div
-                  className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4 space-y-2.5"
-                  role="status"
-                  aria-label="Projected renewal rent"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-                      Projected Renewal Rent
-                    </span>
-                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-[var(--accent-glow)] text-[var(--accent)] border border-blue-500/20">
-                      {escalation === 'percent'
-                        ? `+${Number.isInteger(percentValue) ? percentValue!.toFixed(1) : percentValue}% escalation`
-                        : escalation === 'fixed'
-                          ? 'Fixed renewal rent'
-                          : 'No escalation'}
-                    </span>
+
+                <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 pt-2.5 border-t border-[var(--border-subtle)]">
+                  <div>
+                    <div className="tabular text-lg font-bold text-[var(--text-primary)]">
+                      {formatInr(projectedPaise)}{' '}
+                      <span className="text-xs font-normal text-[var(--text-secondary)]">/ month</span>
+                    </div>
+                    <div className="tabular text-xs text-[var(--text-secondary)]">
+                      Current {formatInr(rentPaise)} (
+                      {formatInr(projectedPaise - rentPaise, { sign: 'always' })} total)
+                    </div>
                   </div>
 
-                  <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 pt-2.5 border-t border-[var(--border-subtle)]">
-                    <div>
-                      <div className="tabular text-lg font-bold text-[var(--text-primary)]">
-                        {formatInr(projectedPaise)}{' '}
-                        <span className="text-xs font-normal text-[var(--text-secondary)]">/ month</span>
+                  {residentCount > 0 && (
+                    <div className="sm:text-right">
+                      <div className="tabular text-sm font-bold text-[var(--text-primary)]">
+                        ~{formatInr(Math.round(projectedPaise / residentCount))}{' '}
+                        <span className="text-xs font-normal text-[var(--text-secondary)]">
+                          / resident
+                        </span>
                       </div>
                       <div className="tabular text-xs text-[var(--text-secondary)]">
-                        Current {formatInr(rentPaise)} (
-                        {formatInr(projectedPaise - rentPaise, { sign: 'always' })} total)
+                        {formatInr(Math.round((projectedPaise - rentPaise) / residentCount), {
+                          sign: 'always',
+                        })}{' '}
+                        per person across {residentCount} residents
                       </div>
                     </div>
-
-                    {residentCount > 0 && (
-                      <div className="sm:text-right">
-                        <div className="tabular text-sm font-bold text-[var(--text-primary)]">
-                          ~{formatInr(Math.round(projectedPaise / residentCount))}{' '}
-                          <span className="text-xs font-normal text-[var(--text-secondary)]">
-                            / resident
-                          </span>
-                        </div>
-                        <div className="tabular text-xs text-[var(--text-secondary)]">
-                          {formatInr(Math.round((projectedPaise - rentPaise) / residentCount), {
-                            sign: 'always',
-                          })}{' '}
-                          per person across {residentCount} residents
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
-              )}
-            </>
-          )}
-        </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
-        <div className="flex items-center justify-between gap-3 pt-3 border-t border-[var(--border-subtle)]">
-          {stepIndex > 0 ? (
-            <button
-              type="button"
-              className={BUTTON_SECONDARY}
-              onClick={() => setStep(TENANCY_STEPS[stepIndex - 1].id)}
-            >
-              <ArrowLeft className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              Back
-            </button>
-          ) : (
-            <span />
-          )}
-          {/* Separate keys, so reaching the last step mounts a new Save button
-              rather than turning the Next button being clicked into a submit
-              button mid-click -- which would save the form instead of moving on. */}
-          {stepIndex < TENANCY_STEPS.length - 1 ? (
-            <button
-              key="next"
-              type="button"
-              className={BUTTON_SECONDARY}
-              onClick={() => setStep(TENANCY_STEPS[stepIndex + 1].id)}
-            >
-              Next: {current.next}
-              <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            </button>
-          ) : (
-            <Fragment key="save">{saveButton}</Fragment>
-          )}
-        </div>
-      </Panel>
     </form>
+  )
+
+  // Back (or Cancel on the first step) and Next, with Save only on the last
+  // step. Separate keys, so reaching the last step mounts a new Save button
+  // rather than turning the Next button being clicked into a submit button
+  // mid-click -- which would save the form instead of moving on.
+  const nav = (
+    <div className="flex w-full items-center justify-between gap-3">
+      {stepIndex > 0 ? (
+        <button
+          key="back"
+          type="button"
+          className={BUTTON_SECONDARY}
+          onClick={() => setStep(TENANCY_STEPS[stepIndex - 1].id)}
+          disabled={save.pending}
+        >
+          <ArrowLeft className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+          Back
+        </button>
+      ) : onCancel ? (
+        <button key="cancel" type="button" className={BUTTON_SECONDARY} onClick={onCancel} disabled={save.pending}>
+          Cancel
+        </button>
+      ) : (
+        <span key="none" />
+      )}
+      {stepIndex < TENANCY_STEPS.length - 1 ? (
+        <button
+          key="next"
+          type="button"
+          className={BUTTON_PRIMARY}
+          onClick={() => setStep(TENANCY_STEPS[stepIndex + 1].id)}
+        >
+          Next: {current.next}
+          <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+        </button>
+      ) : (
+        <button
+          key="save"
+          type="submit"
+          form={formId}
+          className={BUTTON_PRIMARY}
+          disabled={!valid || save.pending}
+        >
+          {save.pending ? 'Saving…' : config ? 'Save Changes' : 'Set Up Lease'}
+        </button>
+      )}
+    </div>
+  )
+
+  // A saved lease is edited in a dialog named like its card, as every card is.
+  if (inDialog && config && onCancel) {
+    return (
+      <Modal
+        title="Master Tenancy Terms"
+        description={`Last saved ${formatDateTime(config.updated_at)}`}
+        onClose={onCancel}
+        footer={nav}
+      >
+        {form}
+      </Modal>
+    )
+  }
+  // A lease being set up for the first time has no card yet, so it is set up here.
+  return (
+    <Panel
+      title="Master Tenancy Terms"
+      icon={<FileText className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+    >
+      {form}
+      <div className="pt-3 border-t border-[var(--border-subtle)]">{nav}</div>
+    </Panel>
   )
 }
 
@@ -574,7 +606,8 @@ function NumberField({
   return (
     <Field label={label} error={error}>
       {({ id, describedBy, invalid }) => (
-        <div className="flex items-center gap-2">
+        // A unit sits in a box joined to the input, like the ₹ on an amount.
+        <div className={suffix ? 'input-addon input-addon--suffix' : undefined}>
           <input
             id={id}
             type="text"
@@ -586,7 +619,7 @@ function NumberField({
             onChange={(event) => onChange(event.target.value)}
           />
           {suffix && (
-            <span className="shrink-0 text-sm font-semibold text-[var(--text-secondary)]" aria-hidden="true">
+            <span className="input-addon-suffix" aria-hidden="true">
               {suffix}
             </span>
           )}
@@ -838,9 +871,11 @@ export function LandlordProfileCard({
         </div>
       </dl>
       {editing && (
+        // Edited in a dialog named like the card, as every card is.
         <ContactModal
           contact={owner}
           title={LANDLORD_TITLE}
+          fixedRole="owner"
           onClose={() => setEditing(false)}
           onDone={(saved) => {
             setEditing(false)

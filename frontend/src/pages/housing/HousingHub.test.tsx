@@ -147,14 +147,12 @@ describe('HousingHub layout', () => {
     expect(screen.getByRole('button', { name: 'Edit apartment' })).toBeInTheDocument()
   })
 
-  it('edits the tenancy terms in one container, leaving the other cards as they are', async () => {
+  it('edits the tenancy terms in a dialog named like the card, leaving the other cards as they are', async () => {
     open()
-    const sectionsBefore = (await screen.findAllByRole('heading', { level: 2 })).length
-    await userEvent.click(screen.getByRole('button', { name: 'Edit tenancy terms' }))
-    expect(screen.getByRole('heading', { level: 2, name: 'Master Tenancy Terms' })).toBeInTheDocument()
-    // The read-only card is swapped for the editor, one panel for one.
-    expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(sectionsBefore)
-    expect(within(screen.getByRole('tablist', { name: 'Edit steps' })).getAllByRole('tab')).toHaveLength(4)
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit tenancy terms' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: 'Master Tenancy Terms' })).toBeInTheDocument()
+    expect(within(within(dialog).getByRole('tablist', { name: 'Edit steps' })).getAllByRole('tab')).toHaveLength(4)
     expect(screen.getByLabelText('Apartment profile')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit apartment' })).toBeInTheDocument()
   })

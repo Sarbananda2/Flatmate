@@ -140,14 +140,18 @@ const editTerms = async () =>
 const goToStep = (label: string) =>
   userEvent.click(screen.getByRole('tab', { name: new RegExp(`^${label.replace('.', '\\.')}`) }))
 
-/** The save in the editor's header, there on every step (the last repeats it). */
-const headerSave = (name: string) => screen.getAllByRole('button', { name })[0]
+/** The tenancy editor saves only from its last step: go there and find its Save. */
+const saveOnLastStep = async (name = 'Save Changes') => {
+  await goToStep('4. Escalation Clause')
+  return screen.getByRole('button', { name })
+}
 
 describe('LeaseContractSection', () => {
   it('sets up a new lease with its landlord, in integer paise', async () => {
     renderPage(null)
-    const save = await screen.findByRole('button', { name: 'Set Up Lease' })
-    expect(save).toBeDisabled()
+    await screen.findByLabelText(/Monthly rent/)
+    // Save waits for the last step.
+    expect(screen.queryByRole('button', { name: 'Set Up Lease' })).toBeNull()
     // Nothing that belongs elsewhere is asked for.
     for (const label of ['PAN', 'IFSC code', 'UPI ID', 'Security Deposit Held by Landlord']) {
       expect(screen.queryByLabelText(label)).toBeNull()
@@ -157,7 +161,7 @@ describe('LeaseContractSection', () => {
     await userEvent.type(screen.getByLabelText(/Monthly rent/), '45,000.50')
     await userEvent.type(screen.getByLabelText(/Landlord name/), ' Rajesh Kumar Sharma ')
     await userEvent.selectOptions(screen.getByLabelText('Due day of month'), '7')
-    await userEvent.click(save)
+    await userEvent.click(await saveOnLastStep('Set Up Lease'))
 
     await waitFor(() => expect(posted()).toBeDefined())
     expect(posted()!.body).toEqual({
@@ -200,30 +204,43 @@ describe('LeaseContractSection', () => {
     expect(screen.queryByRole('link', { name: 'Open monthly rent' })).toBeNull()
   })
 
-  it('edits the landlord on the owner contact, leaving the other cards alone', async () => {
+  it('edits the landlord in a dialog named like the card', async () => {
     renderPage(saved, { 'PATCH /api/property/contacts/owner-1': { ...OWNER, phone: '9123456780' } })
     await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))
     const dialog = screen.getByRole('dialog')
-    // The dialog keeps the name of the card it edits.
     expect(within(dialog).getByRole('heading', { name: 'Landlord Profile & Payout' })).toBeInTheDocument()
-    await userEvent.click(within(dialog).getByRole('tab', { name: '2. Tax Identity (HRA)' }))
-    expect(within(dialog).getByLabelText(/PAN/)).toHaveValue('ABCPS1234K')
-    await userEvent.click(within(dialog).getByRole('tab', { name: '1. Contact Identity' }))
+    // The landlord card holds the owner, so the role is shown rather than chosen.
+    expect(within(dialog).getByText('Property Owner')).toBeInTheDocument()
+    expect(within(dialog).queryByLabelText(/Role/)).toBeNull()
+    // Save waits for the last step.
+    expect(within(dialog).queryByRole('button', { name: 'Save Changes' })).toBeNull()
     // Only the landlord is being edited: the tenancy terms stay read-only.
     expect(screen.getByRole('button', { name: 'Edit tenancy terms' })).toBeInTheDocument()
-    expect(screen.queryByLabelText(/Monthly rent/)).toBeNull()
+
     const phone = within(dialog).getByLabelText(/Phone/)
     await userEvent.clear(phone)
     await userEvent.type(phone, '9123456780')
-    // The contact form saves from its last step.
-    await userEvent.click(within(dialog).getByRole('tab', { name: '3. Payout & Banking' }))
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Contact' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
+    expect(within(dialog).getByLabelText(/PAN/)).toHaveValue('ABCPS1234K')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     await waitFor(() =>
       expect(stub!.calls.find((call) => call.method === 'PATCH')?.body).toMatchObject({
+        role: 'owner',
         phone: '9123456780',
       }),
     )
     expect(await screen.findByText('Rajesh Kumar Sharma saved')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('cancels a landlord edit without saving', async () => {
+    renderPage(saved)
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByLabelText('Landlord profile')).toBeInTheDocument()
+    expect(stub!.calls.some((call) => call.method === 'PATCH')).toBe(false)
   })
 
   it('shows the apartment address part by part, without currency or time zone', async () => {
@@ -331,7 +348,7 @@ describe('LeaseContractSection', () => {
     expect(screen.getByLabelText('Due day of month')).toHaveValue('5')
     expect(screen.queryByLabelText('Expense definition')).not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    await userEvent.click(await saveOnLastStep())
     await waitFor(() => expect(posted()).toBeDefined())
     const body = posted()!.body as Record<string, unknown>
     expect(body).toMatchObject({ monthly_rent_paise: 4500000, expense_definition_id: null })
@@ -379,13 +396,12 @@ describe('LeaseContractSection', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Next: Exit Protections' }))
     const notice = screen.getByLabelText('Notice Period (Days)')
-    const save = screen.getByRole('button', { name: 'Set Up Lease' })
     await userEvent.clear(notice)
-    expect(save).toBeDisabled()
+    expect(screen.getByText('Enter a whole number of days, 0 to 365.')).toBeInTheDocument()
     await userEvent.type(notice, '45')
     await userEvent.clear(screen.getByLabelText('Lock-in Period (Months)'))
     await userEvent.type(screen.getByLabelText('Lock-in Period (Months)'), '3')
-    await userEvent.click(save)
+    await userEvent.click(await saveOnLastStep('Set Up Lease'))
 
     await waitFor(() => expect(posted()).toBeDefined())
     expect(posted()!.body).toMatchObject({
@@ -421,7 +437,7 @@ describe('LeaseContractSection', () => {
     expect(banner()).toHaveTextContent('₹28,500.00 / month')
 
     await userEvent.click(screen.getByRole('radio', { name: 'Fixed Amount' }))
-    const save = headerSave('Set Up Lease')
+    const save = screen.getByRole('button', { name: 'Set Up Lease' })
     expect(save).toBeDisabled()
     await userEvent.type(screen.getByLabelText(/Agreed Renewed Rent/), '30,000')
     expect(banner()).toHaveTextContent('Fixed renewal rent')
@@ -444,7 +460,7 @@ describe('LeaseContractSection', () => {
     expect(screen.getByLabelText('Agreement Duration')).toHaveValue('11')
     expect(screen.getByText('Ends 28 Feb 2027.')).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    await userEvent.click(await saveOnLastStep())
     await waitFor(() => expect(posted()).toBeDefined())
     expect(posted()!.body).toMatchObject({
       lease_start_date: '2026-04-01',
@@ -457,55 +473,57 @@ describe('LeaseContractSection', () => {
   it('explains each invalid field and keeps the save disabled until it is fixed', async () => {
     renderPage(saved)
     await editTerms()
-    const save = await screen.findByRole('button', { name: 'Save Changes' })
-    expect(save).toBeEnabled()
     // A stored lease opens with nothing flagged.
     expect(screen.queryByText(/is required|Enter a valid|must be greater/)).not.toBeInTheDocument()
 
-    const check = async (label: string | RegExp, bad: string, message: string, good: string) => {
+    // Each bad value is explained on its own step, and Save waits until it is put right.
+    const check = async (step: string, label: string | RegExp, bad: string, message: string, good: string) => {
+      await goToStep(step)
       const input = screen.getByLabelText(label)
       await userEvent.clear(input)
       if (bad) await userEvent.type(input, bad)
       expect(screen.getByText(message)).toBeInTheDocument()
       expect(input).toHaveAttribute('aria-invalid', 'true')
-      expect(save).toBeDisabled()
-      await userEvent.clear(input)
-      if (good) await userEvent.type(input, good)
+      expect(await saveOnLastStep()).toBeDisabled()
+      await goToStep(step)
+      await userEvent.clear(screen.getByLabelText(label))
+      if (good) await userEvent.type(screen.getByLabelText(label), good)
       expect(screen.queryByText(message)).not.toBeInTheDocument()
-      expect(save).toBeEnabled()
+      expect(await saveOnLastStep()).toBeEnabled()
     }
 
-    await check(/Monthly rent/, '0', 'Monthly rent must be greater than zero.', '28500')
-    await goToStep('3. Exit Protections')
-    await check('Notice Period (Days)', '400', 'Enter a whole number of days, 0 to 365.', '30')
-    await check('Lock-in Period (Months)', '61', 'Enter a whole number of months, 0 to 60.', '6')
+    await check('1. Monthly Rent', /Monthly rent/, '0', 'Monthly rent must be greater than zero.', '28500')
+    await check('3. Exit Protections', 'Notice Period (Days)', '400', 'Enter a whole number of days, 0 to 365.', '30')
+    await check('3. Exit Protections', 'Lock-in Period (Months)', '61', 'Enter a whole number of months, 0 to 60.', '6')
 
     await goToStep('4. Escalation Clause')
     await userEvent.click(screen.getByRole('radio', { name: 'Fixed Amount' }))
-    expect(save).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save Changes' })).toBeDisabled()
     expect(screen.queryByText('Enter the agreed renewed rent.')).not.toBeInTheDocument()
-    await check(/Agreed Renewed Rent/, '0', 'Enter the agreed renewed rent.', '30000')
+    await check('4. Escalation Clause', /Agreed Renewed Rent/, '0', 'Enter the agreed renewed rent.', '30000')
     expect(posted()).toBeUndefined()
   })
 
   it('needs the landlord name to set up a new lease', async () => {
     renderPage(null)
-    const save = await screen.findByRole('button', { name: 'Set Up Lease' })
-    await userEvent.type(screen.getByLabelText(/Monthly rent/), '28500')
+    await userEvent.type(await screen.findByLabelText(/Monthly rent/), '28500')
     const name = screen.getByLabelText(/Landlord name/)
     await userEvent.type(name, 'x')
     await userEvent.clear(name)
     expect(screen.getByText('Landlord name is required.')).toBeInTheDocument()
-    expect(save).toBeDisabled()
-    await userEvent.type(name, 'Kumar Yadav')
-    expect(save).toBeEnabled()
+    expect(await saveOnLastStep('Set Up Lease')).toBeDisabled()
+    expect(screen.getByRole('tab', { name: '1. Monthly Rent (needs attention)' })).toBeInTheDocument()
+    await goToStep('1. Monthly Rent')
+    await userEvent.type(screen.getByLabelText(/Landlord name/), 'Kumar Yadav')
+    expect(await saveOnLastStep('Set Up Lease')).toBeEnabled()
   })
 
   it('does not flag a new lease before anything is typed', async () => {
     renderPage(null)
-    expect(await screen.findByRole('button', { name: 'Set Up Lease' })).toBeDisabled()
+    await screen.findByLabelText(/Monthly rent/)
     expect(screen.queryByText('Landlord name is required.')).not.toBeInTheDocument()
     expect(screen.queryByText('Monthly rent must be greater than zero.')).not.toBeInTheDocument()
+    expect(await saveOnLastStep('Set Up Lease')).toBeDisabled()
   })
 
   it('leaves how the rent is divided and receipted to the Rent screen', async () => {
@@ -515,7 +533,7 @@ describe('LeaseContractSection', () => {
     expect(screen.queryByRole('radiogroup', { name: 'Rental agreement structure' })).toBeNull()
     expect(screen.queryByText('Rental Agreement Structure')).toBeNull()
     expect(screen.queryByText('Receipt Preferences')).toBeNull()
-    expect(screen.getByRole('heading', { name: 'Master Tenancy Terms' })).toBeInTheDocument()
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Master Tenancy Terms' })).toBeInTheDocument()
   })
 
   it('shows the server message when the save is refused', async () => {
@@ -532,7 +550,7 @@ describe('LeaseContractSection', () => {
       },
     })
     await editTerms()
-    await userEvent.click(await screen.findByRole('button', { name: 'Save Changes' }))
+    await userEvent.click(await saveOnLastStep())
     expect(
       await screen.findByText(
         'The rent category must be an active expense definition of this apartment.',
@@ -576,15 +594,17 @@ describe('the saved tenancy terms', () => {
     expect(screen.queryByRole('button', { name: 'Save Changes' })).toBeNull()
   })
 
-  it('switch to the editor and back, never showing both', async () => {
+  it('are edited in a dialog, and Cancel closes it without saving', async () => {
     renderPage(saved)
+    // On the card itself there are no inputs.
+    expect(await screen.findByLabelText('Tenancy terms')).toBeInTheDocument()
+    expect(screen.queryByLabelText(/Monthly rent/)).toBeNull()
     await editTerms()
-    expect(screen.getByLabelText(/Monthly rent/)).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Edit tenancy terms' })).toBeNull()
-    expect(screen.queryByLabelText('Tenancy terms')).toBeNull()
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByLabelText(/Monthly rent/)).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-    expect(await screen.findByRole('button', { name: 'Edit tenancy terms' })).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
     expect(screen.queryByLabelText(/Monthly rent/)).toBeNull()
     expect(posted()).toBeUndefined()
   })
@@ -596,7 +616,7 @@ describe('the saved tenancy terms', () => {
     const notice = screen.getByLabelText('Notice Period (Days)')
     await userEvent.clear(notice)
     await userEvent.type(notice, '45')
-    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    await userEvent.click(await saveOnLastStep())
     expect(await screen.findByText('Tenancy terms saved')).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: 'Edit tenancy terms' })).toBeInTheDocument()
     expect(screen.getByLabelText('Tenancy terms')).toHaveTextContent('Notice Period: 45 Days')
@@ -619,8 +639,8 @@ describe('the tenancy terms editor', () => {
   it('opens as one container with three steps, showing only the first', async () => {
     renderPage(saved)
     await editTerms()
-    // The card keeps its own name while it is edited.
-    expect(screen.getAllByRole('heading', { name: 'Master Tenancy Terms' })).toHaveLength(1)
+    // The dialog has the card's own name.
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Master Tenancy Terms' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: /Edit Master Tenancy Terms/ })).toBeNull()
     for (const old of ['Master Contract', 'Contract Term & Exit Protections', 'Renewal & Escalation Clause']) {
       expect(screen.queryByRole('heading', { name: old })).toBeNull()
@@ -638,8 +658,8 @@ describe('the tenancy terms editor', () => {
     expect(screen.getByLabelText('Due day of month')).toBeInTheDocument()
     expect(screen.queryByLabelText('Lease Start Date')).toBeNull()
     expect(screen.queryByRole('radiogroup', { name: 'Escalation Method' })).toBeNull()
-    // Save and Cancel are in the header from the first step.
-    expect(screen.getAllByRole('button', { name: 'Save Changes' })).toHaveLength(1)
+    // Cancel is in the header; Save waits for the last step.
+    expect(screen.queryByRole('button', { name: 'Save Changes' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Back' })).toBeNull()
   })
@@ -665,12 +685,12 @@ describe('the tenancy terms editor', () => {
     expect(screen.getByRole('radiogroup', { name: 'Escalation Method' })).toBeInTheDocument()
     // Next only moves between steps; reaching the last one saves nothing.
     expect(posted()).toBeUndefined()
-    expect(screen.getByRole('heading', { name: 'Master Tenancy Terms' })).toBeInTheDocument()
+    expect(within(screen.getByRole('dialog')).getByRole('heading', { name: 'Master Tenancy Terms' })).toBeInTheDocument()
     expect(screen.getByLabelText('Renewal Escalation Rate (%)')).toBeInTheDocument()
     expect(screen.getByRole('status', { name: 'Projected renewal rent' })).toBeInTheDocument()
     // The last step ends in Save rather than Next.
     expect(screen.queryByRole('button', { name: /^Next/ })).toBeNull()
-    expect(screen.getAllByRole('button', { name: 'Save Changes' })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: 'Save Changes' })).toHaveLength(1)
 
     await userEvent.click(screen.getByRole('button', { name: 'Back' }))
     expect(screen.getByLabelText('Notice Period (Days)')).toBeInTheDocument()
@@ -692,8 +712,7 @@ describe('the tenancy terms editor', () => {
     await userEvent.type(notice, '60')
     await goToStep('4. Escalation Clause')
     await userEvent.click(screen.getByRole('radio', { name: 'No Escalation' }))
-    const saves = screen.getAllByRole('button', { name: 'Save Changes' })
-    await userEvent.click(saves[saves.length - 1])
+    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
     await waitFor(() => expect(posted()).toBeDefined())
     expect(posted()!.body).toMatchObject({
       monthly_rent_paise: 4800000,
@@ -713,12 +732,12 @@ describe('the tenancy terms editor', () => {
     expect(screen.getByRole('tab', { name: '1. Monthly Rent' })).toBeInTheDocument()
     await goToStep('2. Contract Term')
     expect(screen.getByRole('tab', { name: '1. Monthly Rent (needs attention)' })).toBeInTheDocument()
-    expect(headerSave('Save Changes')).toBeDisabled()
+    expect(await saveOnLastStep()).toBeDisabled()
     await goToStep('1. Monthly Rent')
     await userEvent.clear(screen.getByLabelText(/Monthly rent/))
     await userEvent.type(screen.getByLabelText(/Monthly rent/), '45000')
     await goToStep('2. Contract Term')
     expect(screen.getByRole('tab', { name: '1. Monthly Rent' })).toBeInTheDocument()
-    expect(headerSave('Save Changes')).toBeEnabled()
+    expect(await saveOnLastStep()).toBeEnabled()
   })
 })

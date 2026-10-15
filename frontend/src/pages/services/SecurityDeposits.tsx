@@ -24,6 +24,7 @@ import {
   BUTTON_PRIMARY,
   BUTTON_QUIET,
   BUTTON_SECONDARY,
+  EditButton,
   EmptyBlock,
   MiniStat,
   Panel,
@@ -1464,7 +1465,49 @@ function DepositAmountForm({
   master: number | null
   onSaved: () => void
 }) {
-  const [editing, setEditing] = useState(master === null)
+  const [editing, setEditing] = useState(false)
+  // The first time, the amount is entered here; after that it is shown, and
+  // edited in a dialog like every other saved value.
+  if (master === null) return <DepositAmountFields master={null} onSaved={onSaved} />
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3">
+      <span className="text-xs text-[var(--text-secondary)]">
+        {DEPOSIT_AMOUNT_TITLE}:{' '}
+        <Rupees paise={master} className="font-bold text-[var(--text-primary)]" />
+      </span>
+      <EditButton label="Edit deposit amount" onClick={() => setEditing(true)} />
+      {editing && (
+        <Modal
+          title={DEPOSIT_AMOUNT_TITLE}
+          description="The refundable deposit on the lease. The slots divide it between the rooms."
+          onClose={() => setEditing(false)}
+        >
+          <DepositAmountFields
+            master={master}
+            onCancel={() => setEditing(false)}
+            onSaved={() => {
+              setEditing(false)
+              onSaved()
+            }}
+          />
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+/** Named once, for the line that shows the amount and the dialog that edits it. */
+const DEPOSIT_AMOUNT_TITLE = 'Deposit held by the landlord'
+
+function DepositAmountFields({
+  master,
+  onSaved,
+  onCancel,
+}: {
+  master: number | null
+  onSaved: () => void
+  onCancel?: () => void
+}) {
   const amount = useMoney(master)
   const error = amount.empty
     ? 'Enter the deposit held by the landlord.'
@@ -1475,31 +1518,12 @@ function DepositAmountForm({
         : null
   const save = useMutation(
     () => api.post('/api/rent/config', { security_deposit_paise: amount.paise }),
-    {
-      onSuccess: () => {
-        setEditing(false)
-        onSaved()
-      },
-    },
+    { onSuccess: onSaved },
   )
-
-  if (!editing && master !== null) {
-    return (
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3">
-        <span className="text-xs text-[var(--text-secondary)]">
-          Deposit held by the landlord:{' '}
-          <Rupees paise={master} className="font-bold text-[var(--text-primary)]" />
-        </span>
-        <button type="button" className={BUTTON_QUIET} onClick={() => setEditing(true)}>
-          Change amount
-        </button>
-      </div>
-    )
-  }
   return (
     <form
       aria-label="Security deposit amount"
-      className="flex flex-wrap items-end gap-3"
+      className={onCancel ? 'stack' : 'flex flex-wrap items-end gap-3'}
       noValidate
       onSubmit={(event) => {
         event.preventDefault()
@@ -1507,7 +1531,7 @@ function DepositAmountForm({
       }}
     >
       {save.error && <ErrorNotice error={save.error} />}
-      <div className="max-w-sm flex-1 min-w-[14rem]">
+      <div className={onCancel ? undefined : 'max-w-sm flex-1 min-w-[14rem]'}>
         <MoneyInput
           label="Security Deposit Held by Landlord"
           required
@@ -1518,18 +1542,20 @@ function DepositAmountForm({
           hint="The refundable deposit on the lease. The slots below divide it between the rooms."
         />
       </div>
-      <button
-        type="submit"
-        className={BUTTON_PRIMARY}
-        disabled={save.pending || Boolean(error) || !amount.ok}
-      >
-        {save.pending ? 'Saving…' : 'Save Deposit'}
-      </button>
-      {master !== null && (
-        <button type="button" className={BUTTON_SECONDARY} onClick={() => setEditing(false)}>
-          Cancel
+      <div className={onCancel ? 'flex items-center justify-between gap-3' : 'contents'}>
+        {onCancel && (
+          <button type="button" className={BUTTON_SECONDARY} onClick={onCancel} disabled={save.pending}>
+            Cancel
+          </button>
+        )}
+        <button
+          type="submit"
+          className={BUTTON_PRIMARY}
+          disabled={save.pending || Boolean(error) || !amount.ok}
+        >
+          {save.pending ? 'Saving…' : onCancel ? 'Save Changes' : 'Save Deposit'}
         </button>
-      )}
+      </div>
     </form>
   )
 }

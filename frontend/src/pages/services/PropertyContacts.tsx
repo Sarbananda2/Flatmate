@@ -364,16 +364,19 @@ function contactSteps(role: ContactRole | ''): Array<{ id: ContactStep; label: s
 export function ContactModal({
   contact,
   title,
+  fixedRole,
   onClose,
   onDone,
 }: {
   contact: HouseholdContact | null
   /** The name of the card being edited. Defaults to the contact's own name. */
   title?: string
+  /** A role the contact must keep, as the landlord card's owner must. */
+  fixedRole?: ContactRole
   onClose: () => void
   onDone: (contact: HouseholdContact) => void
 }) {
-  const [role, setRole] = useState<ContactRole | ''>(contact?.role ?? '')
+  const [role, setRole] = useState<ContactRole | ''>(contact?.role ?? fixedRole ?? '')
   const [name, setName] = useState(contact?.name ?? '')
   const [phone, setPhone] = useState(contact?.phone ?? '')
   const [email, setEmail] = useState(contact?.email ?? '')
@@ -477,7 +480,7 @@ export function ContactModal({
     const next = steps[stepIndex + 1]
     if (next) setStep(next.id)
   }
-  const saveLabel = save.pending ? 'Saving…' : contact ? 'Save Contact' : 'Add Contact'
+  const saveLabel = save.pending ? 'Saving…' : contact ? 'Save Changes' : 'Add Contact'
 
   return (
     <Modal
@@ -553,18 +556,24 @@ export function ContactModal({
 
           {current.id === 'contact' && (
             <>
-              <SelectField
-                label="Role"
-                value={role}
-                onChange={setRole}
-                placeholder="Choose a role"
-                required
-                options={(Object.keys(ROLE_LABELS) as ContactRole[]).map((value) => ({
-                  value,
-                  label: ROLE_LABELS[value],
-                }))}
-                error={required(errors.role)}
-              />
+              {fixedRole ? (
+                <p className="m-0 text-xs text-[var(--text-secondary)]">
+                  Role: <span className="font-semibold text-[var(--text-primary)]">{ROLE_LABELS[fixedRole]}</span>
+                </p>
+              ) : (
+                <SelectField
+                  label="Role"
+                  value={role}
+                  onChange={setRole}
+                  placeholder="Choose a role"
+                  required
+                  options={(Object.keys(ROLE_LABELS) as ContactRole[]).map((value) => ({
+                    value,
+                    label: ROLE_LABELS[value],
+                  }))}
+                  error={required(errors.role)}
+                />
+              )}
               <TextField label="Name" value={name} onChange={setName} required error={required(errors.name)} />
               <TextField
                 label="Phone"

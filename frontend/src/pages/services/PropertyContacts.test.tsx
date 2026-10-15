@@ -206,7 +206,7 @@ describe('ContactsSection', () => {
     await goTo(dialog, '3. Payout & Banking')
     expect(within(dialog).getByRole('tab', { name: '1. Contact Identity (needs attention)' })).toBeInTheDocument()
     // Saving takes the operator to the step to fix rather than sending anything.
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Contact' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     expect(within(dialog).getByRole('tab', { name: '1. Contact Identity' })).toHaveAttribute('aria-selected', 'true')
     expect(within(dialog).getByText('Enter a phone number of 7 to 15 digits.')).toBeInTheDocument()
     expect(sent('PATCH', '/api/property/contacts/owner-1')).toBeUndefined()
@@ -262,13 +262,13 @@ describe('ContactsSection', () => {
     // The dialog is named like the contact's own card.
     expect(within(dialog).getByRole('heading', { name: 'Mohan' })).toBeInTheDocument()
     // No Save before the end of the form, in the header or the footer.
-    expect(within(dialog).queryByRole('button', { name: 'Save Contact' })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: 'Save Changes' })).toBeNull()
     const phone = within(dialog).getByLabelText(/Phone/)
     await userEvent.clear(phone)
     await userEvent.type(phone, '9876522222')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
-    expect(within(dialog).getAllByRole('button', { name: 'Save Contact' })).toHaveLength(1)
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Contact' }))
+    expect(within(dialog).getAllByRole('button', { name: 'Save Changes' })).toHaveLength(1)
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     await waitFor(() => expect(sent('PATCH', '/api/property/contacts/caretaker-1')).toBeDefined())
     expect(sent('PATCH', '/api/property/contacts/caretaker-1')!.body).toMatchObject({
       role: 'caretaker',
