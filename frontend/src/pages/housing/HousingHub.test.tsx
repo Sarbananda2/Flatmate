@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HousingHub } from './HousingHub'
 import { ToastProvider } from '../../components/Toast'
@@ -144,6 +144,18 @@ describe('HousingHub layout', () => {
       expect(profile).toHaveTextContent(text)
     }
     expect(profile).not.toHaveTextContent(/Currency|Time Zone|Asia\/Kolkata/)
+    expect(screen.getByRole('button', { name: 'Edit apartment' })).toBeInTheDocument()
+  })
+
+  it('edits the tenancy terms in one container, leaving the other cards as they are', async () => {
+    open()
+    const sectionsBefore = (await screen.findAllByRole('heading', { level: 2 })).length
+    await userEvent.click(screen.getByRole('button', { name: 'Edit tenancy terms' }))
+    expect(screen.getByRole('heading', { level: 2, name: 'Master Tenancy Terms' })).toBeInTheDocument()
+    // The read-only card is swapped for the editor, one panel for one.
+    expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(sectionsBefore)
+    expect(within(screen.getByRole('tablist', { name: 'Edit steps' })).getAllByRole('tab')).toHaveLength(4)
+    expect(screen.getByLabelText('Apartment profile')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit apartment' })).toBeInTheDocument()
   })
 })
