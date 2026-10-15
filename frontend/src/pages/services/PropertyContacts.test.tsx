@@ -85,6 +85,15 @@ function open(items: HouseholdContact[] = [OWNER, BROKER, CARETAKER], extra = {}
 const sent = (method: string, path: string) =>
   stub!.calls.find((call) => call.method === method && call.path === path)
 
+/** The step pills in the contact dialog, by name. */
+const stepNames = (dialog: HTMLElement) =>
+  within(within(dialog).getByRole('tablist', { name: 'Contact steps' }))
+    .getAllByRole('tab')
+    .map((tab) => tab.textContent)
+
+const goTo = (dialog: HTMLElement, step: string) =>
+  userEvent.click(within(dialog).getByRole('tab', { name: step }))
+
 describe('ContactsSection', () => {
   it('groups contacts into owner, broker, and caretaker & society cards', async () => {
     open()
@@ -123,36 +132,51 @@ describe('ContactsSection', () => {
     expect(screen.getByText(/Add the broker who found the flat/)).toBeInTheDocument()
   })
 
-  it('checks every field before adding a contact', async () => {
+  it('adds an owner over three steps, checking each field', async () => {
     open([], { 'POST /api/property/contacts': OWNER })
     await userEvent.click(await screen.findByRole('button', { name: 'Add Contact' }))
     const dialog = screen.getByRole('dialog')
-    const submit = within(dialog).getByRole('button', { name: 'Add Contact' })
-    await userEvent.click(submit)
+    // Until a role is chosen there is only the first step.
+    expect(stepNames(dialog)).toEqual(['1. Contact Identity'])
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
     expect(within(dialog).getByText('Choose what this contact is to the household.')).toBeInTheDocument()
     expect(within(dialog).getByText('Enter their name.')).toBeInTheDocument()
 
     await userEvent.selectOptions(within(dialog).getByLabelText(/Role/), 'owner')
+    expect(stepNames(dialog)).toEqual([
+      '1. Contact Identity',
+      '2. Tax Identity (HRA)',
+      '3. Payout & Banking',
+    ])
     await userEvent.type(within(dialog).getByLabelText(/^Name/), 'Kumar Yadav')
     await userEvent.type(within(dialog).getByLabelText(/Phone/), '12345')
-    await userEvent.type(within(dialog).getByLabelText(/Email/), 'kumar@example')
-    await userEvent.type(within(dialog).getByLabelText(/PAN/), 'ABCD1234F')
-    await userEvent.type(within(dialog).getByLabelText(/IFSC/), 'HDFC1001234')
-    await userEvent.click(submit)
+    // A malformed value is pointed out as it is typed.
     expect(within(dialog).getByText('Enter a phone number of 7 to 15 digits.')).toBeInTheDocument()
-    expect(within(dialog).getByText('Enter a valid email address.')).toBeInTheDocument()
-    expect(within(dialog).getByText('A PAN looks like ABCDE1234F.')).toBeInTheDocument()
-    expect(within(dialog).getByText('An IFSC looks like HDFC0001234.')).toBeInTheDocument()
-    expect(sent('POST', '/api/property/contacts')).toBeUndefined()
-
     await userEvent.clear(within(dialog).getByLabelText(/Phone/))
     await userEvent.type(within(dialog).getByLabelText(/Phone/), '+91 98765 43210')
-    await userEvent.clear(within(dialog).getByLabelText(/Email/))
     await userEvent.type(within(dialog).getByLabelText(/Email/), 'kumar@example.com')
+    // Step 1 holds only identity.
+    expect(within(dialog).queryByLabelText(/PAN/)).toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
+    expect(within(dialog).getByRole('tab', { name: '2. Tax Identity (HRA)' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(dialog).getByText(/Required for flatmates claiming HRA/)).toBeInTheDocument()
+    await userEvent.type(within(dialog).getByLabelText(/PAN/), 'ABCD1234F')
+    expect(within(dialog).getByText('A PAN looks like ABCDE1234F.')).toBeInTheDocument()
     await userEvent.clear(within(dialog).getByLabelText(/PAN/))
     await userEvent.type(within(dialog).getByLabelText(/PAN/), 'abcde1234f')
-    await userEvent.clear(within(dialog).getByLabelText(/IFSC/))
-    await userEvent.click(submit)
+    expect(within(dialog).getByRole('button', { name: 'Back' })).toBeInTheDocument()
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
+    expect(within(dialog).getByLabelText(/Bank account number/)).toBeInTheDocument()
+    expect(within(dialog).getByLabelText(/IFSC/)).toBeInTheDocument()
+    expect(within(dialog).getByLabelText(/UPI ID/)).toBeInTheDocument()
+    expect(within(dialog).getByLabelText(/Notes/)).toBeInTheDocument()
+    // Moving between steps saved nothing.
+    expect(sent('POST', '/api/property/contacts')).toBeUndefined()
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Add Contact' }))
     await waitFor(() => expect(sent('POST', '/api/property/contacts')).toBeDefined())
     expect(sent('POST', '/api/property/contacts')!.body).toEqual({
       role: 'owner',
@@ -172,35 +196,82 @@ describe('ContactsSection', () => {
     expect(await screen.findByText('Kumar Yadav added')).toBeInTheDocument()
   })
 
-  it('asks a broker for their fee, in integer paise', async () => {
+  it('marks a step holding a bad value, and goes there on save', async () => {
+    open([OWNER], { 'PATCH /api/property/contacts/owner-1': OWNER })
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit Kumar Yadav' }))
+    const dialog = screen.getByRole('dialog')
+    const phone = within(dialog).getByLabelText(/Phone/)
+    await userEvent.clear(phone)
+    await userEvent.type(phone, '12345')
+    await goTo(dialog, '3. Payout & Banking')
+    expect(within(dialog).getByRole('tab', { name: '1. Contact Identity (needs attention)' })).toBeInTheDocument()
+    // Saving takes the operator to the step to fix rather than sending anything.
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Contact' }))
+    expect(within(dialog).getByRole('tab', { name: '1. Contact Identity' })).toHaveAttribute('aria-selected', 'true')
+    expect(within(dialog).getByText('Enter a phone number of 7 to 15 digits.')).toBeInTheDocument()
+    expect(sent('PATCH', '/api/property/contacts/owner-1')).toBeUndefined()
+  })
+
+  it('asks a broker for their agency and fee, in integer paise', async () => {
     open([], { 'POST /api/property/contacts': BROKER })
     await userEvent.click(await screen.findByRole('button', { name: 'Add Contact' }))
     const dialog = screen.getByRole('dialog')
     await userEvent.selectOptions(within(dialog).getByLabelText(/Role/), 'broker')
-    expect(within(dialog).queryByLabelText(/PAN/)).toBeNull()
+    expect(stepNames(dialog)).toEqual([
+      '1. Contact Identity',
+      '2. Brokerage & Agency',
+      '3. Payout & Notes',
+    ])
     await userEvent.type(within(dialog).getByLabelText(/^Name/), 'Ravi')
-    await userEvent.type(within(dialog).getByLabelText(/Agency/), 'NestAway Realty')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
+    expect(within(dialog).queryByLabelText(/PAN/)).toBeNull()
+    await userEvent.type(within(dialog).getByLabelText('Agency'), 'NestAway Realty')
     await userEvent.type(within(dialog).getByLabelText(/Brokerage fee/), '28500.50')
     await userEvent.selectOptions(within(dialog).getByLabelText(/Fee status/), 'paid')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
+    expect(within(dialog).queryByLabelText(/Bank account number/)).toBeNull()
+    await userEvent.type(within(dialog).getByLabelText(/UPI ID/), 'ravi@okaxis')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Add Contact' }))
     await waitFor(() => expect(sent('POST', '/api/property/contacts')).toBeDefined())
     const body = sent('POST', '/api/property/contacts')!.body as Record<string, unknown>
     expect(body.fee_amount_paise).toBe(2850050)
     expect(body.fee_status).toBe('paid')
     expect(body.agency_name).toBe('NestAway Realty')
+    expect(body.upi_id).toBe('ravi@okaxis')
     expect(body.pan).toBeNull()
   })
 
-  it('edits a contact, starting from what is on file', async () => {
+  it('gives other roles two steps, and follows a change of role', async () => {
     open([CARETAKER], { 'PATCH /api/property/contacts/caretaker-1': CARETAKER })
     await userEvent.click(await screen.findByRole('button', { name: 'Edit Mohan' }))
     const dialog = screen.getByRole('dialog')
+    expect(stepNames(dialog)).toEqual(['1. Contact Identity', '2. Duties & Notes'])
+    await goTo(dialog, '2. Duties & Notes')
     expect(within(dialog).getByLabelText(/Responsibilities/)).toHaveValue('Plumbing, gate passes')
+    await goTo(dialog, '1. Contact Identity')
+    await userEvent.selectOptions(within(dialog).getByLabelText(/Role/), 'owner')
+    expect(stepNames(dialog)).toHaveLength(3)
+    await userEvent.selectOptions(within(dialog).getByLabelText(/Role/), 'caretaker')
+    expect(stepNames(dialog)).toEqual(['1. Contact Identity', '2. Duties & Notes'])
+  })
+
+  it('saves only from the last step', async () => {
+    open([CARETAKER], { 'PATCH /api/property/contacts/caretaker-1': CARETAKER })
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit Mohan' }))
+    const dialog = screen.getByRole('dialog')
+    // No Save before the end of the form, in the header or the footer.
+    expect(within(dialog).queryByRole('button', { name: 'Save Contact' })).toBeNull()
+    const phone = within(dialog).getByLabelText(/Phone/)
+    await userEvent.clear(phone)
+    await userEvent.type(phone, '9876522222')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
+    expect(within(dialog).getAllByRole('button', { name: 'Save Contact' })).toHaveLength(1)
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Contact' }))
     await waitFor(() => expect(sent('PATCH', '/api/property/contacts/caretaker-1')).toBeDefined())
     expect(sent('PATCH', '/api/property/contacts/caretaker-1')!.body).toMatchObject({
       role: 'caretaker',
       name: 'Mohan',
+      phone: '9876522222',
       responsibilities: 'Plumbing, gate passes',
     })
   })

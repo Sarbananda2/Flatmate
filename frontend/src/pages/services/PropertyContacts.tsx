@@ -7,8 +7,10 @@
  * The form asks only for the fields that belong to the chosen role and checks
  * each one as the backend will, so a mistake is shown before anything is sent.
  */
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import {
+  ArrowLeft,
+  ArrowRight,
   Briefcase,
   Building,
   Mail,
@@ -28,6 +30,7 @@ import {
   BUTTON_SECONDARY,
   Panel,
   Pill,
+  StepPills,
 } from '../../components/ui'
 import { useToast } from '../../components/Toast'
 import { api } from '../../api/client'
@@ -316,6 +319,48 @@ function ContactCard({
 
 /* ----------------------------------------------------------------- modals -- */
 
+type ContactStep = 'contact' | 'tax' | 'payout' | 'agency' | 'duties'
+
+/**
+ * The steps a contact's form is split into, by role: who they are first, then
+ * only what that role carries, so no step needs scrolling. Until a role is
+ * chosen there is only the first step.
+ */
+function contactSteps(role: ContactRole | ''): Array<{ id: ContactStep; label: string; hint: string }> {
+  const identity = {
+    id: 'contact' as const,
+    title: 'Contact Identity',
+    hint: 'What they are to the household, and how to reach them.',
+  }
+  const rest: Array<{ id: ContactStep; title: string; hint: string }> =
+    role === 'owner'
+      ? [
+          {
+            id: 'tax',
+            title: 'Tax Identity (HRA)',
+            hint: 'Required for flatmates claiming HRA tax exemption on employer receipts.',
+          },
+          {
+            id: 'payout',
+            title: 'Payout & Banking',
+            hint: 'Where the rent is paid. Kept in step with the lease.',
+          },
+        ]
+      : role === 'broker'
+        ? [
+            { id: 'agency', title: 'Brokerage & Agency', hint: 'Their agency, and the brokerage fee agreed.' },
+            { id: 'payout', title: 'Payout & Notes', hint: 'Where to pay them, and anything worth noting.' },
+          ]
+        : role
+          ? [{ id: 'duties', title: 'Duties & Notes', hint: 'What they look after, and anything worth noting.' }]
+          : []
+  return [identity, ...rest].map((step, index) => ({
+    id: step.id,
+    label: `${index + 1}. ${step.title}`,
+    hint: step.hint,
+  }))
+}
+
 export function ContactModal({
   contact,
   onClose,
@@ -340,9 +385,18 @@ export function ContactModal({
   )
   const [duties, setDuties] = useState(contact?.responsibilities ?? '')
   const [notes, setNotes] = useState(contact?.notes ?? '')
-  const [submitted, setSubmitted] = useState(false)
+  // Required fields are called out once the operator tries to move on or save.
+  const [attempted, setAttempted] = useState(false)
+  const [step, setStep] = useState<ContactStep>('contact')
+  const ids = useId()
 
   const uses = role ? ROLE_FIELDS[role] : []
+  const steps = contactSteps(role)
+  // A role change can remove the step being shown.
+  const current = steps.find((entry) => entry.id === step) ?? steps[0]
+  const stepIndex = steps.indexOf(current)
+  const last = stepIndex === steps.length - 1 && steps.length > 1
+
   const parsedFee = parseRupees(fee, { allowEmpty: true })
   const errors = {
     role: role ? null : 'Choose what this contact is to the household.',
@@ -361,8 +415,18 @@ export function ContactModal({
     upi: uses.includes('upi') ? patternError(upi, UPI_PATTERN, 'A UPI ID looks like name@bank.') : null,
     fee: uses.includes('broker') && fee.trim() && !parsedFee.ok ? (parsedFee.error ?? 'Enter an amount.') : null,
   }
+  // Which step each check belongs to, so a step's pill can say it needs attention.
+  const stepErrors: Record<ContactStep, boolean> = {
+    contact: Boolean(errors.role || errors.name || errors.phone || errors.email),
+    tax: Boolean(errors.pan),
+    payout: Boolean(errors.account || errors.ifsc || errors.upi),
+    agency: Boolean(errors.fee),
+    duties: Boolean(errors.upi),
+  }
   const valid = Object.values(errors).every((error) => error === null)
-  const shown = (error: string | null) => (submitted ? error : null)
+  // A malformed value is pointed out as it is typed; a missing one only once
+  // the operator tries to go on.
+  const required = (error: string | null) => (attempted ? error : null)
 
   const body = () => {
     const text = (value: string) => value.trim() || null
@@ -391,20 +455,64 @@ export function ContactModal({
     { onSuccess: onDone },
   )
 
+  const trySave = () => {
+    setAttempted(true)
+    if (!valid) {
+      // Take the operator to the first step with something to fix.
+      const first = steps.find((entry) => stepErrors[entry.id])
+      if (first) setStep(first.id)
+      return
+    }
+    if (!save.pending) void save.run(undefined)
+  }
+  const goNext = () => {
+    // The role decides the next steps, so it has to be chosen first.
+    if (current.id === 'contact' && (errors.role || errors.name)) {
+      setAttempted(true)
+      return
+    }
+    const next = steps[stepIndex + 1]
+    if (next) setStep(next.id)
+  }
+  const saveLabel = save.pending ? 'Saving…' : contact ? 'Save Contact' : 'Add Contact'
+
   return (
     <Modal
       title={contact ? `Edit ${contact.name}` : 'Add Contact'}
       description="Only the details that belong to the chosen role are asked for."
       onClose={onClose}
       footer={
-        <>
-          <button type="button" className={BUTTON_SECONDARY} onClick={onClose} disabled={save.pending}>
-            Cancel
-          </button>
-          <button type="submit" form="contact-form" className={BUTTON_PRIMARY} disabled={save.pending}>
-            {save.pending ? 'Saving…' : contact ? 'Save Contact' : 'Add Contact'}
-          </button>
-        </>
+        <div className="flex w-full items-center justify-between gap-3">
+          {stepIndex === 0 ? (
+            <button key="cancel" type="button" className={BUTTON_SECONDARY} onClick={onClose} disabled={save.pending}>
+              Cancel
+            </button>
+          ) : (
+            <button
+              key="back"
+              type="button"
+              className={BUTTON_SECONDARY}
+              onClick={() => setStep(steps[stepIndex - 1].id)}
+              disabled={save.pending}
+            >
+              <ArrowLeft className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              Back
+            </button>
+          )}
+          {/* Separate keys: reaching the last step mounts a new Save button,
+              rather than turning the Next button being clicked into a submit
+              button mid-click. */}
+          {last ? (
+            <button key="save" type="submit" form="contact-form" className={BUTTON_PRIMARY} disabled={save.pending}>
+              {saveLabel}
+            </button>
+          ) : (
+            <button key="next" type="button" className={BUTTON_PRIMARY} onClick={goNext}>
+              Next
+              <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            </button>
+          )}
+        </div>
       }
     >
       <form
@@ -413,87 +521,127 @@ export function ContactModal({
         noValidate
         onSubmit={(event) => {
           event.preventDefault()
-          setSubmitted(true)
-          if (valid && !save.pending) void save.run(undefined)
+          if (last) trySave()
+          else goNext()
         }}
       >
-        {save.error && <ErrorNotice error={save.error} />}
-        <SelectField
-          label="Role"
-          value={role}
-          onChange={setRole}
-          placeholder="Choose a role"
-          required
-          options={(Object.keys(ROLE_LABELS) as ContactRole[]).map((value) => ({
-            value,
-            label: ROLE_LABELS[value],
-          }))}
-          error={shown(errors.role)}
+        <StepPills
+          steps={steps}
+          current={current.id}
+          flagged={stepErrors}
+          onSelect={(id) => {
+            // Leaving the first step needs a role, which decides the rest.
+            if (id !== 'contact' && (errors.role || errors.name)) setAttempted(true)
+            else setStep(id)
+          }}
+          label="Contact steps"
+          tabId={(id) => `${ids}-contact-${id}`}
+          panelId={`${ids}-contact-panel`}
         />
-        <TextField label="Name" value={name} onChange={setName} required error={shown(errors.name)} />
-        <TextField
-          label="Phone"
-          type="tel"
-          value={phone}
-          onChange={setPhone}
-          placeholder="+91 98765 43210"
-          error={shown(errors.phone)}
-        />
-        <TextField label="Email" type="email" value={email} onChange={setEmail} error={shown(errors.email)} />
-        {uses.includes('owner') && (
-          <>
+        <div
+          id={`${ids}-contact-panel`}
+          role="tabpanel"
+          aria-labelledby={`${ids}-contact-${current.id}`}
+          className="stack"
+        >
+          {save.error && <ErrorNotice error={save.error} />}
+          <p className="m-0 text-xs text-[var(--text-secondary)]">{current.hint}</p>
+
+          {current.id === 'contact' && (
+            <>
+              <SelectField
+                label="Role"
+                value={role}
+                onChange={setRole}
+                placeholder="Choose a role"
+                required
+                options={(Object.keys(ROLE_LABELS) as ContactRole[]).map((value) => ({
+                  value,
+                  label: ROLE_LABELS[value],
+                }))}
+                error={required(errors.role)}
+              />
+              <TextField label="Name" value={name} onChange={setName} required error={required(errors.name)} />
+              <TextField
+                label="Phone"
+                type="tel"
+                value={phone}
+                onChange={setPhone}
+                placeholder="+91 98765 43210"
+                error={errors.phone}
+              />
+              <TextField label="Email" type="email" value={email} onChange={setEmail} error={errors.email} />
+            </>
+          )}
+
+          {current.id === 'tax' && (
             <TextField
               label="PAN"
               value={pan}
               onChange={setPan}
               placeholder="ABCDE1234F"
-              hint="For HRA proof on rent receipts."
-              error={shown(errors.pan)}
+              hint="Printed on each resident's HRA rent receipt."
+              error={errors.pan}
             />
-            <TextField
-              label="Bank account number"
-              value={account}
-              onChange={setAccount}
-              error={shown(errors.account)}
-            />
-            <TextField label="IFSC" value={ifsc} onChange={setIfsc} placeholder="HDFC0001234" error={shown(errors.ifsc)} />
-          </>
-        )}
-        {uses.includes('broker') && (
-          <>
-            <TextField label="Agency" value={agency} onChange={setAgency} />
-            <MoneyInput
-              label="Brokerage fee"
-              value={fee}
-              onChange={(raw) => setFee(raw)}
-              error={shown(errors.fee)}
-            />
-            {fee.trim() && (
-              <SelectField
-                label="Fee status"
-                value={feeStatus || 'pending'}
-                onChange={setFeeStatus}
-                options={[
-                  { value: 'pending', label: 'Pending' },
-                  { value: 'paid', label: 'Paid' },
-                  { value: 'na', label: 'Not applicable' },
-                ]}
+          )}
+
+          {current.id === 'agency' && (
+            <>
+              <TextField label="Agency" value={agency} onChange={setAgency} />
+              <MoneyInput
+                label="Brokerage fee"
+                value={fee}
+                onChange={(raw) => setFee(raw)}
+                error={errors.fee}
               />
-            )}
-          </>
-        )}
-        {uses.includes('upi') && (
-          <TextField label="UPI ID" value={upi} onChange={setUpi} placeholder="name@bank" error={shown(errors.upi)} />
-        )}
-        {uses.includes('duties') && (
-          <TextField
-            label="Responsibilities"
-            value={duties}
-            onChange={setDuties}
-            placeholder="Plumbing, electrical, gate passes, NOC"
-          />
-        )}
-        <TextAreaField label="Notes" value={notes} onChange={setNotes} rows={2} />
+              {fee.trim() && (
+                <SelectField
+                  label="Fee status"
+                  value={feeStatus || 'pending'}
+                  onChange={setFeeStatus}
+                  options={[
+                    { value: 'pending', label: 'Pending' },
+                    { value: 'paid', label: 'Paid' },
+                    { value: 'na', label: 'Not applicable' },
+                  ]}
+                />
+              )}
+            </>
+          )}
+
+          {current.id === 'payout' && (
+            <>
+              {uses.includes('owner') && (
+                <div className="form-grid">
+                  <TextField
+                    label="Bank account number"
+                    value={account}
+                    onChange={setAccount}
+                    error={errors.account}
+                  />
+                  <TextField label="IFSC" value={ifsc} onChange={setIfsc} placeholder="HDFC0001234" error={errors.ifsc} />
+                </div>
+              )}
+              <TextField label="UPI ID" value={upi} onChange={setUpi} placeholder="name@bank" error={errors.upi} />
+              <TextAreaField label="Notes" value={notes} onChange={setNotes} rows={2} />
+            </>
+          )}
+
+          {current.id === 'duties' && (
+            <>
+              <TextField
+                label="Responsibilities"
+                value={duties}
+                onChange={setDuties}
+                placeholder="Plumbing, electrical, gate passes, NOC"
+              />
+              {uses.includes('upi') && (
+                <TextField label="UPI ID" value={upi} onChange={setUpi} placeholder="name@bank" error={errors.upi} />
+              )}
+              <TextAreaField label="Notes" value={notes} onChange={setNotes} rows={2} />
+            </>
+          )}
+        </div>
       </form>
     </Modal>
   )

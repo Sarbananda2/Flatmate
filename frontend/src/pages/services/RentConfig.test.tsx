@@ -205,13 +205,17 @@ describe('LeaseContractSection', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))
     const dialog = screen.getByRole('dialog')
     expect(dialog).toHaveTextContent('Edit Rajesh Kumar Sharma')
+    await userEvent.click(within(dialog).getByRole('tab', { name: '2. Tax Identity (HRA)' }))
     expect(within(dialog).getByLabelText(/PAN/)).toHaveValue('ABCPS1234K')
+    await userEvent.click(within(dialog).getByRole('tab', { name: '1. Contact Identity' }))
     // Only the landlord is being edited: the tenancy terms stay read-only.
     expect(screen.getByRole('button', { name: 'Edit tenancy terms' })).toBeInTheDocument()
     expect(screen.queryByLabelText(/Monthly rent/)).toBeNull()
     const phone = within(dialog).getByLabelText(/Phone/)
     await userEvent.clear(phone)
     await userEvent.type(phone, '9123456780')
+    // The contact form saves from its last step.
+    await userEvent.click(within(dialog).getByRole('tab', { name: '3. Payout & Banking' }))
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Contact' }))
     await waitFor(() =>
       expect(stub!.calls.find((call) => call.method === 'PATCH')?.body).toMatchObject({

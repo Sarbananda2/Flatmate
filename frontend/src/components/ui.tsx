@@ -287,3 +287,62 @@ export function EditButton({ label, onClick }: { label: string; onClick: () => v
     </button>
   )
 }
+
+/**
+ * Step pills for an editor split into steps: the current step filled in, the
+ * others outlined, and a red dot on any other step holding a value that stops
+ * the save. They are tabs, so each one jumps straight to its step.
+ */
+export function StepPills<T extends string>({
+  steps,
+  current,
+  flagged,
+  onSelect,
+  label,
+  tabId,
+  panelId,
+  className,
+}: {
+  steps: ReadonlyArray<{ id: T; label: string }>
+  current: T
+  flagged: Partial<Record<T, boolean>>
+  onSelect: (id: T) => void
+  label: string
+  tabId: (id: T) => string
+  panelId: string
+  className?: string
+}) {
+  return (
+    <div className={clsx('flex flex-wrap gap-2', className)} role="tablist" aria-label={label}>
+      {steps.map((entry) => {
+        const selected = current === entry.id
+        const attention = !selected && flagged[entry.id]
+        return (
+          <button
+            key={entry.id}
+            id={tabId(entry.id)}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            aria-controls={panelId}
+            onClick={() => onSelect(entry.id)}
+            className={clsx(
+              'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors cursor-pointer',
+              selected
+                ? 'bg-[var(--accent)] border-[var(--accent)] text-white shadow-xs'
+                : 'bg-[var(--bg-surface)] border-[var(--border-medium)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
+            )}
+          >
+            {entry.label}
+            {attention && (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--danger)]" aria-hidden="true" />
+                <span className="sr-only"> (needs attention)</span>
+              </>
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+}

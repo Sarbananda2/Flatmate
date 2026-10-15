@@ -24,6 +24,7 @@ import {
   Panel,
   Pill,
   Rupees,
+  StepPills,
 } from '../../components/ui'
 import { ContactModal, useContacts } from './PropertyContacts'
 import { LeaseNoticeBanner } from './LeaseLifecycle'
@@ -318,41 +319,16 @@ function LeaseForm({
           </>
         }
       >
-        <div
-          className="flex flex-wrap gap-2 pb-3 border-b border-[var(--border-subtle)]"
-          role="tablist"
-          aria-label="Edit steps"
-        >
-          {TENANCY_STEPS.map((entry) => {
-            const selected = step === entry.id
-            const flagged = !selected && invalidSteps[entry.id]
-            return (
-              <button
-                key={entry.id}
-                id={tabId(entry.id)}
-                type="button"
-                role="tab"
-                aria-selected={selected}
-                aria-controls={`${ids}-step-panel`}
-                onClick={() => setStep(entry.id)}
-                className={clsx(
-                  'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors cursor-pointer',
-                  selected
-                    ? 'bg-[var(--accent)] border-[var(--accent)] text-white'
-                    : 'bg-[var(--bg-surface)] border-[var(--border-medium)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
-                )}
-              >
-                {entry.label}
-                {flagged && (
-                  <>
-                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--danger)]" aria-hidden="true" />
-                    <span className="sr-only"> (needs attention)</span>
-                  </>
-                )}
-              </button>
-            )
-          })}
-        </div>
+        <StepPills
+          steps={TENANCY_STEPS}
+          current={step}
+          flagged={invalidSteps}
+          onSelect={setStep}
+          label="Edit steps"
+          tabId={tabId}
+          panelId={`${ids}-step-panel`}
+          className="pb-3 border-b border-[var(--border-subtle)]"
+        />
 
         <div
           id={`${ids}-step-panel`}
