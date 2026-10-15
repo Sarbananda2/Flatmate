@@ -607,6 +607,11 @@ function ProfileFact({ label, children }: { label: string; children: React.React
   )
 }
 
+// Each card's name, shared with the dialog that edits it, so a section keeps
+// its name whether it is being read or edited.
+const APARTMENT_TITLE = 'Apartment & Property Details'
+const LANDLORD_TITLE = 'Landlord Profile & Payout'
+
 const NOT_RECORDED = <span className="text-[var(--text-tertiary)]">Not recorded</span>
 
 /** A PIN code: six digits, the first never 0. The backend checks the same. */
@@ -640,7 +645,7 @@ export function ApartmentProfileCard({
   const fact = (value: string | null | undefined) => value || NOT_RECORDED
   return (
     <Panel
-      title="Apartment & Property Details"
+      title={APARTMENT_TITLE}
       icon={<Home className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       actions={<EditButton label="Edit apartment" onClick={() => setEditing(true)} />}
     >
@@ -717,7 +722,7 @@ function EditApartmentModal({
   )
   return (
     <Modal
-      title="Edit Apartment & Property Details"
+      title={APARTMENT_TITLE}
       description="The address is printed, part by part, as the premises on every HRA rent receipt."
       onClose={onClose}
       footer={
@@ -787,7 +792,7 @@ export function LandlordProfileCard({
   const owner = contacts.data?.items.find((contact) => contact.role === 'owner') ?? null
   return (
     <Panel
-      title="Landlord Profile & Payout"
+      title={LANDLORD_TITLE}
       icon={<Building2 className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint="The owner's details are kept on their contact under Stakeholders & Contacts, and in step with the lease."
       actions={
@@ -835,6 +840,7 @@ export function LandlordProfileCard({
       {editing && (
         <ContactModal
           contact={owner}
+          title={LANDLORD_TITLE}
           onClose={() => setEditing(false)}
           onDone={(saved) => {
             setEditing(false)

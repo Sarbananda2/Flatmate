@@ -388,6 +388,9 @@ function CreateApartmentDialog({
 
 /* --------------------------------------------------------------- settings -- */
 
+/** The card's name, shared with the dialog that edits it. */
+const SETTINGS_TITLE = 'Settings'
+
 interface OperatorSettings {
   default_apartment_id: string | null
   server: { operator_name?: string }
@@ -421,7 +424,7 @@ export function SettingsCard({
 
   return (
     <Card
-      title="Settings"
+      title={SETTINGS_TITLE}
       hint="The apartment the app opens on, and who is recorded as making changes."
       actions={
         current && <EditButton label="Edit settings" onClick={() => setEditing(true)} />
@@ -497,7 +500,7 @@ function EditSettingsDialog({
 
   return (
     <Modal
-      title="Edit Settings"
+      title={SETTINGS_TITLE}
       description="Changes apply as soon as they are saved."
       onClose={onClose}
       footer={

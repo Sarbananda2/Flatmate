@@ -51,6 +51,8 @@ describe('Setup settings', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Edit settings' }))
     const dialog = screen.getByRole('dialog')
+    // The dialog keeps the name of the card it edits.
+    expect(within(dialog).getByRole('heading', { name: 'Settings' })).toBeInTheDocument()
     const name = within(dialog).getByLabelText(/Apartment name/)
     await userEvent.clear(name)
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))

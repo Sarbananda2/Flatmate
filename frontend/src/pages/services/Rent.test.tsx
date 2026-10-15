@@ -541,6 +541,8 @@ describe('RentMonth', () => {
     })
     await userEvent.click(await screen.findByRole('button', { name: 'Edit agreement model' }))
     const dialog = screen.getByRole('dialog')
+    // The dialog keeps the name of the card it edits.
+    expect(within(dialog).getByRole('heading', { name: 'Rental Agreement Structure' })).toBeInTheDocument()
     const save = within(dialog).getByRole('button', { name: 'Save Model' })
     expect(save).toBeDisabled()
     const group = within(dialog).getByRole('radiogroup', { name: 'Rental agreement structure' })

@@ -204,7 +204,8 @@ describe('LeaseContractSection', () => {
     renderPage(saved, { 'PATCH /api/property/contacts/owner-1': { ...OWNER, phone: '9123456780' } })
     await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))
     const dialog = screen.getByRole('dialog')
-    expect(dialog).toHaveTextContent('Edit Rajesh Kumar Sharma')
+    // The dialog keeps the name of the card it edits.
+    expect(within(dialog).getByRole('heading', { name: 'Landlord Profile & Payout' })).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: '2. Tax Identity (HRA)' }))
     expect(within(dialog).getByLabelText(/PAN/)).toHaveValue('ABCPS1234K')
     await userEvent.click(within(dialog).getByRole('tab', { name: '1. Contact Identity' }))
@@ -257,6 +258,8 @@ describe('LeaseContractSection', () => {
     )
     await userEvent.click(await screen.findByRole('button', { name: 'Edit apartment' }))
     const dialog = screen.getByRole('dialog')
+    // The dialog keeps the name of the card it edits.
+    expect(within(dialog).getByRole('heading', { name: 'Apartment & Property Details' })).toBeInTheDocument()
     for (const label of [
       'Flat Number',
       'Tower / Wing / Block',

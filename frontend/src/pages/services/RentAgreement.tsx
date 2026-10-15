@@ -64,6 +64,9 @@ export const RENTAL_MODELS: ReadonlyArray<{
   },
 ]
 
+/** The card's name, shared with the dialog that edits it. */
+const AGREEMENT_TITLE = 'Rental Agreement Structure'
+
 export const MODEL_TITLES: Record<RentSplitMode, string> = {
   equal: 'Single Master Lease (Equal Split)',
   room_tiered: 'Room-Tiered Fixed Pricing',
@@ -223,7 +226,7 @@ export function RentAgreementCard({
 
   return (
     <Panel
-      title="Rental Agreement Structure"
+      title={AGREEMENT_TITLE}
       icon={<Layers className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint="How the household divides the rent between flatmates, and how the landlord confirms a payout."
       actions={
@@ -312,7 +315,7 @@ function ChangeAgreementModal({
 
   return (
     <Modal
-      title="Change Agreement Model"
+      title={AGREEMENT_TITLE}
       description="How every month's rent is divided from now on. A month already generated keeps the split it was charged with."
       onClose={onClose}
       wide

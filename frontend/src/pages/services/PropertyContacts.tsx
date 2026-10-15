@@ -363,10 +363,13 @@ function contactSteps(role: ContactRole | ''): Array<{ id: ContactStep; label: s
 
 export function ContactModal({
   contact,
+  title,
   onClose,
   onDone,
 }: {
   contact: HouseholdContact | null
+  /** The name of the card being edited. Defaults to the contact's own name. */
+  title?: string
   onClose: () => void
   onDone: (contact: HouseholdContact) => void
 }) {
@@ -478,7 +481,8 @@ export function ContactModal({
 
   return (
     <Modal
-      title={contact ? `Edit ${contact.name}` : 'Add Contact'}
+      // Named like the card it edits, so the section keeps its name.
+      title={title ?? (contact ? contact.name : 'Add Contact')}
       description="Only the details that belong to the chosen role are asked for."
       onClose={onClose}
       footer={

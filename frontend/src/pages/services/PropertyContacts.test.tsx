@@ -259,6 +259,8 @@ describe('ContactsSection', () => {
     open([CARETAKER], { 'PATCH /api/property/contacts/caretaker-1': CARETAKER })
     await userEvent.click(await screen.findByRole('button', { name: 'Edit Mohan' }))
     const dialog = screen.getByRole('dialog')
+    // The dialog is named like the contact's own card.
+    expect(within(dialog).getByRole('heading', { name: 'Mohan' })).toBeInTheDocument()
     // No Save before the end of the form, in the header or the footer.
     expect(within(dialog).queryByRole('button', { name: 'Save Contact' })).toBeNull()
     const phone = within(dialog).getByLabelText(/Phone/)
