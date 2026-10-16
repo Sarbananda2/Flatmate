@@ -246,7 +246,10 @@ export function MiniStat({
 }) {
   return (
     <div className="p-3.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] shadow-xs min-w-0">
-      <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] truncate">
+      <div
+        className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] truncate"
+        title={typeof label === 'string' ? label : undefined}
+      >
         {label}
       </div>
       <div className="mt-1 text-base font-bold text-[var(--text-primary)] truncate">{value}</div>

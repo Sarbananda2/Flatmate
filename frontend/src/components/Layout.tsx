@@ -80,6 +80,18 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null)
 
+/**
+ * The apartment as the ribbon shows it: "1805, CG6 · Supertech Capetown" once
+ * its address is recorded part by part, otherwise its name. The full postal
+ * address is the tooltip.
+ */
+function brandName(apartment: Apartment | null): string {
+  if (!apartment) return 'Apartment Expense Manager'
+  const { flat_number: flat, tower_block: tower, society_name: society } = apartment
+  if (flat && society) return `${[flat, tower].filter(Boolean).join(', ')} · ${society}`
+  return apartment.name
+}
+
 export function useApp(): AppContextValue {
   const context = useContext(AppContext)
   if (!context) throw new Error('useApp must be used inside the Layout')
@@ -276,7 +288,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <Link
             to="/"
             className="flex items-center gap-3 min-w-0 no-underline md:justify-self-start md:max-w-full"
-            title={apartment?.name ?? undefined}
+            title={apartment ? (apartment.premises_address ?? apartment.name) : undefined}
             aria-label={apartment?.name ?? 'Apartment Expense Manager'}
           >
             <span className="flex w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-700 to-indigo-500 text-white items-center justify-center shrink-0 shadow-xs">
@@ -284,13 +296,13 @@ export function Layout({ children }: { children: ReactNode }) {
             </span>
             <span
               className={clsx(
-                'font-bold text-sm text-[var(--text-primary)] truncate lg:max-w-[300px]',
+                'font-bold text-sm text-[var(--text-primary)] truncate lg:max-w-[420px]',
                 // Beside the tabs there is only room for the name on wide
                 // screens; the setup wizard has no tabs, so it can show sooner.
                 onWizard ? 'hidden sm:block' : 'hidden lg:block',
               )}
             >
-              {apartment?.name ?? 'Apartment Expense Manager'}
+              {brandName(apartment)}
             </span>
           </Link>
 

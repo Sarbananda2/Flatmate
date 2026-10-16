@@ -9,7 +9,6 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { clsx } from 'clsx'
 import { BedDouble, Landmark, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
 import {
@@ -62,6 +61,14 @@ const METHOD_LABELS: Record<DepositPaymentMethod, string> = {
   bank_transfer: 'Bank transfer',
   cash: 'Cash',
   direct_to_landlord: 'Direct to landlord',
+}
+
+/** Money in is green; money handed back or kept is amber. */
+const TX_TONES: Record<DepositTransaction['tx_type'], Tone> = {
+  funding_payment: 'success',
+  direct_replacement_transfer: 'success',
+  move_out_refund: 'warning',
+  move_out_deduction: 'warning',
 }
 
 const TX_LABELS: Record<DepositTransaction['tx_type'], string> = {
@@ -444,8 +451,10 @@ function EscrowPoolCard({
 }) {
   const [dialog, setDialog] = useState<Dialog>(null)
   const fronted = summary.funding_mode === 'primary_signatory'
+  // A ₹0 entry (a refund of nothing, say) moves no money, so it is left out.
   const history = summary.slots
     .flatMap((slot) => slot.transactions.map((tx) => ({ tx, slot })))
+    .filter(({ tx }) => tx.amount_paise > 0)
     .sort((a, b) => a.tx.tx_date.localeCompare(b.tx.tx_date))
     .slice(-6)
     .reverse()
@@ -464,12 +473,12 @@ function EscrowPoolCard({
         {fronted ? (
           <>
             <MiniStat
-              label="Master Deposit Fronted to Landlord"
+              label="Master Deposit Fronted"
               value={<Rupees paise={summary.master_deposit_paise} />}
               note={`By ${summary.primary_signatory_name ?? 'the signatory'}`}
             />
             <MiniStat
-              label="Total Slot Reimbursements Collected"
+              label="Reimbursements Collected"
               value={<Rupees paise={summary.reimbursements_received_paise} />}
               note={
                 summary.retained_deductions_paise > 0
@@ -478,7 +487,7 @@ function EscrowPoolCard({
               }
             />
             <MiniStat
-              label="Primary Signatory Net Capital at Risk"
+              label="Signatory Capital at Risk"
               value={<Rupees paise={summary.signatory_capital_exposure_paise} tone="accent" />}
               note="Still out of pocket"
             />
@@ -505,7 +514,7 @@ function EscrowPoolCard({
           </>
         )}
         <MiniStat
-          label="Vacant / Unfunded Gap"
+          label="Unfunded Gap"
           value={<Rupees paise={summary.unfunded_gap_paise} />}
           note={
             summary.vacant_slots_count > 0
@@ -569,20 +578,31 @@ function EscrowPoolCard({
       </div>
 
       {history.length > 0 && (
-        <section aria-label="Recent deposit activity" className="space-y-1.5">
-          <h3 className="m-0 text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-            Recent deposit activity
+        <section
+          aria-label="Recent deposit activity"
+          className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4 space-y-3"
+        >
+          <h3 className="m-0 text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+            Recent Deposit Activity
           </h3>
-          <ul className="m-0 p-0 list-none space-y-1 text-xs text-[var(--text-secondary)]">
+          <ul className="m-0 p-0 list-none divide-y divide-[var(--border-subtle)]">
             {history.map(({ tx, slot }) => (
-              <li key={tx.tx_id} className="flex flex-wrap items-baseline justify-between gap-x-3">
-                <span className="min-w-0">
-                  <span className="tabular">{formatDate(tx.tx_date)}</span> · {slot.slot_label} ·{' '}
-                  {TX_LABELS[tx.tx_type]}
-                  {tx.resident_display_name && <> · {tx.resident_display_name}</>}
-                  {tx.notes && <> · {tx.notes}</>}
+              <li
+                key={tx.tx_id}
+                className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 py-2 first:pt-0 last:pb-0"
+              >
+                <span className="flex flex-wrap items-center gap-2 min-w-0 text-xs">
+                  <span className="tabular text-[var(--text-secondary)]">{formatDate(tx.tx_date)}</span>
+                  <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 text-[11px] font-semibold text-[var(--text-secondary)]">
+                    {slot.slot_label}
+                  </span>
+                  <Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>
+                  {tx.resident_display_name && (
+                    <span className="font-medium text-[var(--text-primary)]">{tx.resident_display_name}</span>
+                  )}
+                  {tx.notes && <span className="text-[var(--text-secondary)]">{tx.notes}</span>}
                 </span>
-                <Rupees paise={tx.amount_paise} className="font-semibold text-[var(--text-primary)]" />
+                <Rupees paise={tx.amount_paise} className="tabular font-bold text-[var(--text-primary)]" />
               </li>
             ))}
           </ul>
@@ -656,6 +676,10 @@ function PaidDetails({ slot }: { slot: DepositSlot }) {
   )
 }
 
+/** One look for every slot action, so each row reads the same. */
+const ACTION_BUTTON =
+  'inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-medium)] bg-[var(--bg-surface)] px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] transition-colors cursor-pointer'
+
 function SlotActions({
   slot,
   onAction,
@@ -665,69 +689,65 @@ function SlotActions({
 }) {
   const occupied = slot.assigned_resident_id !== null
   const who = slot.assigned_display_name ?? 'the occupant'
+  // Each action has a short name on the button, its full name as the tooltip,
+  // and a description naming the slot for screen readers.
   const actions: Array<{
     kind: DialogKind
+    text: string
     label: string
     describe: string
     icon: typeof Plus
-    className: string
   }> = []
   if (occupied && slot.outstanding_paise > 0) {
     actions.push({
       kind: 'fund',
+      text: 'Pay',
       label: 'Record Payment',
       describe: `Record payment for ${slot.slot_label} from ${who}`,
       icon: Plus,
-      className: BUTTON_SECONDARY,
     })
   }
   // The signatory's own share is settled with the landlord, not here.
   if (occupied && !slot.is_primary_signatory) {
     actions.push({
       kind: 'vacate',
+      text: 'Vacate',
       label: 'Vacate & Settle',
       describe: `Vacate and settle ${slot.slot_label}`,
       icon: LogOut,
-      className: BUTTON_QUIET,
     })
   }
   // An occupant can be set while the slot is vacant, or swapped while nothing is paid.
   if (!slot.is_primary_signatory && slot.funded_amount_paise === 0) {
     actions.push({
       kind: 'assign',
+      text: occupied ? 'Reassign' : 'Assign',
       label: occupied ? 'Reassign Occupant' : 'Assign Occupant',
       describe: `${occupied ? 'Reassign' : 'Assign'} occupant of ${slot.slot_label}`,
       icon: UserPlus,
-      className: BUTTON_QUIET,
     })
   }
   actions.push({
     kind: 'room',
+    text: 'Room',
     label: slot.room_id ? 'Change Room' : 'Link Room',
     describe: `${slot.room_id ? 'Change the room for' : 'Link a room to'} ${slot.slot_label}`,
     icon: BedDouble,
-    className: BUTTON_QUIET,
   })
 
-  // Always one line, so every row is the same height. A lone action has room
-  // for its name; several do not, so they show as icons, each still named for
-  // screen readers and on hover, and the first is spelled out on wide screens.
-  const alone = actions.length === 1
   return (
-    <span className="inline-flex flex-nowrap items-center justify-center gap-1.5 whitespace-nowrap">
-      {actions.map((action, index) => (
+    <span className="inline-flex flex-wrap items-center justify-center gap-1.5">
+      {actions.map((action) => (
         <button
           key={action.kind}
           type="button"
-          className={clsx(action.className, 'whitespace-nowrap', !alone && 'px-2.5')}
+          className={ACTION_BUTTON}
           onClick={() => onAction(action.kind)}
           aria-label={action.describe}
           title={action.label}
         >
           <action.icon className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-          <span className={alone ? undefined : index === 0 ? 'sr-only xl:not-sr-only' : 'sr-only'}>
-            {action.label}
-          </span>
+          {action.text}
         </button>
       ))}
     </span>
@@ -756,18 +776,39 @@ function SlotDialog({
 function SlotRoom({ slot }: { slot: DepositSlot }) {
   if (!slot.room_number) return null
   const amenities = [
-    slot.has_attached_washroom && 'attached washroom',
-    slot.has_balcony && 'balcony',
-  ].filter(Boolean)
+    slot.has_attached_washroom && { icon: '🚿', name: 'Attached Washroom' },
+    slot.has_balcony && { icon: '🌅', name: 'Balcony' },
+  ].filter(Boolean) as Array<{ icon: string; name: string }>
+  // A slot named after its room already says which room it is; only a
+  // differently named slot needs the room spelled out.
+  const sameName = slot.slot_label.trim().toLowerCase() === slot.room_number.trim().toLowerCase()
+  if (sameName && amenities.length === 0) return null
+  const described = amenities.map((amenity) => amenity.name.toLowerCase()).join(' and ')
+  // One small chip each, kept on one line, so a narrow column stacks them
+  // rather than breaking a single pill across lines.
+  const chip =
+    'inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold text-[var(--text-secondary)]'
   return (
     <span
-      className="mt-1 inline-flex items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-semibold text-[var(--text-secondary)]"
-      title={amenities.length ? `With ${amenities.join(' and ')}` : 'No private amenities'}
+      className="mt-1 flex flex-wrap gap-1"
+      aria-label={
+        sameName
+          ? `With ${described}`
+          : `${slot.room_number}${amenities.length ? `, with ${described}` : ''}`
+      }
     >
-      <BedDouble className="w-3 h-3 shrink-0" aria-hidden="true" />
-      {slot.room_number}
-      {slot.has_attached_washroom && <span aria-label="attached washroom">🚿</span>}
-      {slot.has_balcony && <span aria-label="balcony">🌅</span>}
+      {!sameName && (
+        <span className={chip}>
+          <BedDouble className="w-3 h-3 shrink-0" aria-hidden="true" />
+          {slot.room_number}
+        </span>
+      )}
+      {amenities.map((amenity) => (
+        <span key={amenity.name} className={chip}>
+          <span aria-hidden="true">{amenity.icon}</span>
+          {amenity.name}
+        </span>
+      ))}
     </span>
   )
 }

@@ -327,10 +327,15 @@ describe('the escrow pool', () => {
   it('shows the capital exposure ribbon and centres every table header', async () => {
     renderSection(summary())
     const ribbon = await screen.findByRole('region', { name: 'Capital exposure' })
-    expect(ribbon).toHaveTextContent('Master Deposit Fronted to Landlord₹1,50,000.00By Alice')
-    expect(ribbon).toHaveTextContent('Total Slot Reimbursements Collected₹1,00,000.00')
-    expect(ribbon).toHaveTextContent('Primary Signatory Net Capital at Risk₹50,000.00')
-    expect(ribbon).toHaveTextContent('Vacant / Unfunded Gap₹0.00')
+    expect(ribbon).toHaveTextContent('Master Deposit Fronted₹1,50,000.00By Alice')
+    expect(ribbon).toHaveTextContent('Reimbursements Collected₹1,00,000.00')
+    expect(ribbon).toHaveTextContent('Signatory Capital at Risk₹50,000.00')
+    expect(ribbon).toHaveTextContent('Unfunded Gap₹0.00')
+    // Each label is also its own tooltip.
+    expect(within(ribbon).getByText('Signatory Capital at Risk')).toHaveAttribute(
+      'title',
+      'Signatory Capital at Risk',
+    )
 
     const table = screen.getByRole('table', { name: 'Household deposit slots' })
     const headers = within(table).getAllByRole('columnheader')
@@ -370,28 +375,30 @@ describe('the escrow pool', () => {
       within(within(table).getByRole('row', { name }))
         .queryAllByRole('button')
         .map((button) => button.textContent)
+    // Every action shows its icon and a short name, in every row.
     // The signatory fronted their own slot: it is settled with the landlord.
     // Every slot can be linked to the room it backs.
-    expect(actions(/Room 1/)).toEqual(['Link Room'])
+    expect(actions(/Room 1/)).toEqual(['Room'])
     // Nothing paid yet: it can be paid, vacated, or handed to someone else.
-    expect(actions(/Room 2/)).toEqual([
-      'Record Payment',
-      'Vacate & Settle',
-      'Reassign Occupant',
-      'Link Room',
-    ])
+    expect(actions(/Room 2/)).toEqual(['Pay', 'Vacate', 'Reassign', 'Room'])
     // Funded: it has to be settled before anyone else can take it.
-    expect(actions(/Room 3/)).toEqual(['Vacate & Settle', 'Link Room'])
-    expect(actions(/Room 4/)).toEqual(['Assign Occupant', 'Link Room'])
+    expect(actions(/Room 3/)).toEqual(['Vacate', 'Room'])
+    expect(actions(/Room 4/)).toEqual(['Assign', 'Room'])
+    // The full name is the tooltip.
+    const titles = within(within(table).getByRole('row', { name: /Room 2/ }))
+      .getAllByRole('button')
+      .map((button) => button.getAttribute('title'))
+    expect(titles).toEqual(['Record Payment', 'Vacate & Settle', 'Reassign Occupant', 'Link Room'])
     expect(within(table).getByRole('row', { name: /Room 4/ })).toHaveTextContent('Vacant')
     expect(screen.getByRole('region', { name: 'Capital exposure' })).toHaveTextContent(
-      'Vacant / Unfunded Gap₹1,00,000.001 slot vacant',
+      'Unfunded Gap₹1,00,000.001 slot vacant',
     )
-    // Every action sits on one line, and each keeps a name whatever its width.
+    // Each button keeps its name on one line; a slot with many actions wraps
+    // onto a second line rather than hiding any names.
     for (const button of within(table).getAllByRole('button')) {
       expect(button).toHaveClass('whitespace-nowrap')
       expect(button).toHaveAttribute('title')
-      expect(button.closest('span')).toHaveClass('flex-nowrap')
+      expect(button.closest('span')).toHaveClass('flex-wrap')
     }
     for (const header of within(table).getAllByRole('columnheader')) {
       expect(header).toHaveClass('px-2')
@@ -435,9 +442,11 @@ describe('the escrow pool', () => {
     const totals = await screen.findByRole('region', { name: 'Deposit totals' })
     expect(totals).toHaveTextContent('Total Funded₹50,000.00Of ₹1,50,000.00 across the slots')
     expect(totals).toHaveTextContent('Slots3 of 3 occupied')
-    expect(screen.getByRole('region', { name: 'Recent deposit activity' })).toHaveTextContent(
-      '2 Oct 2026 · Room 2 · Paid in · Bob₹50,000.00',
-    )
+    const activity = screen.getByRole('region', { name: 'Recent deposit activity' })
+    const [row] = within(activity).getAllByRole('listitem')
+    for (const part of ['2 Oct 2026', 'Room 2', 'Paid in', 'Bob', '₹50,000.00']) {
+      expect(row).toHaveTextContent(part)
+    }
   })
 
   it('says so when the slots no longer match the deposit on the lease', async () => {
@@ -727,8 +736,12 @@ describe('the rooms slots back', () => {
     )
     const table = await screen.findByRole('table', { name: 'Household deposit slots' })
     const first = within(table).getAllByRole('row')[1]
-    expect(within(first).getByLabelText('attached washroom')).toBeInTheDocument()
-    expect(within(first).getByLabelText('balcony')).toBeInTheDocument()
+    // The slot is already called "Room 1": the pill shows only the amenities.
+    const pill = within(first).getByLabelText('With attached washroom and balcony')
+    expect(within(pill).getByText('Attached Washroom')).toBeInTheDocument()
+    expect(within(pill).getByText('Balcony')).toBeInTheDocument()
+    expect(pill).toHaveTextContent('🚿')
+    expect(pill).not.toHaveTextContent('Room 1')
     expect(within(first).getByRole('button', { name: /Change the room for Room 1/ })).toBeInTheDocument()
     const second = within(table).getAllByRole('row')[2]
     expect(within(second).getByRole('button', { name: /Link a room to Room 2/ })).toBeInTheDocument()
@@ -775,5 +788,69 @@ describe('the rooms slots back', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Unlink Room' }))
     await waitFor(() => expect(posted('/slots/slot-1/link-room')).toBeDefined())
     expect(posted('/slots/slot-1/link-room')!.body).toEqual({ room_id: null })
+  })
+
+  it('names the room on a slot labelled otherwise, and shows nothing it would repeat', async () => {
+    renderSection(
+      summary({
+        slots: [
+          slot(1, 'alice', 'Alice', {
+            slot_label: 'Master Bedroom',
+            room_id: 'room-1',
+            room_number: 'Room 1',
+            has_attached_washroom: true,
+            has_balcony: false,
+          }),
+          slot(2, 'bob', 'Bob', { room_id: 'room-2', room_number: 'Room 2' }),
+        ],
+      }),
+    )
+    const table = await screen.findByRole('table', { name: 'Household deposit slots' })
+    const [, first, second] = within(table).getAllByRole('row')
+    const pill = within(first).getByLabelText('Room 1, with attached washroom')
+    expect(within(pill).getByText('Room 1')).toBeInTheDocument()
+    expect(within(pill).getByText('Attached Washroom')).toBeInTheDocument()
+    // "Room 2" with no private amenities: no pill at all.
+    expect(within(second).queryByLabelText(/^With/)).toBeNull()
+    expect(within(second).getAllByText('Room 2')).toHaveLength(1)
+  })
+})
+
+describe('recent deposit activity', () => {
+  it('sits in its own frame and leaves out entries that moved no money', async () => {
+    const tx = (id: string, type: string, amount: number, date: string) => ({
+      tx_id: id,
+      slot_id: 'slot-2',
+      resident_id: 'bob',
+      resident_display_name: 'Bob',
+      tx_type: type,
+      amount_paise: amount,
+      tx_date: date,
+      counterparty_resident_id: null,
+      counterparty_display_name: null,
+      payment_method: 'upi',
+      reference: null,
+      notes: null,
+    })
+    renderSection(
+      summary({
+        slots: [
+          slot(2, 'bob', 'Bob', {
+            transactions: [
+              tx('t1', 'funding_payment', SHARE, '2026-10-02'),
+              tx('t2', 'move_out_refund', 0, '2026-10-05'),
+              tx('t3', 'move_out_refund', 4000000, '2026-10-06'),
+            ],
+          }),
+        ],
+      }),
+    )
+    const activity = await screen.findByRole('region', { name: 'Recent deposit activity' })
+    expect(activity).toHaveClass('rounded-xl', 'border')
+    const rows = within(activity).getAllByRole('listitem')
+    expect(rows).toHaveLength(2)
+    expect(activity).not.toHaveTextContent('₹0.00')
+    expect(rows[0]).toHaveTextContent('Refunded on leaving')
+    expect(rows[1]).toHaveTextContent('Paid in')
   })
 })
