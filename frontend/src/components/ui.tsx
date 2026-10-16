@@ -147,7 +147,16 @@ export function Rupees({
   )
 }
 
-export function Avatar({ name, tone = 'neutral' }: { name: string; tone?: Tone }) {
+export function Avatar({
+  name,
+  tone = 'neutral',
+  size = 'md',
+}: {
+  name: string
+  tone?: Tone
+  /** 'sm' keeps a one-line table row about as tall as its pills and buttons. */
+  size?: 'sm' | 'md'
+}) {
   const initials = name
     .split(/\s+/)
     .filter(Boolean)
@@ -157,7 +166,8 @@ export function Avatar({ name, tone = 'neutral' }: { name: string; tone?: Tone }
   return (
     <span
       className={clsx(
-        'w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs border shrink-0',
+        'rounded-full flex items-center justify-center font-bold border shrink-0',
+        size === 'sm' ? 'w-6 h-6 text-[10px]' : 'w-10 h-10 text-xs',
         PILL_TONES[tone],
       )}
       aria-hidden="true"

@@ -47,35 +47,67 @@ An audit of the **Security Deposit** tab (`/housing?tab=deposits`) in the live r
    - Add `title={typeof label === 'string' ? label : undefined}` to the label container.
    - Ensure the label does not rigidly truncate when there is vertical room, or keep the concise labels strictly within single-line bounds.
 
-### 2.2. Standardize Action Buttons Across All Rows (`SlotActions`)
+### 2.2. Enforce Rule U7 & Rule D1 on the "Household Escrow Pool" Slots Table
 
-Eliminate mystery icons and provide consistent, labeled actions for all tenants:
+The `Household deposit slots` table previously stacked 2–4 vertical lines inside almost every cell (`Room 1` + `Slot 1` + `Attached Washroom` + `Balcony` in Column 1; `Sarbananda Taw` + `Primary signatory` in Column 3; `Funded` + `₹50,000.00` in Column 4; `5 Oct 2026` + `Bank transfer · NEFT-A...` in Column 5).
 
-1. **Remove Conditional Hiding:** Delete `alone ? undefined : index === 0 ? 'sr-only xl:not-sr-only' : 'sr-only'`.
-2. **Explicit Action Labels:** Every action button must render an icon AND a concise text label:
-   - `fund`: icon `Plus`, label `Record Payment`, text `Pay` (or `Record Payment` if space permits)
-   - `vacate`: icon `LogOut`, label `Vacate & Settle`, text `Vacate`
-   - `assign`: icon `UserPlus`, label `Assign Occupant` / `Reassign Occupant`, text `Assign`
-   - `room`: icon `BedDouble`, label `Change Room` / `Link Room`, text `Room` (or `Change Room`)
-3. **Button Sizing:**
-   - Style with `inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold whitespace-nowrap rounded-lg`.
-   - Maintain `w-[26%]` in the table header to accommodate two labeled action buttons comfortably side-by-side.
+Under **Rule U7 (Summary-First Tables)** and **Rule D1 (Atomicity)**, every row in `Household deposit slots` must be a **single-line summary row** (~44px tall), and clicking a row opens the **`Deposit Slot Details`** modal:
 
-### 2.3. De-Duplicate Room Labels in "Slot / Space" Column (`SlotRoom`)
+1. **6 Center-Aligned Column Headers (Rule U3):**
+   - `Slot / Space` (`w-[16%]`, `text-center`)
+   - `Target Deposit` (`w-[16%]`, `text-center`)
+   - `Current Occupant` (`w-[22%]`, `text-center`)
+   - `Funded Status` (`w-[15%]`, `text-center`)
+   - `Paid Date` (`w-[15%]`, `text-center`) — renamed from `Paid Date & Ref` (obeying **Rule D1** & **Rule U7**)
+   - `Actions` (`w-[16%]`, `text-center`)
 
-1. In `SlotRoom({ slot })`:
-   - Compare `slot.slot_label.trim().toLowerCase()` with `slot.room_number?.trim().toLowerCase()`.
-   - **Case 1 (Slot label matches room name, e.g. "Room 1" == "Room 1"):**
-     - Do not repeat `slot.room_number` in the pill badge!
-     - If the room has private amenities, render only the amenities:
-       - `🚿 Attached Washroom`
-       - `🌅 Balcony`
-       - e.g. `<span className="...">{amenities.join(' · ')}</span>`
-     - If the room has NO private amenities, return `null` (do not render an empty redundant pill).
-   - **Case 2 (Slot label has a custom name, e.g. "Master Bedroom" or "North Wing"):**
-     - Keep the room indicator pill: `[ 🛏️ {slot.room_number} · {amenities} ]`.
+2. **Single-Line Atomic Cells in `Household deposit slots`:**
+   - **Column 1 (`Slot / Space`):**
+     - Render only `slot.slot_label` (`Room 1`, `Room 2`, `Room 3`) inside a focusable `<button type="button" aria-haspopup="dialog">` so keyboard users can press `Enter`/`Space` to open the slot details modal and focus returns to it on close.
+     - Remove the second-line `Slot {slot.slot_number}` subtitle and remove the `SlotRoom` amenity pills from the table cell (both move into the **Deposit Slot Details** modal).
+   - **Column 2 (`Target Deposit`):**
+     - `<Rupees paise={slot.target_deposit_paise} />` (`text-center font-bold`).
+   - **Column 3 (`Current Occupant`):**
+     - Single line: `<Avatar name={name} />` + `<span className="font-bold text-[var(--text-primary)] truncate">{name}</span>` (or `Vacant` when unassigned).
+     - Remove the second-line `Primary signatory` subtitle from the table cell (moves into the **Deposit Slot Details** modal).
+   - **Column 4 (`Funded Status`):**
+     - Single line: `<Pill tone={STATUS_TONES[slot.status]}>{STATUS_LABELS[slot.status]}</Pill>`.
+     - Remove the second-line rupee amount stacked underneath the pill (moves into the **Deposit Slot Details** modal).
+   - **Column 5 (`Paid Date`):**
+     - Single line (`tabular text-center text-[var(--text-secondary)]`): `slot.funded_date ? formatDate(slot.funded_date) : '—'`.
+     - Remove the second-line payment method / reference / `Direct to landlord` sub-line from the table cell (moves into the **Deposit Slot Details** modal).
+   - **Column 6 (`Actions`):**
+     - Hold only the primary deposit lifecycle actions:
+       - `fund`: `<Plus /> Pay` (when occupied and `outstanding_paise > 0`)
+       - `vacate`: `<LogOut /> Vacate` (when occupied and not primary signatory)
+       - `assign`: `<UserPlus /> Assign` (when not primary signatory and `funded_amount_paise === 0`)
+     - **Move `Change Room` / `Link Room` (`kind: 'room'`) out of the table's `Actions` column and inside the `Deposit Slot Details` modal.**
+     - When a slot has no row-level lifecycle action (e.g., the primary signatory's own funded slot), render `'—'` in `text-[var(--text-tertiary)]`.
+     - Clicking any action button in the `Actions` cell must call `event.stopPropagation()` so it opens its action dialog (`fund` / `vacate` / `assign`) directly without opening the row's details modal.
 
-### 2.4. Render "Recent Deposit Activity" with Atomic `From` / `To` Columns & Inline Row Expansion (Rules U3 & D1)
+### 2.3. On-Click "Deposit Slot Details" Modal (`DepositSlotDetailsModal`)
+
+Clicking any row in `Household deposit slots` (outside the `Actions` buttons) or pressing `Enter`/`Space` on the `Slot / Space` button opens a read-only `<Modal title="Deposit Slot Details" description={`${slot.slot_label} · Slot ${slot.slot_number}`}>`:
+
+1. **Top Summary Banner (`rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 flex flex-wrap items-center justify-between gap-3`):**
+   - Left: `<span className="flex flex-wrap items-center gap-2"><Pill tone={STATUS_TONES[slot.status]}>{STATUS_LABELS[slot.status]}</Pill>{slot.is_primary_signatory && <Pill tone="accent">Primary signatory</Pill>}</span>`
+   - Right: `<span className="text-xs text-[var(--text-secondary)]">Funded <Rupees paise={slot.funded_amount_paise} className="text-base font-bold tabular text-[var(--text-primary)]" /> of <Rupees paise={slot.target_deposit_paise} className="font-semibold tabular text-[var(--text-primary)]" /></span>`
+2. **2-Column Atomic Fact Grid (`<dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">`):**
+   - **Slot / Space:** `${slot.slot_label} (Slot ${slot.slot_number})`
+   - **Linked Room:** `slot.room_number ?? 'Not linked'`
+   - **Private Amenities:** When linked to a room, list `Attached Washroom` / `Balcony` (joined by ` · `, or `'None'`); when not linked, `'—'`.
+   - **Current Occupant:** `slot.assigned_display_name ? (slot.is_primary_signatory ? `${slot.assigned_display_name} (Primary signatory)` : slot.assigned_display_name) : 'Vacant'`
+   - **Occupied Since:** `slot.assigned_since ? formatDate(slot.assigned_since) : '—'`
+   - **Outstanding Balance:** `<Rupees paise={slot.outstanding_paise} />`
+   - **Paid Date:** `slot.funded_date ? formatDate(slot.funded_date) : slot.is_primary_signatory ? 'Fronted with master deposit' : 'Not paid yet'`
+   - **Paid To:** `slot.is_primary_signatory && slot.funded_amount_paise > 0 ? 'Direct to landlord' : slot.paid_to_display_name ?? (summary.funding_mode === 'pooled_direct' && slot.funded_amount_paise > 0 ? 'Direct to landlord' : '—')`
+   - **Payment Method:** `slot.payment_method ? METHOD_LABELS[slot.payment_method] : slot.is_primary_signatory ? 'Master lease deposit' : 'Not recorded'`
+   - **Reference / UTR:** `slot.payment_reference ? <span className="font-mono break-all">{slot.payment_reference}</span> : 'Not recorded'`
+3. **Modal Footer (`flex items-center justify-between gap-3`):**
+   - Left: `<button type="button" className={BUTTON_QUIET} onClick={() => onChangeRoom()}><BedDouble className="w-3.5 h-3.5 shrink-0" aria-hidden="true" /> {slot.room_id ? 'Change Room' : 'Link Room'}</button>` — clicking it transitions to `RoomLinkModal` (`setDialog({ kind: 'room', slot })`).
+   - Right: `<button type="button" className={BUTTON_SECONDARY} onClick={onClose}>Close</button>`.
+
+### 2.4. Render "Recent Deposit Activity" with Atomic `From` / `To` Columns & Read-Only Modal (Rules U3, U6, U7 & D1)
 
 1. **Problems Identified in the Previous Table Iteration:**
    - **Rule D1 Violation & Truncation in `Resident`:** Combining two names with an arrow (`Anangarag Mahanta → Sarbana...`) inside a single `Resident` column violates **Rule D1 (Strict Field Atomicity)** and truncates long Indian names.
@@ -154,12 +186,16 @@ Eliminate mystery icons and provide consistent, labeled actions for all tenants:
 
 ## 3. Test & Verification Checklist
 
-1. **SecurityDeposits Unit Tests (`frontend/src/pages/services/SecurityDeposits.test.tsx`):**
-   - Assert that `Household Escrow Pool` and `Recent Deposit Activity` are rendered as two separate sibling `<section>` panels (i.e. `Recent Deposit Activity` is NOT a DOM descendant of the `Household Escrow Pool` section), and when there are no non-zero transactions, only the `Household Escrow Pool` panel is rendered (Rule U6).
-   - Assert the 6 centered column headers in `Recent deposit activity`: `['Date', 'Slot / Space', 'Activity', 'From', 'To', 'Amount']`.
-   - Verify directional accuracy in `From` and `To` across `funding_payment`, `move_out_refund`, and `direct_replacement_transfer`.
-   - Verify clicking a row opens the `"Deposit Transaction Details"` dialog (`role="dialog"`) showing `Date`, `Slot / Space`, `From`, `To`, `Payment Method`, `Reference / UTR`, and full `Notes / Reason`, and clicking `Close` dismisses the dialog.
+1. **Household Escrow Pool Table & Slot Details Modal (`SecurityDeposits.test.tsx`):**
+   - Assert the 6 centered column headers in `Household deposit slots`: `['Slot / Space', 'Target Deposit', 'Current Occupant', 'Funded Status', 'Paid Date', 'Actions']` (Rule U3).
+   - Verify the table cells render single-line summary values only (no `Slot 1` sub-line, no amenity pills, no `UPI · UTR...` sub-line in the table).
+   - Verify the `Actions` column contains only lifecycle actions (`Pay`, `Vacate`, `Assign`), and `Link Room` / `Change Room` lives inside the `"Deposit Slot Details"` dialog.
+   - Verify clicking a slot row opens `"Deposit Slot Details"` (`role="dialog"`) showing all 10 facts (`Slot / Space`, `Linked Room`, `Private Amenities`, `Current Occupant`, `Occupied Since`, `Outstanding Balance`, `Paid Date`, `Paid To`, `Payment Method`, `Reference / UTR`), and clicking `Link Room` / `Change Room` in its footer opens the room link dialog.
+   - Verify clicking an action button in the `Actions` column (e.g. `Vacate`, `Pay`, `Assign`) opens that action dialog directly without opening `"Deposit Slot Details"`.
+2. **Recent Deposit Activity Card (`SecurityDeposits.test.tsx`):**
+   - Assert that `Household Escrow Pool` and `Recent Deposit Activity` are sibling `<section>` panels (Rule U6).
    - Run vitest: `npm test -- --run` $\rightarrow$ all tests must pass.
+
 
 
 
