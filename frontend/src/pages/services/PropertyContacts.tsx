@@ -36,6 +36,15 @@ import { useToast } from '../../components/Toast'
 import { api } from '../../api/client'
 import { type Resource, useMutation, useResource } from '../../lib/useApi'
 import { paiseToInput, parseRupees } from '../../lib/format'
+import {
+  ACCOUNT_MESSAGE,
+  ACCOUNT_PATTERN,
+  IFSC_MESSAGE,
+  IFSC_PATTERN,
+  UPI_MESSAGE,
+  UPI_PATTERN,
+  patternError,
+} from '../../lib/validation'
 import type { ContactList, ContactRole, HouseholdContact } from '../../api/types'
 import { telHref, whatsappHref } from '../ResidentProfile'
 
@@ -74,9 +83,6 @@ const GROUPS: Array<{ title: string; icon: LucideIcon; roles: ContactRole[]; emp
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 const PHONE_PATTERN = /^\+?[0-9 ()-]+$/
 const PAN_PATTERN = /^[A-Z]{5}[0-9]{4}[A-Z]$/
-const IFSC_PATTERN = /^[A-Z]{4}0[A-Z0-9]{6}$/
-const ACCOUNT_PATTERN = /^[0-9]{9,18}$/
-const UPI_PATTERN = /^[A-Za-z0-9._-]{2,256}@[A-Za-z0-9.-]{2,64}$/
 
 /** Which fields each role uses, beyond name, phone, email and notes. */
 const ROLE_FIELDS: Record<ContactRole, Array<'owner' | 'broker' | 'upi' | 'duties'>> = {
@@ -98,11 +104,6 @@ function phoneError(value: string): string | null {
   return PHONE_PATTERN.test(text) && digits.length >= 7 && digits.length <= 15
     ? null
     : 'Enter a phone number of 7 to 15 digits.'
-}
-
-function patternError(value: string, pattern: RegExp, message: string): string | null {
-  const text = value.trim()
-  return text && !pattern.test(text) ? message : null
 }
 
 /* ---------------------------------------------------------------- the tab -- */
@@ -413,12 +414,12 @@ export function ContactModal({
       ? patternError(pan.toUpperCase(), PAN_PATTERN, 'A PAN looks like ABCDE1234F.')
       : null,
     account: uses.includes('owner')
-      ? patternError(account, ACCOUNT_PATTERN, 'A bank account number is 9 to 18 digits.')
+      ? patternError(account, ACCOUNT_PATTERN, ACCOUNT_MESSAGE)
       : null,
     ifsc: uses.includes('owner')
-      ? patternError(ifsc.toUpperCase(), IFSC_PATTERN, 'An IFSC looks like HDFC0001234.')
+      ? patternError(ifsc.toUpperCase(), IFSC_PATTERN, IFSC_MESSAGE)
       : null,
-    upi: uses.includes('upi') ? patternError(upi, UPI_PATTERN, 'A UPI ID looks like name@bank.') : null,
+    upi: uses.includes('upi') ? patternError(upi, UPI_PATTERN, UPI_MESSAGE) : null,
     fee: uses.includes('broker') && fee.trim() && !parsedFee.ok ? (parsedFee.error ?? 'Enter an amount.') : null,
   }
   // Which step each check belongs to, so a step's pill can say it needs attention.

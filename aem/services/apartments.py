@@ -9,6 +9,7 @@ from ..ids import now_timestamp
 from ..persistence import Database, UnitOfWork
 from . import audit
 from .common import apartment_exists, get_apartment, optional_text, require_text
+from .property import bank_account, ifsc_code, upi_id
 
 DEFAULT_APARTMENT_SETTING = "default_apartment_id"
 
@@ -17,8 +18,13 @@ DEFAULT_APARTMENT_SETTING = "default_apartment_id"
 ADDRESS_FIELDS = (("flat_number", 50), ("tower_block", 50), ("society_name", 150),
                   ("locality_street", 200), ("city", 100), ("state", 100))
 PINCODE_RE = re.compile(r"^[1-9][0-9]{5}$")
+# The household pool: where residents send their shares and settlements. It
+# always has a name; its bank account, IFSC and UPI ID follow the same rules
+# as the owner contact's.
+DEFAULT_POOL_NAME = "Household Pool"
+POOL_FIELDS = ("pool_name", "pool_bank_account", "pool_bank_ifsc", "pool_upi_id")
 EDITABLE_FIELDS = ["name", "currency_code", "timezone",
-                   *(field for field, _ in ADDRESS_FIELDS), "pincode"]
+                   *(field for field, _ in ADDRESS_FIELDS), "pincode", *POOL_FIELDS]
 
 
 def premises_address(apartment: Mapping[str, Any]) -> str:
@@ -75,11 +81,13 @@ def create_apartment(db: Database, *, apartment_id: str, name: str,
 
 def update_apartment(db: Database, apartment_id: str, *, actor: str = "operator",
                      **changes: Any) -> dict[str, Any]:
-    """Change the apartment's name, settings or address.
+    """Change the apartment's name, settings, address or household pool.
 
     ``name``, ``currency_code`` and ``timezone`` are kept when left out or
     given as ``None``. An address part that is given is set, and ``None`` or an
-    empty string clears it.
+    empty string clears it. So do the pool's bank account, IFSC and UPI ID;
+    the pool's name is kept when left out, and ``None`` or an empty string
+    puts back the default, "Household Pool".
     """
     unknown = sorted(set(changes) - set(EDITABLE_FIELDS))
     if unknown:
@@ -101,6 +109,16 @@ def update_apartment(db: Database, apartment_id: str, *, actor: str = "operator"
                 after[field] = optional_text(changes[field], field, max_length=max_length)
         if "pincode" in changes:
             after["pincode"] = _pincode(changes["pincode"])
+        if "pool_name" in changes:
+            after["pool_name"] = (optional_text(changes["pool_name"], "pool_name",
+                                                max_length=200) or DEFAULT_POOL_NAME)
+        if "pool_bank_account" in changes:
+            after["pool_bank_account"] = bank_account(changes["pool_bank_account"],
+                                                      "pool_bank_account")
+        if "pool_bank_ifsc" in changes:
+            after["pool_bank_ifsc"] = ifsc_code(changes["pool_bank_ifsc"], "pool_bank_ifsc")
+        if "pool_upi_id" in changes:
+            after["pool_upi_id"] = upi_id(changes["pool_upi_id"], "pool_upi_id")
         uow.apartments.update(apartment_id, **{field: after[field] for field in EDITABLE_FIELDS})
         audit.record_field_changes(
             uow, entity_type="apartment", entity_id=apartment_id, before=before,

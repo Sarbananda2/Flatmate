@@ -46,6 +46,11 @@ export interface Apartment {
   pincode?: string | null
   /** The parts on one line, as HRA receipts print it; the name when none are set. */
   premises_address?: string
+  /** The household pool: where residents send their shares and settlements. */
+  pool_name?: string
+  pool_bank_account?: string | null
+  pool_bank_ifsc?: string | null
+  pool_upi_id?: string | null
 }
 
 export interface Resident {
@@ -374,6 +379,10 @@ export interface ReconciliationAccount {
   cash_received_paise?: number
   cash_paid_out_paise?: number
   funded_by_residents_paise?: number
+  /** The pool's own row: where to pay it, once recorded on the apartment. */
+  bank_account?: string | null
+  bank_ifsc?: string | null
+  upi_id?: string | null
 }
 
 export interface TransferSuggestion {
@@ -1007,6 +1016,19 @@ export interface RentMonthOverview {
 
 export type DepositFundingMode = 'primary_signatory' | 'direct_co_tenants'
 export type DepositPaymentMethod = 'upi' | 'bank_transfer' | 'cash' | 'direct_to_landlord'
+/** Who received a deposit payment: a resident, the landlord, or the household pool. */
+export type DepositPaidToParty = 'resident' | 'landlord' | 'pool'
+
+/** The landlord or the household pool, with where to send them money. */
+export interface PaymentInstance {
+  instance_id: '__landlord__' | '__pool__'
+  party: 'landlord' | 'pool'
+  name: string
+  bank_account: string | null
+  bank_ifsc: string | null
+  upi_id: string | null
+}
+
 export type DepositSettlementPath = 'signatory_refund' | 'direct_transfer'
 export type DepositSlotStatus = 'vacant' | 'occupied_pending' | 'occupied_funded' | 'vacating'
 
@@ -1024,6 +1046,8 @@ export interface DepositTransaction {
   tx_date: string
   counterparty_resident_id: string | null
   counterparty_display_name: string | null
+  /** The kind of party on the other side; older rows are read from what they record. */
+  counterparty_party: DepositPaidToParty | null
   payment_method: string | null
   reference: string | null
   notes: string | null
@@ -1047,7 +1071,9 @@ export interface DepositSlot {
   payment_method: DepositPaymentMethod | null
   payment_reference: string | null
   paid_to_resident_id: string | null
+  /** "Landlord (name)", the pool's name, or the resident paid. */
   paid_to_display_name: string | null
+  paid_to_party: DepositPaidToParty | null
   is_primary_signatory: boolean
   transactions: DepositTransaction[]
   /** The room the slot backs; all null while it is linked to none. */
@@ -1076,6 +1102,10 @@ export interface HouseholdDepositSummary {
   funding_mode: DepositFundingMode | null
   primary_signatory_id: string | null
   primary_signatory_name: string | null
+  primary_signatory_upi_id: string | null
+  /** The two standing payees, with their payment details. */
+  landlord_instance: PaymentInstance
+  pool_instance: PaymentInstance
   /** What the signatory is still out of pocket. Null outside `primary_signatory`. */
   signatory_capital_exposure_paise: number | null
   reimbursements_received_paise: number

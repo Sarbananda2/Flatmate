@@ -36,6 +36,7 @@ import {
   Panel,
   Rupees,
   StatementPill,
+  TransferDestination,
 } from '../components/ui'
 import { useMutation, useResource } from '../lib/useApi'
 import {
@@ -49,6 +50,7 @@ import type {
   Dashboard,
   DashboardWarning,
   ElectricityBillSummary,
+  ReconciliationAccount,
   StatementSnapshot,
   TransferSuggestion,
   WhatsAppSummary,
@@ -275,7 +277,7 @@ function MonthHub({
       {settling && (
         <SettleDialog
           transfer={settling}
-          poolAccountId={data.accounts.find((account) => account.account_type === 'pool')?.account_id}
+          pool={data.accounts.find((account) => account.account_type === 'pool')}
           onClose={() => setSettling(null)}
           onSettled={() => {
             setSettling(null)
@@ -521,15 +523,17 @@ function whatsAppSummary(data: Dashboard, bills: ElectricityBillSummary[], month
  */
 function SettleDialog({
   transfer,
-  poolAccountId,
+  pool,
   onClose,
   onSettled,
 }: {
   transfer: TransferSuggestion
-  poolAccountId: string | undefined
+  /** The pool's account, which also says where to pay it. */
+  pool: ReconciliationAccount | undefined
   onClose: () => void
   onSettled: () => void
 }) {
+  const poolAccountId = pool?.account_id
   const [paymentDate, setPaymentDate] = useState(todayIso())
   const [reference, setReference] = useState('')
 
@@ -598,6 +602,24 @@ function SettleDialog({
           <strong>{transfer.to_display_name}</strong>{' '}
           <Rupees paise={transfer.amount_paise} className="font-bold" />.
         </p>
+        {pool && transfer.to_account === pool.account_id && (
+          <TransferDestination
+            name={pool.display_name}
+            amountPaise={transfer.amount_paise}
+            bankAccount={pool.bank_account}
+            bankIfsc={pool.bank_ifsc}
+            upiId={pool.upi_id}
+            missing={
+              <>
+                No bank account or UPI ID is recorded for the household pool.{' '}
+                <Link to="/payments" className="font-semibold">
+                  Add them on Payments &amp; credits
+                </Link>
+                .
+              </>
+            }
+          />
+        )}
         <div className="form-grid">
           <DateField
             label="Paid on"

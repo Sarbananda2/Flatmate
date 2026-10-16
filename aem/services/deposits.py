@@ -17,7 +17,13 @@ Two ways of funding the deposit, and the operator must say which:
     resident their slot's target. The signatory's own slot needs no payment --
     it is part of what they fronted.
 ``direct_co_tenants``
-    Each flatmate pays the landlord, or a common escrow, directly.
+    Each flatmate pays the landlord, or the household pool, directly.
+
+Every payment says which kind of party received it (``paid_to_party``): a
+resident -- the primary signatory, or a leaver bought out by their
+replacement -- the landlord, or the household pool. The summary carries the
+landlord's and the pool's payment details, so a screen can say where to send
+the money.
 
 When an occupant leaves, their slot is settled one of two ways. Under
 ``signatory_refund`` their money is handed back less deductions, and the slot
@@ -38,7 +44,13 @@ from . import audit, rooms
 from .common import get_apartment, get_resident, optional_text, require_text
 
 FUNDING_MODES = ("primary_signatory", "direct_co_tenants")
+# ``direct_to_landlord`` is how a payment to the landlord was recorded before
+# the party paid had a field of its own; it is still accepted and shown.
 PAYMENT_METHODS = ("upi", "bank_transfer", "cash", "direct_to_landlord")
+PAID_TO_PARTIES = ("resident", "landlord", "pool")
+LANDLORD_INSTANCE_ID = "__landlord__"
+POOL_INSTANCE_ID = "__pool__"
+DEFAULT_POOL_NAME = "Household Pool"
 SETTLEMENT_PATHS = ("signatory_refund", "direct_transfer")
 ENTITY = "household_deposit_slot"
 MAX_SLOTS = 50
@@ -103,6 +115,7 @@ def _transaction(uow: UnitOfWork, slot: Mapping[str, Any], *, resident_id: str,
 # ------------------------------------------------------------------- summary --
 
 def _summary(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
+    apartment = get_apartment(uow, apartment_id)
     lease = uow.rent.active_lease(apartment_id)
     slots = uow.deposits.slots_for_apartment(apartment_id) if lease else []
     transactions = uow.deposits.transactions_for_apartment(apartment_id) if lease else []
@@ -115,6 +128,26 @@ def _summary(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
 
     def name(resident_id: str | None) -> str | None:
         return (residents.get(resident_id) or {}).get("display_name")
+
+    landlord_name = (lease or {}).get("landlord_name")
+    pool_name = apartment.get("pool_name") or DEFAULT_POOL_NAME
+
+    def party_name(party: str | None, resident_id: str | None) -> str | None:
+        """Who a party is, as the screens name them."""
+        if resident_id:
+            return name(resident_id)
+        if party == "pool":
+            return pool_name
+        if party == "landlord":
+            return f"Landlord ({landlord_name})" if landlord_name else "Landlord"
+        return None
+
+    def slot_party(slot: Mapping[str, Any]) -> str | None:
+        # Slots funded before the party was recorded went to the resident
+        # named, or else to the landlord.
+        return slot.get("paid_to_party") or (
+            "resident" if slot["paid_to_resident_id"]
+            else "landlord" if slot["funded_amount_paise"] > 0 else None)
 
     total_target = sum(slot["target_deposit_paise"] for slot in slots)
     total_funded = sum(slot["funded_amount_paise"] for slot in slots)
@@ -148,11 +181,22 @@ def _summary(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
                 "assigned_resident_id": resident["resident_id"],
                 "assigned_display_name": resident["display_name"]})
 
+    slot_by_id = {slot["slot_id"]: slot for slot in slots}
     history: dict[str, list[dict[str, Any]]] = {}
     for tx in transactions:
+        # Rows from before the party was recorded are read from what they do
+        # say: a resident named, else the signatory who holds the deposit,
+        # else wherever the slot's money went -- the landlord, until then.
+        party = tx.get("counterparty_party") or (
+            "resident" if tx["counterparty_resident_id"] or (
+                mode == "primary_signatory" and signatory_id)
+            else slot_party(slot_by_id[tx["slot_id"]]) or "landlord")
+        counterparty_id = tx["counterparty_resident_id"] or (
+            signatory_id if party == "resident" and mode == "primary_signatory" else None)
         history.setdefault(tx["slot_id"], []).append({
             **tx, "resident_display_name": name(tx["resident_id"]),
-            "counterparty_display_name": name(tx["counterparty_resident_id"])})
+            "counterparty_party": party,
+            "counterparty_display_name": party_name(party, counterparty_id)})
 
     return {
         "is_lease_configured": lease is not None,
@@ -160,6 +204,21 @@ def _summary(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
         "funding_mode": mode,
         "primary_signatory_id": signatory_id,
         "primary_signatory_name": name(signatory_id),
+        "primary_signatory_upi_id": (residents.get(signatory_id) or {}).get("upi_id"),
+        # The two standing counterparties, with where to send them money.
+        "landlord_instance": {
+            "instance_id": LANDLORD_INSTANCE_ID, "party": "landlord",
+            "name": landlord_name or "Landlord",
+            "bank_account": (lease or {}).get("landlord_bank_account"),
+            "bank_ifsc": (lease or {}).get("landlord_bank_ifsc"),
+            "upi_id": (lease or {}).get("landlord_upi_id"),
+        },
+        "pool_instance": {
+            "instance_id": POOL_INSTANCE_ID, "party": "pool", "name": pool_name,
+            "bank_account": apartment.get("pool_bank_account"),
+            "bank_ifsc": apartment.get("pool_bank_ifsc"),
+            "upi_id": apartment.get("pool_upi_id"),
+        },
         "signatory_capital_exposure_paise": exposure,
         "reimbursements_received_paise": reimbursements if mode == "primary_signatory" else 0,
         "retained_deductions_paise": retained,
@@ -181,7 +240,8 @@ def _summary(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
                                       and slot["assigned_resident_id"] == signatory_id),
              "outstanding_paise": (slot["target_deposit_paise"] - slot["funded_amount_paise"]
                                    if slot["assigned_resident_id"] else 0),
-             "paid_to_display_name": name(slot["paid_to_resident_id"]),
+             "paid_to_party": slot_party(slot),
+             "paid_to_display_name": party_name(slot_party(slot), slot["paid_to_resident_id"]),
              # The room the slot backs, if it is linked to one.
              **_room_details(rooms.get(slot.get("room_id"))),
              "transactions": history.get(slot["slot_id"], [])}
@@ -363,6 +423,7 @@ def initialize_or_update_slots(db: Database, apartment_id: str,
                     status=_status_for(resident_id, funded, target),
                     funded_amount_paise=funded,
                     payment_method="direct_to_landlord" if fronted else None,
+                    paid_to_party="landlord" if fronted else None,
                     created_at=timestamp)
                 audit.record(uow, entity_type=ENTITY, entity_id=slot_id, action="create",
                              actor=actor, apartment_id=apartment_id,
@@ -392,7 +453,8 @@ def initialize_or_update_slots(db: Database, apartment_id: str,
                 if not keeps_occupant:
                     changes.update(
                         funded_date=None, payment_reference=None, paid_to_resident_id=None,
-                        payment_method="direct_to_landlord" if fronted else None)
+                        payment_method="direct_to_landlord" if fronted else None,
+                        paid_to_party="landlord" if fronted else None)
                 uow.deposits.update_slot(existing["slot_id"], updated_at=timestamp, **changes)
                 audit.record_field_changes(
                     uow, entity_type=ENTITY, entity_id=existing["slot_id"], before=existing,
@@ -429,19 +491,30 @@ def link_slot_room(db: Database, apartment_id: str, slot_id: str, room_id: str |
 def record_slot_funding(
     db: Database, slot_id: str, *, apartment_id: str, amount_paise: Any, paid_date: Any,
     payment_method: Any, payment_reference: Any = None, paid_to_resident_id: Any = None,
-    actor: str = "operator",
+    paid_to_party: Any = None, actor: str = "operator",
 ) -> dict[str, Any]:
-    """Record money the occupant paid towards their slot: to the primary
-    signatory, or straight to the landlord. Part payments add up; the slot keeps
-    the date, method and reference of the latest, and each one is a transaction."""
+    """Record money the occupant paid towards their slot. Part payments add up;
+    the slot keeps the date, method, reference and payee of the latest, and
+    each one is a transaction.
+
+    Under ``primary_signatory`` it reimburses the signatory. Under
+    ``direct_co_tenants`` it went to the resident named, or else to the
+    landlord or the household pool -- the landlord when ``paid_to_party`` is
+    left out, as before the pool could be named.
+    """
     amount = ensure_paise(amount_paise, "amount_paise", allow_zero=False)
     paid_on = _date_not_in_future(paid_date, "paid_date")
     if payment_method not in PAYMENT_METHODS:
         raise ValidationError("Unsupported payment method.",
                               details={"field": "payment_method",
                                        "allowed": list(PAYMENT_METHODS)})
+    if paid_to_party is not None and paid_to_party not in PAID_TO_PARTIES:
+        raise ValidationError("Say who was paid: a resident, the landlord or the pool.",
+                              details={"field": "paid_to_party",
+                                       "allowed": list(PAID_TO_PARTIES)})
     reference = optional_text(payment_reference, "payment_reference", max_length=200)
     paid_to = optional_text(paid_to_resident_id, "paid_to_resident_id", max_length=64)
+    party = paid_to_party
     timestamp = now_timestamp()
 
     with db.transaction() as uow:
@@ -466,12 +539,28 @@ def record_slot_funding(
                 raise ValidationError(
                     "The signatory already paid the landlord; occupants reimburse "
                     "the signatory.", details={"field": "payment_method"})
+            if party not in (None, "resident"):
+                raise ValidationError("Reimbursements go to the primary signatory.",
+                                      details={"field": "paid_to_party"})
             if paid_to and paid_to != signatory_id:
                 raise ValidationError("Reimbursements go to the primary signatory.",
                                       details={"field": "paid_to_resident_id"})
-            paid_to = signatory_id
+            paid_to, party = signatory_id, "resident"
         elif paid_to:
+            if party not in (None, "resident"):
+                raise ValidationError(
+                    "A payment goes to a resident, or to the landlord or the pool, not both.",
+                    details={"field": "paid_to_party"})
             get_resident(uow, paid_to, apartment_id)
+            party = "resident"
+        else:
+            party = party or "landlord"
+            if party == "resident":
+                raise ValidationError("Choose the resident who received it.",
+                                      details={"field": "paid_to_resident_id"})
+            if party == "pool" and payment_method == "direct_to_landlord":
+                raise ValidationError("A payment to the household pool is not paid to the landlord.",
+                                      details={"field": "payment_method"})
         if paid_to == occupant:
             raise ValidationError("An occupant cannot pay their deposit to themselves.",
                                   details={"field": "paid_to_resident_id"})
@@ -481,11 +570,11 @@ def record_slot_funding(
         uow.deposits.update_slot(
             slot_id, updated_at=timestamp, funded_amount_paise=funded, funded_date=paid_on,
             payment_method=payment_method, payment_reference=reference,
-            paid_to_resident_id=paid_to, status=status)
+            paid_to_resident_id=paid_to, paid_to_party=party, status=status)
         _transaction(uow, slot, resident_id=occupant, tx_type="funding_payment",
                      amount_paise=amount, tx_date=paid_on, timestamp=timestamp,
-                     counterparty_resident_id=paid_to, payment_method=payment_method,
-                     reference=reference)
+                     counterparty_resident_id=paid_to, counterparty_party=party,
+                     payment_method=payment_method, reference=reference)
         audit.record(uow, entity_type=ENTITY, entity_id=slot_id, action="funding_payment",
                      actor=actor, apartment_id=apartment_id,
                      old_value={"funded_amount_paise": slot["funded_amount_paise"],
@@ -494,7 +583,8 @@ def record_slot_funding(
                                 "funded_amount_paise": funded, "paid_date": paid_on,
                                 "payment_method": payment_method,
                                 "payment_reference": reference,
-                                "paid_to_resident_id": paid_to, "status": status})
+                                "paid_to_resident_id": paid_to, "paid_to_party": party,
+                                "status": status})
         return _summary(uow, apartment_id)
 
 
@@ -557,31 +647,44 @@ def settle_slot_in(
                 "Nothing would be handed over. Settle the slot as a refund instead.",
                 details={"field": "refund_amount_paise"})
 
+    # Whoever holds the leaver's money: the signatory, or else whoever the slot
+    # was paid to -- the landlord, for slots funded before that was recorded.
+    if lease["deposit_funding_mode"] == "primary_signatory":
+        holder_party, holder_id = "resident", signatory_id
+    else:
+        holder_party = slot.get("paid_to_party") or (
+            "resident" if slot["paid_to_resident_id"] else "landlord")
+        holder_id = slot["paid_to_resident_id"] if holder_party == "resident" else None
+
     if deductions > 0:
+        # The deduction stays with the holder; the row says what kind of party
+        # that is, and the summary names them.
         _transaction(uow, slot, resident_id=leaver, tx_type="move_out_deduction",
                      amount_paise=deductions, tx_date=settled_on, timestamp=timestamp,
-                     notes=reason)
+                     counterparty_party=holder_party, notes=reason)
     if direct:
         _transaction(uow, slot, resident_id=leaver,
                      tx_type="direct_replacement_transfer", amount_paise=refund,
                      tx_date=settled_on, timestamp=timestamp,
-                     counterparty_resident_id=incoming_id, reference=reference)
+                     counterparty_resident_id=incoming_id, counterparty_party="resident",
+                     reference=reference)
         target = slot["target_deposit_paise"]
         changes = {
             "assigned_resident_id": incoming_id, "assigned_since": settled_on,
             "status": _status_for(incoming_id, refund, target),
             "funded_amount_paise": refund, "funded_date": settled_on,
             "payment_method": None, "payment_reference": reference,
-            "paid_to_resident_id": leaver,
+            "paid_to_resident_id": leaver, "paid_to_party": "resident",
         }
     else:
         _transaction(uow, slot, resident_id=leaver, tx_type="move_out_refund",
                      amount_paise=refund, tx_date=settled_on, timestamp=timestamp,
-                     counterparty_resident_id=signatory_id, reference=reference)
+                     counterparty_resident_id=holder_id, counterparty_party=holder_party,
+                     reference=reference)
         changes = {
             "assigned_resident_id": None, "assigned_since": None, "status": "vacant",
             "funded_amount_paise": 0, "funded_date": None, "payment_method": None,
-            "payment_reference": None, "paid_to_resident_id": None,
+            "payment_reference": None, "paid_to_resident_id": None, "paid_to_party": None,
         }
     uow.deposits.update_slot(slot_id, updated_at=timestamp, **changes)
     audit.record(uow, entity_type=ENTITY, entity_id=slot_id, action="vacate",
@@ -595,7 +698,7 @@ def settle_slot_in(
                             "incoming_resident_id": incoming_id,
                             "status": changes["status"]})
     return {"slot": slot, "leaver_resident_id": leaver, "funded_amount_paise": funded,
-            "counterparty_resident_id": incoming_id if direct else signatory_id}
+            "counterparty_resident_id": incoming_id if direct else holder_id}
 
 
 def vacate_and_settle_slot(

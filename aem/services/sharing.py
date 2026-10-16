@@ -100,6 +100,9 @@ def whatsapp_summary(db: Database, statement_id: str) -> dict[str, Any]:
             for row in uow.sharing.resident_upi_ids(statement["apartment_id"])
             if row["upi_id"]
         }
+        # Transfers into the pool are paid to the pool's own UPI ID, once it has one.
+        if apartment.get("pool_upi_id"):
+            upi_ids[POOL_ACCOUNT_ID] = apartment["pool_upi_id"]
         stored = statement["snapshot_json"]
 
     if stored:

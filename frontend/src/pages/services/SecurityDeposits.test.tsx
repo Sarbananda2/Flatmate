@@ -39,6 +39,7 @@ function slot(number: number, id: string | null, name: string | null, overrides:
     payment_reference: null,
     paid_to_resident_id: null,
     paid_to_display_name: null,
+    paid_to_party: null,
     is_primary_signatory: false,
     transactions: [],
     room_id: null,
@@ -59,6 +60,7 @@ const funded = {
   payment_reference: 'UTR428919028471',
   paid_to_resident_id: 'alice',
   paid_to_display_name: 'Alice',
+  paid_to_party: 'resident',
 }
 
 const fronted = {
@@ -68,7 +70,27 @@ const fronted = {
   payment_method: 'direct_to_landlord',
   payment_reference: null,
   paid_to_resident_id: null,
-  paid_to_display_name: null,
+  // The signatory's own share went to the landlord, as the backend names them.
+  paid_to_display_name: 'Landlord (Kumar Yadav)',
+  paid_to_party: 'landlord',
+}
+
+/** The two standing payees, as the summary carries them. */
+const LANDLORD = {
+  instance_id: '__landlord__',
+  party: 'landlord',
+  name: 'Kumar Yadav',
+  bank_account: '50100123456789',
+  bank_ifsc: 'HDFC0001234',
+  upi_id: 'kumar.yadav@okhdfcbank',
+}
+const POOL = {
+  instance_id: '__pool__',
+  party: 'pool',
+  name: 'Household Pool',
+  bank_account: null,
+  bank_ifsc: null,
+  upi_id: null,
 }
 
 const residents = [
@@ -93,6 +115,9 @@ function summary(overrides: Record<string, unknown> = {}) {
     funding_mode: 'primary_signatory',
     primary_signatory_id: 'alice',
     primary_signatory_name: 'Alice',
+    primary_signatory_upi_id: null,
+    landlord_instance: LANDLORD,
+    pool_instance: POOL,
     signatory_capital_exposure_paise: SHARE,
     reimbursements_received_paise: 2 * SHARE,
     retained_deductions_paise: 0,
@@ -529,7 +554,7 @@ describe('the escrow pool', () => {
       amounts: ['Target Deposit: ₹50,000.00', 'Funded: ₹50,000.00', 'Outstanding Balance: ₹0.00'],
       payment: [
         'Resident: Alice (Primary signatory)',
-        'Paid To: Direct to landlord',
+        'Paid To: Landlord (Kumar Yadav)',
         'Paid Date: Fronted with master deposit',
         'Payment Method: Direct to landlord',
         'Reference / UTR: Not recorded',
@@ -553,7 +578,7 @@ describe('the escrow pool', () => {
     })
   })
 
-  it("says the landlord was paid when a co-tenant paid directly", async () => {
+  it('names who a co-tenant paid: the landlord, or the household pool', async () => {
     renderSection(
       summary({
         funding_mode: 'direct_co_tenants',
@@ -561,19 +586,32 @@ describe('the escrow pool', () => {
         primary_signatory_name: null,
         signatory_capital_exposure_paise: null,
         slots: [
+          // Recorded the old way: nobody named, so the landlord was paid.
           slot(1, 'alice', 'Alice', {
             ...funded,
             payment_method: 'direct_to_landlord',
             payment_reference: null,
             paid_to_resident_id: null,
             paid_to_display_name: null,
+            paid_to_party: null,
+          }),
+          slot(2, 'bob', 'Bob', {
+            ...funded,
+            paid_to_resident_id: null,
+            paid_to_display_name: 'Household Pool',
+            paid_to_party: 'pool',
           }),
         ],
       }),
     )
-    const dialog = await openDeposit('Alice')
-    expect(factsIn(dialog)).toContain('Paid To: Direct to landlord')
+    let dialog = await openDeposit('Alice')
+    expect(factsIn(dialog)).toContain('Paid To: Landlord (Kumar Yadav)')
+    // A legacy method is still shown for the rows recorded with it.
     expect(factsIn(dialog)).toContain('Payment Method: Direct to landlord')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+    dialog = await openDeposit('Bob')
+    expect(factsIn(dialog)).toContain('Paid To: Household Pool')
+    expect(factsIn(dialog)).toContain('Payment Method: UPI')
   })
 
   it("opens a row's action straight away, not the slot's details", async () => {
@@ -643,7 +681,10 @@ describe('the escrow pool', () => {
 })
 
 describe('recording a payment', () => {
-  const owing = summary({ slots: [slot(1, 'alice', 'Alice', fronted), slot(2, 'bob', 'Bob')] })
+  const owing = summary({
+    primary_signatory_upi_id: 'alice@okaxis',
+    slots: [slot(1, 'alice', 'Alice', fronted), slot(2, 'bob', 'Bob')],
+  })
 
   async function open() {
     renderSection(owing, { 'POST /api/rent/deposits/slots/slot-2/fund': summary() })
@@ -659,9 +700,17 @@ describe('recording a payment', () => {
     expect(dialog).toHaveTextContent('paid to Alice')
     const amount = within(dialog).getByLabelText(/Amount paid/)
     expect(amount).toHaveValue('50000.00')
+    // Reimbursements go to the signatory: no choice of payee, and their UPI ID to pay.
+    expect(within(dialog).queryByLabelText('Paid to')).toBeNull()
+    const destination = within(dialog).getByRole('region', { name: 'Payment destination' })
+    expect(destination).toHaveTextContent('Transfer toAlice₹50,000.00')
+    expect(destination).toHaveTextContent('UPI IDalice@okaxis')
+    // How it was sent is a transfer channel; who it went to is not a method.
     expect(
-      within(dialog).queryByRole('option', { name: 'Direct to landlord' }),
-    ).not.toBeInTheDocument()
+      within(within(dialog).getByLabelText('Payment method'))
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['UPI', 'Bank transfer', 'Cash'])
 
     await userEvent.clear(amount)
     await userEvent.type(amount, '20,000')
@@ -675,7 +724,59 @@ describe('recording a payment', () => {
       paid_date: TODAY,
       payment_method: 'bank_transfer',
       payment_reference: 'UTR-1',
+      paid_to_party: 'resident',
       paid_to_resident_id: 'alice',
+    })
+  })
+
+  it('lets co-tenants pay the landlord or the household pool, and shows where to send it', async () => {
+    renderSection(
+      summary({
+        funding_mode: 'direct_co_tenants',
+        primary_signatory_id: null,
+        primary_signatory_name: null,
+        signatory_capital_exposure_paise: null,
+        slots: [slot(2, 'bob', 'Bob')],
+      }),
+      { 'POST /api/rent/deposits/slots/slot-2/fund': summary() },
+    )
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Record payment for Room 2 from Bob' }),
+    )
+    const dialog = await screen.findByRole('dialog', { name: 'Record Deposit Payment' })
+    const paidTo = within(dialog).getByLabelText('Paid to')
+    expect(within(paidTo).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'Landlord (Kumar Yadav)',
+      'Household Pool',
+    ])
+    expect(paidTo).toHaveValue('landlord')
+    expect(within(dialog).queryByRole('option', { name: 'Direct to landlord' })).toBeNull()
+
+    // The landlord's details, from the lease.
+    const destination = () => within(dialog).getByRole('region', { name: 'Payment destination' })
+    expect(destination()).toHaveTextContent('Transfer toKumar Yadav')
+    for (const detail of ['Account50100123456789', 'IFSCHDFC0001234', 'UPI IDkumar.yadav@okhdfcbank']) {
+      expect(destination()).toHaveTextContent(detail)
+    }
+
+    // The pool has nothing on file yet: it says where to add it.
+    await userEvent.selectOptions(paidTo, 'pool')
+    expect(destination()).toHaveTextContent('Transfer toHousehold Pool')
+    expect(destination()).not.toHaveTextContent('Kumar Yadav')
+    expect(within(destination()).getByRole('link', { name: /Add them on Payments/ })).toHaveAttribute(
+      'href',
+      '/payments',
+    )
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Record Payment' }))
+    await waitFor(() => expect(posted('/fund')).toBeDefined())
+    expect(posted('/fund')!.body).toEqual({
+      amount_paise: SHARE,
+      paid_date: TODAY,
+      payment_method: 'upi',
+      payment_reference: null,
+      paid_to_party: 'pool',
+      paid_to_resident_id: null,
     })
   })
 

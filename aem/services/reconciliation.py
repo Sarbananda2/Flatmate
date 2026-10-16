@@ -256,7 +256,7 @@ def reconcile(db: Database, *, apartment_id: str, as_of_date: str | None = None,
                                   details={"field": "as_of_date"}) from None
 
     with db.read() as uow:
-        get_apartment(uow, apartment_id)
+        apartment = get_apartment(uow, apartment_id)
         residents = list_residents(uow, apartment_id)
         resident_id_list = sorted(row["resident_id"] for row in residents)
         issues = validate_apartment(uow, apartment_id)
@@ -325,6 +325,8 @@ def reconcile(db: Database, *, apartment_id: str, as_of_date: str | None = None,
                 code="views_disagree", details={"residents": cross_check})
 
         names = {row["resident_id"]: row["display_name"] for row in residents}
+        # The pool is named on the apartment, which also says where to pay it.
+        pool_name = apartment.get("pool_name") or "Household Pool"
         account_rows: list[dict[str, Any]] = []
         for rid in resident_id_list:
             view = charge_view.get(rid, {})
@@ -353,8 +355,11 @@ def reconcile(db: Database, *, apartment_id: str, as_of_date: str | None = None,
         account_rows.append({
             "account_id": POOL_ACCOUNT_ID,
             "account_type": "pool",
-            "display_name": "Household pool",
+            "display_name": pool_name,
             "is_active": True,
+            "bank_account": apartment.get("pool_bank_account"),
+            "bank_ifsc": apartment.get("pool_bank_ifsc"),
+            "upi_id": apartment.get("pool_upi_id"),
             "net_position_paise": positions[POOL_ACCOUNT_ID],
             "expenses_incurred_paise": by_kind.get(POOL_ACCOUNT_ID, {}).get(
                 ENTRY_EXPENSE_INCURRED, 0),
@@ -369,8 +374,8 @@ def reconcile(db: Database, *, apartment_id: str, as_of_date: str | None = None,
         transfers = net_settlement_transfers(positions)
         transfer_rows = [
             {"from_account": debtor, "to_account": creditor, "amount_paise": amount,
-             "from_display_name": names.get(debtor, "Household pool"),
-             "to_display_name": names.get(creditor, "Household pool")}
+             "from_display_name": names.get(debtor, pool_name),
+             "to_display_name": names.get(creditor, pool_name)}
             for debtor, creditor, amount in transfers
         ]
         # A transfer plan must never move more than the position it settles.

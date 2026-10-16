@@ -292,6 +292,72 @@ export function EmptyBlock({
  * The one Edit button every card uses: the word "Edit" on screen, and a name
  * that says what it edits for anyone using a screen reader.
  */
+/**
+ * Where to send a payment: the payee, the amount if known, and their bank
+ * account, IFSC and UPI ID, each with a copy button. When none are recorded,
+ * `missing` says where to add them.
+ */
+export function TransferDestination({
+  name,
+  amountPaise,
+  bankAccount,
+  bankIfsc,
+  upiId,
+  missing,
+  label = 'Payment destination',
+}: {
+  name: string
+  amountPaise?: number | null
+  bankAccount?: string | null
+  bankIfsc?: string | null
+  upiId?: string | null
+  missing: ReactNode
+  label?: string
+}) {
+  return (
+    <section
+      aria-label={label}
+      className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4 space-y-3 min-w-0"
+    >
+      <div className="flex items-start justify-between gap-3 min-w-0">
+        <div className="min-w-0">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+            Transfer to
+          </div>
+          <div className="text-sm font-bold text-[var(--text-primary)] truncate">{name}</div>
+        </div>
+        {amountPaise != null && (
+          <Rupees paise={amountPaise} className="shrink-0 text-base font-bold text-[var(--text-primary)]" />
+        )}
+      </div>
+      {bankAccount || bankIfsc || upiId ? (
+        <dl className="m-0 space-y-2 text-xs">
+          {bankAccount && <DestinationDetail label="Account" value={bankAccount} />}
+          {bankIfsc && <DestinationDetail label="IFSC" value={bankIfsc} />}
+          {upiId && <DestinationDetail label="UPI ID" value={upiId} />}
+        </dl>
+      ) : (
+        <p className="m-0 text-xs text-[var(--text-secondary)]">{missing}</p>
+      )}
+    </section>
+  )
+}
+
+/** One line of where to send money, in full, with a copy button. */
+export function DestinationDetail({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 min-w-0">
+      <dt className="shrink-0 text-[var(--text-secondary)]">{label}</dt>
+      <dd className="m-0 flex items-center gap-2 min-w-0">
+        <span className="tabular font-semibold text-[var(--text-primary)] truncate select-all">
+          {value}
+        </span>
+        <CopyButton text={value} label={`Copy ${label}`} iconOnly />
+      </dd>
+    </div>
+  )
+}
+
 /** One fact in a read-only details dialog: the label above, the value below. */
 export function DetailFact({
   label,

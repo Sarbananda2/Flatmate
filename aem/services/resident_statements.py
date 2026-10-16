@@ -185,6 +185,11 @@ def _build(uow: UnitOfWork, apartment_id: str, settlement_month: str,
 
     lease = uow.rent.active_lease(apartment_id)
     signatory = residents.get(lease["deposit_primary_signatory_resident_id"]) if lease else None
+    # Money owed to the pool is paid into the pool's own account once it has a
+    # UPI ID; until then, to the primary signatory, who holds the household's money.
+    pool = ({"upi_id": apartment["pool_upi_id"],
+             "display_name": apartment.get("pool_name") or "Household Pool"}
+            if apartment.get("pool_upi_id") else None)
     # The room they live in, or failing that the deposit slot they hold.
     rooms = {slot["assigned_resident_id"]: slot["slot_label"]
              for slot in uow.deposits.slots_for_apartment(apartment_id)
@@ -217,7 +222,8 @@ def _build(uow: UnitOfWork, apartment_id: str, settlement_month: str,
         # Never ask for more than is owed today: a payment made after the month
         # closed has already settled part of this statement.
         payable = max(0, min(net_due, -today[rid]))
-        recipient = signatory if signatory and signatory["resident_id"] != rid else None
+        recipient = pool or (
+            signatory if signatory and signatory["resident_id"] != rid else None)
         recipient_upi = recipient["upi_id"] if recipient else None
         result = {
             "resident_id": rid,

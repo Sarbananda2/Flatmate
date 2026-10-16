@@ -9,6 +9,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { RentMonth } from './Rent'
+import type { Apartment } from '../../api/types'
 import { ToastProvider } from '../../components/Toast'
 import { RESIDENTS, installFetchStub, type Recorded } from '../../test/server'
 
@@ -161,7 +162,11 @@ afterEach(() => {
   stub = null
 })
 
-function renderRent(payload: Record<string, unknown>, routes: Record<string, unknown> = {}) {
+function renderRent(
+  payload: Record<string, unknown>,
+  routes: Record<string, unknown> = {},
+  apartment: Apartment | null = null,
+) {
   stub = installFetchStub({
     routes: {
       [`/api/rent/cycle/${MONTH}`]: payload,
@@ -180,7 +185,7 @@ function renderRent(payload: Record<string, unknown>, routes: Record<string, unk
   return render(
     <MemoryRouter>
       <ToastProvider>
-        <RentMonth month={MONTH} />
+        <RentMonth month={MONTH} apartment={apartment} />
       </ToastProvider>
     </MemoryRouter>,
   )
@@ -275,6 +280,42 @@ describe('RentMonth', () => {
         { name: /Record rent payment from/ },
       ),
     ).not.toBeInTheDocument()
+  })
+
+  it('shows where to pay the household pool, or where to add its details', async () => {
+    const apartment: Apartment = {
+      apartment_id: 'home',
+      name: 'Flat 402',
+      currency_code: 'INR',
+      timezone: 'Asia/Kolkata',
+      created_at: '2026-10-01T10:00:00+05:30',
+      pool_name: 'Flat 402 Kitty',
+      pool_bank_account: '123456789012',
+      pool_bank_ifsc: 'SBIN0005678',
+      pool_upi_id: 'flat402@okicici',
+    }
+    const { unmount } = renderRent(overview(), {}, apartment)
+    await userEvent.click(await screen.findByRole('button', { name: 'Record rent payment from Chris' }))
+    let dialog = screen.getByRole('dialog', { name: 'Record Rent Payment' })
+    let destination = within(dialog).getByRole('region', { name: 'Payment destination' })
+    expect(destination).toHaveTextContent('Transfer toFlat 402 Kitty₹15,000.00')
+    for (const detail of ['Account123456789012', 'IFSCSBIN0005678', 'UPI IDflat402@okicici']) {
+      expect(destination).toHaveTextContent(detail)
+    }
+    expect(within(destination).getByRole('button', { name: 'Copy UPI ID' })).toBeInTheDocument()
+    unmount()
+    stub?.restore()
+
+    // Nothing on file for the pool yet.
+    renderRent(overview(), {}, { ...apartment, pool_name: 'Household Pool', pool_bank_account: null, pool_bank_ifsc: null, pool_upi_id: null })
+    await userEvent.click(await screen.findByRole('button', { name: 'Record rent payment from Chris' }))
+    dialog = screen.getByRole('dialog', { name: 'Record Rent Payment' })
+    destination = within(dialog).getByRole('region', { name: 'Payment destination' })
+    expect(destination).toHaveTextContent('Transfer toHousehold Pool')
+    expect(within(destination).getByRole('link', { name: /Add them on Payments/ })).toHaveAttribute(
+      'href',
+      '/payments',
+    )
   })
 
   it('says where the money goes when the amount is not exactly the share', async () => {

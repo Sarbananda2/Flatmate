@@ -37,6 +37,7 @@ import {
   Panel,
   Pill,
   Rupees,
+  TransferDestination,
   type Tone,
 } from '../../components/ui'
 import { api } from '../../api/client'
@@ -68,6 +69,20 @@ const METHOD_LABELS: Record<DepositPaymentMethod, string> = {
   bank_transfer: 'Bank transfer',
   cash: 'Cash',
   direct_to_landlord: 'Direct to landlord',
+}
+
+/** How the money moved. A payment's payee is a separate choice, so the legacy
+ * "Direct to landlord" is only shown for rows recorded that way, never offered. */
+const TRANSFER_METHODS: DepositPaymentMethod[] = ['upi', 'bank_transfer', 'cash']
+
+/** The landlord as the backend names them: "Landlord (Kumar Yadav)", or "Landlord". */
+function landlordLabel(name: string | null | undefined): string {
+  return name && name !== 'Landlord' ? `Landlord (${name})` : 'Landlord'
+}
+
+/** The pool by its own name, saying what it is when that name does not. */
+function poolLabel(name: string | null | undefined): string {
+  return name && name !== 'Household Pool' ? `Household Pool (${name})` : 'Household Pool'
 }
 
 /** Money in is green; money handed back or kept is amber. */
@@ -636,7 +651,9 @@ function EscrowPoolCard({
           </table>
         </div>
 
-        {details && <DepositDetailsModal slot={details} onClose={() => setDetailsId(null)} />}
+        {details && (
+          <DepositDetailsModal slot={details} summary={summary} onClose={() => setDetailsId(null)} />
+        )}
 
         {dialog && (
           <SlotDialog
@@ -902,17 +919,23 @@ function SlotDialog({
  * One resident's deposit in full, read-only: what it is, what is paid, and how.
  * Rooms are Rooms Inventory's and Room Allotment's; paying, vacating and assigning stay on the row.
  */
-function DepositDetailsModal({ slot, onClose }: { slot: DepositSlot; onClose: () => void }) {
+function DepositDetailsModal({
+  slot,
+  summary,
+  onClose,
+}: {
+  slot: DepositSlot
+  summary: HouseholdDepositSummary
+  onClose: () => void
+}) {
   const status = STATUS[slot.status]
   const paid = slot.funded_amount_paise > 0
   const name = slot.assigned_display_name
-  // Money paid with nobody else named went to the landlord: the signatory's
-  // own share, or a co-tenant paying the landlord directly.
+  // The backend names the payee: a resident, the landlord or the pool. Money
+  // paid with nobody named went to the landlord, as it did before.
   const paidTo = !paid
     ? '—'
-    : slot.is_primary_signatory
-      ? 'Direct to landlord'
-      : (slot.paid_to_display_name ?? 'Direct to landlord')
+    : (slot.paid_to_display_name ?? landlordLabel(summary.landlord_instance.name))
   return (
     <Modal
       title="Deposit Details"
@@ -1032,10 +1055,11 @@ function FundingModal({ slot, summary, onClose, onDone }: SlotModalProps) {
   const fronted = summary.funding_mode === 'primary_signatory'
   const amount = useMoney(slot.outstanding_paise)
   const [date, setDate] = useState(todayIso())
-  const [method, setMethod] = useState<DepositPaymentMethod>(
-    fronted ? 'upi' : 'direct_to_landlord',
-  )
+  // Who was paid, and how: two separate choices.
+  const [paidTo, setPaidTo] = useState<'landlord' | 'pool'>('landlord')
+  const [method, setMethod] = useState<DepositPaymentMethod>('upi')
   const [reference, setReference] = useState('')
+  const payee = paidTo === 'pool' ? summary.pool_instance : summary.landlord_instance
 
   const amountError = amount.empty
     ? 'Enter the amount paid.'
@@ -1058,16 +1082,15 @@ function FundingModal({ slot, summary, onClose, onDone }: SlotModalProps) {
           paid_date: date,
           payment_method: method,
           payment_reference: reference.trim() || null,
+          paid_to_party: fronted ? 'resident' : paidTo,
           paid_to_resident_id: fronted ? summary.primary_signatory_id : null,
         },
       ),
     { onSuccess: onDone },
   )
 
-  const methods = (Object.keys(METHOD_LABELS) as DepositPaymentMethod[])
-    // The signatory already paid the landlord; occupants reimburse the signatory.
-    .filter((value) => !fronted || value !== 'direct_to_landlord')
-    .map((value) => ({ value, label: METHOD_LABELS[value] }))
+  const methods = TRANSFER_METHODS.map((value) => ({ value, label: METHOD_LABELS[value] }))
+  const amountPaid = amount.ok && !amount.empty && !amountError ? amount.paise : null
 
   return (
     <Modal
@@ -1097,6 +1120,48 @@ function FundingModal({ slot, summary, onClose, onDone }: SlotModalProps) {
         }}
       >
         {save.error && <ErrorNotice error={save.error} />}
+        {fronted ? (
+          // The signatory fronted the deposit, so occupants reimburse them.
+          <TransferDestination
+            name={summary.primary_signatory_name ?? 'The primary signatory'}
+            amountPaise={amountPaid}
+            upiId={summary.primary_signatory_upi_id}
+            missing={`No UPI ID is on file for ${summary.primary_signatory_name ?? 'the signatory'}. Add it on their resident page.`}
+          />
+        ) : (
+          <>
+            <SelectField<'landlord' | 'pool'>
+              label="Paid to"
+              value={paidTo}
+              options={[
+                { value: 'landlord', label: landlordLabel(summary.landlord_instance.name) },
+                { value: 'pool', label: poolLabel(summary.pool_instance.name) },
+              ]}
+              onChange={setPaidTo}
+              hint="Who received the money. How it was sent is the payment method below."
+            />
+            <TransferDestination
+              name={payee.name}
+              amountPaise={amountPaid}
+              bankAccount={payee.bank_account}
+              bankIfsc={payee.bank_ifsc}
+              upiId={payee.upi_id}
+              missing={
+                paidTo === 'pool' ? (
+                  <>
+                    No bank account or UPI ID is recorded for the household pool.{' '}
+                    <Link to="/payments" className="font-semibold">
+                      Add them on Payments &amp; credits
+                    </Link>
+                    .
+                  </>
+                ) : (
+                  'No bank account or UPI ID is on the lease. Add them under Housing, Tenancy & Master Lease, to see them here.'
+                )
+              }
+            />
+          </>
+        )}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <MoneyInput
             label="Amount paid"
@@ -1189,8 +1254,13 @@ function VacateModal({ slot, summary, onClose, onDone }: SlotModalProps) {
     !settledOnError &&
     (!direct || (Boolean(incoming) && !nothingToHandOver))
 
+  // Whoever holds the leaver's money hands it back: the signatory, or
+  // whoever the slot was paid to.
   const refunder =
-    summary.funding_mode === 'primary_signatory' ? summary.primary_signatory_name : 'the landlord'
+    slot.paid_to_display_name ??
+    (summary.funding_mode === 'primary_signatory'
+      ? summary.primary_signatory_name
+      : landlordLabel(summary.landlord_instance.name))
 
   const save = useMutation(
     () =>

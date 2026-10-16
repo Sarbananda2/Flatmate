@@ -35,12 +35,12 @@ import {
   BUTTON_PRIMARY,
   BUTTON_QUIET,
   BUTTON_SECONDARY,
-  CopyButton,
   EmptyBlock,
   MiniStat,
   Panel,
   Pill,
   Rupees,
+  TransferDestination,
   type Tone,
 } from '../../components/ui'
 import { api } from '../../api/client'
@@ -48,6 +48,7 @@ import { useMutation, useResource } from '../../lib/useApi'
 import { LeaseNoticeBanner, LeaseTermPill } from './LeaseLifecycle'
 import { formatDate, formatInr, formatMonth, paiseToInput, todayIso } from '../../lib/format'
 import type {
+  Apartment,
   RentCollectionStatus,
   RentCycle,
   RentDisbursementMode,
@@ -66,8 +67,8 @@ const TABLE_HEAD =
   'border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold'
 
 export default function RentPage() {
-  const { month } = useApp()
-  return <RentMonth key={month} month={month} />
+  const { month, apartment } = useApp()
+  return <RentMonth key={month} month={month} apartment={apartment} />
 }
 
 /** A share of the whole to one decimal place, for display only. */
@@ -78,7 +79,7 @@ function percent(part: number, whole: number): string {
   return `${((part < whole ? Math.min(tenths, 999) : tenths) / 10).toFixed(1)}%`
 }
 
-export function RentMonth({ month }: { month: string }) {
+export function RentMonth({ month, apartment = null }: { month: string; apartment?: Apartment | null }) {
   const toast = useToast()
   const [excluded, setExcluded] = useState<string[]>([])
   const overview = useResource<RentMonthOverview>(`/api/rent/cycle/${month}`, {
@@ -252,6 +253,7 @@ export function RentMonth({ month }: { month: string }) {
               <RentPaymentModal
                 month={month}
                 participant={payingFor}
+                apartment={apartment}
                 onClose={() => setPayingFor(null)}
                 onRecorded={(updated) => {
                   const name = payingFor.display_name
@@ -919,11 +921,13 @@ const PAYMENT_MODES: Array<{ value: PaymentMode; label: string }> = [
 function RentPaymentModal({
   month,
   participant,
+  apartment,
   onClose,
   onRecorded,
 }: {
   month: string
   participant: RentParticipant
+  apartment: Apartment | null
   onClose: () => void
   onRecorded: (cycle: RentCycle) => void
 }) {
@@ -973,6 +977,23 @@ function RentPaymentModal({
     >
       <div className="stack">
         {record.error && <ErrorNotice error={record.error} />}
+        {/* Residents pay their share into the household pool. */}
+        <TransferDestination
+          name={apartment?.pool_name || 'Household Pool'}
+          amountPaise={amountOk ? amountPaise : null}
+          bankAccount={apartment?.pool_bank_account}
+          bankIfsc={apartment?.pool_bank_ifsc}
+          upiId={apartment?.pool_upi_id}
+          missing={
+            <>
+              No bank account or UPI ID is recorded for the household pool.{' '}
+              <Link to="/payments" className="font-semibold">
+                Add them on Payments &amp; credits
+              </Link>
+              .
+            </>
+          }
+        />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <MoneyInput
             label="Amount paid"
@@ -1115,7 +1136,6 @@ function PayoutModal({
     // The receipt is optional, but a file that was chosen must be usable.
     !receiptFileError(file)
   const funderName = residents.data?.items.find((r) => r.resident_id === funder)?.display_name
-  const hasBank = Boolean(config.landlord_bank_account || config.landlord_bank_ifsc)
 
   return (
     <Modal
@@ -1140,43 +1160,15 @@ function PayoutModal({
     >
       <div className="stack">
         {record.error && <ErrorNotice error={record.error} />}
-        <section
-          aria-label="Payout destination"
-          className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4 space-y-3 min-w-0"
-        >
-          <div className="flex items-start justify-between gap-3 min-w-0">
-            <div className="min-w-0">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-                Transfer to
-              </div>
-              <div className="text-sm font-bold text-[var(--text-primary)] truncate">
-                {config.landlord_name}
-              </div>
-            </div>
-            <Rupees
-              paise={cycle.total_rent_paise}
-              className="shrink-0 text-base font-bold text-[var(--text-primary)]"
-            />
-          </div>
-          {hasBank || config.landlord_upi_id ? (
-            <dl className="m-0 space-y-2 text-xs">
-              {config.landlord_bank_account && (
-                <PayoutDetail label="Account" value={config.landlord_bank_account} />
-              )}
-              {config.landlord_bank_ifsc && (
-                <PayoutDetail label="IFSC" value={config.landlord_bank_ifsc} />
-              )}
-              {config.landlord_upi_id && (
-                <PayoutDetail label="UPI ID" value={config.landlord_upi_id} />
-              )}
-            </dl>
-          ) : (
-            <p className="m-0 text-xs text-[var(--text-secondary)]">
-              No bank account or UPI ID is on the lease. Add them under Housing, Tenancy &amp; Master Lease, to see them
-              here.
-            </p>
-          )}
-        </section>
+        <TransferDestination
+          label="Payout destination"
+          name={config.landlord_name}
+          amountPaise={cycle.total_rent_paise}
+          bankAccount={config.landlord_bank_account}
+          bankIfsc={config.landlord_bank_ifsc}
+          upiId={config.landlord_upi_id}
+          missing="No bank account or UPI ID is on the lease. Add them under Housing, Tenancy & Master Lease, to see them here."
+        />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <DateField label="Payment date" required value={date} onChange={setDate} />
           <TextField
@@ -1228,21 +1220,6 @@ function PayoutModal({
         </Callout>
       </div>
     </Modal>
-  )
-}
-
-/** One line of where to send the rent, in full, with a copy button. */
-function PayoutDetail({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 min-w-0">
-      <dt className="shrink-0 text-[var(--text-secondary)]">{label}</dt>
-      <dd className="m-0 flex items-center gap-2 min-w-0">
-        <span className="tabular font-semibold text-[var(--text-primary)] truncate select-all">
-          {value}
-        </span>
-        <CopyButton text={value} label={`Copy ${label}`} iconOnly />
-      </dd>
-    </div>
   )
 }
 

@@ -9,10 +9,13 @@
  * - a signed ledger adjustment, which is the only way to correct a closed statement.
  *
  * Reversals are mirrored entries, never edits, so the audit trail stays whole.
+ *
+ * The household pool's own account -- where residents send it money -- is
+ * shown at the top, read-only, and edited in a dialog.
  */
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Page } from '../components/Layout'
+import { Page, useApp } from '../components/Layout'
 import {
   AsyncSection,
   Badge,
@@ -27,9 +30,27 @@ import {
   Stat,
 } from '../components/Primitives'
 import { DateField, MoneyInput, SelectField, TextAreaField, TextField } from '../components/Form'
+import {
+  BUTTON_PRIMARY,
+  BUTTON_SECONDARY,
+  CopyButton,
+  DetailFact,
+  EditButton,
+  Panel,
+  TransferDestination,
+} from '../components/ui'
 import { useToast } from '../components/Toast'
 import { api, downloadCsv } from '../api/client'
 import { useDebounced, useMutation, useResource } from '../lib/useApi'
+import {
+  ACCOUNT_MESSAGE,
+  ACCOUNT_PATTERN,
+  IFSC_MESSAGE,
+  IFSC_PATTERN,
+  UPI_MESSAGE,
+  UPI_PATTERN,
+  patternError,
+} from '../lib/validation'
 import {
   PAYMENT_KIND_LABELS,
   formatDate,
@@ -39,6 +60,7 @@ import {
 } from '../lib/format'
 import type {
   AdjustmentRow,
+  Apartment,
   CreditRow,
   ExpenseRow,
   Paged,
@@ -46,6 +68,7 @@ import type {
   PaymentKind,
   PaymentRow,
   ProviderAdvanceRow,
+  RentLeaseConfig,
   Resident,
   StatementRow,
 } from '../api/types'
@@ -54,6 +77,7 @@ const PAGE_SIZE = 25
 type Tab = 'payments' | 'credits' | 'advances' | 'adjustments'
 
 export default function PaymentsPage() {
+  const { apartment, reloadApartment } = useApp()
   const toast = useToast()
   const [tab, setTab] = useState<Tab>('payments')
   const residents = useResource<{ items: Resident[] }>('/api/residents')
@@ -153,6 +177,8 @@ export default function PaymentsPage() {
           note="Signed corrections against residents"
         />
       </div>
+
+      <HouseholdPoolCard apartment={apartment} onSaved={reloadApartment} />
 
       <Callout tone="info" title="These are four different things">
         <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
@@ -725,6 +751,7 @@ export default function PaymentsPage() {
       {recording && (
         <PaymentDialog
           initialKind={recording}
+          apartment={apartment}
           onClose={() => setRecording(null)}
           onSaved={(message, body) => {
             setRecording(null)
@@ -770,16 +797,183 @@ export default function PaymentsPage() {
   )
 }
 
-function PaymentDialog({
+/* ------------------------------------------------------- the household pool -- */
+
+const POOL_TITLE = 'Household Pool Account'
+
+/** The household pool's account, read-only, with its own Edit. */
+export function HouseholdPoolCard({
+  apartment,
+  onSaved,
+}: {
+  apartment: Apartment | null
+  onSaved: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const toast = useToast()
+  if (!apartment) return null
+  const notRecorded = <span className="text-[var(--text-tertiary)]">Not recorded</span>
+  return (
+    <Panel
+      title={POOL_TITLE}
+      hint="Where residents send pool payments, rent shares, and settlement transfers."
+      actions={<EditButton label="Edit household pool" onClick={() => setEditing(true)} />}
+    >
+      <dl aria-label="Household pool account" className="m-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+        <DetailFact label="Pool Name">{apartment.pool_name || 'Household Pool'}</DetailFact>
+        <DetailFact label="Bank Account">
+          {apartment.pool_bank_account ? <span className="tabular">{apartment.pool_bank_account}</span> : notRecorded}
+        </DetailFact>
+        <DetailFact label="IFSC">
+          {apartment.pool_bank_ifsc ? <span className="tabular">{apartment.pool_bank_ifsc}</span> : notRecorded}
+        </DetailFact>
+        <DetailFact label="UPI ID">
+          {apartment.pool_upi_id ? (
+            <span className="flex items-center gap-2 min-w-0">
+              <span className="truncate">{apartment.pool_upi_id}</span>
+              <CopyButton text={apartment.pool_upi_id} label="Copy UPI ID" iconOnly />
+            </span>
+          ) : (
+            notRecorded
+          )}
+        </DetailFact>
+      </dl>
+      {editing && (
+        <HouseholdPoolModal
+          apartment={apartment}
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false)
+            onSaved()
+            toast.success('Household pool saved')
+          }}
+        />
+      )}
+    </Panel>
+  )
+}
+
+function HouseholdPoolModal({
+  apartment,
+  onClose,
+  onSaved,
+}: {
+  apartment: Apartment
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [name, setName] = useState(apartment.pool_name || 'Household Pool')
+  const [account, setAccount] = useState(apartment.pool_bank_account ?? '')
+  const [ifsc, setIfsc] = useState(apartment.pool_bank_ifsc ?? '')
+  const [upi, setUpi] = useState(apartment.pool_upi_id ?? '')
+  const [submitted, setSubmitted] = useState(false)
+  const errors = {
+    name: !name.trim()
+      ? 'Give the pool a name.'
+      : name.trim().length > 200
+        ? 'Keep it to 200 characters.'
+        : null,
+    account: patternError(account, ACCOUNT_PATTERN, ACCOUNT_MESSAGE),
+    ifsc: patternError(ifsc.toUpperCase(), IFSC_PATTERN, IFSC_MESSAGE),
+    upi: patternError(upi, UPI_PATTERN, UPI_MESSAGE),
+  }
+  const valid = Object.values(errors).every((error) => !error)
+  const save = useMutation(
+    () =>
+      api.patch<Apartment>(`/api/apartments/${encodeURIComponent(apartment.apartment_id)}`, {
+        pool_name: name.trim(),
+        pool_bank_account: account.trim() || null,
+        pool_bank_ifsc: ifsc.trim().toUpperCase() || null,
+        pool_upi_id: upi.trim() || null,
+      }),
+    { onSuccess: onSaved },
+  )
+  // Format errors show as soon as something is typed; a missing name on submit.
+  const shown = (error: string | null, value: string) => (submitted || value.trim() ? error : null)
+  return (
+    <Modal
+      title={POOL_TITLE}
+      description="Where residents send the household pool its money. Bank details and the UPI ID are optional."
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className={BUTTON_SECONDARY} onClick={onClose} disabled={save.pending}>
+            Cancel
+          </button>
+          <button type="submit" form="household-pool-form" className={BUTTON_PRIMARY} disabled={save.pending}>
+            {save.pending ? 'Saving…' : 'Save Changes'}
+          </button>
+        </>
+      }
+    >
+      <form
+        id="household-pool-form"
+        className="stack"
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault()
+          setSubmitted(true)
+          if (valid && !save.pending) void save.run(undefined)
+        }}
+      >
+        {save.error && <ErrorNotice error={save.error} />}
+        <TextField
+          label="Pool Name"
+          value={name}
+          onChange={setName}
+          required
+          maxLength={210}
+          error={submitted ? errors.name : null}
+        />
+        <TextField
+          label="Bank Account"
+          value={account}
+          onChange={setAccount}
+          inputMode="numeric"
+          maxLength={18}
+          placeholder="9 to 18 digits"
+          error={shown(errors.account, account)}
+        />
+        <TextField
+          label="IFSC"
+          value={ifsc}
+          onChange={(value) => setIfsc(value.toUpperCase())}
+          maxLength={11}
+          placeholder="HDFC0001234"
+          error={shown(errors.ifsc, ifsc)}
+        />
+        <TextField
+          label="UPI ID"
+          value={upi}
+          onChange={setUpi}
+          maxLength={320}
+          placeholder="household@okhdfcbank"
+          error={shown(errors.upi, upi)}
+        />
+      </form>
+    </Modal>
+  )
+}
+
+/* -------------------------------------------------------- recording payments -- */
+
+export function PaymentDialog({
   initialKind,
+  apartment,
   onClose,
   onSaved,
 }: {
   initialKind: PaymentKind
+  apartment: Apartment | null
   onClose: () => void
   onSaved: (message: string, body?: string) => void
 }) {
   const residents = useResource<{ items: Resident[] }>('/api/residents', { active_only: false })
+  const lease = useResource<{ config: RentLeaseConfig | null }>('/api/rent/config')
+  const landlord = lease.data?.config ?? null
+  // A provider advance can be paid to the landlord, whose details are on the lease.
+  const [provider, setProvider] = useState<'landlord' | 'other'>('other')
+  const poolName = apartment?.pool_name || 'Household Pool'
   const [kind, setKind] = useState<PaymentKind>(initialKind)
   const [payer, setPayer] = useState('')
   const [amountRaw, setAmountRaw] = useState('')
@@ -923,11 +1117,27 @@ function PaymentDialog({
             onChange={setPaymentDate}
             required
           />
+          {kind === 'provider_advance' && landlord && (
+            <SelectField<'landlord' | 'other'>
+              label="Provider"
+              value={provider}
+              options={[
+                { value: 'landlord', label: `Landlord (${landlord.landlord_name})` },
+                { value: 'other', label: 'Other provider' },
+              ]}
+              onChange={(next) => {
+                setProvider(next)
+                if (next === 'landlord') setPayee(landlord.landlord_name)
+                else if (payee === landlord.landlord_name) setPayee('')
+              }}
+            />
+          )}
           <TextField
             label={kind === 'provider_advance' ? 'Provider paid' : 'Counterparty'}
             value={payee}
             onChange={setPayee}
             hint={kind === 'to_pool' ? 'Optional. Who collected it.' : undefined}
+            placeholder={kind === 'to_pool' ? poolName : undefined}
             maxLength={200}
           />
           <TextField
@@ -938,6 +1148,27 @@ function PaymentDialog({
             maxLength={200}
           />
         </div>
+
+        {kind === 'to_pool' && (
+          <TransferDestination
+            name={poolName}
+            amountPaise={amountOk && amountPaise > 0 ? amountPaise : null}
+            bankAccount={apartment?.pool_bank_account}
+            bankIfsc={apartment?.pool_bank_ifsc}
+            upiId={apartment?.pool_upi_id}
+            missing="No bank account or UPI ID is recorded for the household pool yet. Add them under Household Pool Account on this page."
+          />
+        )}
+        {kind === 'provider_advance' && landlord && provider === 'landlord' && (
+          <TransferDestination
+            name={landlord.landlord_name}
+            amountPaise={amountOk && amountPaise > 0 ? amountPaise : null}
+            bankAccount={landlord.landlord_bank_account}
+            bankIfsc={landlord.landlord_bank_ifsc}
+            upiId={landlord.landlord_upi_id}
+            missing="No bank account or UPI ID is on the lease. Add them under Housing, Tenancy & Master Lease, to see them here."
+          />
+        )}
 
         {kind === 'provider_advance' && (
           <fieldset>

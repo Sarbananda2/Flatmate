@@ -10,7 +10,7 @@ from .base import Repository
 _UPDATABLE = frozenset({
     "slot_label", "target_deposit_paise", "assigned_resident_id", "assigned_since",
     "status", "funded_amount_paise", "funded_date", "payment_method",
-    "payment_reference", "paid_to_resident_id",
+    "payment_reference", "paid_to_resident_id", "paid_to_party",
 })
 
 
@@ -40,16 +40,16 @@ class DepositsRepository(Repository):
                     slot_number: int, slot_label: str, target_deposit_paise: int,
                     assigned_resident_id: str | None, assigned_since: str | None,
                     status: str, funded_amount_paise: int, payment_method: str | None,
-                    created_at: str) -> None:
+                    created_at: str, paid_to_party: str | None = None) -> None:
         self._s.execute(
             """INSERT INTO household_deposit_slot
                (slot_id, apartment_id, config_id, slot_number, slot_label,
                 target_deposit_paise, assigned_resident_id, assigned_since, status,
-                funded_amount_paise, payment_method, created_at, updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                funded_amount_paise, payment_method, paid_to_party, created_at, updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (slot_id, apartment_id, config_id, slot_number, slot_label,
              target_deposit_paise, assigned_resident_id, assigned_since, status,
-             funded_amount_paise, payment_method, created_at, created_at))
+             funded_amount_paise, payment_method, paid_to_party, created_at, created_at))
 
     def update_slot(self, slot_id: str, *, updated_at: str, **fields: Any) -> int:
         """Set the given columns, in the order given."""
@@ -68,16 +68,19 @@ class DepositsRepository(Repository):
                            resident_id: str, tx_type: str, amount_paise: int,
                            tx_date: str, created_at: str,
                            counterparty_resident_id: str | None = None,
+                           counterparty_party: str | None = None,
                            payment_method: str | None = None,
                            reference: str | None = None,
                            notes: str | None = None) -> None:
         self._s.execute(
             """INSERT INTO household_deposit_transaction
                (tx_id, slot_id, apartment_id, resident_id, tx_type, amount_paise, tx_date,
-                counterparty_resident_id, payment_method, reference, notes, created_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                counterparty_resident_id, counterparty_party, payment_method, reference,
+                notes, created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (tx_id, slot_id, apartment_id, resident_id, tx_type, amount_paise, tx_date,
-             counterparty_resident_id, payment_method, reference, notes, created_at))
+             counterparty_resident_id, counterparty_party, payment_method, reference, notes,
+             created_at))
 
     def transactions_for_apartment(self, apartment_id: str) -> list[dict[str, Any]]:
         """Every deposit transaction, oldest first."""

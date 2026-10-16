@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HousingHub } from './HousingHub'
 import { ToastProvider } from '../../components/Toast'
@@ -125,6 +125,9 @@ function open(path = '/housing', overrides: Record<string, unknown> = {}) {
   )
 }
 
+/** Waits for every section on the open tab to finish loading, so nothing updates after the test. */
+const settled = () => waitFor(() => expect(screen.queryAllByText(/^Loading/)).toHaveLength(0))
+
 describe('HousingHub layout', () => {
   it('goes straight from the title into the tabs, with no summary tiles', async () => {
     open()
@@ -134,6 +137,7 @@ describe('HousingHub layout', () => {
     }
     expect(screen.queryByLabelText('Housing summary')).toBeNull()
     expect(screen.getByRole('tablist', { name: 'Housing' })).toBeInTheDocument()
+    await settled()
   })
 
   it('shows the apartment in full on the tenancy tab, with its own Edit', async () => {
@@ -197,9 +201,10 @@ describe('HousingHub tabs', () => {
     ['allotment', /Room Allotment/],
     ['contacts', /Stakeholders & Contacts/],
     ['documents', /Document Vault/],
-  ])('opens on the %s tab named in the address', (tab, name) => {
+  ])('opens on the %s tab named in the address', async (tab, name) => {
     open(`/housing?tab=${tab}`)
     expect(screen.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'true')
+    await settled()
   })
 
   it('shows the Room Allotment panel on its tab', async () => {
@@ -212,8 +217,9 @@ describe('HousingHub tabs', () => {
     )
   })
 
-  it('treats an unknown tab as the lease', () => {
+  it('treats an unknown tab as the lease', async () => {
     open('/housing?tab=nonsense')
     expect(screen.getByRole('tab', { name: /Tenancy & Master Lease/ })).toHaveAttribute('aria-selected', 'true')
+    await settled()
   })
 })

@@ -105,6 +105,12 @@ class ApartmentUpdate(ApiModel):
     city: str | None = Field(None, max_length=100)
     state: str | None = Field(None, max_length=100)
     pincode: str | None = Field(None, pattern=PINCODE_PATTERN)
+    # The household pool. Its name is kept when left out and reset to
+    # "Household Pool" when sent as null; the rest are cleared by null.
+    pool_name: str | None = Field(None, max_length=200)
+    pool_bank_account: str | None = Field(None, max_length=18)
+    pool_bank_ifsc: str | None = Field(None, max_length=13)
+    pool_upi_id: str | None = Field(None, max_length=320)
 
 
 class ApartmentResponse(PassthroughModel):
@@ -122,6 +128,11 @@ class ApartmentResponse(PassthroughModel):
     pincode: str | None
     # The address parts in Indian postal order; the name when none are set.
     premises_address: str
+    # Where residents send pool payments, rent shares and settlements.
+    pool_name: str
+    pool_bank_account: str | None
+    pool_bank_ifsc: str | None
+    pool_upi_id: str | None
 
 
 class ResidentCreate(ApiModel):
@@ -498,6 +509,7 @@ class RentLeaseVacateRequest(ApiModel):
 DepositFundingMode = Literal["primary_signatory", "direct_co_tenants"]
 DepositPaymentMethod = Literal["upi", "bank_transfer", "cash", "direct_to_landlord"]
 DepositSettlementPath = Literal["signatory_refund", "direct_transfer"]
+DepositPaidToParty = Literal["resident", "landlord", "pool"]
 
 
 class DepositConfigUpdate(ApiModel):
@@ -540,6 +552,10 @@ class DepositSlotFundingRequest(ApiModel):
     paid_to_resident_id: str | None = Field(
         None, max_length=64,
         description="Who received it. Under primary_signatory this is the signatory.")
+    paid_to_party: DepositPaidToParty | None = Field(
+        None,
+        description="What kind of party received it. Under direct_co_tenants with no "
+                    "resident named, the landlord or the pool; the landlord if left out.")
 
 
 class DepositSlotVacateRequest(ApiModel):
