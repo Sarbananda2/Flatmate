@@ -155,6 +155,11 @@ function slotName(slot: Pick<DepositSlot, 'slot_number' | 'slot_label'>): string
   return `Slot ${slot.slot_number} (${slot.slot_label})`
 }
 
+/** The room a slot pays for: the linked room, or else the slot's own name for it. */
+function roomName(slot: Pick<DepositSlot, 'room_number' | 'slot_label'>): string {
+  return slot.room_number ?? slot.slot_label
+}
+
 /* --------------------------------------------------------------- the page -- */
 
 /** Setup, or the escrow pool once slots exist. Before there is a lease, a pointer to it. */
@@ -588,9 +593,9 @@ function EscrowPoolCard({
             <caption className="sr-only">Household deposit slots</caption>
             <thead>
               <tr className={TABLE_HEAD}>
-                <th scope="col" className="w-[16%] pb-3 px-2 font-bold text-center">Slot / Space</th>
+                <th scope="col" className="w-[22%] pb-3 px-2 font-bold text-center">Resident</th>
+                <th scope="col" className="w-[16%] pb-3 px-2 font-bold text-center">Room</th>
                 <th scope="col" className="w-[16%] pb-3 px-2 font-bold text-center">Target Deposit</th>
-                <th scope="col" className="w-[22%] pb-3 px-2 font-bold text-center">Current Occupant</th>
                 <th scope="col" className="w-[15%] pb-3 px-2 font-bold text-center">Funded Status</th>
                 <th scope="col" className="w-[15%] pb-3 px-2 font-bold text-center">Paid Date</th>
                 <th scope="col" className="w-[16%] pb-3 px-2 font-bold text-center">Actions</th>
@@ -600,28 +605,22 @@ function EscrowPoolCard({
               {summary.slots.map((slot) => {
                 const status = STATUS[slot.status]
                 return (
-                  // The whole row opens the slot's details. The slot's button holds
-                  // the keyboard focus, gets it back on close, and its click reaches
-                  // the row; the action buttons stop theirs from doing so.
+                  // The whole row opens the deposit's details. The resident's button
+                  // holds the keyboard focus, gets it back on close, and its click
+                  // reaches the row; the action buttons stop theirs from doing so.
                   <tr
                     key={slot.slot_id}
                     className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
                     onClick={() => setDetailsId(slot.slot_id)}
                   >
-                    <th scope="row" className="py-2.5 px-2 text-center">
-                      <button
-                        type="button"
-                        aria-haspopup="dialog"
-                        className="inline-block max-w-full truncate align-middle rounded font-bold text-[var(--text-primary)] cursor-pointer"
-                      >
-                        {slot.slot_label}
-                      </button>
+                    <th scope="row" className="py-2.5 px-2 text-left">
+                      <ResidentButton slot={slot} />
                     </th>
+                    <td className="py-2.5 px-2 text-center font-semibold text-[var(--text-secondary)] truncate">
+                      {roomName(slot)}
+                    </td>
                     <td className="py-2.5 px-2 text-center font-bold text-[var(--text-primary)]">
                       <Rupees paise={slot.target_deposit_paise} />
-                    </td>
-                    <td className="py-2.5 px-2">
-                      <Occupant slot={slot} />
                     </td>
                     <td className="py-2.5 px-2 text-center">
                       <Pill tone={status.tone}>{status.label}</Pill>
@@ -640,7 +639,7 @@ function EscrowPoolCard({
         </div>
 
         {details && (
-          <DepositSlotDetailsModal
+          <DepositDetailsModal
             slot={details}
             onClose={() => setDetailsId(null)}
             onChangeRoom={() => {
@@ -696,7 +695,7 @@ function RecentDepositActivity({
           <thead>
             <tr className={TABLE_HEAD}>
               <th scope="col" className="w-[14%] pb-2.5 px-2 font-bold text-center">Date</th>
-              <th scope="col" className="w-[13%] pb-2.5 px-2 font-bold text-center">Slot / Space</th>
+              <th scope="col" className="w-[13%] pb-2.5 px-2 font-bold text-center">Room</th>
               <th scope="col" className="w-[21%] pb-2.5 px-2 font-bold text-center">Activity</th>
               <th scope="col" className="w-[18%] pb-2.5 px-2 font-bold text-center">From</th>
               <th scope="col" className="w-[18%] pb-2.5 px-2 font-bold text-center">To</th>
@@ -718,7 +717,7 @@ function RecentDepositActivity({
                     <button
                       type="button"
                       aria-haspopup="dialog"
-                      aria-label={`Details: ${TX_LABELS[tx.tx_type]}, ${slot.slot_label}, ${formatDate(tx.tx_date)}, ${formatInr(tx.amount_paise)}`}
+                      aria-label={`Details: ${TX_LABELS[tx.tx_type]}, ${roomName(slot)}, ${formatDate(tx.tx_date)}, ${formatInr(tx.amount_paise)}`}
                       className="whitespace-nowrap rounded tabular text-[var(--text-secondary)] cursor-pointer"
                     >
                       {formatDate(tx.tx_date)}
@@ -726,7 +725,7 @@ function RecentDepositActivity({
                   </td>
                   <td className="py-2.5 px-2 text-center">
                     <span className="inline-block max-w-full truncate rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-0.5 text-[11px] font-semibold text-[var(--text-secondary)] align-middle">
-                      {slot.slot_label}
+                      {roomName(slot)}
                     </span>
                   </td>
                   <td className="py-2.5 px-2 text-center">
@@ -784,9 +783,7 @@ function DepositTransactionModal({
         </div>
         <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
           <DetailFact label="Date">{formatDate(tx.tx_date)}</DetailFact>
-          <DetailFact label="Slot / Space">
-            {slot.slot_label} (Slot {slot.slot_number})
-          </DetailFact>
+          <DetailFact label="Room">{roomName(slot)}</DetailFact>
           <DetailFact label="From">{from}</DetailFact>
           <DetailFact label="To">{to}</DetailFact>
           <DetailFact label="Payment Method">{txMethod(tx)}</DetailFact>
@@ -822,16 +819,30 @@ function DetailFact({
   )
 }
 
-function Occupant({ slot }: { slot: DepositSlot }) {
-  if (!slot.assigned_resident_id) {
-    return <span className="block text-center text-[var(--text-tertiary)]">Vacant</span>
-  }
-  const name = slot.assigned_display_name ?? slot.assigned_resident_id
+/**
+ * Who the deposit belongs to, or Vacant, as the button that opens its details.
+ * Its name adds the room, so two vacant rows are still told apart.
+ */
+function ResidentButton({ slot }: { slot: DepositSlot }) {
+  const name = slot.assigned_resident_id
+    ? (slot.assigned_display_name ?? slot.assigned_resident_id)
+    : null
   return (
-    <span className="flex items-center gap-2 min-w-0">
-      <Avatar name={name} size="sm" />
-      <span className="font-bold text-[var(--text-primary)] truncate">{name}</span>
-    </span>
+    <button
+      type="button"
+      aria-haspopup="dialog"
+      aria-label={`${name ?? 'Vacant'}, ${roomName(slot)}`}
+      className="flex items-center gap-2 max-w-full min-w-0 rounded text-left cursor-pointer"
+    >
+      {name ? (
+        <>
+          <Avatar name={name} size="sm" />
+          <span className="font-bold text-[var(--text-primary)] truncate">{name}</span>
+        </>
+      ) : (
+        <span className="font-semibold text-[var(--text-tertiary)]">Vacant</span>
+      )}
+    </button>
   )
 }
 
@@ -862,7 +873,7 @@ function SlotActions({
       kind: 'fund',
       text: 'Pay',
       label: 'Record Payment',
-      describe: `Record payment for ${slot.slot_label} from ${who}`,
+      describe: `Record payment for ${roomName(slot)} from ${who}`,
       icon: Plus,
     })
   }
@@ -872,7 +883,7 @@ function SlotActions({
       kind: 'vacate',
       text: 'Vacate',
       label: 'Vacate & Settle',
-      describe: `Vacate and settle ${slot.slot_label}`,
+      describe: `Vacate and settle ${roomName(slot)}`,
       icon: LogOut,
     })
   }
@@ -882,7 +893,7 @@ function SlotActions({
       kind: 'assign',
       text: occupied ? 'Reassign' : 'Assign',
       label: occupied ? 'Reassign Occupant' : 'Assign Occupant',
-      describe: `${occupied ? 'Reassign' : 'Assign'} occupant of ${slot.slot_label}`,
+      describe: `${occupied ? 'Reassign' : 'Assign'} occupant of ${roomName(slot)}`,
       icon: UserPlus,
     })
   }
@@ -931,10 +942,10 @@ function SlotDialog({
 }
 
 /**
- * One slot in full, read-only. The room it backs is changed from here; paying,
- * vacating and assigning stay on the row.
+ * One resident's deposit in full, read-only. The room it pays for is changed
+ * from here; paying, vacating and assigning stay on the row.
  */
-function DepositSlotDetailsModal({
+function DepositDetailsModal({
   slot,
   onClose,
   onChangeRoom,
@@ -947,8 +958,8 @@ function DepositSlotDetailsModal({
   const paid = slot.funded_amount_paise > 0
   const name = slot.assigned_display_name
   const amenities =
-    slot.room_number === null
-      ? '—'
+    slot.room_id === null
+      ? 'Not linked'
       : [slot.has_attached_washroom && 'Attached Washroom', slot.has_balcony && 'Balcony']
           .filter(Boolean)
           .join(' · ') || 'None'
@@ -961,8 +972,8 @@ function DepositSlotDetailsModal({
       : (slot.paid_to_display_name ?? 'Direct to landlord')
   return (
     <Modal
-      title="Deposit Slot Details"
-      description={`${slot.slot_label} · Slot ${slot.slot_number}`}
+      title="Deposit Details"
+      description={`${name ?? 'Vacant'} · ${roomName(slot)}`}
       onClose={onClose}
       footer={
         <div className="flex w-full items-center justify-between gap-3">
@@ -993,17 +1004,14 @@ function DepositSlotDetailsModal({
           </span>
         </div>
         <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
-          <DetailFact label="Slot / Space">
-            {slot.slot_label} (Slot {slot.slot_number})
-          </DetailFact>
-          <DetailFact label="Linked Room">{slot.room_number ?? 'Not linked'}</DetailFact>
-          <DetailFact label="Private Amenities">{amenities}</DetailFact>
-          <DetailFact label="Current Occupant">
+          <DetailFact label="Resident">
             {name ? (slot.is_primary_signatory ? `${name} (Primary signatory)` : name) : 'Vacant'}
           </DetailFact>
           <DetailFact label="Occupied Since">
             {slot.assigned_since ? formatDate(slot.assigned_since) : '—'}
           </DetailFact>
+          <DetailFact label="Room">{roomName(slot)}</DetailFact>
+          <DetailFact label="Private Amenities">{amenities}</DetailFact>
           <DetailFact label="Outstanding Balance">
             <Rupees paise={slot.outstanding_paise} />
           </DetailFact>
@@ -1022,7 +1030,7 @@ function DepositSlotDetailsModal({
                 ? 'Master lease deposit'
                 : 'Not recorded'}
           </DetailFact>
-          <DetailFact label="Reference / UTR">
+          <DetailFact label="Reference / UTR" className="sm:col-span-2">
             {slot.payment_reference ? (
               <span className="font-mono break-all">{slot.payment_reference}</span>
             ) : (
