@@ -9,7 +9,14 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { BedDouble, Landmark, LogOut, Plus, ShieldCheck, UserPlus } from 'lucide-react'
+import {
+  BedDouble,
+  Landmark,
+  LogOut,
+  Plus,
+  ShieldCheck,
+  UserPlus,
+} from 'lucide-react'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
 import {
   DateField,
@@ -76,6 +83,42 @@ const TX_LABELS: Record<DepositTransaction['tx_type'], string> = {
   move_out_deduction: 'Deducted on leaving',
   move_out_refund: 'Refunded on leaving',
   direct_replacement_transfer: 'Paid by replacement',
+}
+
+/**
+ * Who the money moved from and who it moved to. The entry's resident is always
+ * the slot's occupant (or leaver); the counterparty is the signatory paid or
+ * refunding, or the replacement buying the slot. When nobody else is named the
+ * deposit's holder is the signatory who fronted it, or else the landlord.
+ */
+function txParties(
+  tx: DepositTransaction,
+  summary: HouseholdDepositSummary,
+): { from: string; to: string } {
+  const occupant = tx.resident_display_name ?? '—'
+  const holder =
+    tx.counterparty_display_name ??
+    (summary.funding_mode === 'primary_signatory'
+      ? (summary.primary_signatory_name ?? 'Primary signatory')
+      : 'Landlord')
+  switch (tx.tx_type) {
+    case 'funding_payment':
+      return { from: occupant, to: holder }
+    case 'move_out_refund':
+      return { from: holder, to: occupant }
+    case 'direct_replacement_transfer':
+      return { from: tx.counterparty_display_name ?? '—', to: occupant }
+    case 'move_out_deduction':
+      return { from: occupant, to: holder }
+  }
+}
+
+/** How the money moved; a deduction never moves, the holder keeps it. */
+function txMethod(tx: DepositTransaction): string {
+  if (tx.payment_method) {
+    return METHOD_LABELS[tx.payment_method as DepositPaymentMethod] ?? tx.payment_method
+  }
+  return tx.tx_type === 'move_out_deduction' ? 'Retained from deposit' : 'Not recorded'
 }
 
 const MODES: Array<{ value: DepositFundingMode; title: string; body: string }> = [
@@ -257,15 +300,9 @@ function DepositSetupCard({
       hint="The deposit belongs to the household. Say how it was funded and divide it into slots, one per space; slots stay as people come and go. Deposits are held in escrow and never appear in statements or balances."
       actions={<Pill tone="warning">Setup required</Pill>}
     >
-      <form
-        className="space-y-5"
-        noValidate
-        onSubmit={(event) => {
-          event.preventDefault()
-          setTouched(true)
-          if (valid && !save.pending) void save.run(undefined)
-        }}
-      >
+      {/* The deposit amount saves through a form of its own, so the setup form
+          starts below it; the mode and signatory above are read from state. */}
+      <div className="space-y-5">
         {save.error && <ErrorNotice error={save.error} />}
 
         {modeSaved ? (
@@ -346,93 +383,104 @@ function DepositSetupCard({
 
         <DepositAmountForm master={master} onSaved={onSaved} />
 
-        {master === null ? null : rows.length === 0 ? (
-          <p className="m-0 text-xs text-[var(--text-secondary)]">
-            There are no current residents to propose slots for.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            <div className="text-sm font-bold text-[var(--text-primary)]">
-              Household deposit slots — <Rupees paise={master} /> split equally
-            </div>
-            <div className="overflow-x-auto min-w-0">
-              <table className="w-full text-xs border-collapse min-w-[620px]">
-                <caption className="sr-only">Proposed household deposit slots</caption>
-                <thead>
-                  <tr className={TABLE_HEAD}>
-                    <th scope="col" className="pb-2.5 pr-3 font-bold text-center">Slot</th>
-                    <th scope="col" className="pb-2.5 pr-3 font-bold text-center">Slot / Space</th>
-                    <th scope="col" className="pb-2.5 pr-3 font-bold text-center">Occupant</th>
-                    <th scope="col" className="pb-2.5 font-bold text-center">Target Deposit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {checked.map((row, index) => (
-                    <tr key={row.slot_number} className="align-top">
-                      <th scope="row" className="py-2 pr-3 pt-4 text-center font-bold text-[var(--text-primary)]">
-                        {row.slot_number}
-                      </th>
-                      <td className="py-2 pr-3">
-                        <TextField
-                          label={<span className="sr-only">Name of slot {row.slot_number}</span>}
-                          value={row.label}
-                          maxLength={100}
-                          error={row.labelError}
-                          onChange={(value) => setRow(index, { label: value })}
-                        />
-                      </td>
-                      <td className="py-2 pr-3">
-                        <SelectField
-                          label={<span className="sr-only">Occupant of slot {row.slot_number}</span>}
-                          value={row.resident}
-                          placeholder="Vacant"
-                          options={residents.map((resident) => ({
-                            value: resident.resident_id,
-                            label: resident.display_name,
-                          }))}
-                          error={row.residentError}
-                          onChange={(value) => setRow(index, { resident: value })}
-                        />
-                      </td>
-                      <td className="py-2">
-                        <MoneyInput
-                          label={
-                            <span className="sr-only">Target deposit for slot {row.slot_number}</span>
-                          }
-                          value={row.amount}
-                          hint=""
-                          error={row.amountError}
-                          onChange={(raw) => setRow(index, { amount: raw })}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p
-              className={
-                difference === 0
-                  ? 'tabular m-0 text-xs text-[var(--text-secondary)]'
-                  : 'tabular m-0 text-xs font-semibold text-[var(--danger)]'
-              }
-              role="status"
-            >
-              {difference === 0
-                ? `${formatInr(total)} of ${formatInr(master)} — the slots add up to the deposit.`
-                : difference > 0
-                  ? `${formatInr(difference)} over the ${formatInr(master)} deposit. The slots must add up to it exactly.`
-                  : `${formatInr(-difference)} short of the ${formatInr(master)} deposit. The slots must add up to it exactly.`}
+        <form
+          aria-label="Deposit setup"
+          className="space-y-5"
+          noValidate
+          onSubmit={(event) => {
+            event.preventDefault()
+            setTouched(true)
+            if (valid && !save.pending) void save.run(undefined)
+          }}
+        >
+          {master === null ? null : rows.length === 0 ? (
+            <p className="m-0 text-xs text-[var(--text-secondary)]">
+              There are no current residents to propose slots for.
             </p>
-          </div>
-        )}
+          ) : (
+            <div className="space-y-2">
+              <div className="text-sm font-bold text-[var(--text-primary)]">
+                Household deposit slots — <Rupees paise={master} /> split equally
+              </div>
+              <div className="overflow-x-auto min-w-0">
+                <table className="w-full text-xs border-collapse min-w-[620px]">
+                  <caption className="sr-only">Proposed household deposit slots</caption>
+                  <thead>
+                    <tr className={TABLE_HEAD}>
+                      <th scope="col" className="pb-2.5 pr-3 font-bold text-center">Slot</th>
+                      <th scope="col" className="pb-2.5 pr-3 font-bold text-center">Slot / Space</th>
+                      <th scope="col" className="pb-2.5 pr-3 font-bold text-center">Occupant</th>
+                      <th scope="col" className="pb-2.5 font-bold text-center">Target Deposit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {checked.map((row, index) => (
+                      <tr key={row.slot_number} className="align-top">
+                        <th scope="row" className="py-2 pr-3 pt-4 text-center font-bold text-[var(--text-primary)]">
+                          {row.slot_number}
+                        </th>
+                        <td className="py-2 pr-3">
+                          <TextField
+                            label={<span className="sr-only">Name of slot {row.slot_number}</span>}
+                            value={row.label}
+                            maxLength={100}
+                            error={row.labelError}
+                            onChange={(value) => setRow(index, { label: value })}
+                          />
+                        </td>
+                        <td className="py-2 pr-3">
+                          <SelectField
+                            label={<span className="sr-only">Occupant of slot {row.slot_number}</span>}
+                            value={row.resident}
+                            placeholder="Vacant"
+                            options={residents.map((resident) => ({
+                              value: resident.resident_id,
+                              label: resident.display_name,
+                            }))}
+                            error={row.residentError}
+                            onChange={(value) => setRow(index, { resident: value })}
+                          />
+                        </td>
+                        <td className="py-2">
+                          <MoneyInput
+                            label={
+                              <span className="sr-only">Target deposit for slot {row.slot_number}</span>
+                            }
+                            value={row.amount}
+                            hint=""
+                            error={row.amountError}
+                            onChange={(raw) => setRow(index, { amount: raw })}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p
+                className={
+                  difference === 0
+                    ? 'tabular m-0 text-xs text-[var(--text-secondary)]'
+                    : 'tabular m-0 text-xs font-semibold text-[var(--danger)]'
+                }
+                role="status"
+              >
+                {difference === 0
+                  ? `${formatInr(total)} of ${formatInr(master)} — the slots add up to the deposit.`
+                  : difference > 0
+                    ? `${formatInr(difference)} over the ${formatInr(master)} deposit. The slots must add up to it exactly.`
+                    : `${formatInr(-difference)} short of the ${formatInr(master)} deposit. The slots must add up to it exactly.`}
+              </p>
+            </div>
+          )}
 
-        <div className="flex justify-end">
-          <button type="submit" className={BUTTON_PRIMARY} disabled={save.pending}>
-            {save.pending ? 'Saving…' : 'Save Deposit Setup'}
-          </button>
-        </div>
-      </form>
+          <div className="flex justify-end">
+            <button type="submit" className={BUTTON_PRIMARY} disabled={save.pending}>
+              {save.pending ? 'Saving…' : 'Save Deposit Setup'}
+            </button>
+          </div>
+        </form>
+      </div>
     </Panel>
   )
 }
@@ -577,37 +625,7 @@ function EscrowPoolCard({
         </table>
       </div>
 
-      {history.length > 0 && (
-        <section
-          aria-label="Recent deposit activity"
-          className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4 space-y-3"
-        >
-          <h3 className="m-0 text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-            Recent Deposit Activity
-          </h3>
-          <ul className="m-0 p-0 list-none divide-y divide-[var(--border-subtle)]">
-            {history.map(({ tx, slot }) => (
-              <li
-                key={tx.tx_id}
-                className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 py-2 first:pt-0 last:pb-0"
-              >
-                <span className="flex flex-wrap items-center gap-2 min-w-0 text-xs">
-                  <span className="tabular text-[var(--text-secondary)]">{formatDate(tx.tx_date)}</span>
-                  <span className="rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1.5 py-0.5 text-[11px] font-semibold text-[var(--text-secondary)]">
-                    {slot.slot_label}
-                  </span>
-                  <Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>
-                  {tx.resident_display_name && (
-                    <span className="font-medium text-[var(--text-primary)]">{tx.resident_display_name}</span>
-                  )}
-                  {tx.notes && <span className="text-[var(--text-secondary)]">{tx.notes}</span>}
-                </span>
-                <Rupees paise={tx.amount_paise} className="tabular font-bold text-[var(--text-primary)]" />
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      {history.length > 0 && <RecentDepositActivity history={history} summary={summary} />}
 
       {dialog && (
         <SlotDialog
@@ -621,6 +639,161 @@ function EscrowPoolCard({
         />
       )}
     </Panel>
+  )
+}
+
+/**
+ * The latest deposit entries, one row each with who paid whom. A row opens a
+ * read-only dialog with how it was paid, the reference and the full note, so
+ * the table itself never changes height.
+ */
+function RecentDepositActivity({
+  history,
+  summary,
+}: {
+  history: Array<{ tx: DepositTransaction; slot: DepositSlot }>
+  summary: HouseholdDepositSummary
+}) {
+  const [selected, setSelected] = useState<{ tx: DepositTransaction; slot: DepositSlot } | null>(
+    null,
+  )
+  return (
+    <section
+      aria-label="Recent deposit activity"
+      className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4 space-y-3"
+    >
+      <h3 className="m-0 text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+        Recent Deposit Activity
+      </h3>
+      <div className="overflow-x-auto min-w-0">
+        <table className="w-full table-fixed text-xs min-w-[720px] border-collapse">
+          <caption className="sr-only">Recent deposit activity</caption>
+          <thead>
+            <tr className={TABLE_HEAD}>
+              <th scope="col" className="w-[14%] pb-2.5 px-2 font-bold text-center">Date</th>
+              <th scope="col" className="w-[13%] pb-2.5 px-2 font-bold text-center">Slot / Space</th>
+              <th scope="col" className="w-[21%] pb-2.5 px-2 font-bold text-center">Activity</th>
+              <th scope="col" className="w-[18%] pb-2.5 px-2 font-bold text-center">From</th>
+              <th scope="col" className="w-[18%] pb-2.5 px-2 font-bold text-center">To</th>
+              <th scope="col" className="w-[16%] pb-2.5 px-2 font-bold text-center">Amount</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+            {history.map(({ tx, slot }) => {
+              const { from, to } = txParties(tx, summary)
+              return (
+                // The whole row opens the dialog. The date's button holds the
+                // keyboard focus, gets it back on close, and its click reaches the row.
+                <tr
+                  key={tx.tx_id}
+                  className="align-middle cursor-pointer hover:bg-[var(--bg-surface)] transition-colors"
+                  onClick={() => setSelected({ tx, slot })}
+                >
+                  <td className="py-2.5 px-2 text-center">
+                    <button
+                      type="button"
+                      aria-haspopup="dialog"
+                      aria-label={`Details: ${TX_LABELS[tx.tx_type]}, ${slot.slot_label}, ${formatDate(tx.tx_date)}, ${formatInr(tx.amount_paise)}`}
+                      className="whitespace-nowrap rounded tabular text-[var(--text-secondary)] cursor-pointer"
+                    >
+                      {formatDate(tx.tx_date)}
+                    </button>
+                  </td>
+                  <td className="py-2.5 px-2 text-center">
+                    <span className="inline-block max-w-full truncate rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-0.5 text-[11px] font-semibold text-[var(--text-secondary)] align-middle">
+                      {slot.slot_label}
+                    </span>
+                  </td>
+                  <td className="py-2.5 px-2 text-center">
+                    <Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>
+                  </td>
+                  <td className="py-2.5 px-2 text-center font-semibold text-[var(--text-primary)] truncate" title={from}>
+                    {from}
+                  </td>
+                  <td className="py-2.5 px-2 text-center font-semibold text-[var(--text-primary)] truncate" title={to}>
+                    {to}
+                  </td>
+                  <td className="py-2.5 px-2 text-center tabular font-bold text-[var(--text-primary)]">
+                    <Rupees paise={tx.amount_paise} />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      {selected && (
+        <DepositTransactionModal {...selected} summary={summary} onClose={() => setSelected(null)} />
+      )}
+    </section>
+  )
+}
+
+/** One deposit entry in full, read-only: nothing here can be changed. */
+function DepositTransactionModal({
+  tx,
+  slot,
+  summary,
+  onClose,
+}: {
+  tx: DepositTransaction
+  slot: DepositSlot
+  summary: HouseholdDepositSummary
+  onClose: () => void
+}) {
+  const { from, to } = txParties(tx, summary)
+  return (
+    <Modal
+      title="Deposit Transaction Details"
+      onClose={onClose}
+      footer={
+        <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
+          Close
+        </button>
+      }
+    >
+      <div className="space-y-4">
+        <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 flex items-center justify-between gap-3">
+          <Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>
+          <Rupees paise={tx.amount_paise} className="text-base font-bold tabular text-[var(--text-primary)]" />
+        </div>
+        <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
+          <TxFact label="Date">{formatDate(tx.tx_date)}</TxFact>
+          <TxFact label="Slot / Space">
+            {slot.slot_label} (Slot {slot.slot_number})
+          </TxFact>
+          <TxFact label="From">{from}</TxFact>
+          <TxFact label="To">{to}</TxFact>
+          <TxFact label="Payment Method">{txMethod(tx)}</TxFact>
+          <TxFact label="Reference / UTR">
+            {tx.reference ? <span className="font-mono break-all">{tx.reference}</span> : 'Not recorded'}
+          </TxFact>
+          <TxFact label="Notes / Reason" className="sm:col-span-2">
+            <span className="whitespace-pre-wrap break-words">{tx.notes || 'None'}</span>
+          </TxFact>
+        </dl>
+      </div>
+    </Modal>
+  )
+}
+
+/** One fact in the transaction dialog: the label above, the value below. */
+function TxFact({
+  label,
+  className,
+  children,
+}: {
+  label: string
+  className?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className={className ? `min-w-0 space-y-1 ${className}` : 'min-w-0 space-y-1'}>
+      <dt className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+        {label}
+      </dt>
+      <dd className="m-0 text-[var(--text-primary)]">{children}</dd>
+    </div>
   )
 }
 
