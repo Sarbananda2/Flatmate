@@ -846,7 +846,7 @@ export default function PaymentsPage() {
 const POOL_TITLE = 'House Kitty Account'
 
 /** The three running totals at the foot of each account card. */
-const BALANCE_STRIP = 'm-0 border-t border-[var(--border-subtle)] pt-3 mt-1 grid grid-cols-3 gap-2 text-xs'
+const BALANCE_STRIP = 'm-0 border-t border-[var(--border-subtle)] pt-3 !mt-auto grid grid-cols-3 gap-2 text-xs'
 
 /** The House Kitty's account, read-only, with its own Edit. */
 export function HouseholdPoolCard({
@@ -862,24 +862,35 @@ export function HouseholdPoolCard({
   const [editing, setEditing] = useState(false)
   const toast = useToast()
   if (!apartment) return null
-  const notRecorded = <span className="text-[var(--text-tertiary)]">Not recorded</span>
+  const notRecorded = <span className="text-[var(--text-tertiary)] min-h-[28px] flex items-center">Not recorded</span>
   return (
     <Panel
       title={POOL_TITLE}
       hint="Where residents send kitty payments, rent shares, and settlement transfers."
       actions={<EditButton label="Edit house kitty" onClick={() => setEditing(true)} />}
+      className="flex flex-col h-full"
     >
-      <dl aria-label="House kitty account" className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-        <DetailFact label="Account Name">{apartment.pool_name || 'House Kitty'}</DetailFact>
+      <dl aria-label="House kitty account" className="m-0 flex-1 content-start pb-4 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+        <DetailFact label="Account Name">
+          <span className="min-h-[28px] flex items-center">{apartment.pool_name || 'House Kitty'}</span>
+        </DetailFact>
         <DetailFact label="Bank Account">
-          {apartment.pool_bank_account ? <span className="tabular">{apartment.pool_bank_account}</span> : notRecorded}
+          {apartment.pool_bank_account ? (
+            <span className="tabular min-h-[28px] flex items-center">{apartment.pool_bank_account}</span>
+          ) : (
+            notRecorded
+          )}
         </DetailFact>
         <DetailFact label="IFSC">
-          {apartment.pool_bank_ifsc ? <span className="tabular">{apartment.pool_bank_ifsc}</span> : notRecorded}
+          {apartment.pool_bank_ifsc ? (
+            <span className="tabular min-h-[28px] flex items-center">{apartment.pool_bank_ifsc}</span>
+          ) : (
+            notRecorded
+          )}
         </DetailFact>
         <DetailFact label="UPI ID">
           {apartment.pool_upi_id ? (
-            <span className="flex items-center gap-2 min-w-0">
+            <span className="flex items-center gap-2 min-w-0 min-h-[28px]">
               <span className="truncate">{apartment.pool_upi_id}</span>
               <CopyButton text={apartment.pool_upi_id} label="Copy UPI ID" iconOnly />
             </span>
@@ -1102,7 +1113,7 @@ export function LandlordAccountCard({
   const toast = useToast()
   const config = lease.data?.config ?? null
   const owner = contacts.data?.items.find((contact) => contact.role === 'owner') ?? null
-  const notRecorded = <span className="text-[var(--text-tertiary)]">Not recorded</span>
+  const notRecorded = <span className="text-[var(--text-tertiary)] min-h-[28px] flex items-center">Not recorded</span>
   const name = config?.landlord_name || owner?.name
   const account = config?.landlord_bank_account || owner?.bank_account_no
   const ifsc = config?.landlord_bank_ifsc || owner?.bank_ifsc
@@ -1112,16 +1123,29 @@ export function LandlordAccountCard({
       title={LANDLORD_TITLE}
       hint="Where rent and direct security deposits are paid under the master lease."
       actions={config ? <EditButton label="Edit landlord" onClick={() => setEditing(true)} /> : undefined}
+      className="flex flex-col h-full"
     >
-      <dl aria-label="Landlord account" className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-        <DetailFact label="Account Name">{name || notRecorded}</DetailFact>
-        <DetailFact label="Bank Account">
-          {account ? <span className="tabular">{account}</span> : notRecorded}
+      <dl aria-label="Landlord account" className="m-0 flex-1 content-start pb-4 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+        <DetailFact label="Account Name">
+          <span className="min-h-[28px] flex items-center">{name || notRecorded}</span>
         </DetailFact>
-        <DetailFact label="IFSC">{ifsc ? <span className="tabular">{ifsc}</span> : notRecorded}</DetailFact>
+        <DetailFact label="Bank Account">
+          {account ? (
+            <span className="tabular min-h-[28px] flex items-center">{account}</span>
+          ) : (
+            notRecorded
+          )}
+        </DetailFact>
+        <DetailFact label="IFSC">
+          {ifsc ? (
+            <span className="tabular min-h-[28px] flex items-center">{ifsc}</span>
+          ) : (
+            notRecorded
+          )}
+        </DetailFact>
         <DetailFact label="UPI ID">
           {upi ? (
-            <span className="flex items-center gap-2 min-w-0">
+            <span className="flex items-center gap-2 min-w-0 min-h-[28px]">
               <span className="truncate">{upi}</span>
               <CopyButton text={upi} label="Copy UPI ID" iconOnly />
             </span>
