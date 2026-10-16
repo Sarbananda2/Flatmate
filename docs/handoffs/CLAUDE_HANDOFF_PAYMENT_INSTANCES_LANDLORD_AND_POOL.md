@@ -235,8 +235,13 @@ Add a read-only service function `get_payment_pools_statement(db, apartment_id)`
    - Remove the inline `<Callout tone="info" title="These are four different things">` from the page body.
    - Add a `"How it works"` button (with `HelpCircle` icon, `BUTTON_SECONDARY`) in the page header actions that opens a `<Modal title="How Payment Pools & Transfers Work" onClose={...}>` containing the explanation of `Into the pool`, `Paid a provider`, `Refund`, and `Adjustment`, with a `Close` button in the footer.
 
-2. **Side-by-Side Payment Instance Cards (`grid-cols-1 md:grid-cols-2 gap-4`) & Uniform Edit Forms:**
+2. **Side-by-Side Payment Instance Cards (`grid-cols-1 md:grid-cols-2 gap-4`), Aligned Divider Height & Natural Field Spacing:**
    - Both cards sit side-by-side on all viewports `>= 768px` (`grid-cols-1 md:grid-cols-2 gap-4`).
+   - **Aligned Horizontal Divider Bar & Natural Field-to-Value Spacing:**
+     - Both `<Panel>`s must use `className="flex flex-col h-full"` so both cards stretch to equal total height within the 2-column grid.
+     - The lower balance strip `BALANCE_STRIP` must use `m-0 border-t border-[var(--border-subtle)] pt-3 !mt-auto grid grid-cols-3 gap-2 text-xs`. Because both cards have equal total height and `BALANCE_STRIP` is pinned to the bottom via `!mt-auto` with identical 3-metric heights, the horizontal divider line (`border-t`) sits at the **exact same vertical pixel height on both cards**.
+     - **Natural Label-to-Value Gap:** Do **not** use `min-h-[28px] flex items-center` or vertical centering on fact values or `notRecorded`. Vertical centering inside a 28px box pushes the value text downward, creating an unnatural gap between the field label (`<dt>`) and its value (`<dd>`). Instead, render bare string/tabular values directly inside `<DetailFact>` so `<DetailFact>` maintains its natural, tight 4px vertical gap (`space-y-1`) matching the rest of the application.
+     - The upper account details `<dl>` uses `m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs`. Any minor height variation between rows (e.g. UPI ID with a 28px CopyButton vs text-only rows) is absorbed naturally in the breathing space above the bottom `BALANCE_STRIP`.
    - **Uniform Card Structure (Rule U1, Rule U5):** Both cards display the exact same 4 atomic field labels:
      - `Account Name` (`House Kitty` or `apartment.pool_name` on left; `config.landlord_name` on right)
      - `Bank Account`
