@@ -15,7 +15,7 @@ from ...schemas import (
     PaymentReverse,
     PeerSettlementCreate,
 )
-from ...services import adjustments, payments
+from ...services import adjustments, payments, pool_statements
 from ..deps import ApartmentId, AppSettings, Db, csv_response, to_http
 
 router = APIRouter(prefix="/api", tags=["payments"])
@@ -47,6 +47,18 @@ def list_payments(
             date_from=date_from, date_to=date_to, expense_id=expense_id,
             unapplied_only=unapplied_only, search=search, limit=limit, offset=offset,
             sort=sort)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.get("/payments/pools/statement",
+            summary="Passbooks for the household pool and the landlord")
+def payment_pools_statement(db: Db, apartment_id: ApartmentId) -> dict[str, Any]:
+    """Every movement into and out of the household pool, and everything paid
+    to and returned by the landlord, each with a running balance, newest first.
+    Built from the records; nothing is stored."""
+    try:
+        return pool_statements.get_payment_pools_statement(db, apartment_id)
     except AemError as exc:
         raise to_http(exc) from exc
 

@@ -16,7 +16,18 @@ export default defineConfig({
       '/health': { target: BACKEND, changeOrigin: true },
     },
   },
-  build: { outDir: 'dist', sourcemap: true },
+  build: {
+    outDir: 'dist',
+    sourcemap: true,
+    rollupOptions: {
+      output: {
+        // The libraries change far less often than the app, so they are a
+        // chunk of their own: each stays under the size Vite warns about, and
+        // a browser keeps the libraries cached across the app's updates.
+        manualChunks: { vendor: ['react', 'react-dom', 'react-router-dom', 'lucide-react', 'clsx'] },
+      },
+    },
+  },
   test: {
     environment: 'jsdom',
     globals: true,

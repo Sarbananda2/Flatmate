@@ -613,7 +613,7 @@ function SettleDialog({
               <>
                 No bank account or UPI ID is recorded for the household pool.{' '}
                 <Link to="/payments" className="font-semibold">
-                  Add them on Payments &amp; credits
+                  Add them on Payment Pools
                 </Link>
                 .
               </>

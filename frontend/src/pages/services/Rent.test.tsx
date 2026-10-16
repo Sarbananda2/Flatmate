@@ -312,7 +312,7 @@ describe('RentMonth', () => {
     dialog = screen.getByRole('dialog', { name: 'Record Rent Payment' })
     destination = within(dialog).getByRole('region', { name: 'Payment destination' })
     expect(destination).toHaveTextContent('Transfer toHousehold Pool')
-    expect(within(destination).getByRole('link', { name: /Add them on Payments/ })).toHaveAttribute(
+    expect(within(destination).getByRole('link', { name: 'Add them on Payment Pools' })).toHaveAttribute(
       'href',
       '/payments',
     )

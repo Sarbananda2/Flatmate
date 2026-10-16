@@ -688,6 +688,9 @@ legend { font-size: 0.78rem; font-weight: 700; padding: 0 var(--space-2); }
   font-size: 0.8rem; color: var(--text-muted);
   flex-wrap: wrap;
 }
+/* Inside a card's footer the footer already draws the rule and the padding,
+   so the pager takes its full width without a second, shorter border. */
+.card-footer > .pagination { width: 100%; border-top: none; padding: 0; }
 /* The same segmented control as the ribbon's navigation, one step quieter:
    the selected tab lifts onto the surface rather than taking the accent. */
 .tabs {

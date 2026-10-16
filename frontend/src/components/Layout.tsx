@@ -31,7 +31,15 @@ import type { Apartment, Health, SetupState } from '../api/types'
 import { ExpenseFormDialog } from '../pages/ExpenseForm'
 import { useToast } from './Toast'
 
-type Section = 'hub' | 'housing' | 'services' | 'ledger' | 'residents' | 'statements' | 'settings'
+type Section =
+  | 'hub'
+  | 'housing'
+  | 'services'
+  | 'ledger'
+  | 'residents'
+  | 'pools'
+  | 'statements'
+  | 'settings'
 
 const NAV_TABS: Array<{ to: string; label: string; section: Section }> = [
   { to: '/', label: 'Month Hub', section: 'hub' },
@@ -39,6 +47,7 @@ const NAV_TABS: Array<{ to: string; label: string; section: Section }> = [
   { to: '/services', label: 'Services & Utilities', section: 'services' },
   { to: '/transactions', label: 'Activity Ledger', section: 'ledger' },
   { to: '/residents', label: 'Residents', section: 'residents' },
+  { to: '/payments', label: 'Payment Pools', section: 'pools' },
   { to: '/statements', label: 'Statements', section: 'statements' },
 ]
 
@@ -51,7 +60,7 @@ const SECTION_PREFIXES: Array<[string, Section]> = [
   ['/services', 'services'],
   ['/transactions', 'ledger'],
   ['/expenses', 'ledger'],
-  ['/payments', 'ledger'],
+  ['/payments', 'pools'],
   ['/audit', 'ledger'],
   ['/statements', 'statements'],
   ['/reports', 'statements'],
@@ -262,19 +271,22 @@ export function Layout({ children }: { children: ReactNode }) {
         // View transition aborted or unsupported; the theme has still changed.
       })
   }
-  // Rent, electricity and setup have their own workflows; the generic
-  // transaction form would only compete with them there.
+  // Rent, electricity, setup and Payment Pools have their own workflows; the
+  // generic transaction form would only compete with them there.
   const showRecord =
     section !== 'services' &&
     section !== 'housing' &&
     section !== 'settings' &&
-    section !== 'residents'
+    section !== 'residents' &&
+    section !== 'pools'
   // The month means nothing on setup and configuration screens, so the picker
-  // row is left out there altogether.
+  // row is left out there altogether. Payment Pools lists every month's
+  // payments with its own filters.
   const isConfigPage =
     section === 'housing' ||
     section === 'settings' ||
-    section === 'residents'
+    section === 'residents' ||
+    section === 'pools'
   const showPeriodBar = !onWizard && !isConfigPage
 
   return (
@@ -309,7 +321,7 @@ export function Layout({ children }: { children: ReactNode }) {
           {/* CENTER: the middle column of a three-column grid whose side columns
               are equal, so the tabs sit at the ribbon's midpoint and neither
               side can run into them: the name truncates inside its own column.
-              Below `md` five tabs do not fit beside the utilities, and they
+              Below `md` the tabs do not fit beside the utilities, and they
               take a row of their own. */}
           {!onWizard && (
             <nav
@@ -324,7 +336,7 @@ export function Layout({ children }: { children: ReactNode }) {
                     to={tab.to}
                     aria-current={active ? 'page' : undefined}
                     className={clsx(
-                      'max-md:flex-1 text-center px-2 md:px-2.5 lg:px-4 py-1.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer no-underline',
+                      'max-md:flex-1 text-center px-2 md:px-2.5 py-1.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer no-underline',
                       active
                         ? 'bg-[var(--accent)] text-white font-semibold shadow-xs'
                         : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]',

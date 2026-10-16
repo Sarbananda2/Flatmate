@@ -83,7 +83,7 @@ class DepositsRepository(Repository):
              created_at))
 
     def transactions_for_apartment(self, apartment_id: str) -> list[dict[str, Any]]:
-        """Every deposit transaction, oldest first."""
+        """Every deposit transaction, oldest first, with the order recorded."""
         return self._s.fetch_all(
-            "SELECT * FROM household_deposit_transaction WHERE apartment_id=%s "
-            "ORDER BY row_seq", (apartment_id,))
+            "SELECT *, row_seq AS recorded_order FROM household_deposit_transaction "
+            "WHERE apartment_id=%s ORDER BY row_seq", (apartment_id,))

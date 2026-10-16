@@ -125,6 +125,17 @@ class RentRepository(Repository):
             "SELECT * FROM rent_cycle WHERE apartment_id=%s AND settlement_month=%s",
             (apartment_id, settlement_month))
 
+    def disbursed_cycles(self, apartment_id: str) -> list[dict[str, Any]]:
+        """Months whose rent has been paid to the landlord, in the order paid,
+        with the name of the resident who advanced it, if one did."""
+        return self._s.fetch_all(
+            """SELECT rc.*, r.display_name AS funding_resident_name
+                 FROM rent_cycle rc
+                 LEFT JOIN resident r ON r.resident_id = rc.funding_resident_id
+                WHERE rc.apartment_id = %s AND rc.disbursement_status = 'disbursed'
+                ORDER BY rc.disbursed_at, rc.settlement_month""",
+            (apartment_id,))
+
     def insert_pending_cycle(self, *, cycle_id: str, apartment_id: str,
                              settlement_month: str, expense_id: str, total_rent_paise: int,
                              participant_count: int, created_at: str) -> None:

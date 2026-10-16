@@ -19,6 +19,8 @@ from aem.services import (
     apartments,
     deposits,
     expenses,
+    payments,
+    pool_statements,
     reconciliation,
     rent,
     residents,
@@ -324,3 +326,183 @@ def test_a_resident_who_owes_the_pool_is_asked_to_pay_the_pool(pool_funded):
         "flat402@okicici", "Flat 402 Kitty")
     assert statement["upi_uri"].startswith("upi://pay?pa=flat402@okicici&pn=Flat%20402%20Kitty&")
     assert "💳 Pay via UPI: flat402@okicici (Flat 402 Kitty)" in statement["whatsapp_text"]
+
+
+# ------------------------------------------------- the Payment Pools passbooks --
+
+def _deposit_paid(db, resident_id, party, paid_date, reference=None):
+    deposits.record_slot_funding(
+        db, _slot(_summary(db), resident_id)["slot_id"], apartment_id=APARTMENT,
+        amount_paise=SHARE, paid_date=paid_date, payment_method="upi",
+        payment_reference=reference, paid_to_party=party)
+
+
+def _leaves(db, resident_id, deduction, refund_date, reason):
+    deposits.vacate_and_settle_slot(
+        db, _slot(_summary(db), resident_id)["slot_id"], apartment_id=APARTMENT,
+        settlement_path="signatory_refund", deductions_paise=deduction,
+        refund_amount_paise=SHARE - deduction, refund_date=refund_date,
+        deduction_reason=reason)
+
+
+def _pay(db, payment_id, resident_id, amount, payment_date, kind="to_pool", **extra):
+    payments.record_payment(
+        db, apartment_id=APARTMENT, payment_id=payment_id, payer_resident_id=resident_id,
+        amount_paise=amount, payment_date=payment_date, payment_kind=kind, **extra)
+
+
+def _expense(db, expense_id, description, amount, expense_date, **extra):
+    expenses.create_expense(
+        db, apartment_id=APARTMENT, expense_id=expense_id, description=description,
+        amount_paise=amount, expense_date=expense_date, period_rule="transaction_date",
+        allocation_method="equal", **extra)
+
+
+@pytest.fixture()
+def passbooks(configured):
+    """Co-tenants with deposits paid to the landlord and to the kitty, two months'
+    rent paid to the landlord, the kitty's own payments in and out, and
+    household expenses paid by the kitty, by a resident, and by an advance."""
+    db = configured
+    rent.save_lease_config(db, APARTMENT, dict(LEASE))
+    _slots(db, "direct_co_tenants")                  # Room 1 Alice, 2 Bob, 3 Chris
+    _deposit_paid(db, "alice", "landlord", "2026-10-05", reference="UTR-A")
+    _deposit_paid(db, "chris", "pool", "2026-10-05")
+    _deposit_paid(db, "bob", "landlord", "2026-10-06")
+    _leaves(db, "chris", 1_000_000, "2026-10-10", "Broken window")     # the pool refunds
+    _leaves(db, "bob", 500_000, "2026-10-12", "Repainting")            # the landlord refunds
+    # Before any rent exists, so it is held as Bob's credit, not rent.
+    _pay(db, "bob-kitty", "bob", 100_000, "2026-11-01")
+    rent.generate_monthly_rent_cycle(db, APARTMENT, "2026-11")
+    rent.record_rent_payment(db, apartment_id=APARTMENT, settlement_month="2026-11",
+                             resident_id="alice", amount_paise=950_000,
+                             payment_date="2026-11-03", payment_mode="upi", reference="UPI-77")
+    rent.record_landlord_disbursement(db, apartment_id=APARTMENT, settlement_month="2026-11",
+                                      disbursement_mode="pool", reference="UTR-NOV",
+                                      disbursed_date="2026-11-04")
+    _expense(db, "broadband", "Broadband", 120_000, "2026-11-05", provider_name="ACT Fibernet")
+    _expense(db, "groceries", "Groceries", 60_000, "2026-11-05", payer_resident_id="alice")
+    _expense(db, "power-bill", "Electricity bill", 30_000, "2026-11-09")
+    _pay(db, "chris-back", "chris", 50_000, "2026-11-06", kind="refund")
+    _pay(db, "plumbing", "alice", 200_000, "2026-11-08", kind="provider_advance",
+         payee_or_provider="kumar yadav", note="Plumbing, paid to the landlord")
+    # Bob paid the electricity bill himself, so the kitty did not.
+    _pay(db, "power", "bob", 30_000, "2026-11-09", kind="provider_advance",
+         payee_or_provider="BESCOM", expense_id="power-bill")
+    rent.generate_monthly_rent_cycle(db, APARTMENT, "2026-12")
+    rent.record_landlord_disbursement(db, apartment_id=APARTMENT, settlement_month="2026-12",
+                                      disbursement_mode="resident_advance",
+                                      funding_resident_id="bob", reference="UTR-DEC",
+                                      disbursed_date="2026-12-04")
+    return db
+
+
+def _rows(statement):
+    return [(item["date"], item["category"], item["description"], item["counterparty_name"],
+             item["direction"], item["amount_paise"], item["balance_paise"])
+            for item in statement["items"]]
+
+
+def test_the_kitty_passbook_runs_its_balance_through_every_movement(passbooks):
+    pool = pool_statements.get_payment_pools_statement(passbooks, APARTMENT)["pool_statement"]
+    # The account keeps the name stored for it.
+    assert pool["account"] == {"instance_id": "__pool__", "name": "Household Pool"}
+    # Newest first; each balance is the kitty's after that entry.
+    assert _rows(pool) == [
+        ("2026-11-06", "Resident Refund", "Refund from House Kitty", "Chris", "out",
+         50_000, -970_000),
+        ("2026-11-05", "House Expense", "Broadband", "ACT Fibernet", "out",
+         120_000, -920_000),
+        ("2026-11-04", "Rent Payout", "Rent payout · November 2026", "Kumar Yadav", "out",
+         2_850_000, -800_000),
+        ("2026-11-03", "Rent Collection", "Rent for November 2026", "Alice", "in",
+         950_000, 2_050_000),
+        ("2026-11-01", "Kitty Payment", "Payment into House Kitty", "Bob", "in",
+         100_000, 1_100_000),
+        ("2026-10-10", "Deposit Refund", "Security deposit refunded · Room 3", "Chris", "out",
+         4_000_000, 1_000_000),
+        ("2026-10-05", "Security Deposit", "Security deposit funded · Room 3", "Chris", "in",
+         SHARE, SHARE),
+    ]
+    assert [item["seq"] for item in pool["items"]] == [7, 6, 5, 4, 3, 2, 1]
+    assert (pool["total_in_paise"], pool["total_out_paise"], pool["closing_balance_paise"]) == (
+        6_050_000, 7_020_000, -970_000)
+    rent_in = pool["items"][3]
+    assert (rent_in["payment_mode"], rent_in["reference"], rent_in["counterparty_resident_id"]) == (
+        "upi", "UPI-77", "alice")
+    assert rent_in["payment_id"] and rent_in["source_type"] == "payment"
+    # What the kitty kept from Chris's deposit never left it, so it is no movement.
+    assert all(item["category"] != "Deposit Deduction" for item in pool["items"])
+    # Only the kitty's own expenses: not Alice's groceries, not the bill Bob's
+    # advance paid, and not the rent, whose payout is already its own line.
+    broadband = pool["items"][1]
+    assert (broadband["entry_id"], broadband["source_type"]) == ("expense:broadband", "expense")
+    assert [item["description"] for item in pool["items"] if item["category"] == "House Expense"] == [
+        "Broadband"]
+
+
+def test_the_landlord_passbook_counts_rent_advances_and_the_deposit_held(passbooks):
+    landlord = pool_statements.get_payment_pools_statement(
+        passbooks, APARTMENT)["landlord_statement"]
+    assert landlord["account"] == {"instance_id": "__landlord__", "name": "Kumar Yadav"}
+    assert _rows(landlord) == [
+        ("2026-12-04", "Rent Payout", "Monthly rent · December 2026", "Bob (Advance)", "in",
+         2_850_000, 10_900_000),
+        ("2026-11-08", "Direct Advance", "Plumbing, paid to the landlord", "Alice", "in",
+         200_000, 8_050_000),
+        ("2026-11-04", "Rent Payout", "Monthly rent · November 2026", "House Kitty", "in",
+         2_850_000, 7_850_000),
+        ("2026-10-12", "Deposit Refund", "Deposit refunded by landlord · Room 2", "Bob", "out",
+         4_500_000, 5_000_000),
+        ("2026-10-12", "Deposit Deduction", "Deposit deduction · Room 2", "Bob", "out",
+         500_000, 9_500_000),
+        ("2026-10-06", "Security Deposit", "Security deposit · Room 2", "Bob", "in",
+         SHARE, 10_000_000),
+        ("2026-10-05", "Security Deposit", "Security deposit · Room 1", "Alice", "in",
+         SHARE, SHARE),
+    ]
+    # A payment to any other provider is not the landlord's.
+    assert all(item["counterparty_name"] != "Bob" or item["category"] != "Direct Advance"
+               for item in landlord["items"])
+    assert landlord["total_rent_paid_paise"] == 5_700_000
+    assert landlord["deposit_held_paise"] == 5_000_000            # Alice's, still held
+    assert (landlord["total_in_paise"], landlord["total_out_paise"]) == (15_900_000, 5_000_000)
+    assert landlord["closing_balance_paise"] == 10_900_000
+    december = landlord["items"][0]
+    assert december["payment_id"] and december["counterparty_resident_id"] == "bob"
+    assert landlord["items"][4]["note"] == "Repainting"
+
+
+def test_a_signatory_fronted_deposit_is_on_the_landlords_passbook(leased):
+    _slots(leased, "primary_signatory", "alice")
+    landlord = pool_statements.get_payment_pools_statement(
+        leased, APARTMENT)["landlord_statement"]
+    assert [(item["category"], item["description"], item["counterparty_name"],
+             item["amount_paise"]) for item in landlord["items"]] == [
+        ("Security Deposit", "Security deposit fronted by Alice", "Alice", MASTER)]
+    assert landlord["deposit_held_paise"] == MASTER
+    # Reimbursing the signatory is between flatmates: nothing reaches the landlord.
+    _fund(leased, "bob")
+    assert len(pool_statements.get_payment_pools_statement(
+        leased, APARTMENT)["landlord_statement"]["items"]) == 1
+
+
+def test_an_empty_flat_has_empty_passbooks(apartment):
+    statement = pool_statements.get_payment_pools_statement(apartment, APARTMENT)
+    assert statement["pool_statement"]["items"] == []
+    assert statement["pool_statement"]["closing_balance_paise"] == 0
+    assert statement["landlord_statement"]["account"]["name"] == "Landlord"
+    assert statement["landlord_statement"]["deposit_held_paise"] == 0
+
+
+def test_the_statement_endpoint_returns_both_passbooks(client):
+    client.post("/api/apartments", json={"apartment_id": APARTMENT, "name": "Flat 402"})
+    client.post("/api/residents", json={"resident_id": "alice", "display_name": "Alice"})
+    client.post("/api/payments", json={"payer_resident_id": "alice", "amount_paise": 250_000,
+                                       "payment_date": "2026-10-02", "payment_kind": "to_pool"})
+    response = client.get("/api/payments/pools/statement")
+    assert response.status_code == 200
+    body = response.json()
+    assert [(item["category"], item["balance_paise"]) for item in body["pool_statement"]["items"]] == [
+        ("Kitty Payment", 250_000)]
+    assert body["landlord_statement"]["items"] == []

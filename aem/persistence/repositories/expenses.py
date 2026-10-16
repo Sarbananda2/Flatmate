@@ -182,6 +182,24 @@ class ExpensesRepository(Repository):
         return self._s.fetch_one(
             "SELECT * FROM electricity_bill WHERE expense_id=%s", (expense_id,))
 
+    def kitty_paid_expenses(self, apartment_id: str) -> list[dict[str, Any]]:
+        """Expenses the house kitty paid for itself, oldest first, with the order
+        recorded: no resident is their payer, no active advance funds them, and
+        they are not a month's rent, which is paid out by its own rent cycle."""
+        return self._s.fetch_all(
+            """SELECT e.*, e.row_seq AS recorded_order
+                 FROM expense_instance e
+                WHERE e.apartment_id = %s AND e.payer_resident_id IS NULL
+                  AND e.amount_paise > 0
+                  AND NOT EXISTS (SELECT 1 FROM payment p
+                                   WHERE p.expense_id = e.expense_id
+                                     AND p.payment_kind = 'provider_advance'
+                                     AND p.status = 'active')
+                  AND NOT EXISTS (SELECT 1 FROM rent_cycle rc
+                                   WHERE rc.expense_id = e.expense_id)
+                ORDER BY e.expense_date, e.row_seq""",
+            (apartment_id,))
+
     def rent_cycle_for_expense(self, expense_id: str) -> dict[str, Any] | None:
         return self._s.fetch_one(
             "SELECT cycle_id, settlement_month, disbursement_status FROM rent_cycle "

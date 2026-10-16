@@ -10,11 +10,13 @@
  *
  * Reversals are mirrored entries, never edits, so the audit trail stays whole.
  *
- * The household pool's own account -- where residents send it money -- is
- * shown at the top, read-only, and edited in a dialog.
+ * The page is Payment Pools in the main navigation. At its top, side by side,
+ * are the two accounts money is paid into: the House Kitty's and the
+ * landlord's, each read-only and edited in a dialog named like its card.
  */
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { HelpCircle, SlidersHorizontal } from 'lucide-react'
 import { Page, useApp } from '../components/Layout'
 import {
   AsyncSection,
@@ -28,6 +30,7 @@ import {
   Money,
   Pagination,
   Stat,
+  type BadgeTone,
 } from '../components/Primitives'
 import { DateField, MoneyInput, SelectField, TextAreaField, TextField } from '../components/Form'
 import {
@@ -41,7 +44,7 @@ import {
 } from '../components/ui'
 import { useToast } from '../components/Toast'
 import { api, downloadCsv } from '../api/client'
-import { useDebounced, useMutation, useResource } from '../lib/useApi'
+import { type Resource, useDebounced, useMutation, useResource } from '../lib/useApi'
 import {
   ACCOUNT_MESSAGE,
   ACCOUNT_PATTERN,
@@ -58,9 +61,14 @@ import {
   formatMonth,
   todayIso,
 } from '../lib/format'
+import { ContactModal, useContacts } from './services/PropertyContacts'
 import type {
   AdjustmentRow,
   Apartment,
+  LandlordStatement,
+  PaymentPoolsStatement,
+  PoolStatement,
+  StatementEntry,
   CreditRow,
   ExpenseRow,
   Paged,
@@ -74,12 +82,31 @@ import type {
 } from '../api/types'
 
 const PAGE_SIZE = 25
-type Tab = 'payments' | 'credits' | 'advances' | 'adjustments'
+type Tab =
+  | 'pool_statement'
+  | 'landlord_statement'
+  | 'payments'
+  | 'credits'
+  | 'advances'
+  | 'adjustments'
+
+/** What a reversal needs to know about the payment it reverses. */
+type Reversible = Pick<PaymentRow, 'payment_id' | 'amount_paise'>
+
+/** How money moved, for any payment or deposit entry. */
+const MODE_LABELS: Record<string, string> = {
+  upi: 'UPI',
+  bank_transfer: 'Bank transfer',
+  cash: 'Cash',
+  other: 'Other',
+  direct_to_landlord: 'Direct to landlord',
+}
 
 export default function PaymentsPage() {
   const { apartment, reloadApartment } = useApp()
   const toast = useToast()
-  const [tab, setTab] = useState<Tab>('payments')
+  const [tab, setTab] = useState<Tab>('pool_statement')
+  const [explaining, setExplaining] = useState(false)
   const residents = useResource<{ items: Resident[] }>('/api/residents')
 
   const [search, setSearch] = useState('')
@@ -87,8 +114,11 @@ export default function PaymentsPage() {
   const [kind, setKind] = useState('')
   const [status, setStatus] = useState('')
   const [offset, setOffset] = useState(0)
+  const [filtersOpen, setFiltersOpen] = useState(false)
   const debouncedSearch = useDebounced(search)
 
+  // Both passbooks, which also feed the two accounts' balance strips.
+  const statement = useResource<PaymentPoolsStatement>('/api/payments/pools/statement')
   const payments = useResource<Paged<PaymentRow> & { total_amount_paise: number }>(
     '/api/payments',
     {
@@ -115,23 +145,30 @@ export default function PaymentsPage() {
   const [recording, setRecording] = useState<PaymentKind | null>(null)
   const [adjusting, setAdjusting] = useState(false)
   const [viewing, setViewing] = useState<string | null>(null)
-  const [reversing, setReversing] = useState<PaymentRow | null>(null)
+  const [reversing, setReversing] = useState<Reversible | null>(null)
   const [reversingAdjustment, setReversingAdjustment] = useState<AdjustmentRow | null>(null)
+  const [entry, setEntry] = useState<StatementEntry | null>(null)
 
   const refresh = () => {
+    statement.reload()
     payments.reload()
     credits.reload()
     advances.reload()
     adjustments.reload()
   }
+  const activeFilters = [search.trim(), residentId, kind, status].filter(Boolean).length
+  const poolName = apartment?.pool_name || 'House Kitty'
 
   return (
     <Page
-      title="Payments & credits"
-      subtitle="Money moving between residents, the household pool, and external providers. None of this is a household expense."
-      breadcrumbs={[{ label: 'Record' }, { label: 'Payments & credits' }]}
+      title="Payment Pools"
+      subtitle="The House Kitty and landlord payment accounts, and the payments, credits, advances, and adjustments recorded through them."
       actions={
         <>
+          <button type="button" className={BUTTON_SECONDARY} onClick={() => setExplaining(true)}>
+            <HelpCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            How it works
+          </button>
           <button type="button" className="btn" onClick={() => downloadCsv('/api/payments/export/csv')}>
             Export CSV
           </button>
@@ -146,7 +183,7 @@ export default function PaymentsPage() {
     >
       <div className="grid grid--stats">
         <Stat
-          label="Payments into the pool"
+          label="Payments into the kitty"
           value={formatInr(
             (payments.data?.items ?? [])
               .filter((row) => row.payment_kind === 'to_pool' && row.status === 'active')
@@ -178,37 +215,26 @@ export default function PaymentsPage() {
         />
       </div>
 
-      <HouseholdPoolCard apartment={apartment} onSaved={reloadApartment} />
-
-      <Callout tone="info" title="These are four different things">
-        <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
-          <li>
-            <strong>Into the pool</strong> — a resident hands money to the household. It settles
-            their oldest open charges first; anything left over stays a visible credit.
-          </li>
-          <li>
-            <strong>Paid a provider</strong> — a resident paid an external bill on the household's
-            behalf. <strong>Link it to the expense it funds</strong>; the linked advance then
-            replaces that expense's payer field, so the same rupee is credited once.
-          </li>
-          <li>
-            <strong>Refund</strong> — the pool pays money back out to a resident.
-          </li>
-          <li>
-            <strong>Adjustment</strong> — a signed correction. Positive credits the resident,
-            negative debits them. This is the only way to correct a closed statement.
-          </li>
-        </ul>
-        A resident paying another resident directly is two of these, not an expense: record it as a
-        payment into the pool plus a refund, or as a pair of adjustments.
-      </Callout>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <HouseholdPoolCard
+          apartment={apartment}
+          statement={statement.data?.pool_statement}
+          onSaved={() => {
+            reloadApartment()
+            statement.reload()
+          }}
+        />
+        <LandlordAccountCard statement={statement.data?.landlord_statement} onSaved={statement.reload} />
+      </div>
 
       <div className="tabs" role="tablist" aria-label="Payment views">
         {(
           [
-            ['payments', 'All payments'],
-            ['credits', `Unapplied credits${credits.data ? ` (${credits.data.items.length})` : ''}`],
-            ['advances', `Provider advances${advances.data ? ` (${advances.data.items.length})` : ''}`],
+            ['pool_statement', 'House Kitty Statement'],
+            ['landlord_statement', 'Landlord Statement'],
+            ['payments', 'All Payments'],
+            ['credits', `Unapplied Credits${credits.data ? ` (${credits.data.items.length})` : ''}`],
+            ['advances', `Provider Advances${advances.data ? ` (${advances.data.items.length})` : ''}`],
             ['adjustments', `Adjustments${adjustments.data ? ` (${adjustments.data.total})` : ''}`],
           ] as Array<[Tab, string]>
         ).map(([value, label]) => (
@@ -225,137 +251,176 @@ export default function PaymentsPage() {
         ))}
       </div>
 
-      {tab === 'payments' && (
-        <>
-          <Card title="Filters">
-            <div className="filters">
-              <TextField
-                label="Search"
-                type="search"
-                value={search}
-                onChange={(value) => {
-                  setSearch(value)
-                  setOffset(0)
-                }}
-                placeholder="Provider, reference, note…"
-              />
-              <SelectField
-                label="Resident"
-                value={residentId}
-                options={(residents.data?.items ?? []).map((resident) => ({
-                  value: resident.resident_id,
-                  label: resident.display_name,
-                }))}
-                onChange={(value) => {
-                  setResidentId(value)
-                  setOffset(0)
-                }}
-                placeholder="Anyone"
-              />
-              <SelectField
-                label="Kind"
-                value={kind}
-                options={[
-                  { value: 'to_pool', label: PAYMENT_KIND_LABELS.to_pool },
-                  { value: 'provider_advance', label: PAYMENT_KIND_LABELS.provider_advance },
-                  { value: 'refund', label: PAYMENT_KIND_LABELS.refund },
-                  { value: 'adjustment', label: PAYMENT_KIND_LABELS.adjustment },
-                ]}
-                onChange={(value) => {
-                  setKind(value)
-                  setOffset(0)
-                }}
-                placeholder="All kinds"
-              />
-              <SelectField
-                label="Status"
-                value={status}
-                options={[
-                  { value: 'active', label: 'Active' },
-                  { value: 'reversed', label: 'Reversed' },
-                  { value: 'reversal', label: 'Reversal entries' },
-                ]}
-                onChange={(value) => {
-                  setStatus(value)
-                  setOffset(0)
-                }}
-                placeholder="All statuses"
-              />
-            </div>
-          </Card>
+      {tab === 'pool_statement' && (
+        <StatementPanel
+          title="House Kitty Statement"
+          hint="Every rupee into and out of the House Kitty, newest first, with the balance after each."
+          resource={statement}
+          pick={(data) => data.pool_statement}
+          residents={residents.data?.items ?? []}
+          onOpen={setEntry}
+        />
+      )}
+      {tab === 'landlord_statement' && (
+        <StatementPanel
+          title="Landlord Statement"
+          hint="Everything paid to the landlord, and what they have handed back or kept from a deposit."
+          resource={statement}
+          pick={(data) => data.landlord_statement}
+          residents={residents.data?.items ?? []}
+          onOpen={setEntry}
+        />
+      )}
 
-          <Card
-            title="Payments"
-            hint={
-              payments.data
-                ? `${payments.data.total} matching · ${formatInr(payments.data.total_amount_paise)} in total`
-                : undefined
-            }
-            flush
-            footer={
-              payments.data ? (
-                <Pagination
-                  total={payments.data.total}
-                  limit={PAGE_SIZE}
-                  offset={offset}
-                  onChange={setOffset}
-                  noun="payments"
+      {tab === 'payments' && (
+        <Card
+          title="All Payments"
+          hint={
+            payments.data
+              ? `${payments.data.total} matching · ${formatInr(payments.data.total_amount_paise)} in total`
+              : undefined
+          }
+          flush
+          actions={
+            <button
+              type="button"
+              className="btn btn--sm"
+              aria-expanded={filtersOpen}
+              onClick={() => setFiltersOpen((open) => !open)}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              Filters{activeFilters > 0 ? ` (${activeFilters})` : ''}
+            </button>
+          }
+          footer={
+            payments.data ? (
+              <Pagination
+                total={payments.data.total}
+                limit={PAGE_SIZE}
+                offset={offset}
+                onChange={setOffset}
+                noun="payments"
+              />
+            ) : undefined
+          }
+        >
+          {filtersOpen && (
+            <div className="p-4 border-b border-[var(--border-subtle)]">
+              <div className="filters">
+                <TextField
+                  label="Search"
+                  type="search"
+                  value={search}
+                  onChange={(value) => {
+                    setSearch(value)
+                    setOffset(0)
+                  }}
+                  placeholder="Provider, reference, note…"
                 />
-              ) : undefined
+                <SelectField
+                  label="Resident"
+                  value={residentId}
+                  options={(residents.data?.items ?? []).map((resident) => ({
+                    value: resident.resident_id,
+                    label: resident.display_name,
+                  }))}
+                  onChange={(value) => {
+                    setResidentId(value)
+                    setOffset(0)
+                  }}
+                  placeholder="Anyone"
+                />
+                <SelectField
+                  label="Kind"
+                  value={kind}
+                  options={[
+                    { value: 'to_pool', label: PAYMENT_KIND_LABELS.to_pool },
+                    { value: 'provider_advance', label: PAYMENT_KIND_LABELS.provider_advance },
+                    { value: 'refund', label: PAYMENT_KIND_LABELS.refund },
+                    { value: 'adjustment', label: PAYMENT_KIND_LABELS.adjustment },
+                  ]}
+                  onChange={(value) => {
+                    setKind(value)
+                    setOffset(0)
+                  }}
+                  placeholder="All kinds"
+                />
+                <SelectField
+                  label="Status"
+                  value={status}
+                  options={[
+                    { value: 'active', label: 'Active' },
+                    { value: 'reversed', label: 'Reversed' },
+                    { value: 'reversal', label: 'Reversal entries' },
+                  ]}
+                  onChange={(value) => {
+                    setStatus(value)
+                    setOffset(0)
+                  }}
+                  placeholder="All statuses"
+                />
+              </div>
+            </div>
+          )}
+          <AsyncSection
+            resource={payments}
+            isEmpty={(data) => data.items.length === 0}
+            empty={
+              <EmptyState
+                title="No payments match"
+                body="Record a resident's payment into the kitty, or a bill they paid for the household."
+                action={
+                  <button
+                    type="button"
+                    className="btn btn--primary"
+                    onClick={() => setRecording('to_pool')}
+                  >
+                    Record a payment
+                  </button>
+                }
+              />
             }
           >
-            <AsyncSection
-              resource={payments}
-              isEmpty={(data) => data.items.length === 0}
-              empty={
-                <EmptyState
-                  title="No payments match"
-                  body="Record a resident's payment into the pool, or a bill they paid for the household."
-                  action={
-                    <button
-                      type="button"
-                      className="btn btn--primary"
-                      onClick={() => setRecording('to_pool')}
-                    >
-                      Record a payment
-                    </button>
-                  }
-                />
-              }
-            >
-              {(data) => (
-                <div className="table-scroll">
-                  <table className="data">
-                    <caption className="sr-only">Payments</caption>
-                    <thead>
-                      <tr>
-                        <th scope="col">Date</th>
-                        <th scope="col">Resident</th>
-                        <th scope="col">Kind</th>
-                        <th scope="col">Counterparty</th>
-                        <th scope="col" className="num">
-                          Amount
-                        </th>
-                        <th scope="col" className="num">
-                          Applied
-                        </th>
-                        <th scope="col" className="num">
-                          Credit left
-                        </th>
-                        <th scope="col">Status</th>
-                        <th scope="col">
-                          <span className="sr-only">Actions</span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.items.map((payment) => (
-                        <tr key={payment.payment_id}>
-                          <td className="nowrap">{formatDate(payment.payment_date)}</td>
-                          <th scope="row">
-                            <Link to={`/residents/${payment.payer_resident_id}`}>
-                              {payment.payer_display_name ?? payment.payer_resident_id}
-                            </Link>
+            {(data) => (
+              <div className="table-scroll">
+                <table className="data">
+                  <caption className="sr-only">Payments</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Date</th>
+                      <th scope="col">Resident</th>
+                      <th scope="col">Kind</th>
+                      <th scope="col">Counterparty</th>
+                      <th scope="col" className="num">
+                        Amount
+                      </th>
+                      <th scope="col">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.items.map((payment) => {
+                      const name = payment.payer_display_name ?? payment.payer_resident_id
+                      const kindLabel = PAYMENT_KIND_LABELS[payment.payment_kind] ?? payment.payment_kind
+                      return (
+                        // The whole row opens the payment. The date's button holds
+                        // the keyboard focus, and its click reaches the row.
+                        <tr
+                          key={payment.payment_id}
+                          className="cursor-pointer"
+                          onClick={() => setViewing(payment.payment_id)}
+                        >
+                          <td className="nowrap">
+                            <button
+                              type="button"
+                              aria-haspopup="dialog"
+                              aria-label={`Payment details: ${name}, ${kindLabel}, ${formatDate(payment.payment_date)}, ${formatInr(payment.amount_paise)}`}
+                              className="rounded tabular cursor-pointer"
+                            >
+                              {formatDate(payment.payment_date)}
+                            </button>
+                          </td>
+                          <th scope="row" className="nowrap">
+                            {name}
                           </th>
                           <td>
                             <Badge
@@ -367,74 +432,27 @@ export default function PaymentsPage() {
                                     : 'warn'
                               }
                             >
-                              {PAYMENT_KIND_LABELS[payment.payment_kind] ?? payment.payment_kind}
+                              {kindLabel}
                             </Badge>
                           </td>
-                          <td>
-                            {payment.payee_or_provider ?? 'Household pool'}
-                            {payment.expense_id && (
-                              <div className="subtle">
-                                funds: {payment.linked_expense_description ?? payment.expense_id}
-                              </div>
-                            )}
-                            {payment.payment_kind === 'provider_advance' && !payment.expense_id && (
-                              <div>
-                                <Badge tone="warn">not linked to an expense</Badge>
-                              </div>
-                            )}
-                          </td>
+                          <td>{payment.payee_or_provider ?? poolName}</td>
                           <td className="num">
                             <Money paise={payment.amount_paise} />
-                          </td>
-                          <td className="num">
-                            <Money paise={payment.applied_paise} />
-                            {payment.application_count > 0 && (
-                              <div className="subtle">
-                                {payment.application_count} charge
-                                {payment.application_count === 1 ? '' : 's'}
-                              </div>
-                            )}
-                          </td>
-                          <td className="num">
-                            <Money
-                              paise={payment.unapplied_paise}
-                              tone={payment.unapplied_paise ? 'credit' : 'plain'}
-                            />
                           </td>
                           <td>
                             <Badge tone={payment.status === 'active' ? 'ok' : 'neutral'}>
                               {payment.status}
                             </Badge>
                           </td>
-                          <td>
-                            <div className="row" style={{ gap: 6 }}>
-                              <button
-                                type="button"
-                                className="btn btn--sm"
-                                onClick={() => setViewing(payment.payment_id)}
-                              >
-                                Details
-                              </button>
-                              {payment.status === 'active' && (
-                                <button
-                                  type="button"
-                                  className="btn btn--sm"
-                                  onClick={() => setReversing(payment)}
-                                >
-                                  Reverse
-                                </button>
-                              )}
-                            </div>
-                          </td>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </AsyncSection>
-          </Card>
-        </>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </AsyncSection>
+        </Card>
       )}
 
       {tab === 'credits' && (
@@ -770,7 +788,32 @@ export default function PaymentsPage() {
           }}
         />
       )}
-      {viewing && <PaymentDetailDialog paymentId={viewing} onClose={() => setViewing(null)} />}
+      {viewing && (
+        <PaymentDetailDialog
+          paymentId={viewing}
+          onClose={() => setViewing(null)}
+          onReverse={(payment) => {
+            setViewing(null)
+            setReversing(payment)
+          }}
+        />
+      )}
+      {entry && (
+        <StatementEntryDialog
+          entry={entry}
+          accountName={
+            entry.account === 'pool'
+              ? (statement.data?.pool_statement.account.name ?? poolName)
+              : (statement.data?.landlord_statement.account.name ?? 'Landlord')
+          }
+          onClose={() => setEntry(null)}
+          onViewPayment={(paymentId) => {
+            setEntry(null)
+            setViewing(paymentId)
+          }}
+        />
+      )}
+      {explaining && <HowItWorksDialog onClose={() => setExplaining(false)} />}
       {reversing && (
         <ReversePaymentDialog
           payment={reversing}
@@ -797,16 +840,22 @@ export default function PaymentsPage() {
   )
 }
 
-/* ------------------------------------------------------- the household pool -- */
+/* ---------------------------------------------------------- the house kitty -- */
 
-const POOL_TITLE = 'Household Pool Account'
+const POOL_TITLE = 'House Kitty Account'
 
-/** The household pool's account, read-only, with its own Edit. */
+/** The three running totals at the foot of each account card. */
+const BALANCE_STRIP = 'm-0 border-t border-[var(--border-subtle)] pt-3 mt-1 grid grid-cols-3 gap-2 text-xs'
+
+/** The House Kitty's account, read-only, with its own Edit. */
 export function HouseholdPoolCard({
   apartment,
+  statement,
   onSaved,
 }: {
   apartment: Apartment | null
+  /** The kitty's passbook, for the balance strip; left out until it loads. */
+  statement?: PoolStatement | null
   onSaved: () => void
 }) {
   const [editing, setEditing] = useState(false)
@@ -816,11 +865,11 @@ export function HouseholdPoolCard({
   return (
     <Panel
       title={POOL_TITLE}
-      hint="Where residents send pool payments, rent shares, and settlement transfers."
-      actions={<EditButton label="Edit household pool" onClick={() => setEditing(true)} />}
+      hint="Where residents send kitty payments, rent shares, and settlement transfers."
+      actions={<EditButton label="Edit house kitty" onClick={() => setEditing(true)} />}
     >
-      <dl aria-label="Household pool account" className="m-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
-        <DetailFact label="Pool Name">{apartment.pool_name || 'Household Pool'}</DetailFact>
+      <dl aria-label="House kitty account" className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+        <DetailFact label="Kitty Name">{apartment.pool_name || 'House Kitty'}</DetailFact>
         <DetailFact label="Bank Account">
           {apartment.pool_bank_account ? <span className="tabular">{apartment.pool_bank_account}</span> : notRecorded}
         </DetailFact>
@@ -838,6 +887,23 @@ export function HouseholdPoolCard({
           )}
         </DetailFact>
       </dl>
+      {statement && (
+        <dl aria-label="House kitty balance" className={BALANCE_STRIP}>
+          <DetailFact label="Total In (+)">
+            <span className="tabular font-semibold text-[var(--success)]">
+              {formatInr(statement.total_in_paise)}
+            </span>
+          </DetailFact>
+          <DetailFact label="Total Out (−)">
+            <span className="tabular font-semibold text-[var(--danger)]">
+              {formatInr(statement.total_out_paise)}
+            </span>
+          </DetailFact>
+          <DetailFact label="Kitty Balance">
+            <span className="tabular font-bold">{formatInr(statement.closing_balance_paise)}</span>
+          </DetailFact>
+        </dl>
+      )}
       {editing && (
         <HouseholdPoolModal
           apartment={apartment}
@@ -845,7 +911,7 @@ export function HouseholdPoolCard({
           onSaved={() => {
             setEditing(false)
             onSaved()
-            toast.success('Household pool saved')
+            toast.success('House kitty saved')
           }}
         />
       )}
@@ -862,14 +928,14 @@ function HouseholdPoolModal({
   onClose: () => void
   onSaved: () => void
 }) {
-  const [name, setName] = useState(apartment.pool_name || 'Household Pool')
+  const [name, setName] = useState(apartment.pool_name || 'House Kitty')
   const [account, setAccount] = useState(apartment.pool_bank_account ?? '')
   const [ifsc, setIfsc] = useState(apartment.pool_bank_ifsc ?? '')
   const [upi, setUpi] = useState(apartment.pool_upi_id ?? '')
   const [submitted, setSubmitted] = useState(false)
   const errors = {
     name: !name.trim()
-      ? 'Give the pool a name.'
+      ? 'Give the kitty a name.'
       : name.trim().length > 200
         ? 'Keep it to 200 characters.'
         : null,
@@ -893,21 +959,21 @@ function HouseholdPoolModal({
   return (
     <Modal
       title={POOL_TITLE}
-      description="Where residents send the household pool its money. Bank details and the UPI ID are optional."
+      description="Where residents send the House Kitty its money. Bank details and the UPI ID are optional."
       onClose={onClose}
       footer={
         <>
           <button type="button" className={BUTTON_SECONDARY} onClick={onClose} disabled={save.pending}>
             Cancel
           </button>
-          <button type="submit" form="household-pool-form" className={BUTTON_PRIMARY} disabled={save.pending}>
+          <button type="submit" form="house-kitty-form" className={BUTTON_PRIMARY} disabled={save.pending}>
             {save.pending ? 'Saving…' : 'Save Changes'}
           </button>
         </>
       }
     >
       <form
-        id="household-pool-form"
+        id="house-kitty-form"
         className="stack"
         noValidate
         onSubmit={(event) => {
@@ -918,7 +984,7 @@ function HouseholdPoolModal({
       >
         {save.error && <ErrorNotice error={save.error} />}
         <TextField
-          label="Pool Name"
+          label="Kitty Name"
           value={name}
           onChange={setName}
           required
@@ -955,6 +1021,420 @@ function HouseholdPoolModal({
   )
 }
 
+/* ------------------------------------------------------------- the landlord -- */
+
+const LANDLORD_TITLE = 'Landlord Account'
+
+/**
+ * The landlord's account, read-only, with its own Edit. The lease and the
+ * owner contact hold the same details, kept in step by the backend; the
+ * lease's are shown first, the contact's where the lease has none.
+ */
+export function LandlordAccountCard({
+  statement,
+  onSaved,
+}: {
+  /** The landlord's passbook, for the balance strip; left out until it loads. */
+  statement?: LandlordStatement | null
+  onSaved?: () => void
+} = {}) {
+  const lease = useResource<{ config: RentLeaseConfig | null }>('/api/rent/config')
+  const contacts = useContacts()
+  const [editing, setEditing] = useState(false)
+  const toast = useToast()
+  const config = lease.data?.config ?? null
+  const owner = contacts.data?.items.find((contact) => contact.role === 'owner') ?? null
+  const notRecorded = <span className="text-[var(--text-tertiary)]">Not recorded</span>
+  const name = config?.landlord_name || owner?.name
+  const account = config?.landlord_bank_account || owner?.bank_account_no
+  const ifsc = config?.landlord_bank_ifsc || owner?.bank_ifsc
+  const upi = config?.landlord_upi_id || owner?.upi_id
+  return (
+    <Panel
+      title={LANDLORD_TITLE}
+      hint="Where rent and direct security deposits are paid under the master lease."
+      // Edited once the owner contact is known, so a second owner is never made.
+      actions={contacts.data ? <EditButton label="Edit landlord" onClick={() => setEditing(true)} /> : undefined}
+    >
+      <dl aria-label="Landlord account" className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+        <DetailFact label="Landlord Name">{name || notRecorded}</DetailFact>
+        <DetailFact label="Bank Account">
+          {account ? <span className="tabular">{account}</span> : notRecorded}
+        </DetailFact>
+        <DetailFact label="IFSC">{ifsc ? <span className="tabular">{ifsc}</span> : notRecorded}</DetailFact>
+        <DetailFact label="UPI ID">
+          {upi ? (
+            <span className="flex items-center gap-2 min-w-0">
+              <span className="truncate">{upi}</span>
+              <CopyButton text={upi} label="Copy UPI ID" iconOnly />
+            </span>
+          ) : (
+            notRecorded
+          )}
+        </DetailFact>
+      </dl>
+      {statement && (
+        <dl aria-label="Landlord balance" className={BALANCE_STRIP}>
+          <DetailFact label="Rent Paid">
+            <span className="tabular font-semibold">{formatInr(statement.total_rent_paid_paise)}</span>
+          </DetailFact>
+          <DetailFact label="Deposit Held">
+            <span className="tabular font-semibold">{formatInr(statement.deposit_held_paise)}</span>
+          </DetailFact>
+          <DetailFact label="Total Paid">
+            <span className="tabular font-bold">{formatInr(statement.total_in_paise)}</span>
+          </DetailFact>
+        </dl>
+      )}
+      {editing && (
+        <ContactModal
+          contact={owner}
+          title={LANDLORD_TITLE}
+          fixedRole="owner"
+          onClose={() => setEditing(false)}
+          onDone={(saved) => {
+            setEditing(false)
+            contacts.reload()
+            lease.reload()
+            onSaved?.()
+            toast.success(`${saved.name} saved`)
+          }}
+        />
+      )}
+    </Panel>
+  )
+}
+
+/* ---------------------------------------------------------- the passbooks -- */
+
+/** In green, payouts in the accent, and money handed back or kept in amber. */
+function categoryTone(entry: StatementEntry): BadgeTone {
+  if (entry.category === 'Rent Payout') return 'accent'
+  return entry.direction === 'in' ? 'ok' : 'warn'
+}
+
+/**
+ * One account's passbook: date, particulars, counterparty, money in, money out
+ * and the balance after each line, newest first. A row opens the entry in
+ * full; the filters, hidden until asked for, narrow what is listed.
+ */
+function StatementPanel({
+  title,
+  hint,
+  resource,
+  pick,
+  residents,
+  onOpen,
+}: {
+  title: string
+  hint: string
+  resource: Resource<PaymentPoolsStatement>
+  pick: (data: PaymentPoolsStatement) => PoolStatement
+  residents: Resident[]
+  onOpen: (entry: StatementEntry) => void
+}) {
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [direction, setDirection] = useState('')
+  const [residentId, setResidentId] = useState('')
+  const [category, setCategory] = useState('')
+  const activeFilters = [search.trim(), direction, residentId, category].filter(Boolean).length
+  return (
+    <Card
+      title={title}
+      hint={hint}
+      flush
+      actions={
+        <button
+          type="button"
+          className="btn btn--sm"
+          aria-expanded={filtersOpen}
+          onClick={() => setFiltersOpen((open) => !open)}
+        >
+          <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+          Filters{activeFilters > 0 ? ` (${activeFilters})` : ''}
+        </button>
+      }
+    >
+      <AsyncSection resource={resource}>
+        {(data) => {
+          const statement = pick(data)
+          const categories = [...new Set(statement.items.map((item) => item.category))].sort()
+          const needle = search.trim().toLowerCase()
+          const rows = statement.items.filter(
+            (item) =>
+              (!direction || item.direction === direction) &&
+              (!residentId || item.counterparty_resident_id === residentId) &&
+              (!category || item.category === category) &&
+              (!needle ||
+                [item.description, item.counterparty_name, item.reference, item.category]
+                  .filter(Boolean)
+                  .some((text) => text!.toLowerCase().includes(needle))),
+          )
+          return (
+            <>
+              {filtersOpen && (
+                <div className="p-4 border-b border-[var(--border-subtle)]">
+                  <div className="filters">
+                    <TextField
+                      label="Search"
+                      type="search"
+                      value={search}
+                      onChange={setSearch}
+                      placeholder="Particulars, counterparty, reference…"
+                    />
+                    <SelectField
+                      label="Resident"
+                      value={residentId}
+                      options={residents.map((resident) => ({
+                        value: resident.resident_id,
+                        label: resident.display_name,
+                      }))}
+                      onChange={setResidentId}
+                      placeholder="Anyone"
+                    />
+                    <SelectField
+                      label="Direction"
+                      value={direction}
+                      options={[
+                        { value: 'in', label: 'In / Credit (+)' },
+                        { value: 'out', label: 'Out / Debit (−)' },
+                      ]}
+                      onChange={setDirection}
+                      placeholder="In and out"
+                    />
+                    <SelectField
+                      label="Category"
+                      value={category}
+                      options={categories.map((value) => ({ value, label: value }))}
+                      onChange={setCategory}
+                      placeholder="All categories"
+                    />
+                  </div>
+                </div>
+              )}
+              {statement.items.length === 0 ? (
+                <EmptyState
+                  title="No entries yet"
+                  body="Payments, rent payouts and deposits appear here as they are recorded."
+                />
+              ) : rows.length === 0 ? (
+                <EmptyState title="No entries match" body="Clear a filter to see more of the statement." />
+              ) : (
+                <div className="table-scroll">
+                  <table className="data">
+                    <caption className="sr-only">{title}</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Date</th>
+                        <th scope="col">Particulars</th>
+                        <th scope="col">Counterparty</th>
+                        <th scope="col" className="num">
+                          In / Credit (+)
+                        </th>
+                        <th scope="col" className="num">
+                          Out / Debit (−)
+                        </th>
+                        <th scope="col" className="num">
+                          Balance
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((item) => (
+                        // The whole row opens the entry. The date's button holds the
+                        // keyboard focus, and its click reaches the row.
+                        <tr key={item.entry_id} className="cursor-pointer" onClick={() => onOpen(item)}>
+                          <td className="nowrap">
+                            <button
+                              type="button"
+                              aria-haspopup="dialog"
+                              aria-label={`Entry details: ${item.category}, ${formatDate(item.date)}, ${formatInr(item.amount_paise)}`}
+                              className="rounded tabular cursor-pointer"
+                            >
+                              {formatDate(item.date)}
+                            </button>
+                          </td>
+                          <td>
+                            {/* The category over the description keeps the column narrow. */}
+                            <span className="flex flex-col items-start gap-1 min-w-0">
+                              <Badge tone={categoryTone(item)}>{item.category}</Badge>
+                              <span className="block truncate max-w-[15rem]" title={item.description}>
+                                {item.description}
+                              </span>
+                            </span>
+                          </td>
+                          <td className="nowrap">
+                            <span className="block truncate max-w-[9rem]" title={item.counterparty_name ?? undefined}>
+                              {item.counterparty_name ?? '—'}
+                            </span>
+                          </td>
+                          <td className="num">
+                            {item.direction === 'in' ? (
+                              <Money paise={item.amount_paise} tone="auto" sign="always" />
+                            ) : (
+                              <span className="subtle">—</span>
+                            )}
+                          </td>
+                          <td className="num">
+                            {item.direction === 'out' ? (
+                              <Money paise={-item.amount_paise} tone="auto" sign="always" />
+                            ) : (
+                              <span className="subtle">—</span>
+                            )}
+                          </td>
+                          <td className="num font-bold">
+                            <Money paise={item.balance_paise} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td colSpan={3}>Totals and closing balance</td>
+                        <td className="num">
+                          <Money paise={statement.total_in_paise} tone="auto" sign="always" />
+                        </td>
+                        <td className="num">
+                          <Money paise={-statement.total_out_paise} tone="auto" sign="always" />
+                        </td>
+                        <td className="num font-bold">
+                          <Money paise={statement.closing_balance_paise} />
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </>
+          )
+        }}
+      </AsyncSection>
+    </Card>
+  )
+}
+
+/** One passbook line in full, read-only, with the way to the payment behind it. */
+function StatementEntryDialog({
+  entry,
+  accountName,
+  onClose,
+  onViewPayment,
+}: {
+  entry: StatementEntry
+  accountName: string
+  onClose: () => void
+  onViewPayment: (paymentId: string) => void
+}) {
+  const notRecorded = <span className="text-[var(--text-tertiary)]">Not recorded</span>
+  return (
+    <Modal
+      title="Statement Entry"
+      description={`${accountName} · ${formatDate(entry.date)}`}
+      onClose={onClose}
+      footer={
+        <>
+          {entry.payment_id && (
+            <button type="button" className={BUTTON_SECONDARY} onClick={() => onViewPayment(entry.payment_id!)}>
+              View payment
+            </button>
+          )}
+          <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
+            Close
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 flex items-center justify-between gap-3">
+          <Badge tone={categoryTone(entry)}>{entry.category}</Badge>
+          <span className="text-base font-bold">
+            <Money
+              paise={entry.direction === 'in' ? entry.amount_paise : -entry.amount_paise}
+              tone="auto"
+              sign="always"
+            />
+          </span>
+        </div>
+        <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
+          <DetailFact label="Date">{formatDate(entry.date)}</DetailFact>
+          <DetailFact label="Account">{accountName}</DetailFact>
+          <DetailFact label="Category">{entry.category}</DetailFact>
+          <DetailFact label="Direction">
+            {entry.direction === 'in' ? 'In / Credit (+)' : 'Out / Debit (−)'}
+          </DetailFact>
+          <DetailFact label="Description" className="sm:col-span-2">
+            {entry.description}
+          </DetailFact>
+          <DetailFact label="Counterparty">{entry.counterparty_name ?? '—'}</DetailFact>
+          <DetailFact label="Amount">
+            <span className="tabular">{formatInr(entry.amount_paise)}</span>
+          </DetailFact>
+          <DetailFact label="Running Balance">
+            <span className="tabular">{formatInr(entry.balance_paise)}</span>
+          </DetailFact>
+          <DetailFact label="Payment Mode">
+            {entry.payment_mode ? (MODE_LABELS[entry.payment_mode] ?? entry.payment_mode) : notRecorded}
+          </DetailFact>
+          <DetailFact label="Reference / UTR" className="sm:col-span-2">
+            {entry.reference ? <span className="font-mono break-all">{entry.reference}</span> : notRecorded}
+          </DetailFact>
+          {entry.note && entry.note !== entry.description && (
+            <DetailFact label="Note" className="sm:col-span-2">
+              <span className="whitespace-pre-wrap break-words">{entry.note}</span>
+            </DetailFact>
+          )}
+        </dl>
+      </div>
+    </Modal>
+  )
+}
+
+/** What the four kinds of record are, kept off the page until asked for. */
+function HowItWorksDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <Modal
+      title="How Payment Pools & Transfers Work"
+      onClose={onClose}
+      footer={
+        <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
+          Close
+        </button>
+      }
+    >
+      <div className="stack text-sm">
+        <p className="m-0">
+          Money moves through two accounts: the House Kitty, which residents pay into, and the
+          landlord, who is paid the rent and holds the deposit. Each has its own statement here.
+          None of this is a household expense. There are four kinds of record:
+        </p>
+        <ul className="m-0 pl-5 space-y-1.5">
+          <li>
+            <strong>Into the pool</strong> — a resident hands money to the household. It settles
+            their oldest open charges first; anything left over stays a visible credit.
+          </li>
+          <li>
+            <strong>Paid a provider</strong> — a resident paid an external bill on the household's
+            behalf. <strong>Link it to the expense it funds</strong>; the linked advance then
+            replaces that expense's payer field, so the same rupee is credited once.
+          </li>
+          <li>
+            <strong>Refund</strong> — the kitty pays money back out to a resident.
+          </li>
+          <li>
+            <strong>Adjustment</strong> — a signed correction. Positive credits the resident,
+            negative debits them. This is the only way to correct a closed statement.
+          </li>
+        </ul>
+        <p className="m-0">
+          A resident paying another resident directly is two of these, not an expense: record it as
+          a payment into the kitty plus a refund, or as a pair of adjustments.
+        </p>
+      </div>
+    </Modal>
+  )
+}
+
 /* -------------------------------------------------------- recording payments -- */
 
 export function PaymentDialog({
@@ -973,7 +1453,7 @@ export function PaymentDialog({
   const landlord = lease.data?.config ?? null
   // A provider advance can be paid to the landlord, whose details are on the lease.
   const [provider, setProvider] = useState<'landlord' | 'other'>('other')
-  const poolName = apartment?.pool_name || 'Household Pool'
+  const poolName = apartment?.pool_name || 'House Kitty'
   const [kind, setKind] = useState<PaymentKind>(initialKind)
   const [payer, setPayer] = useState('')
   const [amountRaw, setAmountRaw] = useState('')
@@ -1085,7 +1565,7 @@ export function PaymentDialog({
                 ? 'Applied to this resident’s oldest open charges first; any excess stays a credit.'
                 : kind === 'provider_advance'
                   ? 'Funds a household expense. Link it below.'
-                  : 'The pool pays money back out to this resident.'
+                  : 'The kitty pays money back out to this resident.'
             }
           />
           <SelectField
@@ -1156,7 +1636,7 @@ export function PaymentDialog({
             bankAccount={apartment?.pool_bank_account}
             bankIfsc={apartment?.pool_bank_ifsc}
             upiId={apartment?.pool_upi_id}
-            missing="No bank account or UPI ID is recorded for the household pool yet. Add them under Household Pool Account on this page."
+            missing="No bank account or UPI ID is recorded for the House Kitty yet. Add them under House Kitty Account on this page."
           />
         )}
         {kind === 'provider_advance' && landlord && provider === 'landlord' && (
@@ -1227,8 +1707,18 @@ export function PaymentDialog({
   )
 }
 
-function PaymentDetailDialog({ paymentId, onClose }: { paymentId: string; onClose: () => void }) {
+function PaymentDetailDialog({
+  paymentId,
+  onClose,
+  onReverse,
+}: {
+  paymentId: string
+  onClose: () => void
+  /** Offered only while the payment is active. */
+  onReverse?: (payment: Reversible) => void
+}) {
   const resource = useResource<PaymentDetail>(`/api/payments/${encodeURIComponent(paymentId)}`)
+  const active = resource.data?.status === 'active'
   return (
     <Modal
       title="Payment"
@@ -1236,9 +1726,22 @@ function PaymentDetailDialog({ paymentId, onClose }: { paymentId: string; onClos
       onClose={onClose}
       wide
       footer={
-        <button type="button" className="btn" onClick={onClose}>
-          Close
-        </button>
+        <>
+          {onReverse && active && resource.data && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() =>
+                onReverse({ payment_id: resource.data!.payment_id, amount_paise: resource.data!.amount_paise })
+              }
+            >
+              Reverse
+            </button>
+          )}
+          <button type="button" className="btn" onClick={onClose}>
+            Close
+          </button>
+        </>
       }
     >
       <AsyncSection resource={resource}>
@@ -1369,7 +1872,7 @@ function ReversePaymentDialog({
   onClose,
   onReversed,
 }: {
-  payment: PaymentRow
+  payment: Reversible
   onClose: () => void
   onReversed: () => void
 }) {

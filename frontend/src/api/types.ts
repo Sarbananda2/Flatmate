@@ -385,6 +385,52 @@ export interface ReconciliationAccount {
   upi_id?: string | null
 }
 
+// ------------------------------------------------------------ payment pools --
+
+/** One line of a Payment Pools passbook: money into or out of the account. */
+export interface StatementEntry {
+  entry_id: string
+  account: 'pool' | 'landlord'
+  date: string
+  /** Its place in date order, from 1. */
+  seq: number
+  source_type: 'payment' | 'rent_cycle' | 'deposit' | 'expense'
+  category: string
+  description: string
+  counterparty_name: string | null
+  counterparty_resident_id: string | null
+  direction: 'in' | 'out'
+  amount_paise: number
+  /** The account's balance after this entry. */
+  balance_paise: number
+  payment_mode: string | null
+  reference: string | null
+  /** The payment behind the entry, when there is one. */
+  payment_id: string | null
+  note: string | null
+}
+
+export interface PoolStatement {
+  account: { instance_id: string; name: string }
+  /** Newest first. */
+  items: StatementEntry[]
+  total_in_paise: number
+  total_out_paise: number
+  closing_balance_paise: number
+}
+
+export interface LandlordStatement extends PoolStatement {
+  total_rent_paid_paise: number
+  /** Deposits paid to the landlord, less what they refunded or kept. */
+  deposit_held_paise: number
+}
+
+export interface PaymentPoolsStatement {
+  apartment_id: string
+  pool_statement: PoolStatement
+  landlord_statement: LandlordStatement
+}
+
 export interface TransferSuggestion {
   from_account: string
   to_account: string

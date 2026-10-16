@@ -259,6 +259,11 @@ def _room_details(room: Mapping[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def summary_in(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
+    """The deposit summary inside the caller's read or transaction."""
+    return _summary(uow, apartment_id)
+
+
 def deposit_summary(db: Database, apartment_id: str) -> dict[str, Any]:
     """Everything the deposit screens show: the funding mode, the totals, every
     slot with its occupant and history, and -- before any slot exists -- a

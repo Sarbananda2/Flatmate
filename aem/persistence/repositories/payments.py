@@ -308,6 +308,25 @@ class PaymentsRepository(Repository):
                 ORDER BY {self._ORDERS[sort]} LIMIT %s OFFSET %s""",
             params + [limit, offset])
 
+    def statement_payments(self, apartment_id: str) -> list[dict[str, Any]]:
+        """Every active pool payment, refund and provider advance, oldest first,
+        with the payer's name, the expense an advance funds, whether a pool
+        payment settled any share of a month's rent, and the order recorded."""
+        return self._s.fetch_all(
+            """SELECT p.*, p.row_seq AS recorded_order, r.display_name AS payer_display_name,
+                      (SELECT e.description FROM expense_instance e
+                        WHERE e.expense_id = p.expense_id) AS linked_expense_description,
+                      EXISTS (SELECT 1 FROM payment_application pa
+                                JOIN allocation a ON a.allocation_id = pa.allocation_id
+                                JOIN rent_cycle rc ON rc.expense_id = a.expense_id
+                               WHERE pa.payment_id = p.payment_id) AS settles_rent
+                 FROM payment p
+                 LEFT JOIN resident r ON r.resident_id = p.payer_resident_id
+                WHERE p.apartment_id = %s AND p.status = 'active'
+                  AND p.payment_kind IN ('to_pool', 'refund', 'provider_advance')
+                ORDER BY p.payment_date, p.row_seq""",
+            (apartment_id,))
+
     def unapplied_credits(self, apartment_id: str) -> list[dict[str, Any]]:
         """Active pool payments with money left over, oldest first."""
         return self._s.fetch_all(

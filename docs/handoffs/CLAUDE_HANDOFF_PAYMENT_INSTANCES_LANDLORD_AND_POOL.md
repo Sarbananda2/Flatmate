@@ -158,28 +158,123 @@ ALTER TABLE household_deposit_transaction
 
 ## 4. Frontend Specifications
 
-### 4.1 Payments & Credits Page (`frontend/src/pages/Payments.tsx`)
-1. **Household Pool Account Card (Read-Only by Default + Edit Modal per Rules U1, U2, U4, U5):**
-   - Load apartment details (via `useApp().apartment` and `useApp().reloadApartment`, or `useResource<Apartment>`).
-   - Above the tabs on `/payments`, render a clean `Panel` (or `Card`) titled **"Household Pool Account"** with hint *"Where residents send pool payments, rent shares, and settlement transfers."* and an `EditButton` (`label="Edit household pool"`).
-   - Display 4 read-only facts in a responsive grid:
-     - **Pool Name**: `apartment.pool_name || 'Household Pool'`
-     - **Bank Account**: `apartment.pool_bank_account` (tabular) or `'Not recorded'`
-     - **IFSC**: `apartment.pool_bank_ifsc` (tabular) or `'Not recorded'`
-     - **UPI ID**: `apartment.pool_upi_id` (with `CopyButton`) or `'Not recorded'`
-   - Clicking **Edit** opens an `EditHouseholdPoolModal` (`PATCH /api/apartments/${apartment.apartment_id}`) with client-side validation matching `PropertyContacts.tsx`:
-     - `Pool Name` (required, max 200 chars)
-     - `Bank Account` (optional, 9–18 digits: `/^[0-9]{9,18}$/`)
-     - `IFSC` (optional, auto-uppercased, `/^[A-Z]{4}0[A-Z0-9]{6}$/`)
-     - `UPI ID` (optional, `/^[A-Za-z0-9._-]{2,256}@[A-Za-z0-9.-]{2,64}$/`)
-2. **Payment Destination Box in `PaymentDialog` (`Record a payment` on `/payments`):**
-   - Also fetch the active lease config (`useResource<{ config: RentLeaseConfig | null }>('/api/rent/config')`) inside `PaymentDialog`.
-   - **When `kind === 'to_pool'`:**
-     - Show a **"Transfer to: {pool_name}"** destination box (styled like `PayoutModal`'s destination box in `Rent.tsx`) showing the Household Pool's Bank Account, IFSC, and copyable UPI ID (or a helpful note if none are on file yet).
-     - Default the `Counterparty` field placeholder to `apartment?.pool_name ?? 'Household Pool'`.
-   - **When `kind === 'provider_advance'`:**
-     - If `lease.data?.config` exists, offer a quick counterparty selector or pill/option for **Landlord (`{config.landlord_name}`)** vs **Other Provider**. When **Landlord** is selected, auto-fill `Provider paid` with `config.landlord_name` and display the **"Transfer to: {config.landlord_name}"** destination box with the Landlord's Bank Account, IFSC, and UPI ID!
+### 4.0 Top-Ribbon Navigation (`frontend/src/components/Layout.tsx`)
+1. **Add `"Payment Pools"` to the Top Navigation Ribbon:**
+   - Extend `Section` union type:
+     ```ts
+     type Section = 'hub' | 'housing' | 'services' | 'ledger' | 'residents' | 'pools' | 'statements' | 'settings'
+     ```
+   - Insert `{ to: '/payments', label: 'Payment Pools', section: 'pools' }` into `NAV_TABS` between `Residents` and `Statements`:
+     ```ts
+     const NAV_TABS: Array<{ to: string; label: string; section: Section }> = [
+       { to: '/', label: 'Month Hub', section: 'hub' },
+       { to: '/housing', label: 'Housing', section: 'housing' },
+       { to: '/services', label: 'Services & Utilities', section: 'services' },
+       { to: '/transactions', label: 'Activity Ledger', section: 'ledger' },
+       { to: '/residents', label: 'Residents', section: 'residents' },
+       { to: '/payments', label: 'Payment Pools', section: 'pools' },
+       { to: '/statements', label: 'Statements', section: 'statements' },
+     ]
+     ```
+   - In `SECTION_PREFIXES`, map `['/payments', 'pools']` (instead of `'ledger'`).
+   - Include `section === 'pools'` in `isConfigPage` (and `section !== 'pools'` in `showRecord`) so the global settlement month bar and generic `Record Transaction` button do not compete with `/payments`'s own header actions (`Record a payment`, `Paid a provider`, `Export CSV`).
 
+### 4.1 Payment Pools Page — Bank Statement & Passbook Redesign (`frontend/src/pages/Payments.tsx` & Backend `/api/payments/pools/statement`)
+
+The `Payment Pools` (`/payments`) screen must function as a **proper bank statement / passbook** for both the **Household Pool (House Kitty)** and the **Landlord Account**, while fixing all layout, overflow, and clutter issues:
+
+#### 1. Backend Statement Endpoint (`GET /api/payments/pools/statement`)
+Add a read-only service function `get_payment_pools_statement(db, apartment_id)` in `aem/services/payments.py` (or a dedicated helper) exposed at `GET /api/payments/pools/statement` in `aem/api/routers/payments.py` that returns deterministic, chronological bank-statement ledgers for both payment instances:
+
+- **`pool_statement` (House Kitty Passbook):**
+  - Collects every cash movement into (`direction: "in"`) and out of (`direction: "out"`) the House Kitty:
+    1. **Resident Kitty Payments (`direction: "in"`):** Active rows from `payment` where `payment_kind == "to_pool"`.
+       - `category`: `"Rent Collection"` if `note` starts with `"Rent for "` or applications settle a rent expense, else `"Kitty Payment"`.
+       - `counterparty_name`: `payer_display_name`, `counterparty_resident_id`: `payer_resident_id`.
+       - `description`: `payment.note` or `"Payment into House Kitty"`.
+       - `reference`: `payment.reference`, `payment_mode`: `payment.payment_mode`, `payment_id`: `payment.payment_id`.
+    2. **Resident Refunds from Kitty (`direction: "out"`):** Active rows from `payment` where `payment_kind == "refund"`.
+       - `category`: `"Resident Refund"`, `counterparty_name`: `payer_display_name`, `description`: `payment.note` or `"Refund from House Kitty"`.
+       - `payment_id`: `payment.payment_id`.
+    3. **Household Expenses Paid from Kitty (`direction: "out"`):** Rows from `expense_instance` where:
+       - `payer_resident_id IS NULL`
+       - has no linked `provider_advance`
+       - is NOT an expense associated with a `rent_cycle` (so rent paid from kitty is not double-counted).
+       - `category`: `"House Expense"`, `counterparty_name`: `provider_name` or `"House Expense"`, `description`: `description`, `amount_paise`: `amount_paise`, `date`: `expense_date`, `source_type`: `"expense"`.
+    4. **Landlord Rent Payouts from Kitty (`direction: "out"`):** Disbursed rows from `rent_cycle` where `disbursement_status == "disbursed"` and `disbursed_by == "pool"`.
+       - `date`: `disbursed_at`, `category`: `"Rent Payout"`, `counterparty_name`: `config.landlord_name` (or `"Landlord"`), `description`: `f"Rent payout · {month_label(settlement_month)}"`, `reference`: `disbursement_reference`, `amount_paise`: `total_rent_paise`.
+    5. **Security Deposit Movements via Kitty (`direction: "in"` or `"out"`):** Rows from `household_deposit_transaction` where effective counterparty is `"pool"`:
+       - `tx_type == "fund"`: `direction: "in"`, `category: "Security Deposit"`, `counterparty_name`: resident name, `description`: `f"Security deposit funded · {room_number}"`.
+       - `tx_type == "landlord_refund"`: `direction: "in"`, `category: "Deposit Refund"`, `counterparty_name`: landlord name, `description`: `f"Deposit refunded by landlord · {room_number}"`.
+       - `tx_type == "signatory_refund"`: `direction: "out"`, `category: "Deposit Refund"`, `counterparty_name`: resident name, `description`: `f"Security deposit refunded · {room_number}"`.
+  - Sort chronologically (`date ASC, seq ASC`) to compute `balance_paise` (running balance after each entry: `running += amount_paise if direction == "in" else -amount_paise`), then return items newest-first (`date DESC, seq DESC`) along with:
+    - `total_in_paise`: sum of `"in"` entries
+    - `total_out_paise`: sum of `"out"` entries
+    - `closing_balance_paise`: `total_in_paise - total_out_paise`
+
+- **`landlord_statement` (Landlord Account Passbook):**
+  - Collects every payment made to the Landlord (`direction: "in"`, i.e. credited/paid to Landlord) and every refund or deduction by the Landlord (`direction: "out"`):
+    1. **Monthly Rent Disbursed to Landlord (`direction: "in"`):** Disbursed rows from `rent_cycle` where `disbursement_status == "disbursed"`.
+       - `date`: `disbursed_at`, `category`: `"Rent Payout"`, `counterparty_name`: `"House Kitty"` if `disbursed_by == "pool"` else `f"{funding_resident_name} (Advance)"`, `description`: `f"Monthly rent · {month_label(settlement_month)}"`, `reference`: `disbursement_reference`, `amount_paise`: `total_rent_paise`, `payment_id`: `funding_payment_id`.
+    2. **Other Direct Provider Advances to Landlord (`direction: "in"`):** Active rows from `payment` where `payment_kind == "provider_advance"`, `payment_id` is not already a `rent_cycle.funding_payment_id`, and `payee_or_provider` matches the landlord's name (case-insensitive).
+       - `date`: `payment_date`, `category`: `"Direct Advance"`, `counterparty_name`: `payer_display_name`, `description`: `payment.note` or `linked_expense_description` or `"Direct advance to Landlord"`, `reference`: `payment.reference`, `payment_id`: `payment.payment_id`.
+    3. **Security Deposit Movements with Landlord (`direction: "in"` or `"out"`):** Rows from `household_deposit_transaction` where effective counterparty is `"landlord"` or `tx_type in ("landlord_refund", "deduction")`:
+       - `tx_type == "fund"`: `direction: "in"`, `category: "Security Deposit"`, `counterparty_name`: resident name (or `"Primary Signatory"`), `description`: `f"Security deposit · {room_number}"`.
+       - `tx_type == "landlord_refund"`: `direction: "out"`, `category: "Deposit Refund"`, `counterparty_name`: resident name / pool, `description`: `f"Deposit refunded by landlord · {room_number}"`.
+       - `tx_type == "deduction"`: `direction: "out"`, `category: "Deposit Deduction"`, `counterparty_name`: resident name, `description`: `f"Deposit deduction · {room_number}"`.
+  - Compute running cumulative balance (`balance_paise`) chronologically and return items newest-first along with:
+    - `total_rent_paid_paise`: sum of rent payouts to Landlord
+    - `deposit_held_paise`: net security deposit held by Landlord (`deposit funded - landlord refunds - deductions`)
+    - `total_in_paise`: total paid to Landlord
+    - `total_out_paise`: total refunded/deducted by Landlord
+    - `closing_balance_paise`: `total_in_paise - total_out_paise`
+
+#### 2. Frontend UI Fixes & Bank Statement Layout (`frontend/src/pages/Payments.tsx`, `Layout.tsx`, `index.css`)
+
+1. **Replace the Permanent Blue Notice Banner with a `"How it works"` Pop-Up Modal:**
+   - Remove the inline `<Callout tone="info" title="These are four different things">` from the page body.
+   - Add a `"How it works"` button (with `HelpCircle` icon, `BUTTON_SECONDARY`) in the page header actions that opens a `<Modal title="How Payment Pools & Transfers Work" onClose={...}>` containing the explanation of `Into the pool`, `Paid a provider`, `Refund`, and `Adjustment`, with a `Close` button in the footer.
+
+2. **Side-by-Side Payment Instance Cards (`grid-cols-1 md:grid-cols-2 gap-4`) with Live Account Balances:**
+   - Change the wrapper grid from `lg:grid-cols-2` to `grid-cols-1 md:grid-cols-2 gap-4` so **`House Kitty Account`** and **`Landlord Account`** sit side-by-side on all standard laptop/desktop viewports (`>= 768px`).
+   - Use concise `Edit` button text per Rule U5 (`Edit` visible label with `aria-label="Edit house kitty"` / `aria-label="Edit landlord"`).
+   - At the bottom of **`HouseholdPoolCard`** (`House Kitty Account`), render a compact 3-column account summary strip (`border-t border-[var(--border-subtle)] pt-3 mt-1 grid grid-cols-3 gap-2 text-xs`):
+     - `Total In (+)`: green tabular `formatInr(poolStatement.total_in_paise)`
+     - `Total Out (−)`: red/amber tabular `formatInr(poolStatement.total_out_paise)`
+     - `Kitty Balance`: bold tabular `formatInr(poolStatement.closing_balance_paise)`
+   - At the bottom of **`LandlordAccountCard`**, render the matching 3-column summary strip:
+     - `Rent Paid`: tabular `formatInr(landlordStatement.total_rent_paid_paise)`
+     - `Deposit Held`: tabular `formatInr(landlordStatement.deposit_held_paise)`
+     - `Total Paid`: bold tabular `formatInr(landlordStatement.total_in_paise)`
+
+3. **Bank Statement Tabs & Collapsible Filters:**
+   - Primary tabs (`role="tablist"`, `aria-label="Payment views"`):
+     1. **`House Kitty Statement`** (`'pool_statement'`) — default active tab, showing the passbook statement for the House Kitty (`__pool__`).
+     2. **`Landlord Statement`** (`'landlord_statement'`) — showing the passbook statement for the Landlord Account (`__landlord__`).
+     3. **`All Payments`** (`'payments'`) — the raw resident payment records (`to_pool`, `provider_advance`, `refund`).
+     4. **`Unapplied Credits (${count})`** (`'credits'`)
+     5. **`Provider Advances (${count})`** (`'advances'`)
+     6. **`Adjustments (${count})`** (`'adjustments'`)
+   - **Collapsible Filters (like `Transactions.tsx`):**
+     - Remove the standalone `<Card title="Filters">` box that permanently consumes vertical space.
+     - Place a `Filters` toggle button (`SlidersHorizontal` icon) in the statement/table panel header that expands/collapses the filter bar (`Search`, `Resident`, `Kind / Direction`, `Status`).
+
+4. **Summary-First Bank Statement & Payments Tables (Rule U3 & Rule U7 — Zero Horizontal Overflow):**
+   - For **`House Kitty Statement`** and **`Landlord Statement`**, render a clean 6-column passbook table (`table.data`):
+     - `Date` (`nowrap tabular`)
+     - `Particulars` (Category badge/pill + single-line description)
+     - `Counterparty` (Single-line `nowrap` resident or landlord name)
+     - `In / Credit (+)` (`num` — green `+₹...` when `direction === 'in'`, `—` when `'out'`)
+     - `Out / Debit (−)` (`num` — red `−₹...` when `direction === 'out'`, `—` when `'in'`)
+     - `Balance` (`num` — bold tabular running `balance_paise`)
+   - Clicking any row in the statement table (or pressing `Enter`/`Space` on its row trigger button) opens a **Read-Only Statement Entry Detail Modal** (Rule U7) displaying all atomic fields (`Date`, `Account`, `Category`, `Description`, `Counterparty`, `Direction`, `Amount`, `Running Balance`, `Payment Mode`, `Reference / UTR`), and if `entry.payment_id` is present, a button to view full payment application details or **Reverse** the payment.
+   - For the **`All Payments`** tab (`tab === 'payments'`), also enforce **Rule U7 (Summary-First Table)** so there is **no horizontal scrollbar and no cut-off columns**:
+     - Show 6 clean summary columns: `Date`, `Resident`, `Kind`, `Counterparty`, `Amount`, `Status`.
+     - Move `Applied`, `Credit left`, `funds: ...`, `Reference`, `Note`, and the `Reverse` action into the on-click `PaymentDetailDialog` (opened by clicking any payment row, with `Reverse` button right inside the modal footer when `status === 'active'`, or a compact single action cell that never overflows).
+
+5. **Fix Card Footer Double-Border & Top-Ribbon Fit (`frontend/src/index.css` & `frontend/src/components/Layout.tsx`):**
+   - In `frontend/src/index.css`: add `.card-footer > .pagination { width: 100%; border-top: none; padding: 0; }` so `<Pagination>` inside `<Card footer={...}>` never draws a second short top border or shrinks to text width.
+   - In `frontend/src/components/Layout.tsx`: adjust `NAV_TABS` link padding (`px-2 md:px-2.5 lg:px-3 py-1.5`) so all 7 tabs fit cleanly alongside the apartment brand name on desktop.
 ### 4.2 Security Deposits (`frontend/src/pages/services/SecurityDeposits.tsx`)
 1. **Separate `Paid To` (Instance) from `Payment Method` (Channel) in `FundingModal` (`Record Deposit Payment`):**
    - In `FundingModal`:
@@ -213,14 +308,13 @@ ALTER TABLE household_deposit_transaction
 ## 5. Verification & Test Suite Requirements
 
 1. **Backend (`pytest`):**
-   - Test `PATCH /api/apartments/{id}` with `pool_name`, `pool_bank_account`, `pool_bank_ifsc`, `pool_upi_id` (valid and invalid formats).
-   - Test `POST /api/rent/deposits/slots/{id}/fund` in `direct_co_tenants` mode with `paid_to_party="landlord"` and `paid_to_party="pool"`, verifying `paid_to_display_name` and transaction `counterparty_display_name` resolve to `Landlord (...)` and `Household Pool` respectively.
-   - Test `whatsapp_summary` in `sharing.py` includes `upi_id` and `upi_uri` on transfers to `__pool__` when `pool_upi_id` is configured on the apartment.
+   - Test `GET /api/payments/pools/statement` verifying:
+     - `pool_statement` returns chronological inflows (pool payments, deposit funds to pool) and outflows (rent payouts by pool, refunds) with running balance and correct totals.
+     - `landlord_statement` returns rent payouts, direct advances, and deposit transactions for landlord with cumulative totals.
    - Run the full backend test suite (`pytest`) and ensure 0 regressions.
 2. **Frontend (`npm test` & `npm run build`):**
-   - Add/update tests in `SecurityDeposits.test.tsx`, `Payments` tests, and `Rent.test.tsx` covering:
-     - Editing the `Household Pool Account` card on `/payments`.
-     - Selecting `Paid to: Landlord` vs `Paid to: Household Pool` in `Record Deposit Payment` under `direct_co_tenants` mode, and verifying the destination bank/UPI details update and `"Direct to landlord"` is no longer in the `Payment method` dropdown.
-     - Showing the Household Pool destination box in `Record Rent Payment`.
+   - Add/update tests in `Payments.test.tsx`, `SecurityDeposits.test.tsx`, and `Rent.test.tsx` covering:
+     - `House Kitty Statement` and `Landlord Statement` passbook rendering with running balance.
+     - Opening the `How it works` info modal and closing it.
+     - On-click detail modal for statement rows and payment rows.
    - Run `npm test` and `npm run build` with 0 errors and 0 HTML nesting warnings.
-

@@ -763,7 +763,7 @@ describe('recording a payment', () => {
     await userEvent.selectOptions(paidTo, 'pool')
     expect(destination()).toHaveTextContent('Transfer toHousehold Pool')
     expect(destination()).not.toHaveTextContent('Kumar Yadav')
-    expect(within(destination()).getByRole('link', { name: /Add them on Payments/ })).toHaveAttribute(
+    expect(within(destination()).getByRole('link', { name: 'Add them on Payment Pools' })).toHaveAttribute(
       'href',
       '/payments',
     )
