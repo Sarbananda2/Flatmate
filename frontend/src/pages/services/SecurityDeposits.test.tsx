@@ -152,34 +152,22 @@ const factsIn = (dialog: HTMLElement) =>
     .getAllByRole('term')
     .map((term) => `${term.textContent}: ${term.nextElementSibling!.textContent}`)
 
-/** A deposit's row in the Household Escrow Pool table, found by who or where. */
+/** A deposit's row in the Household Escrow Pool table, found by its resident. */
 const slotRow = (name: RegExp) =>
   within(screen.getByRole('table', { name: 'Household deposit slots' })).getByRole('row', { name })
 
-/** The Deposit Details dialog read back in its parts: the amounts, then each group. */
+/** The Deposit Details dialog read back in its parts: the amounts, then the payment. */
 function depositParts(dialog: HTMLElement) {
   const parts = {
     amounts: factsIn(within(dialog).getByLabelText('Deposit amounts')),
-    occupancy: factsIn(within(dialog).getByRole('region', { name: 'Occupancy & Space' })),
-    payment: factsIn(within(dialog).getByRole('region', { name: 'Payment Details' })),
+    payment: factsIn(within(dialog).getByLabelText('Payment details')),
   }
   // In that order, with no fact outside them.
-  expect(factsIn(dialog)).toEqual([...parts.amounts, ...parts.occupancy, ...parts.payment])
+  expect(factsIn(dialog)).toEqual([...parts.amounts, ...parts.payment])
   return parts
 }
 
-/** The Deposit Transaction Details dialog read back by group. */
-function transactionParts(dialog: HTMLElement) {
-  const parts = {
-    transfer: factsIn(within(dialog).getByRole('region', { name: 'Transfer & Space' })),
-    payment: factsIn(within(dialog).getByRole('region', { name: 'Payment & Notes' })),
-  }
-  // In that order, with no fact outside them.
-  expect(factsIn(dialog)).toEqual([...parts.transfer, ...parts.payment])
-  return parts
-}
-
-/** Opens a deposit's details from its resident button, named "<resident>, <room>". */
+/** Opens a deposit's details from its resident button: the resident's name, or Vacant. */
 async function openDeposit(name: string) {
   await userEvent.click(await screen.findByRole('button', { name }))
   return screen.getByRole('dialog', { name: 'Deposit Details' })
@@ -395,7 +383,6 @@ describe('the escrow pool', () => {
     const headers = within(table).getAllByRole('columnheader')
     expect(headers.map((header) => header.textContent)).toEqual([
       'Resident',
-      'Room',
       'Target Deposit',
       'Funded Status',
       'Paid Date',
@@ -403,29 +390,29 @@ describe('the escrow pool', () => {
     ])
     for (const header of headers) expect(header).toHaveClass('text-center')
 
-    // One line a cell, the resident first: who, which room, the target, the
-    // status, the day it was paid, and what can be done.
-    const bob = slotRow(/Room 2/)
+    // One line a cell, the resident first: who, the target, the status, the
+    // day it was paid, and what can be done. No room: that is Rooms Inventory's.
+    const bob = slotRow(/Bob/)
     const resident = within(within(bob).getByRole('rowheader')).getByRole('button')
-    expect(resident).toHaveAccessibleName('Bob, Room 2')
+    expect(resident).toHaveAccessibleName('Bob')
     expect(resident).toHaveTextContent(/Bob$/)
-    const [room, target, status, paidOn, actions] = within(bob).getAllByRole('cell')
-    expect(room).toHaveTextContent(/^Room 2$/)
+    const [target, status, paidOn, actions] = within(bob).getAllByRole('cell')
     expect(target).toHaveTextContent(/^₹50,000\.00$/)
     expect(status).toHaveTextContent(/^Funded$/)
     expect(paidOn).toHaveTextContent(/^2 Oct 2026$/)
     expect(actions).toHaveTextContent(/^Vacate$/)
-    // How and to whom it was paid, and the room, are in the slot's details.
+    // How and to whom it was paid is in the deposit's details.
     expect(bob).not.toHaveTextContent('UTR428919028471')
+    expect(bob).not.toHaveTextContent('Room 2')
     expect(bob).not.toHaveTextContent('Slot 2')
 
-    const alice = slotRow(/Room 1/)
+    const alice = slotRow(/Alice/)
     expect(alice).not.toHaveTextContent('Primary signatory')
     const aliceCells = within(alice).getAllByRole('cell')
+    expect(aliceCells[2]).toHaveTextContent(/^—$/)
+    // The signatory fronted their own share: nothing to do on the row.
     expect(aliceCells[3]).toHaveTextContent(/^—$/)
-    // The signatory fronted their own slot: nothing to do on the row.
-    expect(aliceCells[4]).toHaveTextContent(/^—$/)
-    expect(within(aliceCells[4]).queryByRole('button')).toBeNull()
+    expect(within(aliceCells[3]).queryByRole('button')).toBeNull()
   })
 
   it('offers each slot only the actions that apply to it', async () => {
@@ -443,33 +430,33 @@ describe('the escrow pool', () => {
       }),
     )
     const table = await screen.findByRole('table', { name: 'Household deposit slots' })
-    const actionCell = (name: RegExp) => within(slotRow(name)).getAllByRole('cell')[4]
+    const actionCell = (name: RegExp) => within(slotRow(name)).getAllByRole('cell')[3]
     const actions = (name: RegExp) =>
       within(actionCell(name))
         .queryAllByRole('button')
         .map((button) => button.textContent)
     // Every action shows its icon and a short name, in every row.
     // The signatory fronted their own slot: it is settled with the landlord.
-    expect(actions(/Room 1/)).toEqual([])
-    expect(actionCell(/Room 1/)).toHaveTextContent('—')
+    expect(actions(/Alice/)).toEqual([])
+    expect(actionCell(/Alice/)).toHaveTextContent('—')
     // Nothing paid yet: it can be paid, vacated, or handed to someone else.
-    expect(actions(/Room 2/)).toEqual(['Pay', 'Vacate', 'Reassign'])
+    expect(actions(/Bob/)).toEqual(['Pay', 'Vacate', 'Reassign'])
     // Funded: it has to be settled before anyone else can take it.
-    expect(actions(/Room 3/)).toEqual(['Vacate'])
-    expect(actions(/Room 4/)).toEqual(['Assign'])
+    expect(actions(/Chris/)).toEqual(['Vacate'])
+    expect(actions(/Vacant/)).toEqual(['Assign'])
     // The full name is the tooltip.
-    const titles = within(actionCell(/Room 2/))
+    const titles = within(actionCell(/Bob/))
       .getAllByRole('button')
       .map((button) => button.getAttribute('title'))
     expect(titles).toEqual(['Record Payment', 'Vacate & Settle', 'Reassign Occupant'])
-    expect(slotRow(/Room 4/)).toHaveTextContent('Vacant')
+    expect(slotRow(/Vacant/)).toHaveTextContent('Vacant')
     expect(screen.getByRole('region', { name: 'Capital exposure' })).toHaveTextContent(
       'Unfunded Gap₹1,00,000.001 slot vacant',
     )
     // Each button keeps its name on one line; a slot with many actions wraps
     // onto a second line rather than hiding any names.
-    const actionButtons = ['Room 2', 'Room 3', 'Room 4'].flatMap((room) =>
-      within(actionCell(new RegExp(room))).getAllByRole('button'),
+    const actionButtons = [/Bob/, /Chris/, /Vacant/].flatMap((who) =>
+      within(actionCell(who)).getAllByRole('button'),
     )
     for (const button of actionButtons) {
       expect(button).toHaveClass('whitespace-nowrap')
@@ -481,11 +468,12 @@ describe('the escrow pool', () => {
     }
   })
 
-  it("opens a slot's details from its row, with every fact the row leaves out", async () => {
+  it("opens a deposit's details from its row: the money, and how it was paid", async () => {
     renderSection(
       summary({
         slots: [
           slot(1, 'alice', 'Alice', fronted),
+          // Linked to a room with amenities, which the deposit tab leaves to Rooms Inventory.
           slot(2, 'bob', 'Bob', {
             ...funded,
             room_id: 'room-2',
@@ -493,42 +481,45 @@ describe('the escrow pool', () => {
             has_attached_washroom: true,
             has_balcony: true,
           }),
-          slot(3, null, null, { room_id: 'room-3', room_number: 'Room 3', has_attached_washroom: false, has_balcony: false }),
+          slot(3, null, null),
         ],
       }),
     )
     await screen.findByRole('table', { name: 'Household deposit slots' })
 
     // A click anywhere on the row opens it.
-    await userEvent.click(within(slotRow(/Room 2/)).getAllByRole('cell')[1])
+    await userEvent.click(within(slotRow(/Bob/)).getAllByRole('cell')[1])
     let dialog = screen.getByRole('dialog', { name: 'Deposit Details' })
-    expect(dialog).toHaveTextContent('Bob · Room 2')
-    expect(dialog).not.toHaveTextContent('Slot 2')
-    // The status over the three amounts, then who and where, then how it was paid.
+    expect(within(dialog).getByText('Bob', { selector: '.card-hint' })).toBeInTheDocument()
+    // The status over the three amounts, then who, whom and how it was paid.
     const amounts = within(dialog).getByLabelText('Deposit amounts')
     expect(within(amounts.parentElement!).getByText('Funded', { selector: 'span' })).toBeInTheDocument()
     expect(depositParts(dialog)).toEqual({
       amounts: ['Target Deposit: ₹50,000.00', 'Funded: ₹50,000.00', 'Outstanding Balance: ₹0.00'],
-      occupancy: [
-        'Resident: Bob',
-        'Occupied Since: 1 Oct 2026',
-        'Room: Room 2',
-        'Private Amenities: Attached Washroom · Balcony',
-      ],
       payment: [
-        'Paid Date: 2 Oct 2026',
+        'Resident: Bob',
         'Paid To: Alice',
+        'Paid Date: 2 Oct 2026',
         'Payment Method: UPI',
         'Reference / UTR: UTR428919028471',
       ],
     })
     expect(within(dialog).getByText('UTR428919028471')).toHaveClass('font-mono')
+    // Nothing about the room, and nothing to change: Close is the only action.
+    for (const roomFact of ['Room 2', 'Attached Washroom', 'Balcony', 'Occupied Since', 'Slot 2']) {
+      expect(dialog).not.toHaveTextContent(roomFact)
+    }
     expect(within(dialog).queryByRole('textbox')).toBeNull()
+    expect(
+      within(dialog)
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label') ?? button.textContent),
+    ).toEqual(['Close dialog', 'Close'])
     await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).toBeNull()
 
     // From the keyboard: the signatory's own share, fronted to the landlord.
-    const aliceSlot = screen.getByRole('button', { name: 'Alice, Room 1' })
+    const aliceSlot = screen.getByRole('button', { name: 'Alice' })
     expect(aliceSlot).toHaveAttribute('aria-haspopup', 'dialog')
     aliceSlot.focus()
     await userEvent.keyboard('{Enter}')
@@ -536,15 +527,10 @@ describe('the escrow pool', () => {
     expect(within(dialog).getByText('Primary signatory')).toBeInTheDocument()
     expect(depositParts(dialog)).toEqual({
       amounts: ['Target Deposit: ₹50,000.00', 'Funded: ₹50,000.00', 'Outstanding Balance: ₹0.00'],
-      occupancy: [
-        'Resident: Alice (Primary signatory)',
-        'Occupied Since: 1 Oct 2026',
-        'Room: Room 1',
-        'Private Amenities: Not linked',
-      ],
       payment: [
-        'Paid Date: Fronted with master deposit',
+        'Resident: Alice (Primary signatory)',
         'Paid To: Direct to landlord',
+        'Paid Date: Fronted with master deposit',
         'Payment Method: Direct to landlord',
         'Reference / UTR: Not recorded',
       ],
@@ -552,15 +538,15 @@ describe('the escrow pool', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     expect(aliceSlot).toHaveFocus()
 
-    // A vacant slot backing a room with no private amenities.
-    dialog = await openDeposit('Vacant, Room 3')
-    expect(dialog).toHaveTextContent('Vacant · Room 3')
+    // A vacant share.
+    dialog = await openDeposit('Vacant')
+    expect(within(dialog).getByText('Vacant deposit share')).toBeInTheDocument()
     expect(depositParts(dialog)).toEqual({
       amounts: ['Target Deposit: ₹50,000.00', 'Funded: ₹0.00', 'Outstanding Balance: ₹0.00'],
-      occupancy: ['Resident: Vacant', 'Occupied Since: —', 'Room: Room 3', 'Private Amenities: None'],
       payment: [
-        'Paid Date: Not paid yet',
+        'Resident: Vacant',
         'Paid To: —',
+        'Paid Date: Not paid yet',
         'Payment Method: Not recorded',
         'Reference / UTR: Not recorded',
       ],
@@ -585,7 +571,7 @@ describe('the escrow pool', () => {
         ],
       }),
     )
-    const dialog = await openDeposit('Alice, Room 1')
+    const dialog = await openDeposit('Alice')
     expect(factsIn(dialog)).toContain('Paid To: Direct to landlord')
     expect(factsIn(dialog)).toContain('Payment Method: Direct to landlord')
   })
@@ -638,7 +624,6 @@ describe('the escrow pool', () => {
     const [row] = activityRows()
     expect(within(row).getByRole('rowheader')).toHaveTextContent(/Bob$/)
     expect(within(row).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
-      'Room 2',
       'Paid in',
       '2 Oct 2026',
       '₹50,000.00',
@@ -646,12 +631,7 @@ describe('the escrow pool', () => {
     // Direct co-tenants with nobody else named: Bob paid the landlord.
     await userEvent.click(row)
     const dialog = screen.getByRole('dialog', { name: 'Deposit Transaction Details' })
-    expect(transactionParts(dialog).transfer).toEqual([
-      'From: Bob',
-      'To: Landlord',
-      'Room: Room 2',
-      'Date: 2 Oct 2026',
-    ])
+    expect(factsIn(dialog).slice(0, 2)).toEqual(['From: Bob', 'To: Landlord'])
   })
 
   it('says so when the slots no longer match the deposit on the lease', async () => {
@@ -914,18 +894,8 @@ describe('ResidentDepositCard', () => {
   })
 })
 
-describe('the rooms slots back', () => {
-  const rooms = {
-    items: [
-      { room_id: 'room-1', room_number: 'Room 1', has_attached_washroom: true, has_balcony: true },
-      { room_id: 'room-2', room_number: 'Room 2', has_attached_washroom: false, has_balcony: false },
-      { room_id: 'room-3', room_number: 'Room 3', has_attached_washroom: false, has_balcony: true },
-    ],
-    total: 3,
-    summary: {},
-  }
-
-  it('names the linked room on the row, and changes or links it from the details', async () => {
+describe('rooms', () => {
+  it('are left to Rooms Inventory: no room, amenities or room changes on the deposit tab', async () => {
     renderSection(
       summary({
         slots: [
@@ -934,86 +904,21 @@ describe('the rooms slots back', () => {
             room_id: 'room-1',
             room_number: 'Room 1',
             has_attached_washroom: true,
-            has_balcony: false,
+            has_balcony: true,
           }),
           slot(2, 'bob', 'Bob'),
         ],
       }),
     )
-    await screen.findByRole('table', { name: 'Household deposit slots' })
-    // The room the deposit pays for, by the room's own name, and nothing else.
-    const first = slotRow(/Alice/)
-    expect(within(first).getAllByRole('cell')[0]).toHaveTextContent(/^Room 1$/)
-    expect(first).not.toHaveTextContent('Master Bedroom')
-    expect(first).not.toHaveTextContent('Attached Washroom')
-    // Changing the room is not a row action.
-    expect(
-      within(within(first).getAllByRole('cell')[4])
-        .getAllByRole('button')
-        .map((button) => button.textContent),
-    ).toEqual(['Pay', 'Vacate', 'Reassign'])
-
-    let dialog = await openDeposit('Alice, Room 1')
-    expect(dialog).toHaveTextContent('Alice · Room 1')
-    expect(factsIn(dialog)).toEqual(
-      expect.arrayContaining(['Room: Room 1', 'Private Amenities: Attached Washroom']),
-    )
-    expect(within(dialog).getByRole('button', { name: 'Change Room' })).toBeInTheDocument()
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
-
-    // Not linked to a room yet: the slot's own name stands in for it.
-    dialog = await openDeposit('Bob, Room 2')
-    expect(factsIn(dialog)).toEqual(
-      expect.arrayContaining(['Room: Room 2', 'Private Amenities: Not linked']),
-    )
-    expect(within(dialog).getByRole('button', { name: 'Link Room' })).toBeInTheDocument()
-  })
-
-  it('links a slot to a room no other slot backs', async () => {
-    renderSection(
-      summary({
-        slots: [slot(1, 'alice', 'Alice', { room_id: 'room-1', room_number: 'Room 1' }), slot(2, 'bob', 'Bob')],
-      }),
-      {
-        '/api/property/rooms': rooms,
-        'POST /api/rent/deposits/slots/slot-2/link-room': summary(),
-      },
-    )
-    const details = await openDeposit('Bob, Room 2')
-    await userEvent.click(within(details).getByRole('button', { name: 'Link Room' }))
-    // The details give way to the room dialog.
-    const dialog = screen.getByRole('dialog')
-    expect(dialog).not.toHaveAccessibleName('Deposit Details')
-    const select = await within(dialog).findByLabelText(/Room/)
-    // Room 1 is already backed by slot 1, so it is not offered.
-    expect(within(select).getAllByRole('option').map((option) => option.textContent)).toEqual([
-      'No room',
-      'Room 2',
-      'Room 3 · balcony',
-    ])
-    const save = within(dialog).getByRole('button', { name: 'Unlink Room' })
-    expect(save).toBeDisabled()
-    await userEvent.selectOptions(select, 'room-3')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Room' }))
-    await waitFor(() => expect(posted('/slots/slot-2/link-room')).toBeDefined())
-    expect(posted('/slots/slot-2/link-room')!.body).toEqual({ room_id: 'room-3' })
-  })
-
-  it('unlinks a slot from its room', async () => {
-    renderSection(
-      summary({ slots: [slot(1, 'alice', 'Alice', { room_id: 'room-1', room_number: 'Room 1' })] }),
-      {
-        '/api/property/rooms': rooms,
-        'POST /api/rent/deposits/slots/slot-1/link-room': summary(),
-      },
-    )
-    const details = await openDeposit('Alice, Room 1')
-    await userEvent.click(within(details).getByRole('button', { name: 'Change Room' }))
-    const dialog = screen.getByRole('dialog')
-    await userEvent.selectOptions(await within(dialog).findByLabelText(/Room/), '')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Unlink Room' }))
-    await waitFor(() => expect(posted('/slots/slot-1/link-room')).toBeDefined())
-    expect(posted('/slots/slot-1/link-room')!.body).toEqual({ room_id: null })
+    const table = await screen.findByRole('table', { name: 'Household deposit slots' })
+    for (const roomFact of ['Room 1', 'Master Bedroom', 'Attached Washroom', 'Balcony']) {
+      expect(table).not.toHaveTextContent(roomFact)
+    }
+    const dialog = await openDeposit('Alice')
+    expect(dialog).not.toHaveTextContent('Room 1')
+    expect(within(dialog).queryByRole('button', { name: /Change Room|Link Room/ })).toBeNull()
+    // The room list is never asked for.
+    expect(stub!.calls.some((call) => call.path.startsWith('/api/property/rooms'))).toBe(false)
   })
 })
 
@@ -1076,8 +981,8 @@ describe('recent deposit activity', () => {
     expect(activity).not.toHaveTextContent('₹0.00')
     expect(rows[0]).toHaveTextContent('Refunded on leaving')
     expect(rows[1]).toHaveTextContent('Paid in')
-    // The linked room's name, as in the pool above.
-    expect(within(rows[0]).getAllByRole('cell')[0]).toHaveTextContent(/^Room 2$/)
+    // No room, linked or named, as in the pool above.
+    expect(activity).not.toHaveTextContent('Room 2')
     expect(activity).not.toHaveTextContent('Back bedroom')
   })
 
@@ -1119,13 +1024,12 @@ describe('recent deposit activity', () => {
   const renderEntries = () =>
     renderSection(summary({ slots: [slot(2, 'bob', 'Bob', { transactions: entries })] }))
 
-  it('leads each row with the resident under five centred column headers', async () => {
+  it('leads each row with the resident under four centred column headers', async () => {
     renderEntries()
     const table = await screen.findByRole('table', { name: 'Recent deposit activity' })
     const headers = within(table).getAllByRole('columnheader')
     expect(headers.map((header) => header.textContent)).toEqual([
       'Resident',
-      'Room',
       'Activity',
       'Date',
       'Amount',
@@ -1140,10 +1044,10 @@ describe('recent deposit activity', () => {
       expect(within(resident).getByRole('button')).toHaveAttribute('aria-haspopup', 'dialog')
     }
     expect(rows.map((row) => within(row).getAllByRole('cell').map((cell) => cell.textContent))).toEqual([
-      ['Room 2', 'Paid by replacement', '9 Oct 2026', '₹30,000.00'],
-      ['Room 2', 'Refunded on leaving', '8 Oct 2026', '₹15,000.00'],
-      ['Room 2', 'Deducted on leaving', '8 Oct 2026', '₹5,000.00'],
-      ['Room 2', 'Paid in', '2 Oct 2026', '₹50,000.00'],
+      ['Paid by replacement', '9 Oct 2026', '₹30,000.00'],
+      ['Refunded on leaving', '8 Oct 2026', '₹15,000.00'],
+      ['Deducted on leaving', '8 Oct 2026', '₹5,000.00'],
+      ['Paid in', '2 Oct 2026', '₹50,000.00'],
     ])
     // Who paid whom is in each entry's details, not repeated on every row.
     expect(table).not.toHaveTextContent('Alice')
@@ -1157,7 +1061,7 @@ describe('recent deposit activity', () => {
     const fromTo = async (activity: string) => {
       await userEvent.click(screen.getByRole('button', { name: new RegExp(`^Bob, ${activity},`) }))
       const dialog = screen.getByRole('dialog', { name: 'Deposit Transaction Details' })
-      const facts = transactionParts(dialog).transfer
+      const facts = factsIn(dialog)
       await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
       return facts.slice(0, 2)
     }
@@ -1171,21 +1075,25 @@ describe('recent deposit activity', () => {
     expect(await fromTo('Paid in')).toEqual(['From: Bob', 'To: Alice'])
   })
 
-  it('opens a row in a grouped, read-only dialog, and Close dismisses it', async () => {
+  it('opens a row in a read-only dialog, and Close dismisses it', async () => {
     renderEntries()
     await screen.findByRole('table', { name: 'Recent deposit activity' })
     const rowCount = activityRows().length
 
     // A click anywhere on the row opens it.
-    await userEvent.click(within(activityRows()[3]).getAllByRole('cell')[3])
+    await userEvent.click(within(activityRows()[3]).getAllByRole('cell')[2])
     let dialog = screen.getByRole('dialog', { name: 'Deposit Transaction Details' })
-    expect(dialog).toHaveTextContent('Bob · Room 2 · 2 Oct 2026')
+    expect(within(dialog).getByText('Bob · 2 Oct 2026')).toBeInTheDocument()
     expect(within(dialog).getByText('Paid in')).toBeInTheDocument()
     expect(within(dialog).getAllByText('₹50,000.00')).toHaveLength(1)
-    expect(transactionParts(dialog)).toEqual({
-      transfer: ['From: Bob', 'To: Alice', 'Room: Room 2', 'Date: 2 Oct 2026'],
-      payment: ['Payment Method: Bank transfer', 'Reference / UTR: UTR123', 'Notes / Reason: None'],
-    })
+    expect(factsIn(dialog)).toEqual([
+      'From: Bob',
+      'To: Alice',
+      'Date: 2 Oct 2026',
+      'Payment Method: Bank transfer',
+      'Reference / UTR: UTR123',
+      'Notes / Reason: None',
+    ])
     expect(within(dialog).getByText('UTR123')).toHaveClass('font-mono')
     // Read-only: nothing to type in, and the only action is to close.
     expect(within(dialog).queryByRole('textbox')).toBeNull()
@@ -1201,18 +1109,18 @@ describe('recent deposit activity', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
 
     // From the keyboard, on the resident: a deduction, kept from the deposit, the note in full.
-    const deduction = screen.getByRole('button', { name: /^Bob, Deducted on leaving, Room 2,/ })
+    const deduction = screen.getByRole('button', { name: /^Bob, Deducted on leaving,/ })
     deduction.focus()
     await userEvent.keyboard('{Enter}')
     dialog = screen.getByRole('dialog', { name: 'Deposit Transaction Details' })
-    expect(transactionParts(dialog)).toEqual({
-      transfer: ['From: Bob', 'To: Alice', 'Room: Room 2', 'Date: 8 Oct 2026'],
-      payment: [
-        'Payment Method: Retained from deposit',
-        'Reference / UTR: Not recorded',
-        'Notes / Reason: Broken wardrobe hinge,\nrepaired by the landlord',
-      ],
-    })
+    expect(factsIn(dialog)).toEqual([
+      'From: Bob',
+      'To: Alice',
+      'Date: 8 Oct 2026',
+      'Payment Method: Retained from deposit',
+      'Reference / UTR: Not recorded',
+      'Notes / Reason: Broken wardrobe hinge,\nrepaired by the landlord',
+    ])
     await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).toBeNull()
     // Focus goes back to the row it came from.

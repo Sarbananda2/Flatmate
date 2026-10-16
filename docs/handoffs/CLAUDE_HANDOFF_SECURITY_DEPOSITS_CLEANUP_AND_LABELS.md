@@ -47,107 +47,67 @@ An audit of the **Security Deposit** tab (`/housing?tab=deposits`) in the live r
    - Add `title={typeof label === 'string' ? label : undefined}` to the label container.
    - Ensure the label does not rigidly truncate when there is vertical room, or keep the concise labels strictly within single-line bounds.
 
-### 2.2. Resident-First "Household Escrow Pool" Table (Rules U3, U7 & D1)
+### 2.2. Pure Financial "Household Escrow Pool" Table (No Room Allotment Mixing — Rules U3, U7 & D1)
 
-Financially, a security deposit in escrow belongs to a **person (Resident)** — people pay deposits, change rooms, and vacate — while the **Room** is the physical space they occupy (or the placeholder when a room is temporarily vacant).
+Physical room inventory and room allotment (`Room Number`, `Attached Washroom`, `Balcony`, `Occupied Since`, assigning/vacating rooms) belong exclusively to the **`Rooms Inventory`** tab (`/housing?tab=rooms`). The **`Security Deposit`** tab (`/housing?tab=deposits`) is strictly a **financial escrow ledger**.
 
-Make **`Resident`** the primary subject (Column 1, `<th scope="row">`) and **`Room`** Column 2, eliminating the redundant "Slot vs. Room" duplication:
-
-1. **6 Center-Aligned Column Headers (Rule U3):**
-   - `Resident` (`w-[22%]`, `text-center`)
-   - `Room` (`w-[16%]`, `text-center`)
-   - `Target Deposit` (`w-[16%]`, `text-center`)
-   - `Funded Status` (`w-[15%]`, `text-center`)
-   - `Paid Date` (`w-[15%]`, `text-center`)
-   - `Actions` (`w-[16%]`, `text-center`)
+1. **5 Center-Aligned Column Headers (Rule U3 — No `Room` Column):**
+   - `Resident` (`w-[28%]`, `text-center`) — primary subject (`<th scope="row">`)
+   - `Target Deposit` (`w-[18%]`, `text-center`)
+   - `Funded Status` (`w-[18%]`, `text-center`)
+   - `Paid Date` (`w-[18%]`, `text-center`)
+   - `Actions` (`w-[18%]`, `text-center`)
 
 2. **Single-Line Atomic Cells in `Household deposit slots`:**
-   - **Column 1 (`Resident`, `<th scope="row">`):**
-     - Render a focusable `<button type="button" aria-haspopup="dialog">` inside `<th scope="row">` so keyboard users can press `Enter`/`Space` on the resident to open the details dialog and focus returns there on close.
-     - When occupied: `<Avatar name={name} size="sm" />` + `<span className="font-bold text-[var(--text-primary)] truncate">{name}</span>`.
-     - When vacant: `<span className="font-semibold text-[var(--text-tertiary)]">Vacant</span>` inside the button.
-   - **Column 2 (`Room`):**
-     - Single line (`text-center font-semibold text-[var(--text-secondary)]`): `slot.room_number ?? slot.slot_label` (e.g. `Room 1`, `Room 2`, `Room 3`).
-   - **Column 3 (`Target Deposit`):**
-     - `<Rupees paise={slot.target_deposit_paise} />` (`text-center font-bold`).
-   - **Column 4 (`Funded Status`):**
-     - Single line: `<Pill tone={STATUS_TONES[slot.status]}>{STATUS_LABELS[slot.status]}</Pill>`.
-   - **Column 5 (`Paid Date`):**
-     - Single line (`tabular text-center text-[var(--text-secondary)]`): `slot.funded_date ? formatDate(slot.funded_date) : '—'`.
-   - **Column 6 (`Actions`):**
-     - Only lifecycle actions (`Pay`, `Vacate`, `Assign`), or `'—'` when none apply (such as the primary signatory's funded share).
-     - `Change Room` / `Link Room` lives inside the on-click details dialog.
+   - **Column 1 (`Resident`, `<th scope="row">`, left-aligned cell under centered header):**
+     - Focusable `<button type="button" aria-haspopup="dialog">` containing `<Avatar name={name} size="sm" />` + `<span className="font-bold text-[var(--text-primary)] truncate">{name}</span>` (or `<span className="font-semibold text-[var(--text-tertiary)]">Vacant</span>` when unassigned).
+   - **Column 2 (`Target Deposit`):** `<Rupees paise={slot.target_deposit_paise} />` (`text-center font-bold`).
+   - **Column 3 (`Funded Status`):** `<Pill tone={STATUS_TONES[slot.status]}>{STATUS_LABELS[slot.status]}</Pill>`.
+   - **Column 4 (`Paid Date`):** `slot.funded_date ? formatDate(slot.funded_date) : '—'`.
+   - **Column 5 (`Actions`):**
+     - Only deposit lifecycle actions (`Pay`, `Vacate`, `Assign`), or `'—'` when none apply (such as the primary signatory's funded share).
      - Action button clicks call `event.stopPropagation()` so they open their own dialog without triggering the row click.
 
-### 2.3. On-Click "Deposit Details" Modal (No Redundant `Slot 1` vs `Room 1` Duplication)
+### 2.3. On-Click "Deposit Details" Modal (Purely Financial & Payment Receipt — No Room Fields, No `Change Room`)
 
-Clicking any row in the `Household Escrow Pool` table opens a read-only `<Modal title="Deposit Details" description={`${slot.assigned_display_name ?? 'Vacant'} · ${slot.room_number ?? slot.slot_label}`}>`:
+Clicking any row in the `Household Escrow Pool` table opens a read-only `<Modal title="Deposit Details" description={slot.assigned_display_name ?? 'Vacant deposit share'}>`:
 
-1. **Top Financial Summary Strip (`rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 space-y-3`):**
-   - **Header Row (`flex flex-wrap items-center justify-between gap-2`):**
-     - Left: `<span className="flex flex-wrap items-center gap-2"><Pill tone={STATUS_TONES[slot.status]}>{STATUS_LABELS[slot.status]}</Pill>{slot.is_primary_signatory && <Pill tone="accent">Primary signatory</Pill>}</span>`
+1. **Top Financial Summary Box (`rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 space-y-3`):**
+   - **Status Row:** `<span className="flex flex-wrap items-center gap-2"><Pill tone={STATUS_TONES[slot.status]}>{STATUS_LABELS[slot.status]}</Pill>{slot.is_primary_signatory && <Pill tone="accent">Primary signatory</Pill>}</span>`
    - **3-Column Financial Strip (`<dl className="m-0 grid grid-cols-3 gap-3 pt-2.5 border-t border-[var(--border-subtle)] text-xs">`):**
      1. **`Target Deposit`:** `<Rupees paise={slot.target_deposit_paise} className="font-bold tabular" />`
      2. **`Funded`:** `<Rupees paise={slot.funded_amount_paise} className="font-bold tabular" />`
      3. **`Outstanding Balance`:** `<Rupees paise={slot.outstanding_paise} className="font-bold tabular" />`
 
-2. **Group 1 — `Occupancy & Space` (2×2 Atomic Fact Grid):**
-   - Section heading: `<h3 className="m-0 text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] pb-2 border-b border-[var(--border-subtle)]">Occupancy &amp; Space</h3>`
-   - `<dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">`:
-     1. **`Resident`:** `slot.assigned_display_name ? (slot.is_primary_signatory ? `${slot.assigned_display_name} (Primary signatory)` : slot.assigned_display_name) : 'Vacant'`
-     2. **`Occupied Since`:** `slot.assigned_since ? formatDate(slot.assigned_since) : '—'`
-     3. **`Room`:** `slot.room_number ?? slot.slot_label`
-     4. **`Private Amenities`:** When linked to a room (`slot.room_id`), list `Attached Washroom` / `Balcony` (joined by ` · `, or `'None'`); when not linked to an inventory room, `'Not linked'`.
+2. **Payment & Escrow Facts (`<dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">` — No `Room`, `Private Amenities`, or `Occupied Since`):**
+   1. **`Resident`:** `slot.assigned_display_name ? (slot.is_primary_signatory ? `${slot.assigned_display_name} (Primary signatory)` : slot.assigned_display_name) : 'Vacant'`
+   2. **`Paid To`:** `slot.is_primary_signatory && slot.funded_amount_paise > 0 ? 'Direct to landlord' : slot.paid_to_display_name ?? (slot.funded_amount_paise > 0 ? 'Direct to landlord' : '—')`
+   3. **`Paid Date`:** `slot.funded_date ? formatDate(slot.funded_date) : slot.is_primary_signatory ? 'Fronted with master deposit' : 'Not paid yet'`
+   4. **`Payment Method`:** `slot.payment_method ? METHOD_LABELS[slot.payment_method] : slot.is_primary_signatory ? 'Master lease deposit' : 'Not recorded'`
+   5. **`Reference / UTR` (`sm:col-span-2`):** `slot.payment_reference ? <span className="font-mono break-all">{slot.payment_reference}</span> : 'Not recorded'`
 
-3. **Group 2 — `Payment Details` (2×2 Atomic Fact Grid):**
-   - Section heading: `<h3 className="m-0 text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] pb-2 border-b border-[var(--border-subtle)]">Payment Details</h3>`
-   - `<dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">`:
-     1. **`Paid Date`:** `slot.funded_date ? formatDate(slot.funded_date) : slot.is_primary_signatory ? 'Fronted with master deposit' : 'Not paid yet'`
-     2. **`Paid To`:** `slot.is_primary_signatory && slot.funded_amount_paise > 0 ? 'Direct to landlord' : slot.paid_to_display_name ?? (slot.funded_amount_paise > 0 ? 'Direct to landlord' : '—')`
-     3. **`Payment Method`:** `slot.payment_method ? METHOD_LABELS[slot.payment_method] : slot.is_primary_signatory ? 'Master lease deposit' : 'Not recorded'`
-     4. **`Reference / UTR`:** `slot.payment_reference ? <span className="font-mono break-all">{slot.payment_reference}</span> : 'Not recorded'`
+3. **Modal Footer (`flex justify-end`):**
+   - Only `<button type="button" className={BUTTON_SECONDARY} onClick={onClose}>Close</button>`.
+   - **Remove `Change Room` / `Link Room` and `RoomLinkModal` from `SecurityDeposits.tsx`.**
 
-4. **Modal Footer (`flex items-center justify-between gap-3`):**
-   - Left: `<button type="button" className={BUTTON_QUIET} onClick={() => onChangeRoom()}><BedDouble className="w-3.5 h-3.5 shrink-0" aria-hidden="true" /> {slot.room_id ? 'Change Room' : 'Link Room'}</button>` — closes the details modal and opens `RoomLinkModal`.
-   - Right: `<button type="button" className={BUTTON_SECONDARY} onClick={onClose}>Close</button>`.
+### 2.4. Resident-First "Recent Deposit Activity" Table & Modal (No `Room` Column or Fact)
 
-### 2.4. Resident-First "Recent Deposit Activity" Table & Grouped Transaction Modal (Rules U3, U6, U7 & D1)
+1. **4 Center-Aligned Column Headers (Rule U3 — No `Room` Column):**
+   - `Resident` (`w-[32%]`, `text-center`) — primary subject (`<th scope="row">`, left-aligned cell under centered header, containing a focusable `<button type="button" aria-haspopup="dialog">` with `<Avatar name={resident} size="sm" />` + `tx.resident_display_name ?? '—'`)
+   - `Activity` (`w-[26%]`, `text-center`) — `<Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>`
+   - `Date` (`w-[20%]`, `text-center tabular`) — `formatDate(tx.tx_date)`
+   - `Amount` (`w-[22%]`, `text-center tabular font-bold`) — `<Rupees paise={tx.amount_paise} />`
 
-Just like the `Household Escrow Pool` table above it leads with `Resident`, every deposit activity row is fundamentally about **one flatmate's deposit stake** (`tx.resident_display_name`), and the `Activity` pill already conveys the direction (`Paid in`, `Refunded on leaving`, `Deduction retained`, `Replacement transfer`). Keeping `From` and `To` inside the on-click `Deposit Transaction Details` modal avoids repeating the primary signatory's name on every single row while preserving the exact directional audit trail.
-
-1. **5 Center-Aligned Column Headers (Rule U3):**
-   - `Resident` (`w-[26%]`, `text-center`) — primary subject (`<th scope="row">`)
-   - `Room` (`w-[16%]`, `text-center`)
-   - `Activity` (`w-[24%]`, `text-center`)
-   - `Date` (`w-[16%]`, `text-center`)
-   - `Amount` (`w-[18%]`, `text-center`)
-
-2. **Single-Line Atomic Cells in `Recent deposit activity`:**
-   - **Column 1 (`Resident`, `<th scope="row">`, left-aligned cell under centered header):**
-     - Focusable `<button type="button" aria-haspopup="dialog">` containing `<Avatar name={resident} size="sm" />` + `<span className="font-bold text-[var(--text-primary)] truncate">{tx.resident_display_name ?? '—'}</span>` so keyboard users can press `Enter`/`Space` on the resident to open the transaction details dialog and focus returns there on close.
-   - **Column 2 (`Room`, `text-center`):** `slot.room_number ?? slot.slot_label`.
-   - **Column 3 (`Activity`, `text-center`):** `<Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>`.
-   - **Column 4 (`Date`, `text-center tabular text-[var(--text-secondary)]`):** `formatDate(tx.tx_date)`.
-   - **Column 5 (`Amount`, `text-center tabular font-bold text-[var(--text-primary)]`):** `<Rupees paise={tx.amount_paise} />`.
-
-3. **Grouped "Deposit Transaction Details" Modal (`title="Deposit Transaction Details"`):**
-   - **Subtitle / Description:** `${tx.resident_display_name ?? 'Resident'} · ${slot.room_number ?? slot.slot_label} · ${formatDate(tx.tx_date)}`.
-   - **Top Summary Banner (`rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 flex items-center justify-between gap-3`):**
-     - Left: `<Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>`
-     - Right: `<Rupees paise={tx.amount_paise} className="text-base font-bold tabular text-[var(--text-primary)]" />`
-   - **Group 1 — `Transfer & Space` (2×2 Atomic Fact Grid):**
-     - Section heading: `<h3 className="m-0 text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] pb-2 border-b border-[var(--border-subtle)]">Transfer &amp; Space</h3>`
-     - `<dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">`:
-       1. **`From`:** `{from}` (derived accurately by `txParties(tx, summary)`)
-       2. **`To`:** `{to}` (derived accurately by `txParties(tx, summary)`)
-       3. **`Room`:** `{slot.room_number ?? slot.slot_label}`
-       4. **`Date`:** `{formatDate(tx.tx_date)}`
-   - **Group 2 — `Payment & Notes` (2-Column Atomic Fact Grid):**
-     - Section heading: `<h3 className="m-0 text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] pb-2 border-b border-[var(--border-subtle)]">Payment &amp; Notes</h3>`
-     - `<dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">`:
-       1. **`Payment Method`:** `{txMethod(tx)}` (`UPI`, `Bank transfer`, `Retained from deposit`, or `Not recorded`)
-       2. **`Reference / UTR`:** `{tx.reference ? <span className="font-mono break-all">{tx.reference}</span> : 'Not recorded'}`
-       3. **`Notes / Reason` (`sm:col-span-2`):** Full untruncated `{tx.notes || 'None'}`.
+2. **On-Click "Deposit Transaction Details" Modal (`title="Deposit Transaction Details"`):**
+   - **Subtitle / Description:** `${tx.resident_display_name ?? 'Resident'} · ${formatDate(tx.tx_date)}` (no `Room` in subtitle).
+   - **Top Summary Banner:** `<Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>` on the left, `<Rupees paise={tx.amount_paise} className="text-base font-bold tabular text-[var(--text-primary)]" />` on the right.
+   - **2-Column Atomic Fact Grid (`<dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">` — No `Room` Fact):**
+     1. **`From`:** `{from}` (derived via `txParties(tx, summary)`)
+     2. **`To`:** `{to}` (derived via `txParties(tx, summary)`)
+     3. **`Date`:** `{formatDate(tx.tx_date)}`
+     4. **`Payment Method`:** `{txMethod(tx)}` (`UPI`, `Bank transfer`, `Retained from deposit`, or `Not recorded`)
+     5. **`Reference / UTR` (`sm:col-span-2`):** `{tx.reference ? <span className="font-mono break-all">{tx.reference}</span> : 'Not recorded'}`
+     6. **`Notes / Reason` (`sm:col-span-2`):** Full untruncated `{tx.notes || 'None'}`.
    - **Footer:** Right-aligned `<button type="button" className={BUTTON_SECONDARY} onClick={onClose}>Close</button>`.
 
 ### 2.5. Refine Top Ribbon Apartment Name (`Layout.tsx`)
@@ -161,17 +121,14 @@ Just like the `Household Escrow Pool` table above it leads with `Resident`, ever
 
 ## 3. Test & Verification Checklist
 
-1. **Resident-First Escrow Pool Table & Grouped Deposit Details Modal (`SecurityDeposits.test.tsx`):**
-   - Assert the 6 centered column headers in `Household deposit slots`: `['Resident', 'Room', 'Target Deposit', 'Funded Status', 'Paid Date', 'Actions']` (Rule U3).
-   - Verify clicking a row opens `"Deposit Details"` (`role="dialog"`) with:
-     - Top financial summary strip showing status pill(s) and `Target Deposit`, `Funded`, and `Outstanding Balance`.
-     - `Occupancy & Space` section heading and 2×2 grid (`Resident`, `Occupied Since`, `Room`, `Private Amenities`).
-     - `Payment Details` section heading and 2×2 grid (`Paid Date`, `Paid To`, `Payment Method`, `Reference / UTR`).
-     - `Change Room` / `Link Room` in the footer.
-2. **Resident-First Recent Deposit Activity Table & Grouped Transaction Modal (`SecurityDeposits.test.tsx`):**
-   - Assert the 5 centered column headers: `['Resident', 'Room', 'Activity', 'Date', 'Amount']` (Rule U3), with `Resident` as `<th scope="row">` containing the keyboard trigger button.
-   - Verify clicking an activity row opens `"Deposit Transaction Details"` (`role="dialog"`) with two grouped sections (`Transfer & Space`: `From`, `To`, `Room`, `Date`; and `Payment & Notes`: `Payment Method`, `Reference / UTR`, `Notes / Reason`), verifying directional accuracy for `From` and `To` across `funding_payment`, `move_out_refund`, and `direct_replacement_transfer`.
+1. **Pure Financial Escrow Pool Table & Deposit Details Modal (`SecurityDeposits.test.tsx`):**
+   - Assert the 5 centered column headers in `Household deposit slots`: `['Resident', 'Target Deposit', 'Funded Status', 'Paid Date', 'Actions']` (Rule U3 — no `Room` column).
+   - Verify clicking a row opens `"Deposit Details"` (`role="dialog"`) showing the top financial strip (`Target Deposit`, `Funded`, `Outstanding Balance`) and the 5 payment/escrow facts (`Resident`, `Paid To`, `Paid Date`, `Payment Method`, `Reference / UTR`), with no `Room`, `Private Amenities`, `Occupied Since`, or `Change Room` / `Link Room` button.
+2. **Resident-First Recent Deposit Activity Table & Transaction Modal (`SecurityDeposits.test.tsx`):**
+   - Assert the 4 centered column headers: `['Resident', 'Activity', 'Date', 'Amount']` (Rule U3 — no `Room` column).
+   - Verify clicking an activity row opens `"Deposit Transaction Details"` (`role="dialog"`) with `From`, `To`, `Date`, `Payment Method`, `Reference / UTR`, and `Notes / Reason` (no `Room` fact).
    - Run vitest: `npm test -- --run` $\rightarrow$ all tests must pass.
+
 
 
 

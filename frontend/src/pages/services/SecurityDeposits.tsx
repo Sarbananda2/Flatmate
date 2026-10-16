@@ -7,10 +7,9 @@
  * or a balance. Every amount shown comes from the backend; the one sum done
  * here is "put in, less deductions", which the backend checks again.
  */
-import { useId, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  BedDouble,
   History,
   Landmark,
   LogOut,
@@ -49,7 +48,6 @@ import type {
   DepositSlot,
   DepositTransaction,
   HouseholdDepositSummary,
-  RoomList,
 } from '../../api/types'
 
 const DEPOSITS = '/api/rent/deposits'
@@ -493,7 +491,7 @@ function DepositSetupCard({
 
 /* ------------------------------------------------------------ escrow pool -- */
 
-type DialogKind = 'fund' | 'vacate' | 'assign' | 'room'
+type DialogKind = 'fund' | 'vacate' | 'assign'
 type Dialog = { kind: DialogKind; slot: DepositSlot } | null
 
 function EscrowPoolCard({
@@ -509,9 +507,9 @@ function EscrowPoolCard({
   const fronted = summary.funding_mode === 'primary_signatory'
   // A ₹0 entry (a refund of nothing, say) moves no money, so it is left out.
   const history = summary.slots
-    .flatMap((slot) => slot.transactions.map((tx) => ({ tx, slot })))
-    .filter(({ tx }) => tx.amount_paise > 0)
-    .sort((a, b) => a.tx.tx_date.localeCompare(b.tx.tx_date))
+    .flatMap((slot) => slot.transactions)
+    .filter((tx) => tx.amount_paise > 0)
+    .sort((a, b) => a.tx_date.localeCompare(b.tx_date))
     .slice(-6)
     .reverse()
 
@@ -593,12 +591,11 @@ function EscrowPoolCard({
             <caption className="sr-only">Household deposit slots</caption>
             <thead>
               <tr className={TABLE_HEAD}>
-                <th scope="col" className="w-[22%] pb-3 px-2 font-bold text-center">Resident</th>
-                <th scope="col" className="w-[16%] pb-3 px-2 font-bold text-center">Room</th>
-                <th scope="col" className="w-[16%] pb-3 px-2 font-bold text-center">Target Deposit</th>
-                <th scope="col" className="w-[15%] pb-3 px-2 font-bold text-center">Funded Status</th>
-                <th scope="col" className="w-[15%] pb-3 px-2 font-bold text-center">Paid Date</th>
-                <th scope="col" className="w-[16%] pb-3 px-2 font-bold text-center">Actions</th>
+                <th scope="col" className="w-[28%] pb-3 px-2 font-bold text-center">Resident</th>
+                <th scope="col" className="w-[18%] pb-3 px-2 font-bold text-center">Target Deposit</th>
+                <th scope="col" className="w-[18%] pb-3 px-2 font-bold text-center">Funded Status</th>
+                <th scope="col" className="w-[18%] pb-3 px-2 font-bold text-center">Paid Date</th>
+                <th scope="col" className="w-[18%] pb-3 px-2 font-bold text-center">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -617,15 +614,8 @@ function EscrowPoolCard({
                     onClick={() => setDetailsId(slot.slot_id)}
                   >
                     <th scope="row" className="py-2.5 px-2 text-left">
-                      <ResidentButton
-                        name={occupant}
-                        placeholder="Vacant"
-                        label={`${occupant ?? 'Vacant'}, ${roomName(slot)}`}
-                      />
+                      <ResidentButton name={occupant} placeholder="Vacant" />
                     </th>
-                    <td className="py-2.5 px-2 text-center font-semibold text-[var(--text-secondary)] truncate">
-                      {roomName(slot)}
-                    </td>
                     <td className="py-2.5 px-2 text-center font-bold text-[var(--text-primary)]">
                       <Rupees paise={slot.target_deposit_paise} />
                     </td>
@@ -645,16 +635,7 @@ function EscrowPoolCard({
           </table>
         </div>
 
-        {details && (
-          <DepositDetailsModal
-            slot={details}
-            onClose={() => setDetailsId(null)}
-            onChangeRoom={() => {
-              setDetailsId(null)
-              setDialog({ kind: 'room', slot: details })
-            }}
-          />
-        )}
+        {details && <DepositDetailsModal slot={details} onClose={() => setDetailsId(null)} />}
 
         {dialog && (
           <SlotDialog
@@ -685,12 +666,10 @@ function RecentDepositActivity({
   history,
   summary,
 }: {
-  history: Array<{ tx: DepositTransaction; slot: DepositSlot }>
+  history: DepositTransaction[]
   summary: HouseholdDepositSummary
 }) {
-  const [selected, setSelected] = useState<{ tx: DepositTransaction; slot: DepositSlot } | null>(
-    null,
-  )
+  const [selected, setSelected] = useState<DepositTransaction | null>(null)
   return (
     <Panel
       title="Recent Deposit Activity"
@@ -698,36 +677,32 @@ function RecentDepositActivity({
       hint="Payments, refunds and deductions recorded across the household's deposit slots."
     >
       <div className="overflow-x-auto min-w-0">
-        <table className="w-full table-fixed text-xs min-w-[640px] border-collapse">
+        <table className="w-full table-fixed text-xs min-w-[600px] border-collapse">
           <caption className="sr-only">Recent deposit activity</caption>
           <thead>
             <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[26%] pb-2.5 px-2 font-bold text-center">Resident</th>
-              <th scope="col" className="w-[16%] pb-2.5 px-2 font-bold text-center">Room</th>
-              <th scope="col" className="w-[24%] pb-2.5 px-2 font-bold text-center">Activity</th>
-              <th scope="col" className="w-[16%] pb-2.5 px-2 font-bold text-center">Date</th>
-              <th scope="col" className="w-[18%] pb-2.5 px-2 font-bold text-center">Amount</th>
+              <th scope="col" className="w-[32%] pb-2.5 px-2 font-bold text-center">Resident</th>
+              <th scope="col" className="w-[26%] pb-2.5 px-2 font-bold text-center">Activity</th>
+              <th scope="col" className="w-[20%] pb-2.5 px-2 font-bold text-center">Date</th>
+              <th scope="col" className="w-[22%] pb-2.5 px-2 font-bold text-center">Amount</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-            {history.map(({ tx, slot }) => (
+            {history.map((tx) => (
               // The whole row opens the dialog. The resident's button holds the
               // keyboard focus, gets it back on close, and its click reaches the row.
               <tr
                 key={tx.tx_id}
                 className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
-                onClick={() => setSelected({ tx, slot })}
+                onClick={() => setSelected(tx)}
               >
                 <th scope="row" className="py-2.5 px-2 text-left">
                   <ResidentButton
                     name={tx.resident_display_name}
                     placeholder="—"
-                    label={`${tx.resident_display_name ?? 'Resident'}, ${TX_LABELS[tx.tx_type]}, ${roomName(slot)}, ${formatDate(tx.tx_date)}, ${formatInr(tx.amount_paise)}`}
+                    label={`${tx.resident_display_name ?? 'Resident'}, ${TX_LABELS[tx.tx_type]}, ${formatDate(tx.tx_date)}, ${formatInr(tx.amount_paise)}`}
                   />
                 </th>
-                <td className="py-2.5 px-2 text-center font-semibold text-[var(--text-secondary)] truncate">
-                  {roomName(slot)}
-                </td>
                 <td className="py-2.5 px-2 text-center">
                   <Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>
                 </td>
@@ -743,7 +718,7 @@ function RecentDepositActivity({
         </table>
       </div>
       {selected && (
-        <DepositTransactionModal {...selected} summary={summary} onClose={() => setSelected(null)} />
+        <DepositTransactionModal tx={selected} summary={summary} onClose={() => setSelected(null)} />
       )}
     </Panel>
   )
@@ -752,12 +727,10 @@ function RecentDepositActivity({
 /** One deposit entry in full, read-only: nothing here can be changed. */
 function DepositTransactionModal({
   tx,
-  slot,
   summary,
   onClose,
 }: {
   tx: DepositTransaction
-  slot: DepositSlot
   summary: HouseholdDepositSummary
   onClose: () => void
 }) {
@@ -765,7 +738,7 @@ function DepositTransactionModal({
   return (
     <Modal
       title="Deposit Transaction Details"
-      description={`${tx.resident_display_name ?? 'Resident'} · ${roomName(slot)} · ${formatDate(tx.tx_date)}`}
+      description={`${tx.resident_display_name ?? 'Resident'} · ${formatDate(tx.tx_date)}`}
       onClose={onClose}
       footer={
         <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
@@ -779,40 +752,20 @@ function DepositTransactionModal({
           <Rupees paise={tx.amount_paise} className="text-base font-bold tabular text-[var(--text-primary)]" />
         </div>
 
-        <DetailGroup title="Transfer & Space">
+        <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
           <DetailFact label="From">{from}</DetailFact>
           <DetailFact label="To">{to}</DetailFact>
-          <DetailFact label="Room">{roomName(slot)}</DetailFact>
           <DetailFact label="Date">{formatDate(tx.tx_date)}</DetailFact>
-        </DetailGroup>
-
-        <DetailGroup title="Payment & Notes">
           <DetailFact label="Payment Method">{txMethod(tx)}</DetailFact>
-          <DetailFact label="Reference / UTR">
+          <DetailFact label="Reference / UTR" className="sm:col-span-2">
             {tx.reference ? <span className="font-mono break-all">{tx.reference}</span> : 'Not recorded'}
           </DetailFact>
           <DetailFact label="Notes / Reason" className="sm:col-span-2">
             <span className="whitespace-pre-wrap break-words">{tx.notes || 'None'}</span>
           </DetailFact>
-        </DetailGroup>
+        </dl>
       </div>
     </Modal>
-  )
-}
-
-/** A titled set of facts in a details dialog, two to a row on wider screens. */
-function DetailGroup({ title, children }: { title: string; children: React.ReactNode }) {
-  const headingId = useId()
-  return (
-    <section aria-labelledby={headingId} className="space-y-3">
-      <h3
-        id={headingId}
-        className="m-0 text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] pb-2 border-b border-[var(--border-subtle)]"
-      >
-        {title}
-      </h3>
-      <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">{children}</dl>
-    </section>
   )
 }
 
@@ -838,8 +791,8 @@ function DetailFact({
 
 /**
  * The resident a row is about, or a placeholder, as the button that opens the
- * row's details. Its accessible name says more than the name alone, so rows
- * for the same person, or two vacant ones, are still told apart.
+ * row's details. A label can say more than the name, where one person has
+ * several rows.
  */
 function ResidentButton({
   name,
@@ -848,7 +801,7 @@ function ResidentButton({
 }: {
   name: string | null
   placeholder: string
-  label: string
+  label?: string
 }) {
   return (
     <button
@@ -960,32 +913,17 @@ function SlotDialog({
   const props = { slot: dialog.slot, summary, onClose, onDone }
   if (dialog.kind === 'fund') return <FundingModal {...props} />
   if (dialog.kind === 'vacate') return <VacateModal {...props} />
-  if (dialog.kind === 'room') return <RoomLinkModal {...props} />
   return <AssignModal {...props} />
 }
 
 /**
- * One resident's deposit in full, read-only. The room it pays for is changed
- * from here; paying, vacating and assigning stay on the row.
+ * One resident's deposit in full, read-only: what it is, what is paid, and how.
+ * Rooms are kept under Rooms Inventory; paying, vacating and assigning stay on the row.
  */
-function DepositDetailsModal({
-  slot,
-  onClose,
-  onChangeRoom,
-}: {
-  slot: DepositSlot
-  onClose: () => void
-  onChangeRoom: () => void
-}) {
+function DepositDetailsModal({ slot, onClose }: { slot: DepositSlot; onClose: () => void }) {
   const status = STATUS[slot.status]
   const paid = slot.funded_amount_paise > 0
   const name = slot.assigned_display_name
-  const amenities =
-    slot.room_id === null
-      ? 'Not linked'
-      : [slot.has_attached_washroom && 'Attached Washroom', slot.has_balcony && 'Balcony']
-          .filter(Boolean)
-          .join(' · ') || 'None'
   // Money paid with nobody else named went to the landlord: the signatory's
   // own share, or a co-tenant paying the landlord directly.
   const paidTo = !paid
@@ -996,18 +934,12 @@ function DepositDetailsModal({
   return (
     <Modal
       title="Deposit Details"
-      description={`${name ?? 'Vacant'} · ${roomName(slot)}`}
+      description={name ?? 'Vacant deposit share'}
       onClose={onClose}
       footer={
-        <div className="flex w-full items-center justify-between gap-3">
-          <button type="button" className={BUTTON_QUIET} onClick={onChangeRoom}>
-            <BedDouble className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            {slot.room_id ? 'Change Room' : 'Link Room'}
-          </button>
-          <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
-            Close
-          </button>
-        </div>
+        <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
+          Close
+        </button>
       }
     >
       <div className="space-y-5">
@@ -1035,18 +967,11 @@ function DepositDetailsModal({
           </dl>
         </div>
 
-        <DetailGroup title="Occupancy & Space">
+        <dl aria-label="Payment details" className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
           <DetailFact label="Resident">
             {name ? (slot.is_primary_signatory ? `${name} (Primary signatory)` : name) : 'Vacant'}
           </DetailFact>
-          <DetailFact label="Occupied Since">
-            {slot.assigned_since ? formatDate(slot.assigned_since) : '—'}
-          </DetailFact>
-          <DetailFact label="Room">{roomName(slot)}</DetailFact>
-          <DetailFact label="Private Amenities">{amenities}</DetailFact>
-        </DetailGroup>
-
-        <DetailGroup title="Payment Details">
+          <DetailFact label="Paid To">{paidTo}</DetailFact>
           <DetailFact label="Paid Date">
             {slot.funded_date
               ? formatDate(slot.funded_date)
@@ -1054,7 +979,6 @@ function DepositDetailsModal({
                 ? 'Fronted with master deposit'
                 : 'Not paid yet'}
           </DetailFact>
-          <DetailFact label="Paid To">{paidTo}</DetailFact>
           <DetailFact label="Payment Method">
             {slot.payment_method
               ? METHOD_LABELS[slot.payment_method]
@@ -1062,14 +986,14 @@ function DepositDetailsModal({
                 ? 'Master lease deposit'
                 : 'Not recorded'}
           </DetailFact>
-          <DetailFact label="Reference / UTR">
+          <DetailFact label="Reference / UTR" className="sm:col-span-2">
             {slot.payment_reference ? (
               <span className="font-mono break-all">{slot.payment_reference}</span>
             ) : (
               'Not recorded'
             )}
           </DetailFact>
-        </DetailGroup>
+        </dl>
       </div>
     </Modal>
   )
@@ -1672,88 +1596,6 @@ function PaidTo({ slot }: { slot: DepositSlot }) {
     slot.payment_reference ? `(${slot.payment_reference})` : null,
   ].filter(Boolean)
   return <>{parts.join(' ')}</>
-}
-
-/** Choose the room a slot backs, or none. A room is backed by one slot at most. */
-function RoomLinkModal({ slot, summary, onClose, onDone }: SlotModalProps) {
-  const rooms = useResource<RoomList>('/api/property/rooms')
-  const [roomId, setRoomId] = useState(slot.room_id ?? '')
-  const taken = new Set(
-    summary.slots
-      .filter((other) => other.slot_id !== slot.slot_id && other.room_id)
-      .map((other) => other.room_id),
-  )
-  const options = (rooms.data?.items ?? [])
-    .filter((room) => !taken.has(room.room_id))
-    .map((room) => ({
-      value: room.room_id,
-      label: [
-        room.room_number,
-        room.has_attached_washroom ? 'attached washroom' : null,
-        room.has_balcony ? 'balcony' : null,
-      ]
-        .filter(Boolean)
-        .join(' · '),
-    }))
-  const unchanged = roomId === (slot.room_id ?? '')
-
-  const save = useMutation(
-    () =>
-      api.post<HouseholdDepositSummary>(
-        `${DEPOSITS}/slots/${encodeURIComponent(slot.slot_id)}/link-room`,
-        { room_id: roomId || null },
-      ),
-    { onSuccess: onDone },
-  )
-
-  return (
-    <Modal
-      title={slot.room_id ? 'Change Room' : 'Link Room'}
-      description={`Which room ${slotName(slot)} is the deposit for. A room is backed by one slot at most.`}
-      onClose={onClose}
-      footer={
-        <ModalFooter
-          form="deposit-room-form"
-          pending={save.pending}
-          valid={!unchanged}
-          label={roomId ? 'Save Room' : 'Unlink Room'}
-          pendingLabel="Saving…"
-          onClose={onClose}
-        />
-      }
-    >
-      <form
-        id="deposit-room-form"
-        className="stack"
-        noValidate
-        onSubmit={(event) => {
-          event.preventDefault()
-          if (!unchanged && !save.pending) void save.run(undefined)
-        }}
-      >
-        {save.error && <ErrorNotice error={save.error} />}
-        <AsyncSection resource={rooms} loadingLabel="Loading rooms…">
-          {() =>
-            options.length === 0 && !slot.room_id ? (
-              <p className="m-0 text-xs text-[var(--text-secondary)]" role="status">
-                Every room is already backed by a slot, or no rooms have been added. Add rooms
-                under Household &amp; Property.
-              </p>
-            ) : (
-              <SelectField
-                label="Room"
-                value={roomId}
-                onChange={setRoomId}
-                placeholder="No room"
-                options={options}
-                hint="Rooms already backed by another slot are not listed."
-              />
-            )
-          }
-        </AsyncSection>
-      </form>
-    </Modal>
-  )
 }
 
 /**
