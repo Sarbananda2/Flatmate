@@ -98,7 +98,7 @@ describe('HouseholdPoolCard', () => {
     ).toBeInTheDocument()
     const facts = screen.getByLabelText('House kitty account')
     expect(factsIn(facts).slice(0, 3)).toEqual([
-      'Kitty Name: Flat 402 Kitty',
+      'Account Name: Flat 402 Kitty',
       'Bank Account: 123456789012',
       'IFSC: SBIN0005678',
     ])
@@ -113,7 +113,7 @@ describe('HouseholdPoolCard', () => {
     showCard({ ...APARTMENT, pool_name: '', pool_bank_account: null, pool_bank_ifsc: null, pool_upi_id: null })
     expect(factsIn(screen.getByLabelText('House kitty account'))).toEqual([
       // No name stored: it is the House Kitty.
-      'Kitty Name: House Kitty',
+      'Account Name: House Kitty',
       'Bank Account: Not recorded',
       'IFSC: Not recorded',
       'UPI ID: Not recorded',
@@ -125,7 +125,13 @@ describe('HouseholdPoolCard', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Edit house kitty' }))
     const dialog = screen.getByRole('dialog', { name: 'House Kitty Account' })
     const field = (label: string) => within(dialog).getByLabelText(new RegExp(`^${label}`))
-    expect(field('Kitty Name')).toHaveValue('Flat 402 Kitty')
+    expect(within(dialog).getAllByRole('textbox').map((box) => box.closest('.field')?.querySelector('label')?.textContent)).toEqual([
+      'Account Name* (required)',
+      'Bank Account',
+      'IFSC',
+      'UPI ID',
+    ])
+    expect(field('Account Name')).toHaveValue('Flat 402 Kitty')
     expect(field('UPI ID')).toHaveValue('flat402@okicici')
 
     await userEvent.clear(field('Bank Account'))
@@ -140,8 +146,8 @@ describe('HouseholdPoolCard', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     expect(patched()).toBeUndefined()
 
-    await userEvent.clear(field('Kitty Name'))
-    await userEvent.type(field('Kitty Name'), ' Kitty ')
+    await userEvent.clear(field('Account Name'))
+    await userEvent.type(field('Account Name'), ' Kitty ')
     await userEvent.clear(field('Bank Account'))
     await userEvent.type(field('Bank Account'), '987654321')
     await userEvent.clear(field('IFSC'))
@@ -166,9 +172,9 @@ describe('HouseholdPoolCard', () => {
     showCard()
     await userEvent.click(screen.getByRole('button', { name: 'Edit house kitty' }))
     const dialog = screen.getByRole('dialog', { name: 'House Kitty Account' })
-    await userEvent.clear(within(dialog).getByLabelText(/^Kitty Name/))
+    await userEvent.clear(within(dialog).getByLabelText(/^Account Name/))
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
-    expect(within(dialog).getByText('Give the kitty a name.')).toBeInTheDocument()
+    expect(within(dialog).getByText('Enter the account name.')).toBeInTheDocument()
     expect(patched()).toBeUndefined()
   })
 })
@@ -248,7 +254,7 @@ function showLandlord(lease: unknown = LEASE, owners: HouseholdContact[] = [OWNE
     routes: {
       '/api/rent/config': lease,
       '/api/property/contacts': { items: owners, total: owners.length, roles_on_file: owners.length ? ['owner'] : [] },
-      'PATCH /api/property/contacts/owner-1': OWNER,
+      'POST /api/rent/config': LEASE.config,
     } as never,
   })
   render(
@@ -273,7 +279,7 @@ describe('LandlordAccountCard', () => {
     const facts = screen.getByLabelText('Landlord account')
     await waitFor(() => expect(facts).toHaveTextContent('Kumar Yadav'))
     expect(factsIn(facts).slice(0, 3)).toEqual([
-      'Landlord Name: Kumar Yadav',
+      'Account Name: Kumar Yadav',
       'Bank Account: 50100123456789',
       'IFSC: HDFC0001234',
     ])
@@ -290,45 +296,77 @@ describe('LandlordAccountCard', () => {
     const facts = screen.getByLabelText('Landlord account')
     await waitFor(() => expect(facts).toHaveTextContent('50100123456789'))
     expect(factsIn(facts)).toEqual([
-      'Landlord Name: Kumar Yadav',
+      'Account Name: Kumar Yadav',
       'Bank Account: 50100123456789',
       'IFSC: HDFC0001234',
       'UPI ID: Not recorded',
     ])
   })
 
-  it('says Not recorded before there is a lease or an owner', async () => {
+  it('says Not recorded before there is a lease, and points to where it is set up', async () => {
     showLandlord({ config: null }, [])
     await waitFor(() => expect(gets('/api/property/contacts')).toBe(1))
     const facts = screen.getByLabelText('Landlord account')
     await waitFor(() =>
       expect(factsIn(facts)).toEqual([
-        'Landlord Name: Not recorded',
+        'Account Name: Not recorded',
         'Bank Account: Not recorded',
         'IFSC: Not recorded',
         'UPI ID: Not recorded',
       ]),
     )
+    // The account is kept on the lease, so there is nothing to edit until there is one.
+    expect(await screen.findByRole('link', { name: 'Set up the lease under Housing' })).toHaveAttribute(
+      'href',
+      '/housing',
+    )
+    expect(screen.queryByRole('button', { name: 'Edit landlord' })).toBeNull()
   })
 
-  it('edits the landlord through the owner contact, in a dialog named like the card', async () => {
+  it('edits the landlord in the same dialog as the kitty, saving to the lease', async () => {
     showLandlord()
     await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))
     const dialog = screen.getByRole('dialog', { name: 'Landlord Account' })
-    expect(dialog).toHaveTextContent('Role: Property Owner')
-    expect(within(dialog).getByLabelText(/^Name/)).toHaveValue('Kumar Yadav')
-    const before = { lease: gets('/api/rent/config'), contacts: gets('/api/property/contacts') }
+    const field = (label: string) => within(dialog).getByLabelText(new RegExp(`^${label}`))
+    // The same four fields, in the same order, as the House Kitty's dialog.
+    expect(within(dialog).getAllByRole('textbox').map((box) => box.closest('.field')?.querySelector('label')?.textContent)).toEqual([
+      'Account Name* (required)',
+      'Bank Account',
+      'IFSC',
+      'UPI ID',
+    ])
+    expect(field('Account Name')).toHaveValue('Kumar Yadav')
+    expect(field('Bank Account')).toHaveValue('50100123456789')
+    expect(field('IFSC')).toHaveValue('HDFC0001234')
+    expect(field('UPI ID')).toHaveValue('kumar.yadav@okhdfcbank')
 
-    // The owner's steps, then Save on the last one.
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
+    // The same checks, before anything is sent.
+    await userEvent.clear(field('Account Name'))
+    await userEvent.clear(field('UPI ID'))
+    await userEvent.type(field('UPI ID'), 'kumar')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    expect(within(dialog).getByText('Enter the account name.')).toBeInTheDocument()
+    expect(within(dialog).getByText('A UPI ID looks like name@bank.')).toBeInTheDocument()
+    expect(stub!.calls.some((call) => call.method === 'POST')).toBe(false)
+
+    await userEvent.type(field('Account Name'), ' Kumar Yadav ')
+    await userEvent.clear(field('UPI ID'))
+    await userEvent.clear(field('IFSC'))
+    await userEvent.type(field('IFSC'), 'icic0004321')
+    const before = { lease: gets('/api/rent/config'), contacts: gets('/api/property/contacts') }
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     await waitFor(() =>
-      expect(stub!.calls.some((call) => call.method === 'PATCH' && call.path === '/api/property/contacts/owner-1')).toBe(true),
+      expect(stub!.calls.find((call) => call.method === 'POST' && call.path === '/api/rent/config')).toBeDefined(),
     )
-    expect(await screen.findByText('Kumar Yadav saved')).toBeInTheDocument()
+    expect(stub!.calls.find((call) => call.method === 'POST')!.body).toEqual({
+      landlord_name: 'Kumar Yadav',
+      landlord_bank_account: '50100123456789',
+      landlord_bank_ifsc: 'ICIC0004321',
+      landlord_upi_id: null,
+    })
+    expect(await screen.findByText('Landlord account saved')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).toBeNull()
-    // Both the contact and the lease it keeps in step are read again.
+    // The lease and the owner contact it is copied to are both read again.
     await waitFor(() => expect(gets('/api/rent/config')).toBe(before.lease + 1))
     expect(gets('/api/property/contacts')).toBe(before.contacts + 1)
   })

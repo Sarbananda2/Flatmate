@@ -61,10 +61,11 @@ import {
   formatMonth,
   todayIso,
 } from '../lib/format'
-import { ContactModal, useContacts } from './services/PropertyContacts'
+import { useContacts } from './services/PropertyContacts'
 import type {
   AdjustmentRow,
   Apartment,
+  HouseholdContact,
   LandlordStatement,
   PaymentPoolsStatement,
   PoolStatement,
@@ -869,7 +870,7 @@ export function HouseholdPoolCard({
       actions={<EditButton label="Edit house kitty" onClick={() => setEditing(true)} />}
     >
       <dl aria-label="House kitty account" className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-        <DetailFact label="Kitty Name">{apartment.pool_name || 'House Kitty'}</DetailFact>
+        <DetailFact label="Account Name">{apartment.pool_name || 'House Kitty'}</DetailFact>
         <DetailFact label="Bank Account">
           {apartment.pool_bank_account ? <span className="tabular">{apartment.pool_bank_account}</span> : notRecorded}
         </DetailFact>
@@ -919,23 +920,44 @@ export function HouseholdPoolCard({
   )
 }
 
-function HouseholdPoolModal({
-  apartment,
+/** An account's name and where to pay it, as the edit dialog holds them. */
+interface AccountDetails {
+  name: string
+  account: string
+  ifsc: string
+  upi: string
+}
+
+/**
+ * The one dialog both payment accounts are edited in: the account's name,
+ * then its bank account, IFSC and UPI ID, checked as the backend checks them.
+ * Empty details are sent as null, which clears them.
+ */
+function PaymentAccountModal({
+  title,
+  description,
+  formId,
+  initial,
+  save: send,
   onClose,
   onSaved,
 }: {
-  apartment: Apartment
+  title: string
+  description: string
+  formId: string
+  initial: AccountDetails
+  save: (details: { name: string; account: string | null; ifsc: string | null; upi: string | null }) => Promise<unknown>
   onClose: () => void
   onSaved: () => void
 }) {
-  const [name, setName] = useState(apartment.pool_name || 'House Kitty')
-  const [account, setAccount] = useState(apartment.pool_bank_account ?? '')
-  const [ifsc, setIfsc] = useState(apartment.pool_bank_ifsc ?? '')
-  const [upi, setUpi] = useState(apartment.pool_upi_id ?? '')
+  const [name, setName] = useState(initial.name)
+  const [account, setAccount] = useState(initial.account)
+  const [ifsc, setIfsc] = useState(initial.ifsc)
+  const [upi, setUpi] = useState(initial.upi)
   const [submitted, setSubmitted] = useState(false)
   const errors = {
     name: !name.trim()
-      ? 'Give the kitty a name.'
+      ? 'Enter the account name.'
       : name.trim().length > 200
         ? 'Keep it to 200 characters.'
         : null,
@@ -946,11 +968,11 @@ function HouseholdPoolModal({
   const valid = Object.values(errors).every((error) => !error)
   const save = useMutation(
     () =>
-      api.patch<Apartment>(`/api/apartments/${encodeURIComponent(apartment.apartment_id)}`, {
-        pool_name: name.trim(),
-        pool_bank_account: account.trim() || null,
-        pool_bank_ifsc: ifsc.trim().toUpperCase() || null,
-        pool_upi_id: upi.trim() || null,
+      send({
+        name: name.trim(),
+        account: account.trim() || null,
+        ifsc: ifsc.trim().toUpperCase() || null,
+        upi: upi.trim() || null,
       }),
     { onSuccess: onSaved },
   )
@@ -958,22 +980,22 @@ function HouseholdPoolModal({
   const shown = (error: string | null, value: string) => (submitted || value.trim() ? error : null)
   return (
     <Modal
-      title={POOL_TITLE}
-      description="Where residents send the House Kitty its money. Bank details and the UPI ID are optional."
+      title={title}
+      description={description}
       onClose={onClose}
       footer={
         <>
           <button type="button" className={BUTTON_SECONDARY} onClick={onClose} disabled={save.pending}>
             Cancel
           </button>
-          <button type="submit" form="house-kitty-form" className={BUTTON_PRIMARY} disabled={save.pending}>
+          <button type="submit" form={formId} className={BUTTON_PRIMARY} disabled={save.pending}>
             {save.pending ? 'Saving…' : 'Save Changes'}
           </button>
         </>
       }
     >
       <form
-        id="house-kitty-form"
+        id={formId}
         className="stack"
         noValidate
         onSubmit={(event) => {
@@ -984,7 +1006,7 @@ function HouseholdPoolModal({
       >
         {save.error && <ErrorNotice error={save.error} />}
         <TextField
-          label="Kitty Name"
+          label="Account Name"
           value={name}
           onChange={setName}
           required
@@ -1013,11 +1035,45 @@ function HouseholdPoolModal({
           value={upi}
           onChange={setUpi}
           maxLength={320}
-          placeholder="household@okhdfcbank"
+          placeholder="name@okhdfcbank"
           error={shown(errors.upi, upi)}
         />
       </form>
     </Modal>
+  )
+}
+
+function HouseholdPoolModal({
+  apartment,
+  onClose,
+  onSaved,
+}: {
+  apartment: Apartment
+  onClose: () => void
+  onSaved: () => void
+}) {
+  return (
+    <PaymentAccountModal
+      title={POOL_TITLE}
+      description="Where residents send the House Kitty its money. Bank details and the UPI ID are optional."
+      formId="house-kitty-form"
+      initial={{
+        name: apartment.pool_name || 'House Kitty',
+        account: apartment.pool_bank_account ?? '',
+        ifsc: apartment.pool_bank_ifsc ?? '',
+        upi: apartment.pool_upi_id ?? '',
+      }}
+      save={(details) =>
+        api.patch<Apartment>(`/api/apartments/${encodeURIComponent(apartment.apartment_id)}`, {
+          pool_name: details.name,
+          pool_bank_account: details.account,
+          pool_bank_ifsc: details.ifsc,
+          pool_upi_id: details.upi,
+        })
+      }
+      onClose={onClose}
+      onSaved={onSaved}
+    />
   )
 }
 
@@ -1028,7 +1084,9 @@ const LANDLORD_TITLE = 'Landlord Account'
 /**
  * The landlord's account, read-only, with its own Edit. The lease and the
  * owner contact hold the same details, kept in step by the backend; the
- * lease's are shown first, the contact's where the lease has none.
+ * lease's are shown first, the contact's where the lease has none. It is
+ * edited in the same dialog as the House Kitty's, saved to the lease, which
+ * there has to be first.
  */
 export function LandlordAccountCard({
   statement,
@@ -1053,11 +1111,10 @@ export function LandlordAccountCard({
     <Panel
       title={LANDLORD_TITLE}
       hint="Where rent and direct security deposits are paid under the master lease."
-      // Edited once the owner contact is known, so a second owner is never made.
-      actions={contacts.data ? <EditButton label="Edit landlord" onClick={() => setEditing(true)} /> : undefined}
+      actions={config ? <EditButton label="Edit landlord" onClick={() => setEditing(true)} /> : undefined}
     >
       <dl aria-label="Landlord account" className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-        <DetailFact label="Landlord Name">{name || notRecorded}</DetailFact>
+        <DetailFact label="Account Name">{name || notRecorded}</DetailFact>
         <DetailFact label="Bank Account">
           {account ? <span className="tabular">{account}</span> : notRecorded}
         </DetailFact>
@@ -1073,6 +1130,15 @@ export function LandlordAccountCard({
           )}
         </DetailFact>
       </dl>
+      {lease.data && !config && (
+        <p className="m-0 text-xs text-[var(--text-secondary)]">
+          The landlord's account is kept on the lease.{' '}
+          <Link to="/housing" className="font-semibold">
+            Set up the lease under Housing
+          </Link>{' '}
+          to add it.
+        </p>
+      )}
       {statement && (
         <dl aria-label="Landlord balance" className={BALANCE_STRIP}>
           <DetailFact label="Rent Paid">
@@ -1087,21 +1153,58 @@ export function LandlordAccountCard({
         </dl>
       )}
       {editing && (
-        <ContactModal
-          contact={owner}
-          title={LANDLORD_TITLE}
-          fixedRole="owner"
+        <LandlordAccountModal
+          config={config}
+          owner={owner}
           onClose={() => setEditing(false)}
-          onDone={(saved) => {
+          onSaved={() => {
             setEditing(false)
-            contacts.reload()
             lease.reload()
+            contacts.reload()
             onSaved?.()
-            toast.success(`${saved.name} saved`)
+            toast.success('Landlord account saved')
           }}
         />
       )}
     </Panel>
+  )
+}
+
+/** The landlord's account in the shared dialog, saved to the lease, which the
+ * backend copies to the owner contact. */
+function LandlordAccountModal({
+  config,
+  owner,
+  onClose,
+  onSaved,
+}: {
+  config: RentLeaseConfig | null
+  owner: HouseholdContact | null
+  onClose: () => void
+  onSaved: () => void
+}) {
+  return (
+    <PaymentAccountModal
+      title={LANDLORD_TITLE}
+      description="Where rent and direct security deposits are paid. Saved to the lease and the owner contact together. Bank details and the UPI ID are optional."
+      formId="landlord-account-form"
+      initial={{
+        name: config?.landlord_name || owner?.name || '',
+        account: config?.landlord_bank_account || owner?.bank_account_no || '',
+        ifsc: config?.landlord_bank_ifsc || owner?.bank_ifsc || '',
+        upi: config?.landlord_upi_id || owner?.upi_id || '',
+      }}
+      save={(details) =>
+        api.post('/api/rent/config', {
+          landlord_name: details.name,
+          landlord_bank_account: details.account,
+          landlord_bank_ifsc: details.ifsc,
+          landlord_upi_id: details.upi,
+        })
+      }
+      onClose={onClose}
+      onSaved={onSaved}
+    />
   )
 }
 

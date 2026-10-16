@@ -235,17 +235,24 @@ Add a read-only service function `get_payment_pools_statement(db, apartment_id)`
    - Remove the inline `<Callout tone="info" title="These are four different things">` from the page body.
    - Add a `"How it works"` button (with `HelpCircle` icon, `BUTTON_SECONDARY`) in the page header actions that opens a `<Modal title="How Payment Pools & Transfers Work" onClose={...}>` containing the explanation of `Into the pool`, `Paid a provider`, `Refund`, and `Adjustment`, with a `Close` button in the footer.
 
-2. **Side-by-Side Payment Instance Cards (`grid-cols-1 md:grid-cols-2 gap-4`) with Live Account Balances:**
-   - Change the wrapper grid from `lg:grid-cols-2` to `grid-cols-1 md:grid-cols-2 gap-4` so **`House Kitty Account`** and **`Landlord Account`** sit side-by-side on all standard laptop/desktop viewports (`>= 768px`).
-   - Use concise `Edit` button text per Rule U5 (`Edit` visible label with `aria-label="Edit house kitty"` / `aria-label="Edit landlord"`).
-   - At the bottom of **`HouseholdPoolCard`** (`House Kitty Account`), render a compact 3-column account summary strip (`border-t border-[var(--border-subtle)] pt-3 mt-1 grid grid-cols-3 gap-2 text-xs`):
-     - `Total In (+)`: green tabular `formatInr(poolStatement.total_in_paise)`
-     - `Total Out (−)`: red/amber tabular `formatInr(poolStatement.total_out_paise)`
-     - `Kitty Balance`: bold tabular `formatInr(poolStatement.closing_balance_paise)`
-   - At the bottom of **`LandlordAccountCard`**, render the matching 3-column summary strip:
-     - `Rent Paid`: tabular `formatInr(landlordStatement.total_rent_paid_paise)`
-     - `Deposit Held`: tabular `formatInr(landlordStatement.deposit_held_paise)`
-     - `Total Paid`: bold tabular `formatInr(landlordStatement.total_in_paise)`
+2. **Side-by-Side Payment Instance Cards (`grid-cols-1 md:grid-cols-2 gap-4`) & Uniform Edit Forms:**
+   - Both cards sit side-by-side on all viewports `>= 768px` (`grid-cols-1 md:grid-cols-2 gap-4`).
+   - **Uniform Card Structure (Rule U1, Rule U5):** Both cards display the exact same 4 atomic field labels:
+     - `Account Name` (`House Kitty` or `apartment.pool_name` on left; `config.landlord_name` on right)
+     - `Bank Account`
+     - `IFSC`
+     - `UPI ID` (with copy button)
+     - Followed by their matching 3-metric live balance summary strip at the bottom.
+     - Edit action button uses `<EditButton label="Edit house kitty" />` on the left and `<EditButton label="Edit landlord" />` on the right (concise visible "Edit" text per Rule U5).
+   - **Uniform Edit Forms (Rule U2, Rule U4):** Both sections open identical single-step, 4-field modals:
+     - **`HouseholdPoolModal` (`House Kitty Account`):**
+       - Fields: `Account Name` (required, max 200), `Bank Account` (9-18 digits), `IFSC` (auto-uppercase), `UPI ID`.
+       - Saves via `PATCH /api/apartments/${apartment_id}`.
+     - **`LandlordAccountModal` (`Landlord Account`):**
+       - Replaces the multi-step `ContactModal` on the Payment Pools page with the exact same 4-field layout!
+       - Fields: `Account Name` (required, max 200, maps to `landlord_name`), `Bank Account` (maps to `landlord_bank_account`), `IFSC` (maps to `landlord_bank_ifsc`), `UPI ID` (maps to `landlord_upi_id`).
+       - Saves via `POST /api/rent/config` with `{ landlord_name, landlord_bank_account, landlord_bank_ifsc, landlord_upi_id }`, which automatically keeps the active lease and owner contact in sync on the backend.
+       - Reloads `lease` and `contacts` on success and shows a success toast.
 
 3. **Bank Statement Tabs & Collapsible Filters:**
    - Primary tabs (`role="tablist"`, `aria-label="Payment views"`):
