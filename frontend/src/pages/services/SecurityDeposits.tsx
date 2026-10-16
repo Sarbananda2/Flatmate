@@ -7,7 +7,7 @@
  * or a balance. Every amount shown comes from the backend; the one sum done
  * here is "put in, less deductions", which the backend checks again.
  */
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   BedDouble,
@@ -604,6 +604,9 @@ function EscrowPoolCard({
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
               {summary.slots.map((slot) => {
                 const status = STATUS[slot.status]
+                const occupant = slot.assigned_resident_id
+                  ? (slot.assigned_display_name ?? slot.assigned_resident_id)
+                  : null
                 return (
                   // The whole row opens the deposit's details. The resident's button
                   // holds the keyboard focus, gets it back on close, and its click
@@ -614,7 +617,11 @@ function EscrowPoolCard({
                     onClick={() => setDetailsId(slot.slot_id)}
                   >
                     <th scope="row" className="py-2.5 px-2 text-left">
-                      <ResidentButton slot={slot} />
+                      <ResidentButton
+                        name={occupant}
+                        placeholder="Vacant"
+                        label={`${occupant ?? 'Vacant'}, ${roomName(slot)}`}
+                      />
                     </th>
                     <td className="py-2.5 px-2 text-center font-semibold text-[var(--text-secondary)] truncate">
                       {roomName(slot)}
@@ -669,9 +676,10 @@ function EscrowPoolCard({
 }
 
 /**
- * The latest deposit entries, one row each with who paid whom. A row opens a
- * read-only dialog with how it was paid, the reference and the full note, so
- * the table itself never changes height.
+ * The latest deposit entries, one row each, led by the resident whose deposit
+ * it is; the pill says which way the money went. A row opens a read-only
+ * dialog with who paid whom, how, the reference and the full note, so the
+ * table itself never changes height.
  */
 function RecentDepositActivity({
   history,
@@ -690,59 +698,47 @@ function RecentDepositActivity({
       hint="Payments, refunds and deductions recorded across the household's deposit slots."
     >
       <div className="overflow-x-auto min-w-0">
-        <table className="w-full table-fixed text-xs min-w-[720px] border-collapse">
+        <table className="w-full table-fixed text-xs min-w-[640px] border-collapse">
           <caption className="sr-only">Recent deposit activity</caption>
           <thead>
             <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[14%] pb-2.5 px-2 font-bold text-center">Date</th>
-              <th scope="col" className="w-[13%] pb-2.5 px-2 font-bold text-center">Room</th>
-              <th scope="col" className="w-[21%] pb-2.5 px-2 font-bold text-center">Activity</th>
-              <th scope="col" className="w-[18%] pb-2.5 px-2 font-bold text-center">From</th>
-              <th scope="col" className="w-[18%] pb-2.5 px-2 font-bold text-center">To</th>
-              <th scope="col" className="w-[16%] pb-2.5 px-2 font-bold text-center">Amount</th>
+              <th scope="col" className="w-[26%] pb-2.5 px-2 font-bold text-center">Resident</th>
+              <th scope="col" className="w-[16%] pb-2.5 px-2 font-bold text-center">Room</th>
+              <th scope="col" className="w-[24%] pb-2.5 px-2 font-bold text-center">Activity</th>
+              <th scope="col" className="w-[16%] pb-2.5 px-2 font-bold text-center">Date</th>
+              <th scope="col" className="w-[18%] pb-2.5 px-2 font-bold text-center">Amount</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-            {history.map(({ tx, slot }) => {
-              const { from, to } = txParties(tx, summary)
-              return (
-                // The whole row opens the dialog. The date's button holds the
-                // keyboard focus, gets it back on close, and its click reaches the row.
-                <tr
-                  key={tx.tx_id}
-                  className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
-                  onClick={() => setSelected({ tx, slot })}
-                >
-                  <td className="py-2.5 px-2 text-center">
-                    <button
-                      type="button"
-                      aria-haspopup="dialog"
-                      aria-label={`Details: ${TX_LABELS[tx.tx_type]}, ${roomName(slot)}, ${formatDate(tx.tx_date)}, ${formatInr(tx.amount_paise)}`}
-                      className="whitespace-nowrap rounded tabular text-[var(--text-secondary)] cursor-pointer"
-                    >
-                      {formatDate(tx.tx_date)}
-                    </button>
-                  </td>
-                  <td className="py-2.5 px-2 text-center">
-                    <span className="inline-block max-w-full truncate rounded-md border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2 py-0.5 text-[11px] font-semibold text-[var(--text-secondary)] align-middle">
-                      {roomName(slot)}
-                    </span>
-                  </td>
-                  <td className="py-2.5 px-2 text-center">
-                    <Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>
-                  </td>
-                  <td className="py-2.5 px-2 text-center font-semibold text-[var(--text-primary)] truncate" title={from}>
-                    {from}
-                  </td>
-                  <td className="py-2.5 px-2 text-center font-semibold text-[var(--text-primary)] truncate" title={to}>
-                    {to}
-                  </td>
-                  <td className="py-2.5 px-2 text-center tabular font-bold text-[var(--text-primary)]">
-                    <Rupees paise={tx.amount_paise} />
-                  </td>
-                </tr>
-              )
-            })}
+            {history.map(({ tx, slot }) => (
+              // The whole row opens the dialog. The resident's button holds the
+              // keyboard focus, gets it back on close, and its click reaches the row.
+              <tr
+                key={tx.tx_id}
+                className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
+                onClick={() => setSelected({ tx, slot })}
+              >
+                <th scope="row" className="py-2.5 px-2 text-left">
+                  <ResidentButton
+                    name={tx.resident_display_name}
+                    placeholder="—"
+                    label={`${tx.resident_display_name ?? 'Resident'}, ${TX_LABELS[tx.tx_type]}, ${roomName(slot)}, ${formatDate(tx.tx_date)}, ${formatInr(tx.amount_paise)}`}
+                  />
+                </th>
+                <td className="py-2.5 px-2 text-center font-semibold text-[var(--text-secondary)] truncate">
+                  {roomName(slot)}
+                </td>
+                <td className="py-2.5 px-2 text-center">
+                  <Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>
+                </td>
+                <td className="py-2.5 px-2 text-center tabular text-[var(--text-secondary)]">
+                  {formatDate(tx.tx_date)}
+                </td>
+                <td className="py-2.5 px-2 text-center tabular font-bold text-[var(--text-primary)]">
+                  <Rupees paise={tx.amount_paise} />
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -769,6 +765,7 @@ function DepositTransactionModal({
   return (
     <Modal
       title="Deposit Transaction Details"
+      description={`${tx.resident_display_name ?? 'Resident'} · ${roomName(slot)} · ${formatDate(tx.tx_date)}`}
       onClose={onClose}
       footer={
         <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
@@ -776,16 +773,20 @@ function DepositTransactionModal({
         </button>
       }
     >
-      <div className="space-y-4">
+      <div className="space-y-5">
         <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 flex items-center justify-between gap-3">
           <Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>
           <Rupees paise={tx.amount_paise} className="text-base font-bold tabular text-[var(--text-primary)]" />
         </div>
-        <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
-          <DetailFact label="Date">{formatDate(tx.tx_date)}</DetailFact>
-          <DetailFact label="Room">{roomName(slot)}</DetailFact>
+
+        <DetailGroup title="Transfer & Space">
           <DetailFact label="From">{from}</DetailFact>
           <DetailFact label="To">{to}</DetailFact>
+          <DetailFact label="Room">{roomName(slot)}</DetailFact>
+          <DetailFact label="Date">{formatDate(tx.tx_date)}</DetailFact>
+        </DetailGroup>
+
+        <DetailGroup title="Payment & Notes">
           <DetailFact label="Payment Method">{txMethod(tx)}</DetailFact>
           <DetailFact label="Reference / UTR">
             {tx.reference ? <span className="font-mono break-all">{tx.reference}</span> : 'Not recorded'}
@@ -793,9 +794,25 @@ function DepositTransactionModal({
           <DetailFact label="Notes / Reason" className="sm:col-span-2">
             <span className="whitespace-pre-wrap break-words">{tx.notes || 'None'}</span>
           </DetailFact>
-        </dl>
+        </DetailGroup>
       </div>
     </Modal>
+  )
+}
+
+/** A titled set of facts in a details dialog, two to a row on wider screens. */
+function DetailGroup({ title, children }: { title: string; children: React.ReactNode }) {
+  const headingId = useId()
+  return (
+    <section aria-labelledby={headingId} className="space-y-3">
+      <h3
+        id={headingId}
+        className="m-0 text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] pb-2 border-b border-[var(--border-subtle)]"
+      >
+        {title}
+      </h3>
+      <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">{children}</dl>
+    </section>
   )
 }
 
@@ -820,18 +837,24 @@ function DetailFact({
 }
 
 /**
- * Who the deposit belongs to, or Vacant, as the button that opens its details.
- * Its name adds the room, so two vacant rows are still told apart.
+ * The resident a row is about, or a placeholder, as the button that opens the
+ * row's details. Its accessible name says more than the name alone, so rows
+ * for the same person, or two vacant ones, are still told apart.
  */
-function ResidentButton({ slot }: { slot: DepositSlot }) {
-  const name = slot.assigned_resident_id
-    ? (slot.assigned_display_name ?? slot.assigned_resident_id)
-    : null
+function ResidentButton({
+  name,
+  placeholder,
+  label,
+}: {
+  name: string | null
+  placeholder: string
+  label: string
+}) {
   return (
     <button
       type="button"
       aria-haspopup="dialog"
-      aria-label={`${name ?? 'Vacant'}, ${roomName(slot)}`}
+      aria-label={label}
       className="flex items-center gap-2 max-w-full min-w-0 rounded text-left cursor-pointer"
     >
       {name ? (
@@ -840,7 +863,7 @@ function ResidentButton({ slot }: { slot: DepositSlot }) {
           <span className="font-bold text-[var(--text-primary)] truncate">{name}</span>
         </>
       ) : (
-        <span className="font-semibold text-[var(--text-tertiary)]">Vacant</span>
+        <span className="font-semibold text-[var(--text-tertiary)]">{placeholder}</span>
       )}
     </button>
   )
@@ -987,23 +1010,32 @@ function DepositDetailsModal({
         </div>
       }
     >
-      <div className="space-y-4">
-        <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 flex flex-wrap items-center justify-between gap-3">
-          <span className="flex flex-wrap items-center gap-2">
-            <Pill tone={status.tone}>{status.label}</Pill>
-            {slot.is_primary_signatory && <Pill tone="accent">Primary signatory</Pill>}
-          </span>
-          <span className="text-xs text-[var(--text-secondary)]">
-            Funded{' '}
-            <Rupees
-              paise={slot.funded_amount_paise}
-              className="text-base font-bold tabular text-[var(--text-primary)]"
-            />{' '}
-            of{' '}
-            <Rupees paise={slot.target_deposit_paise} className="font-semibold tabular text-[var(--text-primary)]" />
-          </span>
+      <div className="space-y-5">
+        <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="flex flex-wrap items-center gap-2">
+              <Pill tone={status.tone}>{status.label}</Pill>
+              {slot.is_primary_signatory && <Pill tone="accent">Primary signatory</Pill>}
+            </span>
+          </div>
+          <dl
+            aria-label="Deposit amounts"
+            className="m-0 grid grid-cols-3 gap-3 pt-2.5 border-t border-[var(--border-subtle)] text-xs"
+          >
+            {/* Labels that wrap on a phone keep the amounts on one line below them. */}
+            <DetailFact label="Target Deposit" className="flex flex-col justify-between">
+              <Rupees paise={slot.target_deposit_paise} className="font-bold tabular" />
+            </DetailFact>
+            <DetailFact label="Funded" className="flex flex-col justify-between">
+              <Rupees paise={slot.funded_amount_paise} className="font-bold tabular" />
+            </DetailFact>
+            <DetailFact label="Outstanding Balance" className="flex flex-col justify-between">
+              <Rupees paise={slot.outstanding_paise} className="font-bold tabular" />
+            </DetailFact>
+          </dl>
         </div>
-        <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
+
+        <DetailGroup title="Occupancy & Space">
           <DetailFact label="Resident">
             {name ? (slot.is_primary_signatory ? `${name} (Primary signatory)` : name) : 'Vacant'}
           </DetailFact>
@@ -1012,9 +1044,9 @@ function DepositDetailsModal({
           </DetailFact>
           <DetailFact label="Room">{roomName(slot)}</DetailFact>
           <DetailFact label="Private Amenities">{amenities}</DetailFact>
-          <DetailFact label="Outstanding Balance">
-            <Rupees paise={slot.outstanding_paise} />
-          </DetailFact>
+        </DetailGroup>
+
+        <DetailGroup title="Payment Details">
           <DetailFact label="Paid Date">
             {slot.funded_date
               ? formatDate(slot.funded_date)
@@ -1030,14 +1062,14 @@ function DepositDetailsModal({
                 ? 'Master lease deposit'
                 : 'Not recorded'}
           </DetailFact>
-          <DetailFact label="Reference / UTR" className="sm:col-span-2">
+          <DetailFact label="Reference / UTR">
             {slot.payment_reference ? (
               <span className="font-mono break-all">{slot.payment_reference}</span>
             ) : (
               'Not recorded'
             )}
           </DetailFact>
-        </dl>
+        </DetailGroup>
       </div>
     </Modal>
   )

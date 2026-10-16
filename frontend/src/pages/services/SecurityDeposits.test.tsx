@@ -156,6 +156,29 @@ const factsIn = (dialog: HTMLElement) =>
 const slotRow = (name: RegExp) =>
   within(screen.getByRole('table', { name: 'Household deposit slots' })).getByRole('row', { name })
 
+/** The Deposit Details dialog read back in its parts: the amounts, then each group. */
+function depositParts(dialog: HTMLElement) {
+  const parts = {
+    amounts: factsIn(within(dialog).getByLabelText('Deposit amounts')),
+    occupancy: factsIn(within(dialog).getByRole('region', { name: 'Occupancy & Space' })),
+    payment: factsIn(within(dialog).getByRole('region', { name: 'Payment Details' })),
+  }
+  // In that order, with no fact outside them.
+  expect(factsIn(dialog)).toEqual([...parts.amounts, ...parts.occupancy, ...parts.payment])
+  return parts
+}
+
+/** The Deposit Transaction Details dialog read back by group. */
+function transactionParts(dialog: HTMLElement) {
+  const parts = {
+    transfer: factsIn(within(dialog).getByRole('region', { name: 'Transfer & Space' })),
+    payment: factsIn(within(dialog).getByRole('region', { name: 'Payment & Notes' })),
+  }
+  // In that order, with no fact outside them.
+  expect(factsIn(dialog)).toEqual([...parts.transfer, ...parts.payment])
+  return parts
+}
+
 /** Opens a deposit's details from its resident button, named "<resident>, <room>". */
 async function openDeposit(name: string) {
   await userEvent.click(await screen.findByRole('button', { name }))
@@ -481,18 +504,24 @@ describe('the escrow pool', () => {
     let dialog = screen.getByRole('dialog', { name: 'Deposit Details' })
     expect(dialog).toHaveTextContent('Bob · Room 2')
     expect(dialog).not.toHaveTextContent('Slot 2')
-    expect(dialog).toHaveTextContent('Funded ₹50,000.00 of ₹50,000.00')
-    expect(factsIn(dialog)).toEqual([
-      'Resident: Bob',
-      'Occupied Since: 1 Oct 2026',
-      'Room: Room 2',
-      'Private Amenities: Attached Washroom · Balcony',
-      'Outstanding Balance: ₹0.00',
-      'Paid Date: 2 Oct 2026',
-      'Paid To: Alice',
-      'Payment Method: UPI',
-      'Reference / UTR: UTR428919028471',
-    ])
+    // The status over the three amounts, then who and where, then how it was paid.
+    const amounts = within(dialog).getByLabelText('Deposit amounts')
+    expect(within(amounts.parentElement!).getByText('Funded', { selector: 'span' })).toBeInTheDocument()
+    expect(depositParts(dialog)).toEqual({
+      amounts: ['Target Deposit: ₹50,000.00', 'Funded: ₹50,000.00', 'Outstanding Balance: ₹0.00'],
+      occupancy: [
+        'Resident: Bob',
+        'Occupied Since: 1 Oct 2026',
+        'Room: Room 2',
+        'Private Amenities: Attached Washroom · Balcony',
+      ],
+      payment: [
+        'Paid Date: 2 Oct 2026',
+        'Paid To: Alice',
+        'Payment Method: UPI',
+        'Reference / UTR: UTR428919028471',
+      ],
+    })
     expect(within(dialog).getByText('UTR428919028471')).toHaveClass('font-mono')
     expect(within(dialog).queryByRole('textbox')).toBeNull()
     await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
@@ -505,35 +534,37 @@ describe('the escrow pool', () => {
     await userEvent.keyboard('{Enter}')
     dialog = screen.getByRole('dialog', { name: 'Deposit Details' })
     expect(within(dialog).getByText('Primary signatory')).toBeInTheDocument()
-    expect(factsIn(dialog)).toEqual([
-      'Resident: Alice (Primary signatory)',
-      'Occupied Since: 1 Oct 2026',
-      'Room: Room 1',
-      'Private Amenities: Not linked',
-      'Outstanding Balance: ₹0.00',
-      'Paid Date: Fronted with master deposit',
-      'Paid To: Direct to landlord',
-      'Payment Method: Direct to landlord',
-      'Reference / UTR: Not recorded',
-    ])
+    expect(depositParts(dialog)).toEqual({
+      amounts: ['Target Deposit: ₹50,000.00', 'Funded: ₹50,000.00', 'Outstanding Balance: ₹0.00'],
+      occupancy: [
+        'Resident: Alice (Primary signatory)',
+        'Occupied Since: 1 Oct 2026',
+        'Room: Room 1',
+        'Private Amenities: Not linked',
+      ],
+      payment: [
+        'Paid Date: Fronted with master deposit',
+        'Paid To: Direct to landlord',
+        'Payment Method: Direct to landlord',
+        'Reference / UTR: Not recorded',
+      ],
+    })
     await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     expect(aliceSlot).toHaveFocus()
 
     // A vacant slot backing a room with no private amenities.
     dialog = await openDeposit('Vacant, Room 3')
     expect(dialog).toHaveTextContent('Vacant · Room 3')
-    expect(dialog).toHaveTextContent('Funded ₹0.00 of ₹50,000.00')
-    expect(factsIn(dialog)).toEqual([
-      'Resident: Vacant',
-      'Occupied Since: —',
-      'Room: Room 3',
-      'Private Amenities: None',
-      'Outstanding Balance: ₹0.00',
-      'Paid Date: Not paid yet',
-      'Paid To: —',
-      'Payment Method: Not recorded',
-      'Reference / UTR: Not recorded',
-    ])
+    expect(depositParts(dialog)).toEqual({
+      amounts: ['Target Deposit: ₹50,000.00', 'Funded: ₹0.00', 'Outstanding Balance: ₹0.00'],
+      occupancy: ['Resident: Vacant', 'Occupied Since: —', 'Room: Room 3', 'Private Amenities: None'],
+      payment: [
+        'Paid Date: Not paid yet',
+        'Paid To: —',
+        'Payment Method: Not recorded',
+        'Reference / UTR: Not recorded',
+      ],
+    })
   })
 
   it("says the landlord was paid when a co-tenant paid directly", async () => {
@@ -605,15 +636,21 @@ describe('the escrow pool', () => {
     expect(totals).toHaveTextContent('Total Funded₹50,000.00Of ₹1,50,000.00 across the slots')
     expect(totals).toHaveTextContent('Slots3 of 3 occupied')
     const [row] = activityRows()
-    const cells = within(row).getAllByRole('cell')
-    // Direct co-tenants with nobody else named: Bob paid the landlord.
-    expect(cells.map((cell) => cell.textContent)).toEqual([
-      '2 Oct 2026',
+    expect(within(row).getByRole('rowheader')).toHaveTextContent(/Bob$/)
+    expect(within(row).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
       'Room 2',
       'Paid in',
-      'Bob',
-      'Landlord',
+      '2 Oct 2026',
       '₹50,000.00',
+    ])
+    // Direct co-tenants with nobody else named: Bob paid the landlord.
+    await userEvent.click(row)
+    const dialog = screen.getByRole('dialog', { name: 'Deposit Transaction Details' })
+    expect(transactionParts(dialog).transfer).toEqual([
+      'From: Bob',
+      'To: Landlord',
+      'Room: Room 2',
+      'Date: 2 Oct 2026',
     ])
   })
 
@@ -1040,7 +1077,7 @@ describe('recent deposit activity', () => {
     expect(rows[0]).toHaveTextContent('Refunded on leaving')
     expect(rows[1]).toHaveTextContent('Paid in')
     // The linked room's name, as in the pool above.
-    expect(within(rows[0]).getAllByRole('cell')[1]).toHaveTextContent(/^Room 2$/)
+    expect(within(rows[0]).getAllByRole('cell')[0]).toHaveTextContent(/^Room 2$/)
     expect(activity).not.toHaveTextContent('Back bedroom')
   })
 
@@ -1082,56 +1119,73 @@ describe('recent deposit activity', () => {
   const renderEntries = () =>
     renderSection(summary({ slots: [slot(2, 'bob', 'Bob', { transactions: entries })] }))
 
-  it('shows who paid whom under six centred column headers', async () => {
+  it('leads each row with the resident under five centred column headers', async () => {
     renderEntries()
     const table = await screen.findByRole('table', { name: 'Recent deposit activity' })
     const headers = within(table).getAllByRole('columnheader')
     expect(headers.map((header) => header.textContent)).toEqual([
-      'Date',
+      'Resident',
       'Room',
       'Activity',
-      'From',
-      'To',
+      'Date',
       'Amount',
     ])
     for (const header of headers) expect(header).toHaveClass('text-center')
 
-    const cells = activityRows().map((row) =>
-      within(row)
-        .getAllByRole('cell')
-        .map((cell) => cell.textContent),
-    )
-    expect(cells).toEqual([
-      // Chris, coming in, pays Bob, leaving, directly.
-      ['9 Oct 2026', 'Room 2', 'Paid by replacement', 'Chris', 'Bob', '₹30,000.00'],
-      // Alice, who holds the deposit, refunds Bob.
-      ['8 Oct 2026', 'Room 2', 'Refunded on leaving', 'Alice', 'Bob', '₹15,000.00'],
-      // Kept from Bob by the signatory, who is named by the summary.
-      ['8 Oct 2026', 'Room 2', 'Deducted on leaving', 'Bob', 'Alice', '₹5,000.00'],
-      // Bob reimburses Alice.
-      ['2 Oct 2026', 'Room 2', 'Paid in', 'Bob', 'Alice', '₹50,000.00'],
+    const rows = activityRows()
+    for (const row of rows) {
+      // Whose deposit it is heads the row, as the button that opens it.
+      const resident = within(row).getByRole('rowheader')
+      expect(resident).toHaveTextContent(/Bob$/)
+      expect(within(resident).getByRole('button')).toHaveAttribute('aria-haspopup', 'dialog')
+    }
+    expect(rows.map((row) => within(row).getAllByRole('cell').map((cell) => cell.textContent))).toEqual([
+      ['Room 2', 'Paid by replacement', '9 Oct 2026', '₹30,000.00'],
+      ['Room 2', 'Refunded on leaving', '8 Oct 2026', '₹15,000.00'],
+      ['Room 2', 'Deducted on leaving', '8 Oct 2026', '₹5,000.00'],
+      ['Room 2', 'Paid in', '2 Oct 2026', '₹50,000.00'],
     ])
+    // Who paid whom is in each entry's details, not repeated on every row.
+    expect(table).not.toHaveTextContent('Alice')
+    expect(table).not.toHaveTextContent('Chris')
   })
 
-  it('opens a row in a read-only dialog with every fact, and Close dismisses it', async () => {
+  it("shows who paid whom in each entry's details", async () => {
+    renderEntries()
+    await screen.findByRole('table', { name: 'Recent deposit activity' })
+    // Opens an entry from its resident and reads back who paid whom.
+    const fromTo = async (activity: string) => {
+      await userEvent.click(screen.getByRole('button', { name: new RegExp(`^Bob, ${activity},`) }))
+      const dialog = screen.getByRole('dialog', { name: 'Deposit Transaction Details' })
+      const facts = transactionParts(dialog).transfer
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+      return facts.slice(0, 2)
+    }
+    // Chris, coming in, pays Bob, leaving, directly.
+    expect(await fromTo('Paid by replacement')).toEqual(['From: Chris', 'To: Bob'])
+    // Alice, who holds the deposit, refunds Bob.
+    expect(await fromTo('Refunded on leaving')).toEqual(['From: Alice', 'To: Bob'])
+    // Kept from Bob by the signatory, who is named by the summary.
+    expect(await fromTo('Deducted on leaving')).toEqual(['From: Bob', 'To: Alice'])
+    // Bob reimburses Alice.
+    expect(await fromTo('Paid in')).toEqual(['From: Bob', 'To: Alice'])
+  })
+
+  it('opens a row in a grouped, read-only dialog, and Close dismisses it', async () => {
     renderEntries()
     await screen.findByRole('table', { name: 'Recent deposit activity' })
     const rowCount = activityRows().length
 
     // A click anywhere on the row opens it.
-    await userEvent.click(within(activityRows()[3]).getAllByRole('cell')[4])
+    await userEvent.click(within(activityRows()[3]).getAllByRole('cell')[3])
     let dialog = screen.getByRole('dialog', { name: 'Deposit Transaction Details' })
+    expect(dialog).toHaveTextContent('Bob · Room 2 · 2 Oct 2026')
     expect(within(dialog).getByText('Paid in')).toBeInTheDocument()
     expect(within(dialog).getAllByText('₹50,000.00')).toHaveLength(1)
-    expect(factsIn(dialog)).toEqual([
-      'Date: 2 Oct 2026',
-      'Room: Room 2',
-      'From: Bob',
-      'To: Alice',
-      'Payment Method: Bank transfer',
-      'Reference / UTR: UTR123',
-      'Notes / Reason: None',
-    ])
+    expect(transactionParts(dialog)).toEqual({
+      transfer: ['From: Bob', 'To: Alice', 'Room: Room 2', 'Date: 2 Oct 2026'],
+      payment: ['Payment Method: Bank transfer', 'Reference / UTR: UTR123', 'Notes / Reason: None'],
+    })
     expect(within(dialog).getByText('UTR123')).toHaveClass('font-mono')
     // Read-only: nothing to type in, and the only action is to close.
     expect(within(dialog).queryByRole('textbox')).toBeNull()
@@ -1146,21 +1200,19 @@ describe('recent deposit activity', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).toBeNull()
 
-    // From the keyboard, a deduction: kept from the deposit, the note in full.
-    const deduction = screen.getByRole('button', { name: /^Details: Deducted on leaving/ })
-    expect(deduction).toHaveAttribute('aria-haspopup', 'dialog')
+    // From the keyboard, on the resident: a deduction, kept from the deposit, the note in full.
+    const deduction = screen.getByRole('button', { name: /^Bob, Deducted on leaving, Room 2,/ })
     deduction.focus()
     await userEvent.keyboard('{Enter}')
     dialog = screen.getByRole('dialog', { name: 'Deposit Transaction Details' })
-    expect(factsIn(dialog)).toEqual([
-      'Date: 8 Oct 2026',
-      'Room: Room 2',
-      'From: Bob',
-      'To: Alice',
-      'Payment Method: Retained from deposit',
-      'Reference / UTR: Not recorded',
-      'Notes / Reason: Broken wardrobe hinge,\nrepaired by the landlord',
-    ])
+    expect(transactionParts(dialog)).toEqual({
+      transfer: ['From: Bob', 'To: Alice', 'Room: Room 2', 'Date: 8 Oct 2026'],
+      payment: [
+        'Payment Method: Retained from deposit',
+        'Reference / UTR: Not recorded',
+        'Notes / Reason: Broken wardrobe hinge,\nrepaired by the landlord',
+      ],
+    })
     await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).toBeNull()
     // Focus goes back to the row it came from.
