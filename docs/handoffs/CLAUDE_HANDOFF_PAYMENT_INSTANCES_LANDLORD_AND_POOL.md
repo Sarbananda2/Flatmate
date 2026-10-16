@@ -254,7 +254,8 @@ Add a read-only service function `get_payment_pools_statement(db, apartment_id)`
        - Saves via `POST /api/rent/config` with `{ landlord_name, landlord_bank_account, landlord_bank_ifsc, landlord_upi_id }`, which automatically keeps the active lease and owner contact in sync on the backend.
        - Reloads `lease` and `contacts` on success and shows a success toast.
 
-3. **Bank Statement Tabs & Collapsible Filters:**
+3. **Bank Statement Tabs Matching Full Column Width & Collapsible Filters:**
+   - **Full-Width Menu Bar:** The `.tabs` segmented control bar must span **100% width** (`w-full` / `width: 100%`) matching the outer left and right edges of the two cards above and the table below, with each `.tab` having `flex: 1 1 0; text-align: center; justify-content: center; display: inline-flex; align-items: center;` so the 6 tabs fill the bar edge-to-edge with equal spacing.
    - Primary tabs (`role="tablist"`, `aria-label="Payment views"`):
      1. **`House Kitty Statement`** (`'pool_statement'`) — default active tab, showing the passbook statement for the House Kitty (`__pool__`).
      2. **`Landlord Statement`** (`'landlord_statement'`) — showing the passbook statement for the Landlord Account (`__landlord__`).

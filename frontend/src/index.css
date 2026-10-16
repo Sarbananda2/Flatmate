@@ -693,15 +693,19 @@ legend { font-size: 0.78rem; font-weight: 700; padding: 0 var(--space-2); }
 .card-footer > .pagination { width: 100%; border-top: none; padding: 0; }
 /* The same segmented control as the ribbon's navigation, one step quieter:
    the selected tab lifts onto the surface rather than taking the accent. */
+/* The bar spans the full width of the cards around it, the tabs sharing it
+   equally; on a narrow screen they wrap rather than scroll sideways. */
 .tabs {
   display: flex; gap: var(--space-1); flex-wrap: wrap;
-  width: fit-content; max-width: 100%;
+  width: 100%;
   padding: var(--space-1);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 .tab {
+  flex: 1 1 0; min-width: fit-content;
+  display: inline-flex; align-items: center; justify-content: center; text-align: center;
   padding: 6px 14px;
   border: none; background: none; font: inherit; font-size: 0.78rem; font-weight: 600;
   color: var(--text-muted); cursor: pointer;
