@@ -1,5 +1,5 @@
 /**
- * Housing: the summary of the flat at the top, and the five tabs below it,
+ * Housing: the title, and the six tabs below it,
  * with the open tab kept in the address. The tabs are the app's own tested
  * sections, so these tests only check that each one is the one shown.
  */
@@ -162,10 +162,12 @@ describe('HousingHub tabs', () => {
   it('opens on the lease and moves between tabs through the address', async () => {
     open()
     const tabs = screen.getAllByRole('tab').map((tab) => tab.textContent)
+    // Define the rooms, fund the deposit, then allot the rooms.
     expect(tabs).toEqual([
       'Tenancy & Master Lease',
-      'Security Deposit',
       'Rooms Inventory',
+      'Security Deposit',
+      'Room Allotment',
       'Stakeholders & Contacts',
       'Document Vault',
     ])
@@ -173,8 +175,9 @@ describe('HousingHub tabs', () => {
     expect(await screen.findByRole('button', { name: 'Edit tenancy terms' })).toBeInTheDocument()
 
     const expectations: Array<[RegExp, string, string]> = [
+      [/Rooms Inventory/, '?tab=rooms', '3 rooms defined'],
       [/Security Deposit/, '?tab=deposits', 'Household Security Deposit Setup'],
-      [/Rooms Inventory/, '?tab=rooms', 'Rooms Directory'],
+      [/Room Allotment/, '?tab=allotment', '2 of 3 rooms allotted · 1 vacant'],
       [/Stakeholders & Contacts/, '?tab=contacts', 'Add Contact'],
       [/Document Vault/, '?tab=documents', 'No documents yet'],
     ]
@@ -189,13 +192,24 @@ describe('HousingHub tabs', () => {
   })
 
   it.each([
-    ['deposits', /Security Deposit/],
     ['rooms', /Rooms Inventory/],
+    ['deposits', /Security Deposit/],
+    ['allotment', /Room Allotment/],
     ['contacts', /Stakeholders & Contacts/],
     ['documents', /Document Vault/],
   ])('opens on the %s tab named in the address', (tab, name) => {
     open(`/housing?tab=${tab}`)
     expect(screen.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('shows the Room Allotment panel on its tab', async () => {
+    open('/housing?tab=allotment')
+    expect(await screen.findByRole('heading', { name: 'Room Allotment' })).toBeInTheDocument()
+    // No rooms yet in this flat: it points to where they are defined.
+    expect(await screen.findByRole('link', { name: 'Go to Rooms Inventory' })).toHaveAttribute(
+      'href',
+      '/housing?tab=rooms',
+    )
   })
 
   it('treats an unknown tab as the lease', () => {

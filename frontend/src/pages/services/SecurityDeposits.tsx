@@ -30,6 +30,7 @@ import {
   BUTTON_PRIMARY,
   BUTTON_QUIET,
   BUTTON_SECONDARY,
+  DetailFact,
   EditButton,
   EmptyBlock,
   MiniStat,
@@ -769,25 +770,6 @@ function DepositTransactionModal({
   )
 }
 
-/** One fact in a read-only details dialog: the label above, the value below. */
-function DetailFact({
-  label,
-  className,
-  children,
-}: {
-  label: string
-  className?: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className={className ? `min-w-0 space-y-1 ${className}` : 'min-w-0 space-y-1'}>
-      <dt className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-        {label}
-      </dt>
-      <dd className="m-0 text-[var(--text-primary)]">{children}</dd>
-    </div>
-  )
-}
 
 /**
  * The resident a row is about, or a placeholder, as the button that opens the
@@ -918,7 +900,7 @@ function SlotDialog({
 
 /**
  * One resident's deposit in full, read-only: what it is, what is paid, and how.
- * Rooms are kept under Rooms Inventory; paying, vacating and assigning stay on the row.
+ * Rooms are Rooms Inventory's and Room Allotment's; paying, vacating and assigning stay on the row.
  */
 function DepositDetailsModal({ slot, onClose }: { slot: DepositSlot; onClose: () => void }) {
   const status = STATUS[slot.status]

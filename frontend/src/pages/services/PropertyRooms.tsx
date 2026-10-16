@@ -1,11 +1,12 @@
 /**
- * The Rooms tab of Household & Property: the physical inventory of the flat.
+ * Rooms under Housing, in two tabs.
  *
- * Each room, whether it has its own washroom or a balcony, and who lives in it
- * now. A room holds at most one resident and a resident holds at most one room;
- * the backend enforces both, and these forms check them first so the operator
- * is told before anything is sent. Moving out through the clearance wizard
- * frees the leaver's room on its own.
+ * Rooms Inventory defines the flat's rooms: the number, whether it has its own
+ * washroom or a balcony, and its base rent. Room Allotment says who lives in
+ * each one. A room holds at most one resident and a resident holds at most one
+ * room; the backend enforces both, and these forms check them first so the
+ * operator is told before anything is sent. Moving out through the clearance
+ * wizard frees the leaver's room on its own.
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -17,6 +18,7 @@ import {
   BUTTON_PRIMARY,
   BUTTON_QUIET,
   BUTTON_SECONDARY,
+  DetailFact,
   EmptyBlock,
   Panel,
   Pill,
@@ -25,9 +27,8 @@ import {
 import { useToast } from '../../components/Toast'
 import { api } from '../../api/client'
 import { type Resource, useMutation, useResource } from '../../lib/useApi'
-import { formatDate, formatInr, paiseToInput, parseRupees, todayIso } from '../../lib/format'
-import type { DepositSlot, Resident, Room, RoomList } from '../../api/types'
-import { useDepositSummary } from './SecurityDeposits'
+import { formatDate, paiseToInput, parseRupees, todayIso } from '../../lib/format'
+import type { Resident, Room, RoomList } from '../../api/types'
 
 export const ROOMS = '/api/property/rooms'
 const EARLIEST_DATE = '2000-01-01'
@@ -49,21 +50,6 @@ function dateError(value: string): string | null {
   return null
 }
 
-/** The deposit slot behind a room: green once funded, amber while owed, grey if none. */
-function LinkedSlot({ room }: { room: Room }) {
-  const slot = room.linked_deposit_slot
-  if (!slot) return <Pill>Unlinked</Pill>
-  const tone =
-    slot.status === 'occupied_funded' ? 'success' : slot.status === 'occupied_pending' ? 'warning' : 'neutral'
-  return (
-    <span title={`${slot.slot_label}: ${formatInr(slot.funded_amount_paise)} of ${formatInr(slot.target_deposit_paise)} funded`}>
-      <Pill tone={tone}>
-        {`Slot ${slot.slot_number}: ${formatInr(slot.target_deposit_paise)}`}
-      </Pill>
-    </span>
-  )
-}
-
 /** "Yes" in green, "No" in a quiet grey. */
 function YesNo({ value }: { value: boolean }) {
   return value ? <Pill tone="success">Yes</Pill> : <Pill>No</Pill>
@@ -82,21 +68,23 @@ export function RoomAmenities({ room }: { room: Room }) {
   )
 }
 
-/* --------------------------------------------------------------- the page -- */
+/** A room's private amenities in words, or None. */
+function amenitiesText(room: Room): string {
+  return (
+    [room.has_attached_washroom && 'Attached Washroom', room.has_balcony && 'Balcony']
+      .filter(Boolean)
+      .join(' · ') || 'None'
+  )
+}
 
-type Dialog =
-  | { kind: 'add' }
-  | { kind: 'edit'; room: Room }
-  | { kind: 'assign'; room: Room }
-  | { kind: 'vacate'; room: Room }
-  | { kind: 'delete'; room: Room }
+/* --------------------------------------------------------- the inventory -- */
 
-/** The Rooms tab of the Household & Property hub. */
+type InventoryDialog = { kind: 'add' } | { kind: 'edit'; room: Room } | { kind: 'delete'; room: Room }
+
+/** The Rooms Inventory tab: the flat's rooms themselves, not who lives in them. */
 export function RoomsInventory() {
   const rooms = useRooms()
-  const residents = useResource<{ items: Resident[] }>('/api/residents', { active_only: true })
-  const deposits = useDepositSummary()
-  const [dialog, setDialog] = useState<Dialog | null>(null)
+  const [dialog, setDialog] = useState<InventoryDialog | null>(null)
   const toast = useToast()
 
   const done = (message: string) => {
@@ -108,14 +96,13 @@ export function RoomsInventory() {
   return (
     <>
       <Panel
-        title="Rooms Directory"
+        title="Rooms Inventory"
         icon={<BedDouble className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
         hint={
           rooms.data
-            ? `${rooms.data.summary.total_rooms} rooms · ${rooms.data.summary.occupied_rooms} occupied · ${rooms.data.summary.vacant_rooms} vacant`
+            ? `${rooms.data.summary.total_rooms} room${rooms.data.summary.total_rooms === 1 ? '' : 's'} defined`
             : undefined
         }
-     
         actions={
           <button type="button" className={BUTTON_PRIMARY} onClick={() => setDialog({ kind: 'add' })}>
             <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -129,7 +116,7 @@ export function RoomsInventory() {
           empty={
             <EmptyBlock
               title="No rooms yet"
-              body="Add each room in the flat, with its washroom and balcony, and who lives in it."
+              body="Add each room in the flat, with its washroom, balcony and base rent."
               action={
                 <button
                   type="button"
@@ -144,70 +131,34 @@ export function RoomsInventory() {
         >
           {(data) => (
             <div className="overflow-x-auto min-w-0">
-              <table className="w-full text-xs min-w-[760px] border-collapse">
+              <table className="w-full table-fixed text-xs min-w-[560px] border-collapse">
                 <caption className="sr-only">Rooms</caption>
                 <thead>
                   <tr className={TABLE_HEAD}>
-                    <th scope="col" className={TH}>Room Number</th>
-                    <th scope="col" className={TH}>Base Rent</th>
-                    <th scope="col" className={TH}>Attached Washroom</th>
-                    <th scope="col" className={TH}>Balcony</th>
-                    <th scope="col" className={TH}>Current Occupant</th>
-                    <th scope="col" className={TH}>Linked Escrow Slot</th>
-                    <th scope="col" className={TH}>Actions</th>
+                    <th scope="col" className={`w-[22%] ${TH}`}>Room</th>
+                    <th scope="col" className={`w-[20%] ${TH}`}>Attached Washroom</th>
+                    <th scope="col" className={`w-[16%] ${TH}`}>Balcony</th>
+                    <th scope="col" className={`w-[20%] ${TH}`}>Base Rent</th>
+                    <th scope="col" className={`w-[22%] ${TH}`}>Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
                   {data.items.map((room) => (
                     <tr key={room.room_id} className="hover:bg-[var(--bg-elevated)] transition-colors">
-                      <th scope="row" className="py-3 px-2 text-left font-bold whitespace-nowrap">
+                      <th scope="row" className="py-2.5 px-2 text-center font-bold truncate">
                         {room.room_number}
                       </th>
-                      <td className="py-3 px-2 text-center font-semibold">
-                        {room.base_rent_paise != null ? <Rupees paise={room.base_rent_paise} /> : '—'}
-                      </td>
-                      <td className="py-3 px-2 text-center">
+                      <td className="py-2.5 px-2 text-center">
                         <YesNo value={room.has_attached_washroom} />
                       </td>
-                      <td className="py-3 px-2 text-center">
+                      <td className="py-2.5 px-2 text-center">
                         <YesNo value={room.has_balcony} />
                       </td>
-                      <td className="py-3 px-2">
-                        {room.assigned_resident_id ? (
-                          <Link
-                            to={`/residents/${encodeURIComponent(room.assigned_resident_id)}`}
-                            className="flex items-center gap-2 min-w-0 font-semibold"
-                          >
-                            <Avatar name={room.assigned_display_name ?? room.assigned_resident_id} />
-                            <span className="min-w-0">
-                              <span className="block truncate">{room.assigned_display_name}</span>
-                              {room.assigned_since && (
-                                <span className="block text-[11px] font-normal text-[var(--text-tertiary)]">
-                                  {`Since ${formatDate(room.assigned_since)}`}
-                                </span>
-                              )}
-                            </span>
-                          </Link>
-                        ) : (
-                          <div className="text-center">
-                            <Pill tone="warning">Vacant</Pill>
-                          </div>
-                        )}
+                      <td className="py-2.5 px-2 text-center font-semibold">
+                        {room.base_rent_paise != null ? <Rupees paise={room.base_rent_paise} /> : '—'}
                       </td>
-                      <td className="py-3 px-2 text-center">
-                        <LinkedSlot room={room} />
-                      </td>
-                      <td className="py-3 px-2">
+                      <td className="py-2.5 px-2">
                         <div className="flex items-center justify-center gap-1.5 whitespace-nowrap">
-                          <button
-                            type="button"
-                            className={BUTTON_SECONDARY}
-                            aria-label={`Assign occupant to ${room.room_number}`}
-                            onClick={() => setDialog({ kind: 'assign', room })}
-                          >
-                            <UserPlus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                            Assign
-                          </button>
                           <button
                             type="button"
                             className={BUTTON_SECONDARY}
@@ -217,17 +168,8 @@ export function RoomsInventory() {
                             <Pencil className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                             Edit
                           </button>
-                          {room.assigned_resident_id ? (
-                            <button
-                              type="button"
-                              className={BUTTON_SECONDARY}
-                              aria-label={`Vacate ${room.room_number}`}
-                              onClick={() => setDialog({ kind: 'vacate', room })}
-                            >
-                              <DoorOpen className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                              Vacate
-                            </button>
-                          ) : (
+                          {/* An occupied room is vacated under Room Allotment before it can go. */}
+                          {!room.assigned_resident_id && (
                             <button
                               type="button"
                               className={BUTTON_QUIET}
@@ -253,14 +195,166 @@ export function RoomsInventory() {
         <RoomModal
           room={dialog.kind === 'edit' ? dialog.room : null}
           rooms={rooms.data?.items ?? []}
-          residents={residents.data?.items ?? []}
-          slots={deposits.data?.slots ?? []}
           onClose={() => setDialog(null)}
           onDone={(room) =>
             done(dialog.kind === 'add' ? `${room.room_number} added` : `${room.room_number} saved`)
           }
         />
       )}
+      {dialog?.kind === 'delete' && (
+        <ConfirmModal
+          title="Remove Room"
+          body={`${dialog.room.room_number} will be removed from the inventory. This cannot be undone.`}
+          confirm="Remove Room"
+          pendingLabel="Removing…"
+          action={() => api.delete(`${ROOMS}/${encodeURIComponent(dialog.room.room_id)}`)}
+          onClose={() => setDialog(null)}
+          onDone={() => done(`${dialog.room.room_number} removed`)}
+        />
+      )}
+    </>
+  )
+}
+
+/* --------------------------------------------------------- the allotment -- */
+
+type AllotmentDialog = { kind: 'assign'; room: Room } | { kind: 'vacate'; room: Room }
+
+/** The Room Allotment tab: who lives in each room, and since when. */
+export function RoomAllotmentSection() {
+  const rooms = useRooms()
+  const residents = useResource<{ items: Resident[] }>('/api/residents', { active_only: true })
+  const [dialog, setDialog] = useState<AllotmentDialog | null>(null)
+  const [detailsId, setDetailsId] = useState<string | null>(null)
+  const details = rooms.data?.items.find((room) => room.room_id === detailsId) ?? null
+  const toast = useToast()
+
+  const done = (message: string) => {
+    setDialog(null)
+    rooms.reload()
+    toast.success(message)
+  }
+  // The row's buttons open their own dialog, not the room's details.
+  const act = (event: React.MouseEvent, next: AllotmentDialog) => {
+    event.stopPropagation()
+    setDialog(next)
+  }
+
+  return (
+    <>
+      <Panel
+        title="Room Allotment"
+        icon={<DoorOpen className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+        hint={
+          rooms.data
+            ? `${rooms.data.summary.occupied_rooms} of ${rooms.data.summary.total_rooms} rooms allotted · ${rooms.data.summary.vacant_rooms} vacant`
+            : undefined
+        }
+      >
+        <AsyncSection
+          resource={rooms}
+          isEmpty={(data) => data.items.length === 0}
+          empty={
+            <EmptyBlock
+              title="No rooms defined yet"
+              body="Define the flat's bedrooms in Rooms Inventory first, then allot residents to them here."
+              action={
+                <Link to="/housing?tab=rooms" className={BUTTON_PRIMARY}>
+                  Go to Rooms Inventory
+                </Link>
+              }
+            />
+          }
+        >
+          {(data) => (
+            <div className="overflow-x-auto min-w-0">
+              <table className="w-full table-fixed text-xs min-w-[560px] border-collapse">
+                <caption className="sr-only">Room allotment</caption>
+                <thead>
+                  <tr className={TABLE_HEAD}>
+                    <th scope="col" className={`w-[22%] ${TH}`}>Room</th>
+                    <th scope="col" className={`w-[32%] ${TH}`}>Resident</th>
+                    <th scope="col" className={`w-[22%] ${TH}`}>Occupied Since</th>
+                    <th scope="col" className={`w-[24%] ${TH}`}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+                  {data.items.map((room) => {
+                    const name = room.assigned_resident_id
+                      ? (room.assigned_display_name ?? room.assigned_resident_id)
+                      : null
+                    return (
+                      // The whole row opens the room's details. The room's button
+                      // holds the keyboard focus, gets it back on close, and its
+                      // click reaches the row; the action buttons stop theirs.
+                      <tr
+                        key={room.room_id}
+                        className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
+                        onClick={() => setDetailsId(room.room_id)}
+                      >
+                        <th scope="row" className="py-2.5 px-2 text-center">
+                          <button
+                            type="button"
+                            aria-haspopup="dialog"
+                            className="inline-block max-w-full truncate align-middle rounded font-bold text-[var(--text-primary)] cursor-pointer"
+                          >
+                            {room.room_number}
+                          </button>
+                        </th>
+                        <td className="py-2.5 px-2">
+                          {name ? (
+                            <span className="flex items-center gap-2 min-w-0">
+                              <Avatar name={name} size="sm" />
+                              <span className="font-bold text-[var(--text-primary)] truncate">{name}</span>
+                            </span>
+                          ) : (
+                            <span className="block text-center">
+                              <Pill tone="warning">Vacant</Pill>
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-2 text-center tabular text-[var(--text-secondary)]">
+                          {room.assigned_since ? formatDate(room.assigned_since) : '—'}
+                        </td>
+                        <td className="py-2.5 px-2">
+                          <div className="flex flex-wrap items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              className={BUTTON_SECONDARY}
+                              aria-label={
+                                name
+                                  ? `Reassign occupant of ${room.room_number}`
+                                  : `Assign occupant to ${room.room_number}`
+                              }
+                              onClick={(event) => act(event, { kind: 'assign', room })}
+                            >
+                              <UserPlus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                              {name ? 'Reassign' : 'Assign'}
+                            </button>
+                            {name && (
+                              <button
+                                type="button"
+                                className={BUTTON_QUIET}
+                                aria-label={`Vacate ${room.room_number}`}
+                                onClick={(event) => act(event, { kind: 'vacate', room })}
+                              >
+                                <DoorOpen className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                                Vacate
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </AsyncSection>
+      </Panel>
+
+      {details && <RoomAllotmentDetailsModal room={details} onClose={() => setDetailsId(null)} />}
       {dialog?.kind === 'assign' && (
         <AssignModal
           room={dialog.room}
@@ -281,18 +375,48 @@ export function RoomsInventory() {
           onDone={() => done(`${dialog.room.room_number} is vacant`)}
         />
       )}
-      {dialog?.kind === 'delete' && (
-        <ConfirmModal
-          title="Remove Room"
-          body={`${dialog.room.room_number} will be removed from the inventory. This cannot be undone.`}
-          confirm="Remove Room"
-          pendingLabel="Removing…"
-          action={() => api.delete(`${ROOMS}/${encodeURIComponent(dialog.room.room_id)}`)}
-          onClose={() => setDialog(null)}
-          onDone={() => done(`${dialog.room.room_number} removed`)}
-        />
-      )}
     </>
+  )
+}
+
+/** One room's allotment in full, read-only. */
+function RoomAllotmentDetailsModal({ room, onClose }: { room: Room; onClose: () => void }) {
+  const occupied = Boolean(room.assigned_resident_id)
+  return (
+    <Modal
+      title="Room Allotment Details"
+      description={room.room_number}
+      onClose={onClose}
+      footer={
+        <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
+          Close
+        </button>
+      }
+    >
+      <div className="space-y-5">
+        <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 flex flex-wrap items-center justify-between gap-3">
+          <Pill tone={occupied ? 'success' : 'warning'}>{occupied ? 'Occupied' : 'Vacant'}</Pill>
+          <span className="text-xs text-[var(--text-secondary)]">
+            {room.base_rent_paise != null ? (
+              <>
+                Base rent{' '}
+                <Rupees paise={room.base_rent_paise} className="font-bold tabular text-[var(--text-primary)]" />
+              </>
+            ) : (
+              'Base rent not set'
+            )}
+          </span>
+        </div>
+        <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
+          <DetailFact label="Room">{room.room_number}</DetailFact>
+          <DetailFact label="Private Amenities">{amenitiesText(room)}</DetailFact>
+          <DetailFact label="Resident">{room.assigned_display_name ?? 'Vacant'}</DetailFact>
+          <DetailFact label="Occupied Since">
+            {room.assigned_since ? formatDate(room.assigned_since) : '—'}
+          </DetailFact>
+        </dl>
+      </div>
+    </Modal>
   )
 }
 
@@ -335,29 +459,22 @@ function Footer({
   )
 }
 
+/** Add or edit a room itself: its number, amenities and base rent. */
 function RoomModal({
   room,
   rooms,
-  residents,
-  slots,
   onClose,
   onDone,
 }: {
   room: Room | null
   rooms: Room[]
-  residents: Resident[]
-  slots: DepositSlot[]
   onClose: () => void
   onDone: (room: Room) => void
 }) {
   const [number, setNumber] = useState(room?.room_number ?? '')
   const [rentRaw, setRentRaw] = useState(paiseToInput(room?.base_rent_paise))
-  const currentSlot = room?.linked_deposit_slot?.slot_id ?? ''
-  const [slotId, setSlotId] = useState(currentSlot)
   const [washroom, setWashroom] = useState(room?.has_attached_washroom ?? false)
   const [balcony, setBalcony] = useState(room?.has_balcony ?? false)
-  const [occupant, setOccupant] = useState(room?.assigned_resident_id ?? '')
-  const [since, setSince] = useState(todayIso())
   const [submitted, setSubmitted] = useState(false)
 
   const trimmed = number.trim()
@@ -366,7 +483,6 @@ function RoomModal({
       other.room_id !== room?.room_id &&
       other.room_number.trim().toLowerCase() === trimmed.toLowerCase(),
   )
-  const occupantChanged = occupant !== (room?.assigned_resident_id ?? '')
   const rent = parseRupees(rentRaw, { allowEmpty: true })
   const errors = {
     number: !trimmed
@@ -376,50 +492,29 @@ function RoomModal({
         : clash
           ? `${clash.room_number} already exists.`
           : null,
-    since: occupant && occupantChanged ? dateError(since) : null,
     rent: rentRaw.trim() && !rent.ok ? (rent.error ?? 'Enter the rent in rupees.') : null,
   }
-  const valid = !errors.number && !errors.since && !errors.rent
-  const basePaise = rentRaw.trim() ? rent.paise : null
-  const slotChanged = slotId !== currentSlot
-  // Slots that back no room yet, and the one that backs this room.
-  const slotOptions = slots
-    .filter((slot) => !slot.room_id || slot.room_id === room?.room_id)
-    .map((slot) => ({
-      value: slot.slot_id,
-      label: `Slot ${slot.slot_number} (${slot.slot_label}) · ${formatInr(slot.target_deposit_paise)}`,
-    }))
+  const valid = !errors.number && !errors.rent
   const formId = room ? 'room-edit-form' : 'room-add-form'
+  const body = {
+    room_number: trimmed,
+    has_attached_washroom: washroom,
+    has_balcony: balcony,
+    base_rent_paise: rentRaw.trim() ? rent.paise : null,
+  }
 
   const save = useMutation(
     () =>
       room
-        ? api.patch<Room>(`${ROOMS}/${encodeURIComponent(room.room_id)}`, {
-            room_number: trimmed,
-            has_attached_washroom: washroom,
-            has_balcony: balcony,
-            base_rent_paise: basePaise,
-            ...(slotChanged ? { linked_slot_id: slotId || null } : {}),
-            ...(occupantChanged
-              ? { assigned_resident_id: occupant || null, effective_date: occupant ? since : null }
-              : {}),
-          })
-        : api.post<Room>(ROOMS, {
-            room_number: trimmed,
-            has_attached_washroom: washroom,
-            has_balcony: balcony,
-            base_rent_paise: basePaise,
-            linked_slot_id: slotId || null,
-            assigned_resident_id: occupant || null,
-            effective_date: occupant ? since : null,
-          }),
+        ? api.patch<Room>(`${ROOMS}/${encodeURIComponent(room.room_id)}`, body)
+        : api.post<Room>(ROOMS, body),
     { onSuccess: onDone },
   )
 
   return (
     <Modal
       title={room ? `Edit ${room.room_number}` : 'Add Room'}
-      description="Room numbers are unique in the flat. A room holds one resident at most."
+      description="Room numbers are unique in the flat. Who lives in each room is set under Room Allotment."
       onClose={onClose}
       footer={
         <Footer
@@ -460,32 +555,6 @@ function RoomModal({
           hint="Optional. This room's share of the monthly rent, for a room-tiered split."
           error={submitted ? errors.rent : null}
         />
-        <SelectField
-          label="Deposit Slot"
-          value={slotId}
-          onChange={setSlotId}
-          placeholder="No slot"
-          options={slotOptions}
-          hint="The security deposit slot that backs this room. Slots backing another room are not listed."
-        />
-        <SelectField
-          label="Occupant"
-          value={occupant}
-          onChange={setOccupant}
-          placeholder="Vacant"
-          options={candidates(residents, rooms, room)}
-          hint="Optional. Only active residents without a room are listed."
-        />
-        {occupant && occupantChanged && (
-          <DateField
-            label="Moved in on"
-            value={since}
-            onChange={setSince}
-            required
-            max={todayIso()}
-            error={submitted ? errors.since : null}
-          />
-        )}
       </form>
     </Modal>
   )
@@ -525,7 +594,7 @@ function AssignModal({
 
   return (
     <Modal
-      title={room.assigned_resident_id ? 'Swap Occupant' : 'Assign Occupant'}
+      title={room.assigned_resident_id ? 'Reassign Occupant' : 'Assign Occupant'}
       description={
         room.assigned_resident_id
           ? `${room.assigned_display_name} occupies ${room.room_number} now and will move out of it.`
@@ -635,8 +704,8 @@ export function AssignedRoomCard({ residentId }: { residentId: string }) {
       title="Assigned Space / Room"
       icon={<BedDouble className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       actions={
-        <Link to="/housing?tab=rooms" className={BUTTON_SECONDARY}>
-          Manage Rooms
+        <Link to="/housing?tab=allotment" className={BUTTON_SECONDARY}>
+          Manage Allotment
         </Link>
       }
     >

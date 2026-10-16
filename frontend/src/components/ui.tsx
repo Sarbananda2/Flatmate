@@ -292,6 +292,26 @@ export function EmptyBlock({
  * The one Edit button every card uses: the word "Edit" on screen, and a name
  * that says what it edits for anyone using a screen reader.
  */
+/** One fact in a read-only details dialog: the label above, the value below. */
+export function DetailFact({
+  label,
+  className,
+  children,
+}: {
+  label: string
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <div className={clsx('min-w-0 space-y-1', className)}>
+      <dt className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+        {label}
+      </dt>
+      <dd className="m-0 text-[var(--text-primary)]">{children}</dd>
+    </div>
+  )
+}
+
 export function EditButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button type="button" className={BUTTON_SECONDARY} onClick={onClick} aria-label={label} title={label}>

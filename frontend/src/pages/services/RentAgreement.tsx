@@ -346,7 +346,7 @@ function ChangeAgreementModal({
         {model === 'room_tiered' && !roomTieredAvailable && (
           <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
             The room base rents do not add up to the lease rent yet, so rent cannot be generated
-            this way until they do. Set them on the Rooms tab under Housing.
+            this way until they do. Set them under Housing, in Rooms Inventory.
           </p>
         )}
         <ReceiptSwitch checked={receipts} onChange={setReceipts} disabled={save.pending} />
