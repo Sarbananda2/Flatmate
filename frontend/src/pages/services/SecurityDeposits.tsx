@@ -11,6 +11,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   BedDouble,
+  History,
   Landmark,
   LogOut,
   Plus,
@@ -508,137 +509,140 @@ function EscrowPoolCard({
     .reverse()
 
   return (
-    <Panel
-      title="Household Escrow Pool"
-      icon={<Landmark className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="The landlord's deposit, divided into the household's permanent slots. Held in escrow; not part of any statement, expense or balance."
-      actions={summary.funding_mode && <Pill tone="accent">{MODE_LABELS[summary.funding_mode]}</Pill>}
-    >
-      <section
-        aria-label={fronted ? 'Capital exposure' : 'Deposit totals'}
-        className="grid grid-cols-2 lg:grid-cols-4 gap-3"
+    <div className="stack">
+      <Panel
+        title="Household Escrow Pool"
+        icon={<Landmark className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+        hint="The landlord's deposit, divided into the household's permanent slots. Held in escrow; not part of any statement, expense or balance."
+        actions={summary.funding_mode && <Pill tone="accent">{MODE_LABELS[summary.funding_mode]}</Pill>}
       >
-        {fronted ? (
-          <>
-            <MiniStat
-              label="Master Deposit Fronted"
-              value={<Rupees paise={summary.master_deposit_paise} />}
-              note={`By ${summary.primary_signatory_name ?? 'the signatory'}`}
-            />
-            <MiniStat
-              label="Reimbursements Collected"
-              value={<Rupees paise={summary.reimbursements_received_paise} />}
-              note={
-                summary.retained_deductions_paise > 0
-                  ? `Plus ${formatInr(summary.retained_deductions_paise)} kept back from leavers`
-                  : 'From the other occupants'
-              }
-            />
-            <MiniStat
-              label="Signatory Capital at Risk"
-              value={<Rupees paise={summary.signatory_capital_exposure_paise} tone="accent" />}
-              note="Still out of pocket"
-            />
-          </>
-        ) : (
-          <>
-            <MiniStat
-              label="Master Deposit"
-              value={<Rupees paise={summary.master_deposit_paise} />}
-              note="Held by the landlord"
-            />
-            <MiniStat
-              label="Total Funded"
-              value={<Rupees paise={summary.total_funded_paise} />}
-              note={`Of ${formatInr(summary.total_target_paise)} across the slots`}
-            />
-            <MiniStat
-              label="Slots"
-              value={`${summary.total_slots_count - summary.vacant_slots_count} of ${summary.total_slots_count} occupied`}
-              note={
-                summary.vacant_slots_count > 0 ? `${summary.vacant_slots_count} vacant` : 'None vacant'
-              }
-            />
-          </>
+        <section
+          aria-label={fronted ? 'Capital exposure' : 'Deposit totals'}
+          className="grid grid-cols-2 lg:grid-cols-4 gap-3"
+        >
+          {fronted ? (
+            <>
+              <MiniStat
+                label="Master Deposit Fronted"
+                value={<Rupees paise={summary.master_deposit_paise} />}
+                note={`By ${summary.primary_signatory_name ?? 'the signatory'}`}
+              />
+              <MiniStat
+                label="Reimbursements Collected"
+                value={<Rupees paise={summary.reimbursements_received_paise} />}
+                note={
+                  summary.retained_deductions_paise > 0
+                    ? `Plus ${formatInr(summary.retained_deductions_paise)} kept back from leavers`
+                    : 'From the other occupants'
+                }
+              />
+              <MiniStat
+                label="Signatory Capital at Risk"
+                value={<Rupees paise={summary.signatory_capital_exposure_paise} tone="accent" />}
+                note="Still out of pocket"
+              />
+            </>
+          ) : (
+            <>
+              <MiniStat
+                label="Master Deposit"
+                value={<Rupees paise={summary.master_deposit_paise} />}
+                note="Held by the landlord"
+              />
+              <MiniStat
+                label="Total Funded"
+                value={<Rupees paise={summary.total_funded_paise} />}
+                note={`Of ${formatInr(summary.total_target_paise)} across the slots`}
+              />
+              <MiniStat
+                label="Slots"
+                value={`${summary.total_slots_count - summary.vacant_slots_count} of ${summary.total_slots_count} occupied`}
+                note={
+                  summary.vacant_slots_count > 0 ? `${summary.vacant_slots_count} vacant` : 'None vacant'
+                }
+              />
+            </>
+          )}
+          <MiniStat
+            label="Unfunded Gap"
+            value={<Rupees paise={summary.unfunded_gap_paise} />}
+            note={
+              summary.vacant_slots_count > 0
+                ? `${summary.vacant_slots_count} slot${summary.vacant_slots_count === 1 ? '' : 's'} vacant`
+                : 'Targets not yet paid in'
+            }
+          />
+        </section>
+
+        {!summary.is_balanced && (
+          <p className="m-0 text-xs font-semibold text-[var(--danger)]" role="alert">
+            The slots add up to {formatInr(summary.total_target_paise)}, not the{' '}
+            {formatInr(summary.master_deposit_paise)} deposit on the lease. Bring them back in line.
+          </p>
         )}
-        <MiniStat
-          label="Unfunded Gap"
-          value={<Rupees paise={summary.unfunded_gap_paise} />}
-          note={
-            summary.vacant_slots_count > 0
-              ? `${summary.vacant_slots_count} slot${summary.vacant_slots_count === 1 ? '' : 's'} vacant`
-              : 'Targets not yet paid in'
-          }
-        />
-      </section>
 
-      {!summary.is_balanced && (
-        <p className="m-0 text-xs font-semibold text-[var(--danger)]" role="alert">
-          The slots add up to {formatInr(summary.total_target_paise)}, not the{' '}
-          {formatInr(summary.master_deposit_paise)} deposit on the lease. Bring them back in line.
-        </p>
-      )}
-
-      <div className="overflow-x-auto min-w-0">
-        <table className="w-full table-fixed text-left text-xs min-w-[720px] border-collapse">
-          <caption className="sr-only">Household deposit slots</caption>
-          <thead>
-            <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[13%] pb-3 px-2 font-bold text-center">Slot / Space</th>
-              <th scope="col" className="w-[13%] pb-3 px-2 font-bold text-center">Target Deposit</th>
-              <th scope="col" className="w-[18%] pb-3 px-2 font-bold text-center">Current Occupant</th>
-              <th scope="col" className="w-[14%] pb-3 px-2 font-bold text-center">Funded Status</th>
-              <th scope="col" className="w-[16%] pb-3 px-2 font-bold text-center">Paid Date &amp; Ref</th>
-              <th scope="col" className="w-[26%] pb-3 px-2 font-bold text-center">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-            {summary.slots.map((slot) => (
-              <tr key={slot.slot_id} className="align-middle">
-                <th scope="row" className="py-3 px-2 text-left">
-                  <span className="block font-bold text-[var(--text-primary)] truncate">
-                    {slot.slot_label}
-                  </span>
-                  <span className="block text-[11px] font-normal text-[var(--text-tertiary)]">
-                    Slot {slot.slot_number}
-                  </span>
-                  <SlotRoom slot={slot} />
-                </th>
-                <td className="py-3 px-2 text-center font-bold text-[var(--text-primary)]">
-                  <Rupees paise={slot.target_deposit_paise} />
-                </td>
-                <td className="py-3 px-2">
-                  <Occupant slot={slot} />
-                </td>
-                <td className="py-3 px-2 text-center">
-                  <FundedStatus slot={slot} />
-                </td>
-                <td className="py-3 px-2 text-center text-[var(--text-secondary)]">
-                  <PaidDetails slot={slot} />
-                </td>
-                <td className="py-3 px-2 text-center">
-                  <SlotActions slot={slot} onAction={(kind) => setDialog({ kind, slot })} />
-                </td>
+        <div className="overflow-x-auto min-w-0">
+          <table className="w-full table-fixed text-left text-xs min-w-[720px] border-collapse">
+            <caption className="sr-only">Household deposit slots</caption>
+            <thead>
+              <tr className={TABLE_HEAD}>
+                <th scope="col" className="w-[13%] pb-3 px-2 font-bold text-center">Slot / Space</th>
+                <th scope="col" className="w-[13%] pb-3 px-2 font-bold text-center">Target Deposit</th>
+                <th scope="col" className="w-[18%] pb-3 px-2 font-bold text-center">Current Occupant</th>
+                <th scope="col" className="w-[14%] pb-3 px-2 font-bold text-center">Funded Status</th>
+                <th scope="col" className="w-[16%] pb-3 px-2 font-bold text-center">Paid Date &amp; Ref</th>
+                <th scope="col" className="w-[26%] pb-3 px-2 font-bold text-center">Actions</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+              {summary.slots.map((slot) => (
+                <tr key={slot.slot_id} className="align-middle">
+                  <th scope="row" className="py-3 px-2 text-left">
+                    <span className="block font-bold text-[var(--text-primary)] truncate">
+                      {slot.slot_label}
+                    </span>
+                    <span className="block text-[11px] font-normal text-[var(--text-tertiary)]">
+                      Slot {slot.slot_number}
+                    </span>
+                    <SlotRoom slot={slot} />
+                  </th>
+                  <td className="py-3 px-2 text-center font-bold text-[var(--text-primary)]">
+                    <Rupees paise={slot.target_deposit_paise} />
+                  </td>
+                  <td className="py-3 px-2">
+                    <Occupant slot={slot} />
+                  </td>
+                  <td className="py-3 px-2 text-center">
+                    <FundedStatus slot={slot} />
+                  </td>
+                  <td className="py-3 px-2 text-center text-[var(--text-secondary)]">
+                    <PaidDetails slot={slot} />
+                  </td>
+                  <td className="py-3 px-2 text-center">
+                    <SlotActions slot={slot} onAction={(kind) => setDialog({ kind, slot })} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
 
+        {dialog && (
+          <SlotDialog
+            dialog={dialog}
+            summary={summary}
+            onClose={() => setDialog(null)}
+            onDone={() => {
+              setDialog(null)
+              onChanged()
+            }}
+          />
+        )}
+      </Panel>
+
+      {/* Its own card, not a box inside the pool; left out until money has moved. */}
       {history.length > 0 && <RecentDepositActivity history={history} summary={summary} />}
-
-      {dialog && (
-        <SlotDialog
-          dialog={dialog}
-          summary={summary}
-          onClose={() => setDialog(null)}
-          onDone={() => {
-            setDialog(null)
-            onChanged()
-          }}
-        />
-      )}
-    </Panel>
+    </div>
   )
 }
 
@@ -658,13 +662,11 @@ function RecentDepositActivity({
     null,
   )
   return (
-    <section
-      aria-label="Recent deposit activity"
-      className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4 space-y-3"
+    <Panel
+      title="Recent Deposit Activity"
+      icon={<History className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint="Payments, refunds and deductions recorded across the household's deposit slots."
     >
-      <h3 className="m-0 text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-        Recent Deposit Activity
-      </h3>
       <div className="overflow-x-auto min-w-0">
         <table className="w-full table-fixed text-xs min-w-[720px] border-collapse">
           <caption className="sr-only">Recent deposit activity</caption>
@@ -725,7 +727,7 @@ function RecentDepositActivity({
       {selected && (
         <DepositTransactionModal {...selected} summary={summary} onClose={() => setSelected(null)} />
       )}
-    </section>
+    </Panel>
   )
 }
 

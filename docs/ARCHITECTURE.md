@@ -419,6 +419,12 @@ The frontend enforces strict UX, state-separation, and visual presentation invar
 ### Rule U6: Zero Dead Space for Empty Histories
 * **Invariant:** Historical archives and completed term logs must remain hidden or collapsed until at least one record exists. Do not render giant, empty full-width panels with placeholder text explaining that history has not occurred yet.
 
+### Rule U7: Summary-First Tables with On-Click Detail Modals (Progressive Table Disclosure)
+* **Invariant:** Data tables must display only the primary, scannable, atomic summary columns required to identify and compare rows at a glance (e.g., `Date`, `Slot / Space`, `Activity`, `From`, `To`, `Amount`). Secondary, verbose, or audit-level attributes (such as payment methods, bank/UPI UTR references, free-text notes, deduction reasons, or multi-line breakdowns) must **never** be crammed into table columns where they cause horizontal crowding or ellipsis truncation.
+* **On-Click Read-Only Detail Modal:** Clicking a table row opens a focused, read-only detail dialog (`<Modal>`) presenting the record's complete set of atomic fields in a structured key-value grid with full, untruncated text.
+* **Zero Table Layout Shift:** Inspecting a row's details must **never** mutate row height or insert inline expansion/drop-down rows into the table body.
+* **Keyboard & Screen-Reader Accessibility:** Every openable row must provide an accessible keyboard trigger (with `aria-haspopup="dialog"`) that opens the detail dialog on `Enter`/`Space` and returns focus to the trigger when closed.
+
 ---
 
 ## Domain Modeling & Field Atomicity Standards

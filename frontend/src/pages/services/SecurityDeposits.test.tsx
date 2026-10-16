@@ -837,6 +837,9 @@ describe('the rooms slots back', () => {
   })
 })
 
+/** The card a panel heading names. */
+const panel = (title: string) => screen.getByRole('heading', { name: title }).closest('section')!
+
 /** The body rows of the Recent Deposit Activity table, newest first. */
 function activityRows() {
   const table = screen.getByRole('table', { name: 'Recent deposit activity' })
@@ -861,7 +864,7 @@ describe('recent deposit activity', () => {
     ...extra,
   })
 
-  it('sits in its own frame and leaves out entries that moved no money', async () => {
+  it('is a card of its own beside the escrow pool, and leaves out entries that moved no money', async () => {
     renderSection(
       summary({
         slots: [
@@ -875,13 +878,32 @@ describe('recent deposit activity', () => {
         ],
       }),
     )
-    const activity = await screen.findByRole('region', { name: 'Recent deposit activity' })
-    expect(activity).toHaveClass('rounded-xl', 'border')
+    await screen.findByRole('table', { name: 'Recent deposit activity' })
+    const pool = panel('Household Escrow Pool')
+    const activity = panel('Recent Deposit Activity')
+    // Not a box inside the pool: the two cards sit side by side in one stack.
+    expect(pool.contains(activity)).toBe(false)
+    expect(activity.parentElement).toBe(pool.parentElement)
+    expect(within(pool).queryByRole('table', { name: 'Recent deposit activity' })).toBeNull()
+    expect(within(activity).getByText(/Payments, refunds and deductions recorded/)).toBeInTheDocument()
+    // The table sits straight in the card, with no second box around it.
+    expect(within(activity).getByRole('table').parentElement!.parentElement).toBe(activity)
     const rows = activityRows()
     expect(rows).toHaveLength(2)
     expect(activity).not.toHaveTextContent('₹0.00')
     expect(rows[0]).toHaveTextContent('Refunded on leaving')
     expect(rows[1]).toHaveTextContent('Paid in')
+  })
+
+  it('is left out until some money has moved', async () => {
+    renderSection(
+      summary({
+        slots: [slot(2, 'bob', 'Bob', { transactions: [tx('t1', 'move_out_refund', 0, '2026-10-05')] })],
+      }),
+    )
+    expect(await screen.findByRole('heading', { name: 'Household Escrow Pool' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Recent Deposit Activity' })).toBeNull()
+    expect(screen.queryByRole('table', { name: 'Recent deposit activity' })).toBeNull()
   })
 
   // Bob's slot, with Alice the primary signatory and Chris taking the slot over.

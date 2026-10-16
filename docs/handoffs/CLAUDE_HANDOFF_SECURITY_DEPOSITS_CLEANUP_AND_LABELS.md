@@ -3,7 +3,7 @@
 **Role:** Lead Architect & UX Designer  
 **Audience:** Claude Code (Lead Frontend Implementer)  
 **Status:** Approved for Implementation  
-**Governing Rules:** Rule U1 (Read-Only Default), Rule U3 (Header Alignment), Rule U5 (Explicit Actions), Rule D1 (Field Atomicity)  
+**Governing Rules:** Rule U1 (Read-Only Default), Rule U3 (Header Alignment), Rule U5 (Explicit Actions), Rule U6 (Zero Dead Space), Rule U7 (Summary-First Tables with On-Click Detail Modals), Rule D1 (Field Atomicity)  
 **Target Files:**
 - `frontend/src/pages/services/SecurityDeposits.tsx`
 - `frontend/src/components/ui.tsx`
@@ -113,7 +113,14 @@ Eliminate mystery icons and provide consistent, labeled actions for all tenants:
    }
    ```
 
-3. **6-Column Table Structure (No `Details` Column, No Chevrons; All `<th>` Center-Aligned per Rule U3):**
+3. **Top-Level Sibling `<Panel>` Separation (Not Nested Inside `Household Escrow Pool`):**
+   - `Recent Deposit Activity` must **not** be rendered inside the `Household Escrow Pool` `<Panel>` (which made it look like a subordinate child box of the pool card).
+   - Instead, render `Household Escrow Pool` and `Recent Deposit Activity` as two **sibling top-level `<Panel>` cards** inside a vertical stack (`<div className="stack">`):
+     - **Card 1:** `<Panel title="Household Escrow Pool" icon={<Landmark ... />} hint="...">` — contains only the 4 `MiniStat` cards, the balance alert (if any), the `Household deposit slots` table, and `SlotDialog`.
+     - **Card 2 (when `history.length > 0`, obeying Rule U6):** `RecentDepositActivity` renders its own top-level `<Panel title="Recent Deposit Activity" icon={<History className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />} hint="Payments, refunds and deductions recorded across the household's deposit slots.">` directly below the `Household Escrow Pool` panel.
+   - Inside the `Recent Deposit Activity` `<Panel>`, render the `<div className="overflow-x-auto min-w-0">` and `<table>` directly (without an extra inner `bg-[var(--bg-elevated)]` box wrapper, since `<Panel>` itself provides the card frame).
+
+4. **6-Column Table Structure (No `Details` Column, No Chevrons; All `<th>` Center-Aligned per Rule U3):**
    - `Date` (`w-[14%]`, `text-center`) — plain tabular date (`12 Oct 2026`).
    - `Slot / Space` (`w-[13%]`, `text-center`) — slot label pill (`Room 2`).
    - `Activity` (`w-[21%]`, `text-center`) — `<Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>`.
@@ -121,9 +128,9 @@ Eliminate mystery icons and provide consistent, labeled actions for all tenants:
    - `To` (`w-[18%]`, `text-center`) — atomic recipient name (`truncate` with `title={to}`).
    - `Amount` (`w-[16%]`, `text-center`) — bold tabular `<Rupees paise={tx.amount_paise} />`.
 
-4. **Openable Row — Read-Only Transaction Modal (Zero Table Layout Shift):**
+5. **Openable Row — Read-Only Transaction Modal (Zero Table Layout Shift):**
    - **State:** `const [selected, setSelected] = useState<{ tx: DepositTransaction; slot: DepositSlot } | null>(null)` in `RecentDepositActivity`.
-   - **Trigger:** Clicking any transaction row (`onClick={() => setSelected({ tx, slot })}`, plus keyboard accessibility via an interactive button or `tabIndex={0}` + `Enter`/`Space` handler) opens a read-only `<Modal>` for that transaction. Do not expand rows inline in the table.
+   - **Trigger:** Clicking any transaction row (`onClick={() => setSelected({ tx, slot })}`, plus keyboard accessibility via the date button) opens a read-only `<Modal>` for that transaction.
    - **Modal Layout (`title="Deposit Transaction Details"`):**
      - **Summary Banner:** A highlighted bar (`rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3.5 flex items-center justify-between gap-3`) showing `<Pill tone={TX_TONES[tx.tx_type]}>{TX_LABELS[tx.tx_type]}</Pill>` on the left and `<Rupees paise={tx.amount_paise} className="text-base font-bold tabular text-[var(--text-primary)]" />` on the right.
      - **2-Column Atomic Fact Grid (`<dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">`):**
@@ -148,10 +155,12 @@ Eliminate mystery icons and provide consistent, labeled actions for all tenants:
 ## 3. Test & Verification Checklist
 
 1. **SecurityDeposits Unit Tests (`frontend/src/pages/services/SecurityDeposits.test.tsx`):**
+   - Assert that `Household Escrow Pool` and `Recent Deposit Activity` are rendered as two separate sibling `<section>` panels (i.e. `Recent Deposit Activity` is NOT a DOM descendant of the `Household Escrow Pool` section), and when there are no non-zero transactions, only the `Household Escrow Pool` panel is rendered (Rule U6).
    - Assert the 6 centered column headers in `Recent deposit activity`: `['Date', 'Slot / Space', 'Activity', 'From', 'To', 'Amount']`.
    - Verify directional accuracy in `From` and `To` across `funding_payment`, `move_out_refund`, and `direct_replacement_transfer`.
-   - Verify clicking a row opens the `"Deposit Transaction Details"` dialog (`role="dialog"`) showing `Date`, `Slot / Space`, `From`, `To`, `Payment Method`, `Reference / UTR`, and full `Notes / Reason`, and clicking `Close` dismisses the dialog without shifting the table rows.
-   - Run vitest: `npm test -- --run` $\rightarrow$ all tests must pass with zero DOM nesting warnings.
+   - Verify clicking a row opens the `"Deposit Transaction Details"` dialog (`role="dialog"`) showing `Date`, `Slot / Space`, `From`, `To`, `Payment Method`, `Reference / UTR`, and full `Notes / Reason`, and clicking `Close` dismisses the dialog.
+   - Run vitest: `npm test -- --run` $\rightarrow$ all tests must pass.
+
 
 
 
