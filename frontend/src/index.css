@@ -333,10 +333,21 @@ table.data thead th {
   white-space: nowrap;
   position: sticky; top: 0; z-index: 1;
 }
-/* Column headers are centred in every data table, numeric columns included.
-   The cells beneath keep their own alignment: text left, figures right. */
-table.data thead th,
-table.data thead th.num { text-align: center; }
+/* Column headers are centred in every data table, except a numeric column's,
+   which sits right, over its figures (Rule U3). The cells beneath keep their
+   own alignment: text left, figures right. */
+table.data thead th { text-align: center; }
+table.data thead th.num { text-align: right; }
+/* The passbooks: six columns and a description that wraps, so their cells are
+   a little tighter and the table stays inside its card on a laptop. The outer
+   columns still line up with the card's own padding; phones keep theirs. */
+@media (min-width: 621px) {
+  table.data.statement-table th, table.data.statement-table td { padding: 10px 12px; }
+  table.data.statement-table th:first-child,
+  table.data.statement-table td:first-child { padding-left: var(--space-5); }
+  table.data.statement-table th:last-child,
+  table.data.statement-table td:last-child { padding-right: var(--space-5); }
+}
 table.data tbody tr { transition: background-color 0.12s; }
 table.data tbody tr:hover { background: var(--surface-hover); }
 table.data tbody tr:last-child td, table.data tbody tr:last-child th { border-bottom: none; }

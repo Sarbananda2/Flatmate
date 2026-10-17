@@ -257,7 +257,8 @@ export default function PaymentsPage() {
       {tab === 'pool_statement' && (
         <StatementPanel
           title="House Kitty Statement"
-          hint="Every rupee into and out of the House Kitty, newest first, with the balance after each."
+          hint="Money into and out of the House Kitty, newest first, with the kitty balance after each."
+          wording={KITTY_WORDING}
           resource={statement}
           pick={(data) => data.pool_statement}
           residents={residents.data?.items ?? []}
@@ -267,7 +268,8 @@ export default function PaymentsPage() {
       {tab === 'landlord_statement' && (
         <StatementPanel
           title="Landlord Statement"
-          hint="Everything paid to the landlord, and what they have handed back or kept from a deposit."
+          hint="Everything disbursed to the landlord, and what they have refunded or kept from a deposit."
+          wording={LANDLORD_WORDING}
           resource={statement}
           pick={(data) => data.landlord_statement}
           residents={residents.data?.items ?? []}
@@ -804,6 +806,7 @@ export default function PaymentsPage() {
       {entry && (
         <StatementEntryDialog
           entry={entry}
+          wording={entry.account === 'pool' ? KITTY_WORDING : LANDLORD_WORDING}
           accountName={
             entry.account === 'pool'
               ? (statement.data?.pool_statement.account.name ?? poolName)
@@ -1291,6 +1294,30 @@ function LandlordAccountModal({
 
 /* ---------------------------------------------------------- the passbooks -- */
 
+/** How a passbook's columns and filters are worded, in plain terms for its
+ * account. Money in and out share one signed Amount column; their own words
+ * name the direction filter and an entry's direction. */
+interface StatementWording {
+  counterparty: string
+  moneyIn: string
+  moneyOut: string
+  balance: string
+}
+
+const KITTY_WORDING: StatementWording = {
+  counterparty: 'Paid By / To',
+  moneyIn: 'Money In (+)',
+  moneyOut: 'Money Out (−)',
+  balance: 'Kitty Balance',
+}
+
+const LANDLORD_WORDING: StatementWording = {
+  counterparty: 'Paid By',
+  moneyIn: 'Disbursed (+)',
+  moneyOut: 'Refunded (−)',
+  balance: 'Total Disbursed',
+}
+
 /** In green, payouts in the accent, and money handed back or kept in amber. */
 function categoryTone(entry: StatementEntry): BadgeTone {
   if (entry.category === 'Rent Payout') return 'accent'
@@ -1298,13 +1325,16 @@ function categoryTone(entry: StatementEntry): BadgeTone {
 }
 
 /**
- * One account's passbook: date, particulars, counterparty, money in, money out
- * and the balance after each line, newest first. A row opens the entry in
- * full; the filters, hidden until asked for, narrow what is listed.
+ * One account's passbook, newest first, as a quick peek: one line per entry
+ * with its date, description, who paid or was paid, the signed amount and the
+ * balance after it, worded for the account. A row opens the entry in full --
+ * its category, reference and notes; the filters, hidden until asked for,
+ * narrow what is listed.
  */
 function StatementPanel({
   title,
   hint,
+  wording,
   resource,
   pick,
   residents,
@@ -1312,6 +1342,7 @@ function StatementPanel({
 }: {
   title: string
   hint: string
+  wording: StatementWording
   resource: Resource<PaymentPoolsStatement>
   pick: (data: PaymentPoolsStatement) => PoolStatement
   residents: Resident[]
@@ -1365,7 +1396,7 @@ function StatementPanel({
                       type="search"
                       value={search}
                       onChange={setSearch}
-                      placeholder="Particulars, counterparty, reference…"
+                      placeholder={`Description, ${wording.counterparty.toLowerCase()}, reference…`}
                     />
                     <SelectField
                       label="Resident"
@@ -1381,8 +1412,8 @@ function StatementPanel({
                       label="Direction"
                       value={direction}
                       options={[
-                        { value: 'in', label: 'In / Credit (+)' },
-                        { value: 'out', label: 'Out / Debit (−)' },
+                        { value: 'in', label: wording.moneyIn },
+                        { value: 'out', label: wording.moneyOut },
                       ]}
                       onChange={setDirection}
                       placeholder="In and out"
@@ -1406,21 +1437,18 @@ function StatementPanel({
                 <EmptyState title="No entries match" body="Clear a filter to see more of the statement." />
               ) : (
                 <div className="table-scroll">
-                  <table className="data">
+                  <table className="data statement-table">
                     <caption className="sr-only">{title}</caption>
                     <thead>
                       <tr>
                         <th scope="col">Date</th>
-                        <th scope="col">Particulars</th>
-                        <th scope="col">Counterparty</th>
+                        <th scope="col">Description</th>
+                        <th scope="col">{wording.counterparty}</th>
                         <th scope="col" className="num">
-                          In / Credit (+)
+                          Amount
                         </th>
                         <th scope="col" className="num">
-                          Out / Debit (−)
-                        </th>
-                        <th scope="col" className="num">
-                          Balance
+                          {wording.balance}
                         </th>
                       </tr>
                     </thead>
@@ -1439,33 +1467,25 @@ function StatementPanel({
                               {formatDate(item.date)}
                             </button>
                           </td>
-                          <td>
-                            {/* The category over the description keeps the column narrow. */}
-                            <span className="flex flex-col items-start gap-1 min-w-0">
-                              <Badge tone={categoryTone(item)}>{item.category}</Badge>
-                              <span className="block truncate max-w-[15rem]" title={item.description}>
-                                {item.description}
-                              </span>
+                          {/* One line. The description takes the width the other columns
+                              leave, and is cut short only when even that is not enough;
+                              the entry's dialog has it in full, with its category. */}
+                          <td className="w-full max-w-0">
+                            <span className="block truncate font-medium text-[var(--text-primary)]" title={item.description}>
+                              {item.description || item.category}
                             </span>
                           </td>
                           <td className="nowrap">
-                            <span className="block truncate max-w-[9rem]" title={item.counterparty_name ?? undefined}>
+                            <span className="block truncate max-w-[12rem]" title={item.counterparty_name ?? undefined}>
                               {item.counterparty_name ?? '—'}
                             </span>
                           </td>
                           <td className="num">
-                            {item.direction === 'in' ? (
-                              <Money paise={item.amount_paise} tone="auto" sign="always" />
-                            ) : (
-                              <span className="subtle">—</span>
-                            )}
-                          </td>
-                          <td className="num">
-                            {item.direction === 'out' ? (
-                              <Money paise={-item.amount_paise} tone="auto" sign="always" />
-                            ) : (
-                              <span className="subtle">—</span>
-                            )}
+                            <Money
+                              paise={item.direction === 'in' ? item.amount_paise : -item.amount_paise}
+                              tone="auto"
+                              sign="always"
+                            />
                           </td>
                           <td className="num font-bold">
                             <Money paise={item.balance_paise} />
@@ -1476,11 +1496,13 @@ function StatementPanel({
                     <tfoot>
                       <tr>
                         <td colSpan={3}>Totals and closing balance</td>
+                        {/* The net of everything in and out. */}
                         <td className="num">
-                          <Money paise={statement.total_in_paise} tone="auto" sign="always" />
-                        </td>
-                        <td className="num">
-                          <Money paise={-statement.total_out_paise} tone="auto" sign="always" />
+                          <Money
+                            paise={statement.total_in_paise - statement.total_out_paise}
+                            tone="auto"
+                            sign="always"
+                          />
                         </td>
                         <td className="num font-bold">
                           <Money paise={statement.closing_balance_paise} />
@@ -1501,11 +1523,13 @@ function StatementPanel({
 /** One passbook line in full, read-only, with the way to the payment behind it. */
 function StatementEntryDialog({
   entry,
+  wording,
   accountName,
   onClose,
   onViewPayment,
 }: {
   entry: StatementEntry
+  wording: StatementWording
   accountName: string
   onClose: () => void
   onViewPayment: (paymentId: string) => void
@@ -1545,16 +1569,16 @@ function StatementEntryDialog({
           <DetailFact label="Account">{accountName}</DetailFact>
           <DetailFact label="Category">{entry.category}</DetailFact>
           <DetailFact label="Direction">
-            {entry.direction === 'in' ? 'In / Credit (+)' : 'Out / Debit (−)'}
+            {entry.direction === 'in' ? wording.moneyIn : wording.moneyOut}
           </DetailFact>
           <DetailFact label="Description" className="sm:col-span-2">
             {entry.description}
           </DetailFact>
-          <DetailFact label="Counterparty">{entry.counterparty_name ?? '—'}</DetailFact>
+          <DetailFact label={wording.counterparty}>{entry.counterparty_name ?? '—'}</DetailFact>
           <DetailFact label="Amount">
             <span className="tabular">{formatInr(entry.amount_paise)}</span>
           </DetailFact>
-          <DetailFact label="Running Balance">
+          <DetailFact label={wording.balance}>
             <span className="tabular">{formatInr(entry.balance_paise)}</span>
           </DetailFact>
           <DetailFact label="Payment Mode">

@@ -280,16 +280,14 @@ figure depends on colour alone.
 
 **Mandatory Rule — Table Header Alignment (All Columns):**
 Whenever a table is made or a new page is introduced, this rule must be strictly followed:
-- **All table column headers (`<th>`) must be center-aligned (`text-align: center;`) across every single column.**
-- This applies universally across the board: entity/resident names, descriptions, categories, dates, monetary amounts (`.num`), statuses, and action columns.
+- **Table column headers (`<th>`) are center-aligned (`text-align: center;`), except numeric columns (`.num`), whose headers are right-aligned so they sit over their right-aligned figures.**
+- Centered: entity/resident names, descriptions, categories, dates, statuses, and action columns. Right-aligned: monetary amounts, balances and other figures marked `.num`.
 - Enforced at the base design system level in `frontend/src/index.css`:
   ```css
-  table.data thead th,
-  table.data thead th.num {
-    text-align: center;
-  }
+  table.data thead th { text-align: center; }
+  table.data thead th.num { text-align: right; }
   ```
-- Individual pages and components must **not** override column headers to `text-left` or `text-right` via inline styles or utility classes.
+- Individual pages and components must **not** override column headers to `text-left` or `text-right` via inline styles or utility classes; mark a numeric column's header `.num` instead.
 - **Table Data Cells (`<td>`)**: Row content retains its natural semantic alignment — text/names/descriptions remain left-aligned, monetary and numerical figures remain right-aligned with monospace tabular figures (`.num`), and status chips/actions remain centered.
 
 **Mandatory Rule — Comprehensive Form Field Validation:**
@@ -406,8 +404,8 @@ The frontend enforces strict UX, state-separation, and visual presentation invar
   1. **Modal / Dialog Mode (Preferred for cards and lists):** Clicking "Edit" opens a focused dialog containing the form inputs, keeping the background read-only view undisturbed until save/cancel.
   2. **In-Place Toggle Mode:** Clicking "Edit" replaces the display view with the form inputs, along with explicit `Save Changes` and `Cancel` buttons. Canceling or saving restores the Read-Only display view.
 
-### Rule U3: Universal Table Header Center-Alignment
-* **Invariant:** In every data table across all screens, all column headers (`<th>`) must be center-aligned (`text-center`).
+### Rule U3: Universal Table Header Alignment
+* **Invariant:** In every data table across all screens, column headers (`<th>`) are center-aligned (`text-center`), except numeric columns (`th.num`), whose headers are right-aligned over their figures.
 
 ### Rule U4: Mandatory Client-Side Validation
 * **Invariant:** Every form input must validate non-empty text, phone/email/PAN/IFSC syntax, non-negative amounts, and date bounds before submission.

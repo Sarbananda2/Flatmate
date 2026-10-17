@@ -704,26 +704,70 @@ describe('Payment Pools page', () => {
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
 
     const table = await screen.findByRole('table', { name: 'House Kitty Statement' })
+    // A quick peek, worded for the kitty: five columns, one signed amount.
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Date',
-      'Particulars',
-      'Counterparty',
-      'In / Credit (+)',
-      'Out / Debit (−)',
-      'Balance',
+      'Description',
+      'Paid By / To',
+      'Amount',
+      'Kitty Balance',
     ])
+    // One line a row: the description alone, its category left to the entry's dialog.
     expect(bodyRows(table)).toEqual([
       // A household expense the kitty paid itself.
-      ['5 Nov 2026', 'House ExpenseBroadband', 'ACT Fibernet', '—', '−₹1,200.00', '−₹19,200.00'],
-      ['4 Nov 2026', 'Rent PayoutRent payout · November 2026', 'Kumar Yadav', '—', '−₹28,500.00', '−₹18,000.00'],
-      ['3 Nov 2026', 'Rent CollectionRent for November 2026', 'Alice', '+₹9,500.00', '—', '₹10,500.00'],
-      ['1 Nov 2026', 'Kitty PaymentPayment into House Kitty', 'Bob', '+₹1,000.00', '—', '₹1,000.00'],
+      ['5 Nov 2026', 'Broadband', 'ACT Fibernet', '−₹1,200.00', '−₹19,200.00'],
+      ['4 Nov 2026', 'Rent payout · November 2026', 'Kumar Yadav', '−₹28,500.00', '−₹18,000.00'],
+      ['3 Nov 2026', 'Rent for November 2026', 'Alice', '+₹9,500.00', '₹10,500.00'],
+      ['1 Nov 2026', 'Payment into House Kitty', 'Bob', '+₹1,000.00', '₹1,000.00'],
     ])
-    expect(within(table).getByText('Totals and closing balance').closest('tr')).toHaveTextContent(
-      '+₹10,500.00−₹29,700.00−₹19,200.00',
-    )
+    expect(within(table).queryByText('Rent Collection')).toBeNull()
+    // The net of everything in and out, then the closing balance.
+    const totals = within(table).getByText('Totals and closing balance').closest('tr')!
+    expect(within(totals).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
+      'Totals and closing balance',
+      '−₹19,200.00',
+      '−₹19,200.00',
+    ])
     // The banner explaining the four kinds of record is no longer on the page.
     expect(screen.queryByText('These are four different things')).toBeNull()
+
+    // The filters speak the same words as the columns.
+    await userEvent.click(screen.getByRole('button', { name: 'Filters' }))
+    expect(screen.getByLabelText('Search')).toHaveAttribute('placeholder', 'Description, paid by / to, reference…')
+    expect(within(screen.getByLabelText('Direction')).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'In and out',
+      'Money In (+)',
+      'Money Out (−)',
+    ])
+  })
+
+  it("words the landlord's statement for the landlord, a line to an entry", async () => {
+    showPage()
+    await userEvent.click(await screen.findByRole('tab', { name: 'Landlord Statement' }))
+    const table = await screen.findByRole('table', { name: 'Landlord Statement' })
+    expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Date',
+      'Description',
+      'Paid By',
+      'Amount',
+      'Total Disbursed',
+    ])
+    // The description takes the width the other columns leave, so it is cut
+    // short only when even that is not enough.
+    expect(within(table).getByText('Security deposit · Room 1').closest('td')).toHaveClass('w-full', 'max-w-0')
+    const totals = within(table).getByText('Totals and closing balance').closest('tr')!
+    expect(within(totals).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
+      'Totals and closing balance',
+      '+₹78,500.00',
+      '₹78,500.00',
+    ])
+    await userEvent.click(screen.getByRole('button', { name: 'Filters' }))
+    expect(screen.getByLabelText('Search')).toHaveAttribute('placeholder', 'Description, paid by, reference…')
+    expect(within(screen.getByLabelText('Direction')).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'In and out',
+      'Disbursed (+)',
+      'Refunded (−)',
+    ])
   })
 
   it("shows each account's live balance at the foot of its card", async () => {
@@ -753,11 +797,11 @@ describe('Payment Pools page', () => {
       'Date: 3 Nov 2026',
       'Account: House Kitty',
       'Category: Rent Collection',
-      'Direction: In / Credit (+)',
+      'Direction: Money In (+)',
       'Description: Rent for November 2026',
-      'Counterparty: Alice',
+      'Paid By / To: Alice',
       'Amount: ₹9,500.00',
-      'Running Balance: ₹10,500.00',
+      'Kitty Balance: ₹10,500.00',
       'Payment Mode: UPI',
       'Reference / UTR: UPI-77',
     ])
@@ -791,10 +835,7 @@ describe('Payment Pools page', () => {
     await userEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     await userEvent.selectOptions(screen.getByLabelText('Direction'), 'out')
-    expect(bodyRows(table).map((row) => row[1])).toEqual([
-      'House ExpenseBroadband',
-      'Rent PayoutRent payout · November 2026',
-    ])
+    expect(bodyRows(table).map((row) => row[1])).toEqual(['Broadband', 'Rent payout · November 2026'])
     expect(screen.getByRole('button', { name: 'Filters (1)' })).toBeInTheDocument()
   })
 
@@ -803,8 +844,8 @@ describe('Payment Pools page', () => {
     await userEvent.click(await screen.findByRole('tab', { name: 'Landlord Statement' }))
     const table = await screen.findByRole('table', { name: 'Landlord Statement' })
     expect(bodyRows(table)).toEqual([
-      ['4 Nov 2026', 'Rent PayoutMonthly rent · November 2026', 'House Kitty', '+₹28,500.00', '—', '₹78,500.00'],
-      ['5 Oct 2026', 'Security DepositSecurity deposit · Room 1', 'Alice', '+₹50,000.00', '—', '₹50,000.00'],
+      ['4 Nov 2026', 'Monthly rent · November 2026', 'House Kitty', '+₹28,500.00', '₹78,500.00'],
+      ['5 Oct 2026', 'Security deposit · Room 1', 'Alice', '+₹50,000.00', '₹50,000.00'],
     ])
   })
 
