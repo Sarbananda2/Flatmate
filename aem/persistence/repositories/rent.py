@@ -10,7 +10,7 @@ from .base import Repository
 _LEASE_COLUMNS = frozenset({
     "landlord_name", "landlord_phone", "landlord_email", "landlord_pan",
     "landlord_bank_account", "landlord_bank_ifsc", "landlord_upi_id",
-    "monthly_rent_paise", "due_day_of_month", "requires_landlord_receipt",
+    "payout_beneficiary_name", "monthly_rent_paise", "due_day_of_month", "requires_landlord_receipt",
     "expense_definition_id", "lease_start_date", "lease_end_date", "duration_months",
     "notice_period_days", "lock_in_months", "security_deposit_paise", "escalation_type",
     "escalation_percent", "renewal_rent_paise", "lease_status", "notice_served_date",

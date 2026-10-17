@@ -132,6 +132,15 @@ describe('ContactsSection', () => {
     )
   })
 
+  it("names whose account the owner is paid into, when it is not their own", async () => {
+    open([{ ...OWNER, beneficiary_name: 'Anita Yadav' }])
+    const card = await screen.findByRole('listitem', { name: 'Kumar Yadav' })
+    expect(card).toHaveTextContent('Rent & deposits remitted to: Anita Yadav · Managed under Payment Pools.')
+    expect(within(card).getByText('Anita Yadav').tagName).toBe('STRONG')
+    expect(within(card).getByRole('link', { name: 'Payment Pools' })).toHaveAttribute('href', '/payments')
+    expect(card).not.toHaveTextContent('Bank & payout details')
+  })
+
   it('says what to add when a group is empty', async () => {
     open([])
     expect(await screen.findByText(/Add the owner, with their PAN/)).toBeInTheDocument()
@@ -175,10 +184,18 @@ describe('ContactsSection', () => {
     expect(within(dialog).getByRole('button', { name: 'Back' })).toBeInTheDocument()
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
-    expect(within(dialog).getByLabelText(/Bank account number/)).toBeInTheDocument()
-    expect(within(dialog).getByLabelText(/IFSC/)).toBeInTheDocument()
-    expect(within(dialog).getByLabelText(/UPI ID/)).toBeInTheDocument()
-    expect(within(dialog).getByLabelText(/Notes/)).toBeInTheDocument()
+    // Whose account it is comes first, right above the bank account.
+    expect(
+      within(dialog)
+        .getAllByRole('textbox')
+        .map((box) => box.closest('.field')?.querySelector('label')?.textContent),
+    ).toEqual(['Payout Beneficiary', 'Bank account number', 'IFSC', 'UPI ID', 'Notes'])
+    const beneficiary = within(dialog).getByLabelText(/Payout Beneficiary/)
+    expect(beneficiary).toHaveAttribute('placeholder', 'Leave blank if payments go to the owner')
+    expect(beneficiary).toHaveAccessibleDescription(
+      'Whose bank account or UPI ID receives payments if different from the owner.',
+    )
+    await userEvent.type(beneficiary, ' Anita Yadav ')
     // Moving between steps saved nothing.
     expect(sent('POST', '/api/property/contacts')).toBeUndefined()
 
@@ -191,6 +208,7 @@ describe('ContactsSection', () => {
       email: 'kumar@example.com',
       notes: null,
       pan: 'ABCDE1234F',
+      beneficiary_name: 'Anita Yadav',
       bank_account_no: null,
       bank_ifsc: null,
       upi_id: null,
@@ -236,6 +254,7 @@ describe('ContactsSection', () => {
     await userEvent.selectOptions(within(dialog).getByLabelText(/Fee status/), 'paid')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
     expect(within(dialog).queryByLabelText(/Bank account number/)).toBeNull()
+    expect(within(dialog).queryByLabelText(/Payout Beneficiary/)).toBeNull()
     await userEvent.type(within(dialog).getByLabelText(/UPI ID/), 'ravi@okaxis')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Add Contact' }))
     await waitFor(() => expect(sent('POST', '/api/property/contacts')).toBeDefined())
@@ -245,6 +264,7 @@ describe('ContactsSection', () => {
     expect(body.agency_name).toBe('NestAway Realty')
     expect(body.upi_id).toBe('ravi@okaxis')
     expect(body.pan).toBeNull()
+    expect(body.beneficiary_name).toBeNull()
   })
 
   it('gives other roles two steps, and follows a change of role', async () => {

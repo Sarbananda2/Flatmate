@@ -420,6 +420,8 @@ export interface PoolStatement {
 }
 
 export interface LandlordStatement extends PoolStatement {
+  /** `name` is whose name the account is in; `owner_name` is always the landlord's. */
+  account: { instance_id: string; name: string; owner_name?: string }
   total_rent_paid_paise: number
   /** Deposits paid to the landlord, less what they refunded or kept. */
   deposit_held_paise: number
@@ -883,6 +885,11 @@ export interface RentLeaseConfig {
   landlord_bank_account: string | null
   landlord_bank_ifsc: string | null
   landlord_upi_id: string | null
+  /** Whose name the payout account is in, when it is not the landlord's own. The
+   * landlord stays the owner on the lease; null means the account is theirs. */
+  payout_beneficiary_name?: string | null
+  /** Who rent and deposits are paid to: the beneficiary, else the landlord. */
+  effective_payout_name?: string
   monthly_rent_paise: number
   due_day_of_month: number
   requires_landlord_receipt: boolean
@@ -1411,6 +1418,8 @@ export interface HouseholdContact {
   bank_account_no: string | null
   bank_ifsc: string | null
   upi_id: string | null
+  /** Owner only: whose name their payout account is in, when it is not their own. */
+  beneficiary_name?: string | null
   agency_name: string | null
   fee_amount_paise: number | null
   fee_status: 'paid' | 'pending' | 'na' | null

@@ -4,7 +4,8 @@
  *
  * Each account is shown read-only and edited in a dialog named like its card:
  * the pool's checked as the backend checks it, the landlord's through the
- * owner contact. Recording a payment into the pool, or an advance paid to the
+ * owner contact. The landlord's account may be in someone else's name, which
+ * is saved beside the owner's and never in its place. Recording a payment into the pool, or an advance paid to the
  * landlord, shows where to send the money. The page is in the main navigation.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -219,6 +220,17 @@ describe('PaymentDialog', () => {
     expect(within(dialog).queryByRole('region', { name: 'Payment destination' })).toBeNull()
   })
 
+  it("sends an advance to the account's holder while the landlord stays the provider", async () => {
+    const dialog = showDialog('provider_advance', {
+      config: { ...LEASE.config, payout_beneficiary_name: 'Anita Yadav' },
+    })
+    await userEvent.selectOptions(await within(dialog).findByLabelText('Provider'), 'landlord')
+    expect(within(dialog).getByLabelText(/^Provider paid/)).toHaveValue('Kumar Yadav')
+    expect(within(dialog).getByRole('region', { name: 'Payment destination' })).toHaveTextContent(
+      'Transfer toAnita Yadav',
+    )
+  })
+
   it('offers no landlord before there is a lease', async () => {
     const dialog = showDialog('provider_advance', { config: null })
     await waitFor(() => expect(stub!.calls.some((call) => call.path === '/api/rent/config')).toBe(true))
@@ -279,7 +291,7 @@ describe('LandlordAccountCard', () => {
     const facts = screen.getByLabelText('Landlord account')
     await waitFor(() => expect(facts).toHaveTextContent('Kumar Yadav'))
     expect(factsIn(facts).slice(0, 3)).toEqual([
-      'Account Name: Kumar Yadav',
+      'Payout Beneficiary: Kumar Yadav',
       'Bank Account: 50100123456789',
       'IFSC: HDFC0001234',
     ])
@@ -296,7 +308,7 @@ describe('LandlordAccountCard', () => {
     const facts = screen.getByLabelText('Landlord account')
     await waitFor(() => expect(facts).toHaveTextContent('50100123456789'))
     expect(factsIn(facts)).toEqual([
-      'Account Name: Kumar Yadav',
+      'Payout Beneficiary: Kumar Yadav',
       'Bank Account: 50100123456789',
       'IFSC: HDFC0001234',
       'UPI ID: Not recorded',
@@ -309,7 +321,7 @@ describe('LandlordAccountCard', () => {
     const facts = screen.getByLabelText('Landlord account')
     await waitFor(() =>
       expect(factsIn(facts)).toEqual([
-        'Account Name: Not recorded',
+        'Payout Beneficiary: Not recorded',
         'Bank Account: Not recorded',
         'IFSC: Not recorded',
         'UPI ID: Not recorded',
@@ -330,26 +342,29 @@ describe('LandlordAccountCard', () => {
     const field = (label: string) => within(dialog).getByLabelText(new RegExp(`^${label}`))
     // The same four fields, in the same order, as the House Kitty's dialog.
     expect(within(dialog).getAllByRole('textbox').map((box) => box.closest('.field')?.querySelector('label')?.textContent)).toEqual([
-      'Account Name* (required)',
+      'Payout Beneficiary* (required)',
       'Bank Account',
       'IFSC',
       'UPI ID',
     ])
-    expect(field('Account Name')).toHaveValue('Kumar Yadav')
+    expect(field('Payout Beneficiary')).toHaveValue('Kumar Yadav')
+    expect(field('Payout Beneficiary')).toHaveAccessibleDescription(
+      'Whose bank account or UPI ID receives payments. Defaults to the landlord.',
+    )
     expect(field('Bank Account')).toHaveValue('50100123456789')
     expect(field('IFSC')).toHaveValue('HDFC0001234')
     expect(field('UPI ID')).toHaveValue('kumar.yadav@okhdfcbank')
 
     // The same checks, before anything is sent.
-    await userEvent.clear(field('Account Name'))
+    await userEvent.clear(field('Payout Beneficiary'))
     await userEvent.clear(field('UPI ID'))
     await userEvent.type(field('UPI ID'), 'kumar')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
-    expect(within(dialog).getByText('Enter the account name.')).toBeInTheDocument()
+    expect(within(dialog).getByText('Enter the payout beneficiary.')).toBeInTheDocument()
     expect(within(dialog).getByText('A UPI ID looks like name@bank.')).toBeInTheDocument()
     expect(stub!.calls.some((call) => call.method === 'POST')).toBe(false)
 
-    await userEvent.type(field('Account Name'), ' Kumar Yadav ')
+    await userEvent.type(field('Payout Beneficiary'), ' kumar yadav ')
     await userEvent.clear(field('UPI ID'))
     await userEvent.clear(field('IFSC'))
     await userEvent.type(field('IFSC'), 'icic0004321')
@@ -358,8 +373,9 @@ describe('LandlordAccountCard', () => {
     await waitFor(() =>
       expect(stub!.calls.find((call) => call.method === 'POST' && call.path === '/api/rent/config')).toBeDefined(),
     )
+    // The landlord's own name: the account is theirs, and the landlord is not renamed.
     expect(stub!.calls.find((call) => call.method === 'POST')!.body).toEqual({
-      landlord_name: 'Kumar Yadav',
+      payout_beneficiary_name: null,
       landlord_bank_account: '50100123456789',
       landlord_bank_ifsc: 'ICIC0004321',
       landlord_upi_id: null,
@@ -369,6 +385,52 @@ describe('LandlordAccountCard', () => {
     // The lease and the owner contact it is copied to are both read again.
     await waitFor(() => expect(gets('/api/rent/config')).toBe(before.lease + 1))
     expect(gets('/api/property/contacts')).toBe(before.contacts + 1)
+  })
+
+  it('saves a different name as the payout beneficiary, never as the landlord', async () => {
+    showLandlord()
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))
+    const dialog = screen.getByRole('dialog', { name: 'Landlord Account' })
+    const name = within(dialog).getByLabelText(/^Payout Beneficiary/)
+    await userEvent.clear(name)
+    await userEvent.type(name, ' Anita Yadav ')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() => expect(stub!.calls.some((call) => call.method === 'POST')).toBe(true))
+    expect(stub!.calls.find((call) => call.method === 'POST')!.body).toEqual({
+      payout_beneficiary_name: 'Anita Yadav',
+      landlord_bank_account: '50100123456789',
+      landlord_bank_ifsc: 'HDFC0001234',
+      landlord_upi_id: 'kumar.yadav@okhdfcbank',
+    })
+  })
+
+  it("shows only the payout beneficiary when the account is in someone else's name", async () => {
+    showLandlord({ config: { ...LEASE.config, payout_beneficiary_name: 'Anita Yadav' } }, [
+      { ...OWNER, beneficiary_name: 'Anita Yadav' },
+    ])
+    const facts = screen.getByLabelText('Landlord account')
+    await waitFor(() => expect(facts).toHaveTextContent('Anita Yadav'))
+    expect(factsIn(facts).slice(0, 3)).toEqual([
+      'Payout Beneficiary: Anita Yadav',
+      'Bank Account: 50100123456789',
+      'IFSC: HDFC0001234',
+    ])
+    expect(factsIn(facts)).toHaveLength(4)
+    // No landlord's name beside it.
+    expect(facts).not.toHaveTextContent('Kumar Yadav')
+
+    // The dialog edits the beneficiary; the landlord's own name clears it.
+    await userEvent.click(screen.getByRole('button', { name: 'Edit landlord' }))
+    const dialog = screen.getByRole('dialog', { name: 'Landlord Account' })
+    const name = within(dialog).getByLabelText(/^Payout Beneficiary/)
+    expect(name).toHaveValue('Anita Yadav')
+    await userEvent.clear(name)
+    await userEvent.type(name, 'Kumar Yadav')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() => expect(stub!.calls.some((call) => call.method === 'POST')).toBe(true))
+    const body = stub!.calls.find((call) => call.method === 'POST')!.body
+    expect(body).toMatchObject({ payout_beneficiary_name: null })
+    expect(body).not.toHaveProperty('landlord_name')
   })
 })
 

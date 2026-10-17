@@ -205,10 +205,11 @@ def _summary(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
         "primary_signatory_id": signatory_id,
         "primary_signatory_name": name(signatory_id),
         "primary_signatory_upi_id": (residents.get(signatory_id) or {}).get("upi_id"),
-        # The two standing counterparties, with where to send them money.
+        # The two standing counterparties, with where to send them money. The
+        # landlord's account is in their name unless the lease names someone else.
         "landlord_instance": {
             "instance_id": LANDLORD_INSTANCE_ID, "party": "landlord",
-            "name": landlord_name or "Landlord",
+            "name": (lease or {}).get("payout_beneficiary_name") or landlord_name or "Landlord",
             "bank_account": (lease or {}).get("landlord_bank_account"),
             "bank_ifsc": (lease or {}).get("landlord_bank_ifsc"),
             "upi_id": (lease or {}).get("landlord_upi_id"),

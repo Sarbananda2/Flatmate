@@ -359,7 +359,7 @@ def test_owner_contact_syncs_to_lease(configured):
     assert _lease_landlord(configured) == {
         "name": "Kumar S. Yadav", "phone": "9123456780", "email": "kumar@example.com",
         "pan": None, "bank_account_no": "123456789012", "bank_ifsc": "HDFC0001234",
-        "upi_id": "kumar@okhdfc"}
+        "upi_id": "kumar@okhdfc", "beneficiary_name": None}
     assert updated["bank_ifsc"] == "HDFC0001234"
     synced = _rows(configured, "SELECT field_name, reason FROM audit_log "
                                "WHERE entity_type='rent_lease_config' AND reason IS NOT NULL")

@@ -929,6 +929,14 @@ export function HouseholdPoolCard({
   )
 }
 
+/** The name an account goes by, as its dialog asks for it. */
+interface NameField {
+  label: string
+  /** What to say when it is left empty. */
+  missing: string
+  hint?: string
+}
+
 /** An account's name and where to pay it, as the edit dialog holds them. */
 interface AccountDetails {
   name: string
@@ -938,14 +946,15 @@ interface AccountDetails {
 }
 
 /**
- * The one dialog both payment accounts are edited in: the account's name,
- * then its bank account, IFSC and UPI ID, checked as the backend checks them.
- * Empty details are sent as null, which clears them.
+ * The one dialog both payment accounts are edited in: the name the account
+ * goes by, then its bank account, IFSC and UPI ID, checked as the backend
+ * checks them. Empty details are sent as null, which clears them.
  */
 function PaymentAccountModal({
   title,
   description,
   formId,
+  nameField,
   initial,
   save: send,
   onClose,
@@ -954,6 +963,7 @@ function PaymentAccountModal({
   title: string
   description: string
   formId: string
+  nameField: NameField
   initial: AccountDetails
   save: (details: { name: string; account: string | null; ifsc: string | null; upi: string | null }) => Promise<unknown>
   onClose: () => void
@@ -966,7 +976,7 @@ function PaymentAccountModal({
   const [submitted, setSubmitted] = useState(false)
   const errors = {
     name: !name.trim()
-      ? 'Enter the account name.'
+      ? nameField.missing
       : name.trim().length > 200
         ? 'Keep it to 200 characters.'
         : null,
@@ -1015,11 +1025,12 @@ function PaymentAccountModal({
       >
         {save.error && <ErrorNotice error={save.error} />}
         <TextField
-          label="Account Name"
+          label={nameField.label}
           value={name}
           onChange={setName}
           required
           maxLength={210}
+          hint={nameField.hint}
           error={submitted ? errors.name : null}
         />
         <TextField
@@ -1066,18 +1077,19 @@ function HouseholdPoolModal({
       title={POOL_TITLE}
       description="Where residents send the House Kitty its money. Bank details and the UPI ID are optional."
       formId="house-kitty-form"
+      nameField={{ label: 'Account Name', missing: 'Enter the account name.' }}
       initial={{
         name: apartment.pool_name || 'House Kitty',
         account: apartment.pool_bank_account ?? '',
         ifsc: apartment.pool_bank_ifsc ?? '',
         upi: apartment.pool_upi_id ?? '',
       }}
-      save={(details) =>
+      save={({ name, account, ifsc, upi }) =>
         api.patch<Apartment>(`/api/apartments/${encodeURIComponent(apartment.apartment_id)}`, {
-          pool_name: details.name,
-          pool_bank_account: details.account,
-          pool_bank_ifsc: details.ifsc,
-          pool_upi_id: details.upi,
+          pool_name: name,
+          pool_bank_account: account,
+          pool_bank_ifsc: ifsc,
+          pool_upi_id: upi,
         })
       }
       onClose={onClose}
@@ -1090,12 +1102,26 @@ function HouseholdPoolModal({
 
 const LANDLORD_TITLE = 'Landlord Account'
 
+/** Whether the payout account is in someone else's name than the owner's. */
+function heldForOwner(beneficiary: string | null | undefined, ownerName: string | null | undefined) {
+  return !!beneficiary?.trim() && beneficiary.trim().toLowerCase() !== (ownerName ?? '').trim().toLowerCase()
+}
+
+/** The owner's name and whose name their account is in: the lease's, or the
+ * owner contact's while there is no lease. */
+function landlordNames(config: RentLeaseConfig | null, owner: HouseholdContact | null) {
+  const ownerName = config ? config.landlord_name : owner?.name
+  const beneficiary = config ? config.payout_beneficiary_name : owner?.beneficiary_name
+  return { ownerName, accountName: beneficiary || ownerName }
+}
+
 /**
  * The landlord's account, read-only, with its own Edit. The lease and the
  * owner contact hold the same details, kept in step by the backend; the
- * lease's are shown first, the contact's where the lease has none. It is
- * edited in the same dialog as the House Kitty's, saved to the lease, which
- * there has to be first.
+ * lease's are shown first, the contact's where the lease has none. The
+ * account goes by its payout beneficiary: whoever's name it is in, the
+ * landlord unless the lease names someone else. It is edited in the same
+ * dialog as the House Kitty's, saved to the lease, which there has to be first.
  */
 export function LandlordAccountCard({
   statement,
@@ -1112,7 +1138,7 @@ export function LandlordAccountCard({
   const config = lease.data?.config ?? null
   const owner = contacts.data?.items.find((contact) => contact.role === 'owner') ?? null
   const notRecorded = <span className="text-[var(--text-tertiary)]">Not recorded</span>
-  const name = config?.landlord_name || owner?.name
+  const { accountName } = landlordNames(config, owner)
   const account = config?.landlord_bank_account || owner?.bank_account_no
   const ifsc = config?.landlord_bank_ifsc || owner?.bank_ifsc
   const upi = config?.landlord_upi_id || owner?.upi_id
@@ -1124,7 +1150,7 @@ export function LandlordAccountCard({
       className="flex flex-col h-full"
     >
       <dl aria-label="Landlord account" className="m-0 flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-        <DetailFact label="Account Name">{name || notRecorded}</DetailFact>
+        <DetailFact label="Payout Beneficiary">{accountName || notRecorded}</DetailFact>
         <DetailFact label="Bank Account">
           {account ? <span className="tabular">{account}</span> : notRecorded}
         </DetailFact>
@@ -1180,8 +1206,12 @@ export function LandlordAccountCard({
   )
 }
 
-/** The landlord's account in the shared dialog, saved to the lease, which the
- * backend copies to the owner contact. */
+/**
+ * The landlord's account in the shared dialog, saved to the lease, which the
+ * backend copies to the owner contact. The landlord stays the owner on the
+ * lease: a payout beneficiary other than them is saved as whose account it
+ * is, and their own name clears that.
+ */
 function LandlordAccountModal({
   config,
   owner,
@@ -1193,25 +1223,32 @@ function LandlordAccountModal({
   onClose: () => void
   onSaved: () => void
 }) {
+  const { ownerName, accountName } = landlordNames(config, owner)
   return (
     <PaymentAccountModal
       title={LANDLORD_TITLE}
       description="Where rent and direct security deposits are paid. Saved to the lease and the owner contact together. Bank details and the UPI ID are optional."
       formId="landlord-account-form"
+      nameField={{
+        label: 'Payout Beneficiary',
+        missing: 'Enter the payout beneficiary.',
+        hint: 'Whose bank account or UPI ID receives payments. Defaults to the landlord.',
+      }}
       initial={{
-        name: config?.landlord_name || owner?.name || '',
+        name: accountName || '',
         account: config?.landlord_bank_account || owner?.bank_account_no || '',
         ifsc: config?.landlord_bank_ifsc || owner?.bank_ifsc || '',
         upi: config?.landlord_upi_id || owner?.upi_id || '',
       }}
-      save={(details) =>
-        api.post('/api/rent/config', {
-          landlord_name: details.name,
-          landlord_bank_account: details.account,
-          landlord_bank_ifsc: details.ifsc,
-          landlord_upi_id: details.upi,
+      save={({ name, account, ifsc, upi }) => {
+        const bank = { landlord_bank_account: account, landlord_bank_ifsc: ifsc, landlord_upi_id: upi }
+        // With no landlord on file yet, the name is the landlord's.
+        if (!ownerName) return api.post('/api/rent/config', { landlord_name: name, ...bank })
+        return api.post('/api/rent/config', {
+          payout_beneficiary_name: heldForOwner(name, ownerName) ? name : null,
+          ...bank,
         })
-      }
+      }}
       onClose={onClose}
       onSaved={onSaved}
     />
@@ -1754,12 +1791,12 @@ export function PaymentDialog({
         )}
         {kind === 'provider_advance' && landlord && provider === 'landlord' && (
           <TransferDestination
-            name={landlord.landlord_name}
+            name={landlord.payout_beneficiary_name || landlord.landlord_name}
             amountPaise={amountOk && amountPaise > 0 ? amountPaise : null}
             bankAccount={landlord.landlord_bank_account}
             bankIfsc={landlord.landlord_bank_ifsc}
             upiId={landlord.landlord_upi_id}
-            missing="No bank account or UPI ID is on the lease. Add them under Housing, Tenancy & Master Lease, to see them here."
+            missing="No bank account or UPI ID is recorded for the landlord yet. Add them under Landlord Account on this page."
           />
         )}
 

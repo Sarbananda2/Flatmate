@@ -7,7 +7,7 @@ from .base import Repository
 
 CONTACT_COLUMNS = (
     "role", "name", "phone", "email", "pan", "bank_account_no", "bank_ifsc", "upi_id",
-    "agency_name", "fee_amount_paise", "fee_status", "responsibilities", "notes",
+    "beneficiary_name", "agency_name", "fee_amount_paise", "fee_status", "responsibilities", "notes",
 )
 # Everything about a document except its bytes, so a listing stays light.
 _DOCUMENT_METADATA = (

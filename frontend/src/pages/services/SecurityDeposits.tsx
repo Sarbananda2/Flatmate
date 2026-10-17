@@ -1156,7 +1156,13 @@ function FundingModal({ slot, summary, onClose, onDone }: SlotModalProps) {
                     .
                   </>
                 ) : (
-                  'No bank account or UPI ID is on the lease. Add them under Housing, Tenancy & Master Lease, to see them here.'
+                  <>
+                    No bank account or UPI ID is recorded for the landlord.{' '}
+                    <Link to="/payments" className="font-semibold">
+                      Add them on Payment Pools
+                    </Link>
+                    .
+                  </>
                 )
               }
             />

@@ -316,26 +316,106 @@ Add a read-only service function `get_payment_pools_statement(db, apartment_id)`
 ### 4.4 Dashboard Settlement (`frontend/src/pages/Dashboard.tsx`)
 1. In `SettleDialog` (and/or the transfer row), when `transfer.to_account === poolAccountId` and the pool account has a `upi_id`, display the Household Pool's UPI ID with a `CopyButton` so the resident can copy it right from the settlement dialog.
 
-### 4.5 Landlord Single Source of Truth: Communication vs. Banking Projections (`RentConfig.tsx`, `PropertyContacts.tsx`, `Payments.tsx`)
+### 4.5 Landlord Single Source of Truth: Owner Identity vs. Designated Payout Beneficiary (`RentConfig.tsx`, `PropertyContacts.tsx`, `Payments.tsx`)
 1. **Architectural Separation of Concerns:**
    - The Landlord entity in the backend (`OWNER_LEASE_FIELDS` between `rent_lease_config` and `household_contact [role='owner']`) is the **Single Source of Truth** for all landlord data.
-   - It comprises two distinct logical field groups projected into two distinct UI contexts:
-     - **Basic Communication Info:** `Name`, `Phone`, `Email`, `PAN`, `Notes`.
+   - It separates two distinct real-world concerns without conflating them:
+     - **Legal Property Owner (Identity, Contact & Tax):** `landlord_name`, `landlord_phone`, `landlord_email`, `landlord_pan`.
        - Projected in **Housing Hub (`/housing`)** on the `Landlord Profile` card (`RentConfig.tsx`) and the `Property Owner` contact card (`PropertyContacts.tsx`).
-       - Used for tenant communication, calling, messaging, lease record, and HRA tax receipts.
+       - Used for tenant communication, calling, messaging, lease record, and **HRA tax receipts**.
        - **Bank details are excluded here** to eliminate clutter and protect financial credentials where they are not actionable.
-     - **Bank & Settlement Details:** `Account Name`, `Bank Account`, `IFSC`, `UPI ID` + live balance metrics.
-       - Projected in **Payment Pools (`/payments`)** on the `Landlord Account` passbook card (`Payments.tsx`).
+     - **Designated Payout Destination (Bank Account & UPI):** `payout_beneficiary_name` (optional), `landlord_bank_account`, `landlord_bank_ifsc`, `landlord_upi_id`.
+       - When the owner requests payments to be deposited to their spouse, family member, or joint account, `payout_beneficiary_name` holds that account holder's name (e.g. `"Sunita Yadav"`). If `NULL` or empty, it defaults to the owner (`landlord_name`).
+       - Projected in **Payment Pools (`/payments`)** on the `Landlord Account` passbook card (`Payments.tsx`) and payment transfer destination boxes.
        - Used for financial execution, UPI copying, rent disbursement, deposit transfers, and passbook accounting.
        - **Communication details are excluded here** to maintain a clean bank passbook layout.
-2. **Housing Frontend Changes:**
+       - **Contract Invariant:** Editing the payout account name in `/payments` updates `payout_beneficiary_name` and **never** mutates the legal owner's `landlord_name`.
+
+2. **Database Migration (`0016_landlord_payout_beneficiary.sql`):**
+   ```sql
+   -- Migration 0016: Support designated payout beneficiary name
+   ALTER TABLE rent_lease_config
+       ADD COLUMN payout_beneficiary_name TEXT
+           CHECK (payout_beneficiary_name IS NULL OR length(trim(payout_beneficiary_name)) > 0);
+
+   ALTER TABLE household_contact
+       ADD COLUMN beneficiary_name TEXT
+           CHECK (beneficiary_name IS NULL OR length(trim(beneficiary_name)) > 0);
+   ```
+
+3. **Backend Repositories & Services:**
+   - In `aem/persistence/repositories/rent.py`:
+     - Add `payout_beneficiary_name` to `_LEASE_COLUMNS` and `save_lease_config`/`update_lease`.
+   - In `aem/persistence/repositories/property.py`:
+     - Add `beneficiary_name` to `CONTACT_COLUMNS` and insert/update methods.
+   - In `aem/services/property.py`:
+     - Update `OWNER_LEASE_FIELDS` to include `"beneficiary_name": "payout_beneficiary_name"`.
+   - In `aem/services/rent.py`:
+     - Support `payout_beneficiary_name` in `save_lease_config`.
+     - Expose `effective_payout_name: lease.get("payout_beneficiary_name") or lease.get("landlord_name")`.
+   - In `aem/services/deposits.py`:
+     - In `deposit_summary`, `landlord_instance.name` uses `effective_payout_name` (e.g. `lease.get("payout_beneficiary_name") or landlord_name`).
+   - In `aem/services/pool_statements.py`:
+     - In `landlord_statement`, the account name uses `effective_payout_name`:
+       `account_name = lease.get("payout_beneficiary_name") or landlord_name`
+       and `effective_payout_name` is included in the statement's account metadata:
+       `"account": {"instance_id": LANDLORD_INSTANCE_ID, "name": account_name, "owner_name": landlord_name}`.
+
+4. **Frontend Implementation:**
+   - In `frontend/src/api/types.ts`:
+     - Add `payout_beneficiary_name?: string | null` to `RentLeaseConfig`.
+     - Add `beneficiary_name?: string | null` to `HouseholdContact`.
+   - In `frontend/src/pages/Payments.tsx`:
+     - In `LandlordAccountCard`:
+       - Do **NOT** display a `Landlord Name` or `(Owner: ...)` field on this card.
+       - Rename the first fact label from `Account Name` to **`Payout Beneficiary`**:
+         ```tsx
+         <DetailFact label="Payout Beneficiary">{accountName || notRecorded}</DetailFact>
+         ```
+       - Where `accountName = config?.payout_beneficiary_name || config?.landlord_name || owner?.beneficiary_name || owner?.name`.
+       - Render the 4 clean atomic facts: `Payout Beneficiary`, `Bank Account`, `IFSC`, `UPI ID`.
+     - In `LandlordAccountModal`:
+       - Rename the first field label to **`Payout Beneficiary`**:
+         ```tsx
+         <TextField
+           label="Payout Beneficiary"
+           value={name}
+           onChange={setName}
+           required
+           maxLength={210}
+           hint="Whose bank account or UPI ID receives payments. Defaults to the landlord."
+           error={submitted ? errors.name : null}
+         />
+         ```
+       - Initial state: `config?.payout_beneficiary_name || config?.landlord_name || owner?.beneficiary_name || owner?.name || ''`.
+       - When saving:
+         - If `name` differs from the owner's legal name (`ownerName = config?.landlord_name || owner?.name`), send `{ payout_beneficiary_name: details.name, landlord_bank_account: details.account, landlord_bank_ifsc: details.ifsc, landlord_upi_id: details.upi }` to `POST /api/rent/config`.
+         - If `name` matches `ownerName`, send `{ payout_beneficiary_name: null, landlord_bank_account: details.account, landlord_bank_ifsc: details.ifsc, landlord_upi_id: details.upi }`.
+         - (If `ownerName` is not yet set, set `landlord_name: details.name`).
+   - In `frontend/src/pages/services/PropertyContacts.tsx` (`ContactModal`):
+     - In Step 3 (`payout`), when `uses.includes('owner')`:
+       - Add the field labeled **`Payout Beneficiary`** right above `Bank account number`:
+         ```tsx
+         <TextField
+           label="Payout Beneficiary"
+           value={beneficiary}
+           onChange={setBeneficiary}
+           placeholder="Leave blank if payments go to the owner"
+           hint="Whose bank account or UPI ID receives payments if different from the owner."
+         />
+         ```
+       - Include `beneficiary_name: beneficiary.trim() || null` in the save payload `body()`.
    - In `frontend/src/pages/services/RentConfig.tsx` (`LandlordProfileCard`):
      - Remove `Bank Account`, `IFSC`, and `UPI ID` from `<dl aria-label="Landlord profile">`.
      - Render the 4 communication facts: `Name`, `Phone`, `Email`, `PAN` in `grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4`.
      - Under `<dl>`, add the link note:
        ```tsx
        <p className="m-0 text-xs text-[var(--text-secondary)]">
-         Bank & payout details are managed under{' '}
+         {config.payout_beneficiary_name ? (
+           <>Rent & deposits remitted to: <strong className="font-semibold text-[var(--text-primary)]">{config.payout_beneficiary_name}</strong> · Managed under </>
+         ) : (
+           <>Bank & payout details are managed under </>
+         )}
          <Link to="/payments" className="font-semibold text-[var(--accent)]">
            Payment Pools
          </Link>.
@@ -346,17 +426,27 @@ Add a read-only service function `get_payment_pools_statement(db, apartment_id)`
      - Under the details list, add the link note:
        ```tsx
        <p className="m-0 text-[11px] text-[var(--text-secondary)]">
-         Bank & payout details are managed under{' '}
+         {contact.beneficiary_name ? (
+           <>Rent & deposits remitted to: <strong className="font-semibold text-[var(--text-primary)]">{contact.beneficiary_name}</strong> · Managed under </>
+         ) : (
+           <>Bank & payout details are managed under </>
+         )}
          <Link to="/payments" className="font-semibold text-[var(--accent)]">
            Payment Pools
          </Link>.
        </p>
        ```
-3. **Test Suite Updates:**
+   - In `frontend/src/pages/services/Rent.tsx`:
+     - In `PayoutModal` / transfer boxes, display `effective_payout_name` (e.g. `config.payout_beneficiary_name || config.landlord_name`) so residents transfer funds to the actual account holder.
+
+5. **Test Suite Updates:**
+   - In `tests/test_payment_instances.py`:
+     - Test that saving a designated beneficiary name updates `payout_beneficiary_name` without modifying `landlord_name`.
+     - Test that the landlord passbook statement reports the designated account name.
    - In `frontend/src/pages/services/RentConfig.test.tsx`:
-     - In `shows the landlord in full on a card of its own`, assert `card` has `Rajesh Kumar Sharma`, `+91 98765 43210`, `ABCPS1234K`, and that bank account (`50100012348912`), IFSC (`HDFC0000128`), and UPI ID (`rajeshsharma@okaxis`) are **not** present on the card.
+     - Assert `card` has `Rajesh Kumar Sharma`, `+91 98765 43210`, `ABCPS1234K`, and that bank account (`50100012348912`), IFSC (`HDFC0000128`), and UPI ID (`rajeshsharma@okaxis`) are **not** present on the card.
    - In `frontend/src/pages/services/PropertyContacts.test.tsx`:
-     - In `groups contacts into owner, broker, and caretaker & society cards`, assert `card` has `PAN ABCDE1234F` and does **not** have bank account `123456789012`.
+     - Assert `card` has `PAN ABCDE1234F` and does **not** have bank account `123456789012`.
 
 ---
 

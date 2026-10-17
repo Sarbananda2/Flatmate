@@ -83,8 +83,8 @@ PAN_REQUIRED_ABOVE_ANNUAL_PAISE = 10_000_000
 
 _CONFIG_FIELDS = ("landlord_name", "landlord_phone", "landlord_email", "landlord_pan",
                   "landlord_bank_account", "landlord_bank_ifsc", "landlord_upi_id",
-                  "monthly_rent_paise", "due_day_of_month", "requires_landlord_receipt",
-                  "expense_definition_id", "rent_split_mode")
+                  "payout_beneficiary_name", "monthly_rent_paise", "due_day_of_month",
+                  "requires_landlord_receipt", "expense_definition_id", "rent_split_mode")
 
 #: The contract term. A save that leaves one of these out keeps what the lease
 #: already has, so a client that only knows the landlord fields cannot wipe the
@@ -218,9 +218,9 @@ def _clean_config(payload: Mapping[str, Any],
                               details={"field": "requires_landlord_receipt"})
     # The landlord's details are the owner contact's too, so both are checked
     # by the same rules.
+    landlord_name = require_text(kept("landlord_name"), "landlord_name", max_length=200)
     return {
-        "landlord_name": require_text(kept("landlord_name"), "landlord_name",
-                                      max_length=200),
+        "landlord_name": landlord_name,
         "landlord_phone": household.phone_number(kept("landlord_phone"),
                                                  "landlord_phone"),
         "landlord_email": household.email_address(kept("landlord_email"),
@@ -231,6 +231,10 @@ def _clean_config(payload: Mapping[str, Any],
         "landlord_bank_ifsc": household.ifsc_code(kept("landlord_bank_ifsc"),
                                                   "landlord_bank_ifsc"),
         "landlord_upi_id": household.upi_id(kept("landlord_upi_id"), "landlord_upi_id"),
+        # The landlord stays the legal owner; this is only whose name the
+        # payout account is in, when it is someone else's.
+        "payout_beneficiary_name": household.beneficiary_name(
+            kept("payout_beneficiary_name"), landlord_name, "payout_beneficiary_name"),
         "monthly_rent_paise": rent,
         "due_day_of_month": due_day,
         "requires_landlord_receipt": requires,
@@ -250,6 +254,8 @@ def _decode_config(uow: UnitOfWork, row: dict[str, Any]) -> dict[str, Any]:
     out = dict(row)
     out["requires_landlord_receipt"] = bool(row["requires_landlord_receipt"])
     out["is_active"] = bool(row["is_active"])
+    # The name to pay rent and deposits to.
+    out["effective_payout_name"] = row["payout_beneficiary_name"] or row["landlord_name"]
     out["expense_definition_name"] = uow.rent.definition_name(row["expense_definition_id"])
     out["term_number"] = 1 + uow.rent.completed_term_count(row["apartment_id"])
     out["lifecycle"] = get_lease_lifecycle_status(out)

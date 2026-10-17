@@ -1162,12 +1162,20 @@ function PayoutModal({
         {record.error && <ErrorNotice error={record.error} />}
         <TransferDestination
           label="Payout destination"
-          name={config.landlord_name}
+          name={config.payout_beneficiary_name || config.landlord_name}
           amountPaise={cycle.total_rent_paise}
           bankAccount={config.landlord_bank_account}
           bankIfsc={config.landlord_bank_ifsc}
           upiId={config.landlord_upi_id}
-          missing="No bank account or UPI ID is on the lease. Add them under Housing, Tenancy & Master Lease, to see them here."
+          missing={
+            <>
+              No bank account or UPI ID is recorded for the landlord.{' '}
+              <Link to="/payments" className="font-semibold">
+                Add them on Payment Pools
+              </Link>
+              .
+            </>
+          }
         />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <DateField label="Payment date" required value={date} onChange={setDate} />

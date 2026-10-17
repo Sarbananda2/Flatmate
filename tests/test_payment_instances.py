@@ -1,4 +1,4 @@
-"""The landlord and the household pool as payees (migration 0015).
+"""The landlord and the household pool as payees (migrations 0015 and 0016).
 
 Residents pay two standing counterparties besides each other: the landlord,
 whose payment details are on the lease, and the household pool, whose name,
@@ -6,7 +6,9 @@ bank account, IFSC and UPI ID are kept on the apartment. These tests pin that
 the pool's details are validated like the owner contact's, that a deposit
 payment records which of them received it and is named after them, that rows
 written before the party was recorded still read correctly, and that money owed
-to the pool is asked for at the pool's own UPI ID once it has one.
+to the pool is asked for at the pool's own UPI ID once it has one -- and that
+the landlord's payout account may be in someone else's name without that name
+ever taking the landlord's place.
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ from aem.services import (
     sharing,
     statements,
 )
+from aem.services import property as household
 
 from .conftest import APARTMENT
 from .support import DatabaseRefusal, connect
@@ -444,7 +447,8 @@ def test_the_kitty_passbook_runs_its_balance_through_every_movement(passbooks):
 def test_the_landlord_passbook_counts_rent_advances_and_the_deposit_held(passbooks):
     landlord = pool_statements.get_payment_pools_statement(
         passbooks, APARTMENT)["landlord_statement"]
-    assert landlord["account"] == {"instance_id": "__landlord__", "name": "Kumar Yadav"}
+    assert landlord["account"] == {"instance_id": "__landlord__", "name": "Kumar Yadav",
+                                   "owner_name": "Kumar Yadav"}
     assert _rows(landlord) == [
         ("2026-12-04", "Rent Payout", "Monthly rent · December 2026", "Bob (Advance)", "in",
          2_850_000, 10_900_000),
@@ -506,3 +510,106 @@ def test_the_statement_endpoint_returns_both_passbooks(client):
     assert [(item["category"], item["balance_paise"]) for item in body["pool_statement"]["items"]] == [
         ("Kitty Payment", 250_000)]
     assert body["landlord_statement"]["items"] == []
+
+
+# ------------------------------------- whose name the landlord's account is in --
+
+BENEFICIARY = {"payout_beneficiary_name": "  Anita Yadav ",
+               "landlord_bank_account": "50100987654321", "landlord_bank_ifsc": "hdfc0004321",
+               "landlord_upi_id": "anita.yadav@okaxis"}
+
+
+def _lease_updates(db):
+    with connect(db, read_only=True) as conn:
+        return {row["field_name"] for row in conn.execute(
+            "SELECT field_name FROM audit_log "
+            "WHERE entity_type='rent_lease_config' AND action='update'").fetchall()}
+
+
+def test_without_a_beneficiary_the_account_is_the_landlords_own(leased):
+    config = rent.get_lease_config(leased, APARTMENT)
+    assert config["payout_beneficiary_name"] is None
+    assert config["effective_payout_name"] == "Kumar Yadav"
+
+
+def test_a_beneficiary_is_kept_beside_the_landlord_not_in_their_place(leased):
+    saved = rent.save_lease_config(leased, APARTMENT, dict(BENEFICIARY))
+    assert (saved["landlord_name"], saved["payout_beneficiary_name"],
+            saved["effective_payout_name"]) == ("Kumar Yadav", "Anita Yadav", "Anita Yadav")
+    assert saved["landlord_bank_ifsc"] == "HDFC0004321"
+    assert "payout_beneficiary_name" in _lease_updates(leased)
+    assert "landlord_name" not in _lease_updates(leased)
+    # The owner contact is the same landlord, paid into the same account.
+    [owner] = household.list_contacts(leased, APARTMENT)["items"]
+    assert (owner["name"], owner["beneficiary_name"], owner["upi_id"]) == (
+        "Kumar Yadav", "Anita Yadav", "anita.yadav@okaxis")
+
+
+@pytest.mark.parametrize("name", [None, "", "  ", "kumar yadav", " Kumar Yadav "])
+def test_naming_nobody_or_the_landlord_themself_leaves_no_beneficiary(leased, name):
+    rent.save_lease_config(leased, APARTMENT, {"payout_beneficiary_name": "Anita Yadav"})
+    saved = rent.save_lease_config(leased, APARTMENT, {"payout_beneficiary_name": name})
+    assert saved["payout_beneficiary_name"] is None
+    assert (saved["landlord_name"], saved["effective_payout_name"]) == (
+        "Kumar Yadav", "Kumar Yadav")
+
+
+def test_a_save_that_leaves_the_beneficiary_out_keeps_it(leased):
+    rent.save_lease_config(leased, APARTMENT, {"payout_beneficiary_name": "Anita Yadav"})
+    saved = rent.save_lease_config(leased, APARTMENT, {"landlord_upi_id": "anita@okaxis"})
+    assert saved["payout_beneficiary_name"] == "Anita Yadav"
+
+
+def test_the_owner_contacts_beneficiary_is_the_leases(leased):
+    [owner] = household.list_contacts(leased, APARTMENT)["items"]
+    household.update_contact(leased, APARTMENT, owner["contact_id"],
+                             {"beneficiary_name": "Anita Yadav"})
+    config = rent.get_lease_config(leased, APARTMENT)
+    assert (config["landlord_name"], config["payout_beneficiary_name"]) == (
+        "Kumar Yadav", "Anita Yadav")
+    # Only an owner is paid into an account in someone else's name.
+    with pytest.raises(ValidationError):
+        household.create_contact(leased, APARTMENT, {
+            "role": "broker", "name": "Ravi Brokers", "beneficiary_name": "Ravi"})
+
+
+def test_the_database_itself_refuses_a_blank_beneficiary(leased):
+    for table, column in (("rent_lease_config", "payout_beneficiary_name"),
+                          ("household_contact", "beneficiary_name")):
+        with connect(leased) as conn, pytest.raises(DatabaseRefusal):
+            conn.execute(f"UPDATE {table} SET {column}=%s", ("  ",))
+
+
+def test_the_landlords_account_goes_by_the_beneficiarys_name(passbooks):
+    rent.save_lease_config(passbooks, APARTMENT, {"payout_beneficiary_name": "Anita Yadav"})
+    landlord = pool_statements.get_payment_pools_statement(
+        passbooks, APARTMENT)["landlord_statement"]
+    assert landlord["account"] == {"instance_id": "__landlord__", "name": "Anita Yadav",
+                                   "owner_name": "Kumar Yadav"}
+    summary = _summary(passbooks)
+    assert summary["landlord_instance"]["name"] == "Anita Yadav"
+    # Who was paid is still the landlord, as the lease names them.
+    assert _slot(summary, "alice")["paid_to_display_name"] == "Landlord (Kumar Yadav)"
+    # A resident who paid the account's holder directly paid the landlord.
+    _pay(passbooks, "gate", "alice", 40_000, "2026-12-10", kind="provider_advance",
+         payee_or_provider="anita yadav", note="Gate repair")
+    newest = pool_statements.get_payment_pools_statement(
+        passbooks, APARTMENT)["landlord_statement"]["items"][0]
+    assert (newest["category"], newest["description"], newest["counterparty_name"],
+            newest["amount_paise"], newest["balance_paise"]) == (
+        "Direct Advance", "Gate repair", "Alice", 40_000, 10_940_000)
+
+
+def test_the_lease_endpoint_saves_the_beneficiary(client):
+    client.post("/api/apartments", json={"apartment_id": APARTMENT, "name": "Flat 402"})
+    assert client.post("/api/rent/config", json=LEASE).status_code == 200
+    saved = client.post("/api/rent/config", json={"payout_beneficiary_name": "Anita Yadav"})
+    assert saved.status_code == 200
+    assert (saved.json()["landlord_name"], saved.json()["effective_payout_name"]) == (
+        "Kumar Yadav", "Anita Yadav")
+    [owner] = client.get("/api/property/contacts").json()["items"]
+    assert owner["beneficiary_name"] == "Anita Yadav"
+    cleared = client.patch(f"/api/property/contacts/{owner['contact_id']}",
+                           json={"beneficiary_name": None})
+    assert cleared.status_code == 200
+    assert client.get("/api/rent/config").json()["config"]["payout_beneficiary_name"] is None

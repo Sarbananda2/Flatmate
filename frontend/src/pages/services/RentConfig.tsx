@@ -844,9 +844,18 @@ export function LandlordProfileCard({
           {config.landlord_pan ? <span className="tabular">{config.landlord_pan}</span> : NOT_RECORDED}
         </ProfileFact>
       </dl>
-      {/* Who the landlord is lives here; where to pay them, on Payment Pools. */}
+      {/* Who the landlord is lives here; where to pay them, on Payment Pools.
+          An account in someone else's name is named, as that is who receives it. */}
       <p className="m-0 text-xs text-[var(--text-secondary)]">
-        Bank & payout details are managed under{' '}
+        {config.payout_beneficiary_name ? (
+          <>
+            Rent & deposits remitted to:{' '}
+            <strong className="font-semibold text-[var(--text-primary)]">{config.payout_beneficiary_name}</strong>
+            {' · '}Managed under{' '}
+          </>
+        ) : (
+          <>Bank & payout details are managed under </>
+        )}
         <Link to="/payments" className="font-semibold text-[var(--accent)]">
           Payment Pools
         </Link>

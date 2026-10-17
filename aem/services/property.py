@@ -44,6 +44,7 @@ ROLE_FIELDS: dict[str, tuple[str, ...]] = {
     "pan": ("owner",),
     "bank_account_no": ("owner",),
     "bank_ifsc": ("owner",),
+    "beneficiary_name": ("owner",),
     "upi_id": ("owner", "broker", "caretaker", "society_manager"),
     "agency_name": ("broker",),
     "fee_amount_paise": ("broker",),
@@ -125,6 +126,16 @@ def upi_id(value: Any, field: str = "upi_id") -> str | None:
     return _pattern(value, field, _UPI, "A UPI ID looks like name@bank.")
 
 
+def beneficiary_name(value: Any, owner_name: str | None,
+                     field: str = "beneficiary_name") -> str | None:
+    """Whose name the owner's payout account is in, when it is not the owner's
+    own. Naming the owner themself is the same as naming nobody."""
+    name = optional_text(value, field, max_length=200)
+    if name and owner_name and name.casefold() == owner_name.strip().casefold():
+        return None
+    return name
+
+
 def _clean_contact(fields: Mapping[str, Any]) -> dict[str, Any]:
     """Every contact column, validated, with the inapplicable ones refused."""
     role = fields.get("role")
@@ -144,15 +155,17 @@ def _clean_contact(fields: Mapping[str, Any]) -> dict[str, Any]:
                               details={"field": "fee_status"})
     if role == "broker" and fee is not None and fee_status is None:
         fee_status = "pending"
+    name = require_text(fields.get("name"), "name", max_length=200)
     return {
         "role": role,
-        "name": require_text(fields.get("name"), "name", max_length=200),
+        "name": name,
         "phone": phone_number(fields.get("phone")),
         "email": email_address(fields.get("email")),
         "pan": pan_number(fields.get("pan")),
         "bank_account_no": bank_account(fields.get("bank_account_no")),
         "bank_ifsc": ifsc_code(fields.get("bank_ifsc")),
         "upi_id": upi_id(fields.get("upi_id")),
+        "beneficiary_name": beneficiary_name(fields.get("beneficiary_name"), name),
         "agency_name": optional_text(fields.get("agency_name"), "agency_name",
                                      max_length=200),
         "fee_amount_paise": fee,
@@ -196,6 +209,7 @@ OWNER_LEASE_FIELDS = {
     "bank_account_no": "landlord_bank_account",
     "bank_ifsc": "landlord_bank_ifsc",
     "upi_id": "landlord_upi_id",
+    "beneficiary_name": "payout_beneficiary_name",
 }
 SYNC_FROM_OWNER = "synced from the owner contact"
 SYNC_FROM_LEASE = "synced from the lease"

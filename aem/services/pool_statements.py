@@ -11,7 +11,10 @@ landlord, and deposits it hands back.
 The **landlord** account counts what has been paid to the landlord -- each
 month's rent, advances paid to them directly, and security deposits -- and what
 they have handed back or kept from a deposit. Its balance is what the landlord
-has had, net; ``deposit_held_paise`` is the part of it that is deposit.
+has had, net; ``deposit_held_paise`` is the part of it that is deposit. The
+account goes by the name it is held in: the lease's payout beneficiary when
+there is one, otherwise the landlord's own; ``owner_name`` is always the
+landlord's.
 
 Entries are put in date order to work out the running balance -- payments,
 then deposit movements, then rent payouts, then expenses on the same day, each
@@ -83,6 +86,9 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
 
     pool_name = apartment.get("pool_name") or DEFAULT_KITTY_NAME
     landlord_name = (lease or {}).get("landlord_name") or "Landlord"
+    account_name = (lease or {}).get("payout_beneficiary_name") or landlord_name
+    # A resident who paid the landlord may have named either of them.
+    landlord_payees = {landlord_name.strip().lower(), account_name.strip().lower()}
     pool: list[dict[str, Any]] = []
     landlord: list[dict[str, Any]] = []
 
@@ -145,7 +151,7 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
         if (payment["payment_kind"] != "provider_advance"
                 or payment["payment_id"] in advanced
                 or (payment["payee_or_provider"] or "").strip().lower()
-                != landlord_name.strip().lower()):
+                not in landlord_payees):
             continue
         landlord.append(_entry(
             entry_id=f"payment:{payment['payment_id']}", account="landlord", direction="in",
@@ -225,7 +231,8 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
             "closing_balance_paise": pool_in - pool_out,
         },
         "landlord_statement": {
-            "account": {"instance_id": LANDLORD_INSTANCE_ID, "name": landlord_name},
+            "account": {"instance_id": LANDLORD_INSTANCE_ID, "name": account_name,
+                        "owner_name": landlord_name},
             "items": landlord_items,
             "total_rent_paid_paise": sum(item["amount_paise"] for item in landlord_items
                                          if item["category"] == "Rent Payout"),

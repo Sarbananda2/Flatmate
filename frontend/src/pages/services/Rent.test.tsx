@@ -339,6 +339,32 @@ describe('RentMonth', () => {
     expect((posted('/pay')!.body as { amount_paise: number }).amount_paise).toBe(1650050)
   })
 
+  it("sends the payout to the account's holder, and says where to add a missing account", async () => {
+    renderRent(
+      overview({
+        config: {
+          ...config,
+          payout_beneficiary_name: 'Sunita Sharma',
+          landlord_bank_account: null,
+          landlord_bank_ifsc: null,
+          landlord_upi_id: null,
+        },
+      }),
+    )
+    await userEvent.click(await screen.findByRole('button', { name: 'Record Landlord Payout' }))
+    const dialog = await screen.findByRole('dialog')
+    const destination = within(dialog).getByRole('region', { name: 'Payout destination' })
+    expect(destination).toHaveTextContent('Sunita Sharma')
+    expect(destination).not.toHaveTextContent('Rajesh Kumar Sharma')
+    expect(destination).toHaveTextContent(
+      'No bank account or UPI ID is recorded for the landlord. Add them on Payment Pools.',
+    )
+    expect(within(destination).getByRole('link', { name: 'Add them on Payment Pools' })).toHaveAttribute(
+      'href',
+      '/payments',
+    )
+  })
+
   it('asks only for date, funder, and reference when the landlord issues no receipts', async () => {
     renderRent(overview())
     await userEvent.click(await screen.findByRole('button', { name: 'Record Landlord Payout' }))

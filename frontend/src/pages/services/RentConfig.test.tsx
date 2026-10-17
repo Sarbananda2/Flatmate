@@ -206,6 +206,20 @@ describe('LeaseContractSection', () => {
     expect(screen.queryByRole('link', { name: 'Open monthly rent' })).toBeNull()
   })
 
+  it('names whose account rent and deposits are remitted to, when it is not the landlord', async () => {
+    renderPage({ ...saved, payout_beneficiary_name: 'Sunita Sharma' } as typeof saved)
+    const card = await screen.findByLabelText('Landlord profile')
+    // The landlord stays the owner on the card; the account holder is named under it.
+    expect(within(card).getByText('Rajesh Kumar Sharma')).toBeInTheDocument()
+    const panel = card.closest('section')!
+    expect(panel).toHaveTextContent(
+      'Rent & deposits remitted to: Sunita Sharma · Managed under Payment Pools.',
+    )
+    expect(within(panel).getByText('Sunita Sharma').tagName).toBe('STRONG')
+    expect(within(panel).getByRole('link', { name: 'Payment Pools' })).toHaveAttribute('href', '/payments')
+    expect(panel).not.toHaveTextContent('Bank & payout details')
+  })
+
   it('edits the landlord in a dialog named like the card', async () => {
     renderPage(saved, { 'PATCH /api/property/contacts/owner-1': { ...OWNER, phone: '9123456780' } })
     await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))

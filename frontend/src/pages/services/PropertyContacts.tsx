@@ -273,7 +273,15 @@ function ContactCard({
       </dl>
       {contact.role === 'owner' && (
         <p className="m-0 text-[11px] text-[var(--text-secondary)]">
-          Bank & payout details are managed under{' '}
+          {contact.beneficiary_name ? (
+            <>
+              Rent & deposits remitted to:{' '}
+              <strong className="font-semibold text-[var(--text-primary)]">{contact.beneficiary_name}</strong>
+              {' · '}Managed under{' '}
+            </>
+          ) : (
+            <>Bank & payout details are managed under </>
+          )}
           <Link to="/payments" className="font-semibold text-[var(--accent)]">
             Payment Pools
           </Link>
@@ -388,6 +396,7 @@ export function ContactModal({
   const [phone, setPhone] = useState(contact?.phone ?? '')
   const [email, setEmail] = useState(contact?.email ?? '')
   const [pan, setPan] = useState(contact?.pan ?? '')
+  const [beneficiary, setBeneficiary] = useState(contact?.beneficiary_name ?? '')
   const [account, setAccount] = useState(contact?.bank_account_no ?? '')
   const [ifsc, setIfsc] = useState(contact?.bank_ifsc ?? '')
   const [upi, setUpi] = useState(contact?.upi_id ?? '')
@@ -419,6 +428,8 @@ export function ContactModal({
     pan: uses.includes('owner')
       ? patternError(pan.toUpperCase(), PAN_PATTERN, 'A PAN looks like ABCDE1234F.')
       : null,
+    beneficiary:
+      uses.includes('owner') && beneficiary.trim().length > 200 ? 'Keep it to 200 characters.' : null,
     account: uses.includes('owner')
       ? patternError(account, ACCOUNT_PATTERN, ACCOUNT_MESSAGE)
       : null,
@@ -432,7 +443,7 @@ export function ContactModal({
   const stepErrors: Record<ContactStep, boolean> = {
     contact: Boolean(errors.role || errors.name || errors.phone || errors.email),
     tax: Boolean(errors.pan),
-    payout: Boolean(errors.account || errors.ifsc || errors.upi),
+    payout: Boolean(errors.beneficiary || errors.account || errors.ifsc || errors.upi),
     agency: Boolean(errors.fee),
     duties: Boolean(errors.upi),
   }
@@ -450,6 +461,7 @@ export function ContactModal({
       email: text(email),
       notes: text(notes),
       pan: uses.includes('owner') ? text(pan.toUpperCase()) : null,
+      beneficiary_name: uses.includes('owner') ? text(beneficiary) : null,
       bank_account_no: uses.includes('owner') ? text(account) : null,
       bank_ifsc: uses.includes('owner') ? text(ifsc.toUpperCase()) : null,
       upi_id: uses.includes('upi') ? text(upi) : null,
@@ -631,6 +643,16 @@ export function ContactModal({
 
           {current.id === 'payout' && (
             <>
+              {uses.includes('owner') && (
+                <TextField
+                  label="Payout Beneficiary"
+                  value={beneficiary}
+                  onChange={setBeneficiary}
+                  placeholder="Leave blank if payments go to the owner"
+                  hint="Whose bank account or UPI ID receives payments if different from the owner."
+                  error={errors.beneficiary}
+                />
+              )}
               {uses.includes('owner') && (
                 <div className="form-grid">
                   <TextField

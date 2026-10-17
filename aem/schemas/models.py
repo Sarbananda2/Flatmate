@@ -456,6 +456,11 @@ class RentLeaseConfigSave(ApiModel):
     landlord_bank_account: str | None = Field(None, max_length=32)
     landlord_bank_ifsc: str | None = Field(None, max_length=16)
     landlord_upi_id: str | None = Field(None, max_length=320)
+    payout_beneficiary_name: str | None = Field(
+        None, max_length=200,
+        description="Whose name the landlord's bank account or UPI ID is in, when it is "
+                    "not the landlord's own. The landlord stays the owner on the lease. "
+                    "Null, or the landlord's own name, means the account is theirs.")
     monthly_rent_paise: int | None = _money_field("The whole monthly rent on the lease.",
                                                   ge=1, default=None)
     due_day_of_month: int = Field(5, ge=1, le=28)
@@ -735,6 +740,10 @@ class ContactCreate(ApiModel):
     bank_account_no: str | None = Field(None, max_length=18, description="Owner only.")
     bank_ifsc: str | None = Field(None, max_length=11, description="Owner only.")
     upi_id: str | None = Field(None, max_length=320)
+    beneficiary_name: str | None = Field(
+        None, max_length=200,
+        description="Owner only. Whose name their payout account is in, when it is not "
+                    "their own.")
     agency_name: str | None = Field(None, max_length=200, description="Broker only.")
     fee_amount_paise: int | None = _money_field(
         "Broker only. The brokerage fee.", default=None)
@@ -755,6 +764,7 @@ class ContactUpdate(ApiModel):
     bank_account_no: str | None = Field(None, max_length=18)
     bank_ifsc: str | None = Field(None, max_length=11)
     upi_id: str | None = Field(None, max_length=320)
+    beneficiary_name: str | None = Field(None, max_length=200)
     agency_name: str | None = Field(None, max_length=200)
     fee_amount_paise: int | None = _money_field("The brokerage fee.", default=None)
     fee_status: Literal["paid", "pending", "na"] | None = None
