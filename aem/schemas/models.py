@@ -105,9 +105,12 @@ class ApartmentUpdate(ApiModel):
     city: str | None = Field(None, max_length=100)
     state: str | None = Field(None, max_length=100)
     pincode: str | None = Field(None, pattern=PINCODE_PATTERN)
-    # The household pool. Its name is kept when left out and reset to
-    # "Household Pool" when sent as null; the rest are cleared by null.
+    # The household pool, the House Kitty. Its name is kept when left out and
+    # reset to "House Kitty" when sent as null; the rest are cleared by null.
     pool_name: str | None = Field(None, max_length=200)
+    pool_account_holder: str | None = Field(
+        None, max_length=200,
+        description="The legal name on the bank account or UPI ID that holds the kitty.")
     pool_bank_account: str | None = Field(None, max_length=18)
     pool_bank_ifsc: str | None = Field(None, max_length=13)
     pool_upi_id: str | None = Field(None, max_length=320)
@@ -128,8 +131,10 @@ class ApartmentResponse(PassthroughModel):
     pincode: str | None
     # The address parts in Indian postal order; the name when none are set.
     premises_address: str
-    # Where residents send pool payments, rent shares and settlements.
+    # Where residents send pool payments, rent shares and settlements: the
+    # House Kitty, held in the account holder's bank account or UPI ID.
     pool_name: str
+    pool_account_holder: str | None = None
     pool_bank_account: str | None
     pool_bank_ifsc: str | None
     pool_upi_id: str | None

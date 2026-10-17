@@ -25,17 +25,19 @@ class ApartmentsRepository(Repository):
     def update(self, apartment_id: str, *, name: str, currency_code: str, timezone: str,
                flat_number: str | None, tower_block: str | None, society_name: str | None,
                locality_street: str | None, city: str | None, state: str | None,
-               pincode: str | None, pool_name: str, pool_bank_account: str | None,
-               pool_bank_ifsc: str | None, pool_upi_id: str | None) -> None:
+               pincode: str | None, pool_name: str, pool_account_holder: str | None,
+               pool_bank_account: str | None, pool_bank_ifsc: str | None,
+               pool_upi_id: str | None) -> None:
         self._s.execute(
             """UPDATE apartment SET name=%s, currency_code=%s, timezone=%s, flat_number=%s,
                                     tower_block=%s, society_name=%s, locality_street=%s,
                                     city=%s, state=%s, pincode=%s, pool_name=%s,
-                                    pool_bank_account=%s, pool_bank_ifsc=%s, pool_upi_id=%s
+                                    pool_account_holder=%s, pool_bank_account=%s,
+                                    pool_bank_ifsc=%s, pool_upi_id=%s
                WHERE apartment_id=%s""",
             (name, currency_code, timezone, flat_number, tower_block, society_name,
-             locality_street, city, state, pincode, pool_name, pool_bank_account,
-             pool_bank_ifsc, pool_upi_id, apartment_id))
+             locality_street, city, state, pincode, pool_name, pool_account_holder,
+             pool_bank_account, pool_bank_ifsc, pool_upi_id, apartment_id))
 
     def list_all(self) -> list[dict[str, Any]]:
         return self._s.fetch_all("SELECT * FROM apartment ORDER BY name, apartment_id")

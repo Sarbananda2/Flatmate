@@ -82,7 +82,7 @@ function landlordLabel(name: string | null | undefined): string {
 
 /** The pool by its own name, saying what it is when that name does not. */
 function poolLabel(name: string | null | undefined): string {
-  return name && name !== 'Household Pool' ? `Household Pool (${name})` : 'Household Pool'
+  return name && name !== 'House Kitty' ? `House Kitty (${name})` : 'House Kitty'
 }
 
 /** Money in is green; money handed back or kept is amber. */

@@ -873,7 +873,9 @@ export function HouseholdPoolCard({
       className="flex flex-col h-full"
     >
       <dl aria-label="House kitty account" className="m-0 flex-1 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-        <DetailFact label="Account Name">{apartment.pool_name || 'House Kitty'}</DetailFact>
+        <DetailFact label="Account Holder">
+          {apartment.pool_account_holder ? <span>{apartment.pool_account_holder}</span> : notRecorded}
+        </DetailFact>
         <DetailFact label="Bank Account">
           {apartment.pool_bank_account ? (
             <span className="tabular">{apartment.pool_bank_account}</span>
@@ -936,7 +938,7 @@ export function HouseholdPoolCard({
  * landlord by whose account it is -- theirs, or a payout beneficiary's.
  */
 type AccountNaming =
-  | { kind: 'account'; label: string; missing: string }
+  | { kind: 'account'; label: string; missing: string; placeholder?: string; hint?: string }
   | { kind: 'beneficiary'; landlordName: string }
 
 /** An account's name and where to pay it, as the edit dialog holds them. For
@@ -1049,6 +1051,8 @@ function PaymentAccountModal({
             onChange={setName}
             required
             maxLength={210}
+            placeholder={naming.placeholder}
+            hint={naming.hint}
             error={submitted ? errors.name : null}
           />
         ) : (
@@ -1091,6 +1095,11 @@ function PaymentAccountModal({
   )
 }
 
+/**
+ * The House Kitty's banking details. The kitty is "House Kitty" in every
+ * account and statement; what is edited here is the real account that holds
+ * its money: whose it is, and its bank account, IFSC and UPI ID.
+ */
 function HouseholdPoolModal({
   apartment,
   onClose,
@@ -1102,19 +1111,26 @@ function HouseholdPoolModal({
 }) {
   return (
     <PaymentAccountModal
-      title={POOL_TITLE}
-      description="Where residents send the House Kitty its money. Bank details and the UPI ID are optional."
+      title="House Kitty Account & Banking Details"
+      description="The household pool is identified as 'House Kitty' across all accounting. Enter the real bank account and UPI details where kitty funds are held."
       formId="house-kitty-form"
-      naming={{ kind: 'account', label: 'Account Name', missing: 'Enter the account name.' }}
+      naming={{
+        kind: 'account',
+        label: 'Account Holder Name',
+        missing: 'Enter the account holder name.',
+        placeholder: 'e.g. Sarbananda Taw',
+        hint: "The legal name on the bank account or UPI ID (e.g. your name or the managing roommate's name).",
+      }}
       initial={{
-        name: apartment.pool_name || 'House Kitty',
+        name: apartment.pool_account_holder || '',
         account: apartment.pool_bank_account ?? '',
         ifsc: apartment.pool_bank_ifsc ?? '',
         upi: apartment.pool_upi_id ?? '',
       }}
       save={({ name, account, ifsc, upi }) =>
         api.patch<Apartment>(`/api/apartments/${encodeURIComponent(apartment.apartment_id)}`, {
-          pool_name: name,
+          pool_name: 'House Kitty',
+          pool_account_holder: name || null,
           pool_bank_account: account,
           pool_bank_ifsc: ifsc,
           pool_upi_id: upi,

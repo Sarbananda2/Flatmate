@@ -979,7 +979,7 @@ function RentPaymentModal({
         {record.error && <ErrorNotice error={record.error} />}
         {/* Residents pay their share into the household pool. */}
         <TransferDestination
-          name={apartment?.pool_name || 'Household Pool'}
+          name={apartment?.pool_name || 'House Kitty'}
           amountPaise={amountOk ? amountPaise : null}
           bankAccount={apartment?.pool_bank_account}
           bankIfsc={apartment?.pool_bank_ifsc}

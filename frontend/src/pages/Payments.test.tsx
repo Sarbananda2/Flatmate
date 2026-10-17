@@ -30,7 +30,8 @@ const APARTMENT: Apartment = {
   currency_code: 'INR',
   timezone: 'Asia/Kolkata',
   created_at: '2026-10-01T10:00:00+05:30',
-  pool_name: 'Flat 402 Kitty',
+  pool_name: 'House Kitty',
+  pool_account_holder: 'Sarbananda Taw',
   pool_bank_account: '123456789012',
   pool_bank_ifsc: 'SBIN0005678',
   pool_upi_id: 'flat402@okicici',
@@ -91,48 +92,62 @@ const factsIn = (element: HTMLElement) =>
     .map((term) => `${term.textContent}: ${term.nextElementSibling!.textContent}`)
 
 describe('HouseholdPoolCard', () => {
-  it('shows the pool account read-only, with the UPI ID to copy', () => {
+  it('shows the account holding the kitty read-only, with the UPI ID to copy', () => {
     showCard()
     expect(screen.getByRole('heading', { name: 'House Kitty Account' })).toBeInTheDocument()
     expect(
       screen.getByText('Where residents send kitty payments, rent shares, and settlement transfers.'),
     ).toBeInTheDocument()
     const facts = screen.getByLabelText('House kitty account')
+    // Whose account holds the kitty; the kitty itself is always the House Kitty.
     expect(factsIn(facts).slice(0, 3)).toEqual([
-      'Account Name: Flat 402 Kitty',
+      'Account Holder: Sarbananda Taw',
       'Bank Account: 123456789012',
       'IFSC: SBIN0005678',
     ])
     // The UPI ID, then its copy button.
     expect(factsIn(facts)[3]).toMatch(/^UPI ID: flat402@okicici/)
     expect(within(facts).getByRole('button', { name: 'Copy UPI ID' })).toBeInTheDocument()
+    expect(within(facts).queryByText('Account Name')).toBeNull()
     // Read-only until Edit: nothing to type in.
     expect(screen.queryByRole('textbox')).toBeNull()
   })
 
   it('says what is not recorded yet', () => {
-    showCard({ ...APARTMENT, pool_name: '', pool_bank_account: null, pool_bank_ifsc: null, pool_upi_id: null })
+    showCard({
+      ...APARTMENT,
+      pool_account_holder: null,
+      pool_bank_account: null,
+      pool_bank_ifsc: null,
+      pool_upi_id: null,
+    })
     expect(factsIn(screen.getByLabelText('House kitty account'))).toEqual([
-      // No name stored: it is the House Kitty.
-      'Account Name: House Kitty',
+      'Account Holder: Not recorded',
       'Bank Account: Not recorded',
       'IFSC: Not recorded',
       'UPI ID: Not recorded',
     ])
   })
 
-  it('edits the pool in a dialog named like the card, checking each field first', async () => {
-    const onSaved = showCard()
+  it('edits the account holding the kitty, checking each field first', async () => {
+    const onSaved = showCard({ ...APARTMENT, pool_account_holder: null })
     await userEvent.click(screen.getByRole('button', { name: 'Edit house kitty' }))
-    const dialog = screen.getByRole('dialog', { name: 'House Kitty Account' })
+    const dialog = screen.getByRole('dialog', { name: 'House Kitty Account & Banking Details' })
+    expect(dialog).toHaveTextContent(
+      "The household pool is identified as 'House Kitty' across all accounting. Enter the real bank account and UPI details where kitty funds are held.",
+    )
     const field = (label: string) => within(dialog).getByLabelText(new RegExp(`^${label}`))
     expect(within(dialog).getAllByRole('textbox').map((box) => box.closest('.field')?.querySelector('label')?.textContent)).toEqual([
-      'Account Name* (required)',
+      'Account Holder Name* (required)',
       'Bank Account',
       'IFSC',
       'UPI ID',
     ])
-    expect(field('Account Name')).toHaveValue('Flat 402 Kitty')
+    expect(field('Account Holder Name')).toHaveValue('')
+    expect(field('Account Holder Name')).toHaveAttribute('placeholder', 'e.g. Sarbananda Taw')
+    expect(field('Account Holder Name')).toHaveAccessibleDescription(
+      "The legal name on the bank account or UPI ID (e.g. your name or the managing roommate's name).",
+    )
     expect(field('UPI ID')).toHaveValue('flat402@okicici')
 
     await userEvent.clear(field('Bank Account'))
@@ -141,14 +156,14 @@ describe('HouseholdPoolCard', () => {
     await userEvent.type(field('IFSC'), 'hdfc1001234')
     await userEvent.clear(field('UPI ID'))
     await userEvent.type(field('UPI ID'), 'flat402')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    expect(within(dialog).getByText('Enter the account holder name.')).toBeInTheDocument()
     expect(within(dialog).getByText('A bank account number is 9 to 18 digits.')).toBeInTheDocument()
     expect(within(dialog).getByText('An IFSC looks like HDFC0001234.')).toBeInTheDocument()
     expect(within(dialog).getByText('A UPI ID looks like name@bank.')).toBeInTheDocument()
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     expect(patched()).toBeUndefined()
 
-    await userEvent.clear(field('Account Name'))
-    await userEvent.type(field('Account Name'), ' Kitty ')
+    await userEvent.type(field('Account Holder Name'), ' Sarbananda Taw ')
     await userEvent.clear(field('Bank Account'))
     await userEvent.type(field('Bank Account'), '987654321')
     await userEvent.clear(field('IFSC'))
@@ -159,8 +174,10 @@ describe('HouseholdPoolCard', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     await waitFor(() => expect(patched()).toBeDefined())
     expect(patched()!.path).toBe('/api/apartments/home')
+    // The kitty keeps its name; the holder is saved beside it.
     expect(patched()!.body).toEqual({
-      pool_name: 'Kitty',
+      pool_name: 'House Kitty',
+      pool_account_holder: 'Sarbananda Taw',
       pool_bank_account: '987654321',
       pool_bank_ifsc: 'HDFC0001234',
       pool_upi_id: null,
@@ -169,14 +186,11 @@ describe('HouseholdPoolCard', () => {
     expect(await screen.findByText('House kitty saved')).toBeInTheDocument()
   })
 
-  it('will not save a kitty without a name', async () => {
+  it('opens with the account holder on file', async () => {
     showCard()
     await userEvent.click(screen.getByRole('button', { name: 'Edit house kitty' }))
-    const dialog = screen.getByRole('dialog', { name: 'House Kitty Account' })
-    await userEvent.clear(within(dialog).getByLabelText(/^Account Name/))
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
-    expect(within(dialog).getByText('Enter the account name.')).toBeInTheDocument()
-    expect(patched()).toBeUndefined()
+    const dialog = screen.getByRole('dialog', { name: 'House Kitty Account & Banking Details' })
+    expect(within(dialog).getByLabelText(/^Account Holder Name/)).toHaveValue('Sarbananda Taw')
   })
 })
 
@@ -184,12 +198,12 @@ describe('PaymentDialog', () => {
   it('shows where to pay the House Kitty', async () => {
     const dialog = showDialog('to_pool')
     const destination = within(dialog).getByRole('region', { name: 'Payment destination' })
-    expect(destination).toHaveTextContent('Transfer toFlat 402 Kitty')
+    expect(destination).toHaveTextContent('Transfer toHouse Kitty')
     for (const detail of ['Account123456789012', 'IFSCSBIN0005678', 'UPI IDflat402@okicici']) {
       expect(destination).toHaveTextContent(detail)
     }
     expect(within(destination).getByRole('button', { name: 'Copy UPI ID' })).toBeInTheDocument()
-    expect(within(dialog).getByLabelText(/^Counterparty/)).toHaveAttribute('placeholder', 'Flat 402 Kitty')
+    expect(within(dialog).getByLabelText(/^Counterparty/)).toHaveAttribute('placeholder', 'House Kitty')
 
     // The amount, once entered, is shown with it.
     await userEvent.type(within(dialog).getByLabelText(/^Amount/), '1,500')
@@ -526,7 +540,7 @@ function line(overrides: Partial<StatementEntry>): StatementEntry {
 }
 
 const POOL_STATEMENT: PoolStatement = {
-  account: { instance_id: '__pool__', name: 'Flat 402 Kitty' },
+  account: { instance_id: '__pool__', name: 'House Kitty', account_holder: 'Sarbananda Taw' },
   items: [
     line({
       entry_id: 'expense:broadband',
@@ -734,10 +748,10 @@ describe('Payment Pools page', () => {
     const [, body] = within(table).getAllByRole('rowgroup')
     await userEvent.click(within(within(body).getAllByRole('row')[2]).getAllByRole('cell')[2])
     const dialog = screen.getByRole('dialog', { name: 'Statement Entry' })
-    expect(dialog).toHaveTextContent('Flat 402 Kitty · 3 Nov 2026')
+    expect(dialog).toHaveTextContent('House Kitty · 3 Nov 2026')
     expect(factsIn(dialog)).toEqual([
       'Date: 3 Nov 2026',
-      'Account: Flat 402 Kitty',
+      'Account: House Kitty',
       'Category: Rent Collection',
       'Direction: In / Credit (+)',
       'Description: Rent for November 2026',

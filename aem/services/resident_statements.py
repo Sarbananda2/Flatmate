@@ -22,7 +22,7 @@ from ..errors import ReconciliationError
 from ..money import format_inr
 from ..periods import normalize_month
 from ..persistence import Database, UnitOfWork
-from .common import get_apartment, get_resident, list_residents
+from .common import DEFAULT_POOL_NAME, get_apartment, get_resident, list_residents
 from .reconciliation import (
     ENTRY_ADJUSTMENT,
     ENTRY_EXPENSE_FUNDED,
@@ -188,7 +188,7 @@ def _build(uow: UnitOfWork, apartment_id: str, settlement_month: str,
     # Money owed to the pool is paid into the pool's own account once it has a
     # UPI ID; until then, to the primary signatory, who holds the household's money.
     pool = ({"upi_id": apartment["pool_upi_id"],
-             "display_name": apartment.get("pool_name") or "Household Pool"}
+             "display_name": apartment.get("pool_name") or DEFAULT_POOL_NAME}
             if apartment.get("pool_upi_id") else None)
     # The room they live in, or failing that the deposit slot they hold.
     rooms = {slot["assigned_resident_id"]: slot["slot_label"]

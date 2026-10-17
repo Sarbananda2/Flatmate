@@ -26,13 +26,13 @@ from typing import Any
 
 from ..persistence import Database
 from . import deposits
-from .common import get_apartment
+from .common import DEFAULT_POOL_NAME, get_apartment
 from .rent import month_label
 
 POOL_INSTANCE_ID = "__pool__"
 LANDLORD_INSTANCE_ID = "__landlord__"
 _SOURCE_ORDER = {"payment": 0, "deposit": 1, "rent_cycle": 2, "expense": 3}
-DEFAULT_KITTY_NAME = "House Kitty"
+DEFAULT_KITTY_NAME = DEFAULT_POOL_NAME
 
 
 def _entry(*, entry_id: str, account: str, date: str, source_type: str, order: Any,
@@ -224,7 +224,9 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
     return {
         "apartment_id": apartment_id,
         "pool_statement": {
-            "account": {"instance_id": POOL_INSTANCE_ID, "name": pool_name},
+            # The House Kitty, and whose bank account or UPI ID holds it.
+            "account": {"instance_id": POOL_INSTANCE_ID, "name": pool_name,
+                        "account_holder": apartment.get("pool_account_holder")},
             "items": pool_items,
             "total_in_paise": pool_in,
             "total_out_paise": pool_out,

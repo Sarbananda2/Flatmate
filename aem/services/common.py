@@ -7,6 +7,9 @@ from ..errors import ConflictError, ImmutableRecordError, NotFoundError, Validat
 from ..persistence import UnitOfWork
 
 POOL_ACCOUNT_ID = "__pool__"
+#: The household pool's name in every account and statement. Whose bank account
+#: or UPI ID actually holds it is the apartment's ``pool_account_holder``.
+DEFAULT_POOL_NAME = "House Kitty"
 
 ALLOCATION_METHODS = ("equal", "weighted", "custom", "measured", "host_guest")
 EXPENSE_KINDS = ("general", "electricity")

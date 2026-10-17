@@ -8,7 +8,13 @@ from ..errors import ConflictError, ValidationError
 from ..ids import now_timestamp
 from ..persistence import Database, UnitOfWork
 from . import audit
-from .common import apartment_exists, get_apartment, optional_text, require_text
+from .common import (
+    DEFAULT_POOL_NAME,
+    apartment_exists,
+    get_apartment,
+    optional_text,
+    require_text,
+)
 from .property import bank_account, ifsc_code, upi_id
 
 DEFAULT_APARTMENT_SETTING = "default_apartment_id"
@@ -18,11 +24,12 @@ DEFAULT_APARTMENT_SETTING = "default_apartment_id"
 ADDRESS_FIELDS = (("flat_number", 50), ("tower_block", 50), ("society_name", 150),
                   ("locality_street", 200), ("city", 100), ("state", 100))
 PINCODE_RE = re.compile(r"^[1-9][0-9]{5}$")
-# The household pool: where residents send their shares and settlements. It
-# always has a name; its bank account, IFSC and UPI ID follow the same rules
-# as the owner contact's.
-DEFAULT_POOL_NAME = "Household Pool"
-POOL_FIELDS = ("pool_name", "pool_bank_account", "pool_bank_ifsc", "pool_upi_id")
+# The household pool, the House Kitty: where residents send their shares and
+# settlements. Its money is held in a real person's account -- the account
+# holder's -- whose bank account, IFSC and UPI ID follow the same rules as the
+# owner contact's.
+POOL_FIELDS = ("pool_name", "pool_account_holder", "pool_bank_account", "pool_bank_ifsc",
+               "pool_upi_id")
 EDITABLE_FIELDS = ["name", "currency_code", "timezone",
                    *(field for field, _ in ADDRESS_FIELDS), "pincode", *POOL_FIELDS]
 
@@ -85,9 +92,9 @@ def update_apartment(db: Database, apartment_id: str, *, actor: str = "operator"
 
     ``name``, ``currency_code`` and ``timezone`` are kept when left out or
     given as ``None``. An address part that is given is set, and ``None`` or an
-    empty string clears it. So do the pool's bank account, IFSC and UPI ID;
-    the pool's name is kept when left out, and ``None`` or an empty string
-    puts back the default, "Household Pool".
+    empty string clears it. So do the pool's account holder, bank account, IFSC
+    and UPI ID; the pool's name is kept when left out, and ``None`` or an empty
+    string puts back the default, "House Kitty".
     """
     unknown = sorted(set(changes) - set(EDITABLE_FIELDS))
     if unknown:
@@ -112,6 +119,9 @@ def update_apartment(db: Database, apartment_id: str, *, actor: str = "operator"
         if "pool_name" in changes:
             after["pool_name"] = (optional_text(changes["pool_name"], "pool_name",
                                                 max_length=200) or DEFAULT_POOL_NAME)
+        if "pool_account_holder" in changes:
+            after["pool_account_holder"] = optional_text(
+                changes["pool_account_holder"], "pool_account_holder", max_length=200)
         if "pool_bank_account" in changes:
             after["pool_bank_account"] = bank_account(changes["pool_bank_account"],
                                                       "pool_bank_account")

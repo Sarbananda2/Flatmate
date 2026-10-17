@@ -41,7 +41,7 @@ from ..money import ensure_paise
 from ..periods import parse_iso_date
 from ..persistence import Database, UnitOfWork
 from . import audit, rooms
-from .common import get_apartment, get_resident, optional_text, require_text
+from .common import DEFAULT_POOL_NAME, get_apartment, get_resident, optional_text, require_text
 
 FUNDING_MODES = ("primary_signatory", "direct_co_tenants")
 # ``direct_to_landlord`` is how a payment to the landlord was recorded before
@@ -50,7 +50,6 @@ PAYMENT_METHODS = ("upi", "bank_transfer", "cash", "direct_to_landlord")
 PAID_TO_PARTIES = ("resident", "landlord", "pool")
 LANDLORD_INSTANCE_ID = "__landlord__"
 POOL_INSTANCE_ID = "__pool__"
-DEFAULT_POOL_NAME = "Household Pool"
 SETTLEMENT_PATHS = ("signatory_refund", "direct_transfer")
 ENTITY = "household_deposit_slot"
 MAX_SLOTS = 50

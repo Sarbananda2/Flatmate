@@ -89,9 +89,9 @@ def signatory(leased):
 
 def test_a_pool_starts_with_its_default_name_and_no_payment_details(apartment):
     saved = apartments.read_apartment(apartment, APARTMENT)
-    assert saved["pool_name"] == "Household Pool"
-    assert (saved["pool_bank_account"], saved["pool_bank_ifsc"], saved["pool_upi_id"]) == (
-        None, None, None)
+    assert saved["pool_name"] == "House Kitty"
+    assert (saved["pool_account_holder"], saved["pool_bank_account"], saved["pool_bank_ifsc"],
+            saved["pool_upi_id"]) == (None, None, None, None)
 
 
 def test_the_pools_details_are_saved_validated_and_audited(apartment):
@@ -114,7 +114,7 @@ def test_a_pool_field_left_out_is_kept_and_the_name_falls_back_to_the_default(ap
     assert kept["pool_name"] == "Flat 402 Kitty" and kept["pool_bank_account"] == "123456789012"
     for empty in (None, "", "   "):
         reset = apartments.update_apartment(apartment, APARTMENT, pool_name=empty)
-        assert reset["pool_name"] == "Household Pool"
+        assert reset["pool_name"] == "House Kitty"
 
 
 @pytest.mark.parametrize("field, value", [
@@ -128,7 +128,7 @@ def test_an_invalid_pool_detail_is_refused_and_nothing_changes(apartment, field,
     with pytest.raises(ValidationError) as refused:
         apartments.update_apartment(apartment, APARTMENT, **{"pool_name": "Kitty", field: value})
     assert refused.value.details["field"] == field
-    assert apartments.read_apartment(apartment, APARTMENT)["pool_name"] == "Household Pool"
+    assert apartments.read_apartment(apartment, APARTMENT)["pool_name"] == "House Kitty"
 
 
 def test_the_database_itself_refuses_bad_pool_details(apartment):
@@ -174,11 +174,11 @@ def test_co_tenants_pay_the_landlord_or_the_pool_and_each_is_named(co_tenants):
                            _slot(summary, resident_id)["paid_to_display_name"])
              for resident_id in ("alice", "bob", "chris")}
     assert names == {"alice": ("landlord", "Landlord (Kumar Yadav)"),
-                     "bob": ("pool", "Household Pool"),
+                     "bob": ("pool", "House Kitty"),
                      "chris": ("landlord", "Landlord (Kumar Yadav)")}
     bob_tx = _slot(summary, "bob")["transactions"][0]
     assert (bob_tx["counterparty_party"], bob_tx["counterparty_display_name"],
-            bob_tx["counterparty_resident_id"]) == ("pool", "Household Pool", None)
+            bob_tx["counterparty_resident_id"]) == ("pool", "House Kitty", None)
     with connect(co_tenants, read_only=True) as conn:
         stored = conn.execute(
             "SELECT counterparty_party FROM household_deposit_transaction ORDER BY row_seq"
@@ -195,9 +195,9 @@ def test_a_refund_comes_back_from_wherever_the_deposit_was_paid(co_tenants):
     slot = next(slot for slot in settled["slots"] if slot["slot_number"] == 2)
     assert [(tx["tx_type"], tx["counterparty_party"], tx["counterparty_display_name"])
             for tx in slot["transactions"]] == [
-        ("funding_payment", "pool", "Household Pool"),
-        ("move_out_deduction", "pool", "Household Pool"),
-        ("move_out_refund", "pool", "Household Pool")]
+        ("funding_payment", "pool", "House Kitty"),
+        ("move_out_deduction", "pool", "House Kitty"),
+        ("move_out_refund", "pool", "House Kitty")]
     assert (slot["paid_to_party"], slot["paid_to_display_name"]) == (None, None)
 
 
@@ -276,7 +276,7 @@ def test_the_fund_endpoint_takes_the_payee(client):
         "amount_paise": SHARE, "paid_date": TODAY, "payment_method": "upi",
         "paid_to_party": "pool"})
     assert funded.status_code == 200
-    assert _slot(funded.json(), "bob")["paid_to_display_name"] == "Household Pool"
+    assert _slot(funded.json(), "bob")["paid_to_display_name"] == "House Kitty"
 
 
 # --------------------------------------------- paying the pool by its UPI ID --
@@ -313,7 +313,7 @@ def test_a_transfer_to_the_pool_gets_the_pools_upi_link(pool_funded):
     assert len(to_pool) == 3
     bob = next(t for t in to_pool if t["from_account"] == "bob")
     assert bob["upi_id"] == "flat402@okicici"
-    assert bob["upi_uri"] == ("upi://pay?pa=flat402@okicici&pn=Household%20Pool&am=1000.00"
+    assert bob["upi_uri"] == ("upi://pay?pa=flat402@okicici&pn=House%20Kitty&am=1000.00"
                               "&cu=INR&tn=October%202026%20Flat%20402")
     assert "UPI flat402@okicici" in summary["text"]
 
@@ -409,7 +409,8 @@ def _rows(statement):
 def test_the_kitty_passbook_runs_its_balance_through_every_movement(passbooks):
     pool = pool_statements.get_payment_pools_statement(passbooks, APARTMENT)["pool_statement"]
     # The account keeps the name stored for it.
-    assert pool["account"] == {"instance_id": "__pool__", "name": "Household Pool"}
+    assert pool["account"] == {"instance_id": "__pool__", "name": "House Kitty",
+                               "account_holder": None}
     # Newest first; each balance is the kitty's after that entry.
     assert _rows(pool) == [
         ("2026-11-06", "Resident Refund", "Refund from House Kitty", "Chris", "out",

@@ -46,8 +46,11 @@ export interface Apartment {
   pincode?: string | null
   /** The parts on one line, as HRA receipts print it; the name when none are set. */
   premises_address?: string
-  /** The household pool: where residents send their shares and settlements. */
+  /** The household pool, "House Kitty" in every account and statement: where
+   * residents send their shares and settlements. */
   pool_name?: string
+  /** The legal name on the bank account or UPI ID that holds the kitty. */
+  pool_account_holder?: string | null
   pool_bank_account?: string | null
   pool_bank_ifsc?: string | null
   pool_upi_id?: string | null
@@ -411,7 +414,8 @@ export interface StatementEntry {
 }
 
 export interface PoolStatement {
-  account: { instance_id: string; name: string }
+  /** For the kitty, `account_holder` is whose bank account or UPI ID holds it. */
+  account: { instance_id: string; name: string; account_holder?: string | null }
   /** Newest first. */
   items: StatementEntry[]
   total_in_paise: number

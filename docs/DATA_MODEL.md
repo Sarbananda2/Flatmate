@@ -413,6 +413,7 @@ The API maps each marker to an HTTP 409 with the matching error code.
 | 0015 | `apartment` pool account; deposit payees | The household pool's `pool_name`, `pool_bank_account`, `pool_bank_ifsc` and `pool_upi_id`; `household_deposit_slot.paid_to_party` and `household_deposit_transaction.counterparty_party` (`resident`, `landlord` or `pool`) |
 | 0016 | `rent_lease_config.payout_beneficiary_name`; `household_contact.beneficiary_name` | Whose name the landlord's payout account is in, when it is not the landlord's own |
 | 0017 | `household_contact` and `rent_lease_config` name parts | `first_name`, `middle_name`, `last_name` on a contact and `landlord_first_name`, `landlord_middle_name`, `landlord_last_name` on the lease, filled in from the names already on file |
+| 0018 | `apartment.pool_account_holder` | The legal name on the bank account or UPI ID that holds the House Kitty. `pool_name` became the fixed `House Kitty` (also its default); a pool name changed from the defaults was kept as the account holder |
 
 Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from a single `0001_baseline.sql` that carries all six, so its migration files are `0001` and then `0007` onward: the numbering continues the history above rather than restarting.
 

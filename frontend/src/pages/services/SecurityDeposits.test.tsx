@@ -87,7 +87,7 @@ const LANDLORD = {
 const POOL = {
   instance_id: '__pool__',
   party: 'pool',
-  name: 'Household Pool',
+  name: 'House Kitty',
   bank_account: null,
   bank_ifsc: null,
   upi_id: null,
@@ -598,7 +598,7 @@ describe('the escrow pool', () => {
           slot(2, 'bob', 'Bob', {
             ...funded,
             paid_to_resident_id: null,
-            paid_to_display_name: 'Household Pool',
+            paid_to_display_name: 'House Kitty',
             paid_to_party: 'pool',
           }),
         ],
@@ -610,7 +610,7 @@ describe('the escrow pool', () => {
     expect(factsIn(dialog)).toContain('Payment Method: Direct to landlord')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     dialog = await openDeposit('Bob')
-    expect(factsIn(dialog)).toContain('Paid To: Household Pool')
+    expect(factsIn(dialog)).toContain('Paid To: House Kitty')
     expect(factsIn(dialog)).toContain('Payment Method: UPI')
   })
 
@@ -747,7 +747,7 @@ describe('recording a payment', () => {
     const paidTo = within(dialog).getByLabelText('Paid to')
     expect(within(paidTo).getAllByRole('option').map((option) => option.textContent)).toEqual([
       'Landlord (Kumar Yadav)',
-      'Household Pool',
+      'House Kitty',
     ])
     expect(paidTo).toHaveValue('landlord')
     expect(within(dialog).queryByRole('option', { name: 'Direct to landlord' })).toBeNull()
@@ -761,7 +761,7 @@ describe('recording a payment', () => {
 
     // The pool has nothing on file yet: it says where to add it.
     await userEvent.selectOptions(paidTo, 'pool')
-    expect(destination()).toHaveTextContent('Transfer toHousehold Pool')
+    expect(destination()).toHaveTextContent('Transfer toHouse Kitty')
     expect(destination()).not.toHaveTextContent('Kumar Yadav')
     expect(within(destination()).getByRole('link', { name: 'Add them on Payment Pools' })).toHaveAttribute(
       'href',

@@ -307,11 +307,11 @@ describe('RentMonth', () => {
     stub?.restore()
 
     // Nothing on file for the pool yet.
-    renderRent(overview(), {}, { ...apartment, pool_name: 'Household Pool', pool_bank_account: null, pool_bank_ifsc: null, pool_upi_id: null })
+    renderRent(overview(), {}, { ...apartment, pool_name: 'House Kitty', pool_bank_account: null, pool_bank_ifsc: null, pool_upi_id: null })
     await userEvent.click(await screen.findByRole('button', { name: 'Record rent payment from Chris' }))
     dialog = screen.getByRole('dialog', { name: 'Record Rent Payment' })
     destination = within(dialog).getByRole('region', { name: 'Payment destination' })
-    expect(destination).toHaveTextContent('Transfer toHousehold Pool')
+    expect(destination).toHaveTextContent('Transfer toHouse Kitty')
     expect(within(destination).getByRole('link', { name: 'Add them on Payment Pools' })).toHaveAttribute(
       'href',
       '/payments',

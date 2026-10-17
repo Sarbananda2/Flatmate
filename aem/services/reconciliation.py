@@ -46,7 +46,13 @@ from ..errors import ReconciliationError, ValidationError
 from ..money import format_inr
 from ..periods import normalize_month, parse_iso_date
 from ..persistence import Database, UnitOfWork
-from .common import POOL_ACCOUNT_ID, get_apartment, list_residents, resident_ids
+from .common import (
+    DEFAULT_POOL_NAME,
+    POOL_ACCOUNT_ID,
+    get_apartment,
+    list_residents,
+    resident_ids,
+)
 from .validation import SEVERITY_ERROR, validate_apartment
 
 # Entry kinds, in the order the audit view presents them.
@@ -326,7 +332,7 @@ def reconcile(db: Database, *, apartment_id: str, as_of_date: str | None = None,
 
         names = {row["resident_id"]: row["display_name"] for row in residents}
         # The pool is named on the apartment, which also says where to pay it.
-        pool_name = apartment.get("pool_name") or "Household Pool"
+        pool_name = apartment.get("pool_name") or DEFAULT_POOL_NAME
         account_rows: list[dict[str, Any]] = []
         for rid in resident_id_list:
             view = charge_view.get(rid, {})
