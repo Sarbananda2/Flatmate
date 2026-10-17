@@ -412,6 +412,7 @@ The API maps each marker to an HTTP 409 with the matching error code.
 | 0014 | `apartment` atomic address | Atomic Indian residential address fields (`flat_number`, `tower_block`, `society_name`, `locality_street`, `city`, `state`, `pincode`) |
 | 0015 | `apartment` pool account; deposit payees | The household pool's `pool_name`, `pool_bank_account`, `pool_bank_ifsc` and `pool_upi_id`; `household_deposit_slot.paid_to_party` and `household_deposit_transaction.counterparty_party` (`resident`, `landlord` or `pool`) |
 | 0016 | `rent_lease_config.payout_beneficiary_name`; `household_contact.beneficiary_name` | Whose name the landlord's payout account is in, when it is not the landlord's own |
+| 0017 | `household_contact` and `rent_lease_config` name parts | `first_name`, `middle_name`, `last_name` on a contact and `landlord_first_name`, `landlord_middle_name`, `landlord_last_name` on the lease, filled in from the names already on file |
 
 Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from a single `0001_baseline.sql` that carries all six, so its migration files are `0001` and then `0007` onward: the numbering continues the history above rather than restarting.
 
@@ -422,7 +423,7 @@ Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from 
 ### `rent_lease_config`
 Active lease parameters: landlord name, contact, PAN, bank/UPI parameters, monthly rent in paise, due day of month (1-28), and `requires_landlord_receipt` toggle.
 
-`landlord_name` is the property's legal owner: the name on the agreement and on HRA receipts. Since migration 0016, `payout_beneficiary_name` is whose name the landlord's bank account or UPI ID is in when it is someone else's -- a spouse, a parent, a family business. It sits beside the owner and never replaces them; null, or the owner's own name, means the account is the owner's. Rent and deposits are sent to the beneficiary when there is one (`effective_payout_name` in the API), and the Payment Pools landlord account goes by that name.
+`landlord_name` is the property's legal owner: the name on the agreement and on HRA receipts. Since migration 0017 it is composed from `landlord_first_name`, `landlord_middle_name` and `landlord_last_name` on every save (see *People's names* under `household_contact`). Since migration 0016, `payout_beneficiary_name` is whose name the landlord's bank account or UPI ID is in when it is someone else's -- a spouse, a parent, a family business. It sits beside the owner and never replaces them; null, or the owner's own name, means the account is the owner's. Rent and deposits are sent to the beneficiary when there is one (`effective_payout_name` in the API), and the Payment Pools landlord account goes by that name.
 
 Since migration 0006 it also holds the current contract term:
 
@@ -500,6 +501,8 @@ The people the household deals with. `role` is `owner`, `broker`, `caretaker`, `
 | `upi_id` | all but emergency utility | Where to pay them |
 | `agency_name`, `fee_amount_paise`, `fee_status` | broker | The brokerage fee in BIGINT paise, and whether it is `paid`, `pending` or `na` |
 | `responsibilities` | caretaker, society manager, emergency utility | What they look after: plumbing, gate passes, NOCs |
+
+Since migration 0017 a contact's name is kept in parts: `first_name` (required), `middle_name` and `last_name` (optional, since many names have no surname). `name` stays, composed from the parts on every write -- the parts that are there, joined by single spaces -- so everything that reads one name keeps working; it is what every read-only screen shows. A client that sends only `name` has it split: the first word, the last word, and the words between. The migration split the names already on file the same way. The owner contact's parts are kept in step with the lease's `landlord_*_name` parts.
 
 Changing a contact's role clears the fields the new role does not use. Creating, changing and removing a contact are audited under `entity_type = 'household_contact'`.
 

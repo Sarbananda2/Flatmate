@@ -155,7 +155,7 @@ describe('ContactsSection', () => {
     expect(stepNames(dialog)).toEqual(['1. Contact Identity'])
     await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
     expect(within(dialog).getByText('Choose what this contact is to the household.')).toBeInTheDocument()
-    expect(within(dialog).getByText('Enter their name.')).toBeInTheDocument()
+    expect(within(dialog).getByText('Enter first name.')).toBeInTheDocument()
 
     await userEvent.selectOptions(within(dialog).getByLabelText(/Role/), 'owner')
     expect(stepNames(dialog)).toEqual([
@@ -163,7 +163,16 @@ describe('ContactsSection', () => {
       '2. Tax Identity (HRA)',
       '3. Payout & Banking',
     ])
-    await userEvent.type(within(dialog).getByLabelText(/^Name/), 'Kumar Yadav')
+    // The name in three parts, side by side: a first name, then an optional middle and last.
+    expect(
+      within(dialog)
+        .getAllByRole('textbox')
+        .slice(0, 3)
+        .map((box) => box.closest('.field')?.querySelector('label')?.textContent),
+    ).toEqual(['First Name* (required)', 'Middle Name', 'Last Name'])
+    expect(within(dialog).getByLabelText(/^Last Name/)).toHaveAttribute('placeholder', 'e.g. Sharma')
+    await userEvent.type(within(dialog).getByLabelText(/^First Name/), ' Kumar ')
+    await userEvent.type(within(dialog).getByLabelText(/^Last Name/), 'Yadav')
     await userEvent.type(within(dialog).getByLabelText(/Phone/), '12345')
     // A malformed value is pointed out as it is typed.
     expect(within(dialog).getByText('Enter a phone number of 7 to 15 digits.')).toBeInTheDocument()
@@ -184,17 +193,43 @@ describe('ContactsSection', () => {
     expect(within(dialog).getByRole('button', { name: 'Back' })).toBeInTheDocument()
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
-    // Whose account it is comes first, right above the bank account.
-    expect(
-      within(dialog)
+    // Whose account it is comes first, as a choice: the owner's own by default,
+    // named as step 1 has them, locked so nothing is typed.
+    const choice = within(dialog).getByRole('radiogroup', { name: 'Payout Beneficiary' })
+    const same = within(choice).getByRole('radio', { name: 'Same as Landlord (Kumar Yadav)' })
+    expect(same).toHaveAttribute('aria-checked', 'true')
+    expect(within(dialog)
         .getAllByRole('textbox')
-        .map((box) => box.closest('.field')?.querySelector('label')?.textContent),
-    ).toEqual(['Payout Beneficiary', 'Bank account number', 'IFSC', 'UPI ID', 'Notes'])
-    const beneficiary = within(dialog).getByLabelText(/Payout Beneficiary/)
-    expect(beneficiary).toHaveAttribute('placeholder', 'Leave blank if payments go to the owner')
+        .map((box) => box.closest('.field')?.querySelector('label')?.textContent)).toEqual([
+      'Beneficiary Name',
+      'Bank account number',
+      'IFSC',
+      'UPI ID',
+      'Notes',
+    ])
+    const locked = within(dialog).getByLabelText(/^Beneficiary Name/)
+    expect(locked).toBeDisabled()
+    expect(locked).toHaveValue('Kumar Yadav')
+    expect(locked).toHaveAccessibleDescription("🔒 Locked to the landlord's legal name. Switch to 'Custom Beneficiary' above to edit.")
+    // Someone else's account: a name, right above the bank account, required.
+    await userEvent.click(within(choice).getByRole('radio', { name: 'Custom Beneficiary' }))
+    expect(within(dialog)
+        .getAllByRole('textbox')
+        .map((box) => box.closest('.field')?.querySelector('label')?.textContent)).toEqual([
+      'Beneficiary Name* (required)',
+      'Bank account number',
+      'IFSC',
+      'UPI ID',
+      'Notes',
+    ])
+    const beneficiary = within(dialog).getByLabelText(/^Beneficiary Name/)
+    // Step 1 was already tried with nothing in it, so the missing name is flagged at once.
     expect(beneficiary).toHaveAccessibleDescription(
-      'Whose bank account or UPI ID receives payments if different from the owner.',
+      expect.stringContaining('Whose bank account or UPI ID receives payouts (e.g., spouse, parent, family business).'),
     )
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Add Contact' }))
+    expect(within(dialog).getByText('Enter the beneficiary name.')).toBeInTheDocument()
+    expect(sent('POST', '/api/property/contacts')).toBeUndefined()
     await userEvent.type(beneficiary, ' Anita Yadav ')
     // Moving between steps saved nothing.
     expect(sent('POST', '/api/property/contacts')).toBeUndefined()
@@ -203,7 +238,9 @@ describe('ContactsSection', () => {
     await waitFor(() => expect(sent('POST', '/api/property/contacts')).toBeDefined())
     expect(sent('POST', '/api/property/contacts')!.body).toEqual({
       role: 'owner',
-      name: 'Kumar Yadav',
+      first_name: 'Kumar',
+      middle_name: null,
+      last_name: 'Yadav',
       phone: '+91 98765 43210',
       email: 'kumar@example.com',
       notes: null,
@@ -246,7 +283,7 @@ describe('ContactsSection', () => {
       '2. Brokerage & Agency',
       '3. Payout & Notes',
     ])
-    await userEvent.type(within(dialog).getByLabelText(/^Name/), 'Ravi')
+    await userEvent.type(within(dialog).getByLabelText(/^First Name/), 'Ravi')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
     expect(within(dialog).queryByLabelText(/PAN/)).toBeNull()
     await userEvent.type(within(dialog).getByLabelText('Agency'), 'NestAway Realty')
@@ -254,7 +291,7 @@ describe('ContactsSection', () => {
     await userEvent.selectOptions(within(dialog).getByLabelText(/Fee status/), 'paid')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Next' }))
     expect(within(dialog).queryByLabelText(/Bank account number/)).toBeNull()
-    expect(within(dialog).queryByLabelText(/Payout Beneficiary/)).toBeNull()
+    expect(within(dialog).queryByRole('radiogroup', { name: 'Payout Beneficiary' })).toBeNull()
     await userEvent.type(within(dialog).getByLabelText(/UPI ID/), 'ravi@okaxis')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Add Contact' }))
     await waitFor(() => expect(sent('POST', '/api/property/contacts')).toBeDefined())
@@ -298,10 +335,72 @@ describe('ContactsSection', () => {
     await waitFor(() => expect(sent('PATCH', '/api/property/contacts/caretaker-1')).toBeDefined())
     expect(sent('PATCH', '/api/property/contacts/caretaker-1')!.body).toMatchObject({
       role: 'caretaker',
-      name: 'Mohan',
+      first_name: 'Mohan',
+      middle_name: null,
+      last_name: null,
       phone: '9876522222',
       responsibilities: 'Plumbing, gate passes',
     })
+  })
+
+  it("edits a contact's name in its parts, and shows it whole", async () => {
+    const rajesh = {
+      ...OWNER,
+      name: 'Rajesh Kumar Sharma',
+      first_name: 'Rajesh',
+      middle_name: 'Kumar',
+      last_name: 'Sharma',
+    }
+    open([rajesh], {
+      'PATCH /api/property/contacts/owner-1': { ...rajesh, name: 'Rajesh Sharma', middle_name: null },
+    })
+    // Read-only, the name is one.
+    const card = await screen.findByRole('listitem', { name: 'Rajesh Kumar Sharma' })
+    expect(within(card).queryByText('Rajesh')).toBeNull()
+    await userEvent.click(within(card).getByRole('button', { name: 'Edit Rajesh Kumar Sharma' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByLabelText(/^First Name/)).toHaveValue('Rajesh')
+    expect(within(dialog).getByLabelText(/^Middle Name/)).toHaveValue('Kumar')
+    expect(within(dialog).getByLabelText(/^Last Name/)).toHaveValue('Sharma')
+    await userEvent.clear(within(dialog).getByLabelText(/^Middle Name/))
+    await goTo(dialog, '3. Payout & Banking')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() => expect(sent('PATCH', '/api/property/contacts/owner-1')).toBeDefined())
+    expect(sent('PATCH', '/api/property/contacts/owner-1')!.body).toMatchObject({
+      first_name: 'Rajesh',
+      middle_name: null,
+      last_name: 'Sharma',
+    })
+    expect(sent('PATCH', '/api/property/contacts/owner-1')!.body).not.toHaveProperty('name')
+  })
+
+  it("opens on the owner's beneficiary, and goes back to the owner's own account", async () => {
+    open([{ ...OWNER, beneficiary_name: 'Anita Yadav' }], { 'PATCH /api/property/contacts/owner-1': OWNER })
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit Kumar Yadav' }))
+    const dialog = screen.getByRole('dialog')
+    // The landlord on the choice is the name as it is being edited.
+    await userEvent.type(within(dialog).getByLabelText(/^Middle Name/), 'S.')
+    await goTo(dialog, '3. Payout & Banking')
+    expect(within(dialog).getByRole('radio', { name: 'Custom Beneficiary' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(dialog).getByLabelText(/^Beneficiary Name/)).toHaveValue('Anita Yadav')
+    await userEvent.click(within(dialog).getByRole('radio', { name: 'Same as Landlord (Kumar S. Yadav)' }))
+    expect(within(dialog).getByLabelText(/^Beneficiary Name/)).toBeDisabled()
+    expect(within(dialog).getByLabelText(/^Beneficiary Name/)).toHaveValue('Kumar S. Yadav')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() => expect(sent('PATCH', '/api/property/contacts/owner-1')).toBeDefined())
+    expect(sent('PATCH', '/api/property/contacts/owner-1')!.body).toMatchObject({
+      middle_name: 'S.',
+      beneficiary_name: null,
+    })
+  })
+
+  it('splits a whole name it has no parts for', async () => {
+    open([{ ...CARETAKER, name: 'Venkata Sai Krishna Rao' }])
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit Venkata Sai Krishna Rao' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByLabelText(/^First Name/)).toHaveValue('Venkata')
+    expect(within(dialog).getByLabelText(/^Middle Name/)).toHaveValue('Sai Krishna')
+    expect(within(dialog).getByLabelText(/^Last Name/)).toHaveValue('Rao')
   })
 
   it('removes a contact after confirmation', async () => {

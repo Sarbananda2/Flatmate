@@ -8,10 +8,11 @@ from .base import Repository
 #: Columns of ``rent_lease_config`` a service may set, besides its keys and
 #: timestamps. Column names reach the SQL text, so they are checked against this.
 _LEASE_COLUMNS = frozenset({
-    "landlord_name", "landlord_phone", "landlord_email", "landlord_pan",
+    "landlord_name", "landlord_first_name", "landlord_middle_name", "landlord_last_name",
+    "landlord_phone", "landlord_email", "landlord_pan",
     "landlord_bank_account", "landlord_bank_ifsc", "landlord_upi_id",
-    "payout_beneficiary_name", "monthly_rent_paise", "due_day_of_month", "requires_landlord_receipt",
-    "expense_definition_id", "lease_start_date", "lease_end_date", "duration_months",
+    "payout_beneficiary_name", "monthly_rent_paise", "due_day_of_month",
+    "requires_landlord_receipt", "expense_definition_id", "lease_start_date", "lease_end_date", "duration_months",
     "notice_period_days", "lock_in_months", "security_deposit_paise", "escalation_type",
     "escalation_percent", "renewal_rent_paise", "lease_status", "notice_served_date",
     "target_handover_date", "rent_split_mode",

@@ -35,7 +35,8 @@ def create_contact(payload: ContactCreate, db: Db, apartment_id: ApartmentId,
     """Role-specific details (an owner's PAN and bank, a broker's agency and fee,
     a caretaker's responsibilities) are refused for any other role."""
     try:
-        return household.create_contact(db, apartment_id, payload.model_dump(),
+        return household.create_contact(db, apartment_id,
+                                        payload.model_dump(exclude_unset=True),
                                         actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc

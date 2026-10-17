@@ -137,6 +137,10 @@ const editTerms = async () =>
   userEvent.click(await screen.findByRole('button', { name: 'Edit tenancy terms' }))
 
 /** The editor shows one step at a time; its pills jump between them. */
+/** One part of a new lease's landlord name. */
+const landlordPart = (part: 'First Name' | 'Middle Name' | 'Last Name') =>
+  within(screen.getByRole('group', { name: 'Landlord name' })).getByLabelText(new RegExp(`^${part}`))
+
 const goToStep = (label: string) =>
   userEvent.click(screen.getByRole('tab', { name: new RegExp(`^${label.replace('.', '\\.')}`) }))
 
@@ -159,13 +163,27 @@ describe('LeaseContractSection', () => {
     expect(screen.queryByRole('switch')).toBeNull()
 
     await userEvent.type(screen.getByLabelText(/Monthly rent/), '45,000.50')
-    await userEvent.type(screen.getByLabelText(/Landlord name/), ' Rajesh Kumar Sharma ')
+    // The landlord's name in three parts, side by side.
+    const group = screen.getByRole('group', { name: 'Landlord name' })
+    expect(within(group).getAllByRole('textbox').map((box) => box.closest('.field')?.querySelector('label')?.textContent)).toEqual([
+      'First Name* (required)',
+      'Middle Name',
+      'Last Name',
+    ])
+    expect(group).toHaveAccessibleDescription(
+      'Their phone and PAN are added to the owner under Stakeholders & Contacts, and their bank details under Payment Pools.',
+    )
+    await userEvent.type(landlordPart('First Name'), ' Rajesh ')
+    await userEvent.type(landlordPart('Middle Name'), 'Kumar')
+    await userEvent.type(landlordPart('Last Name'), 'Sharma ')
     await userEvent.selectOptions(screen.getByLabelText('Due day of month'), '7')
     await userEvent.click(await saveOnLastStep('Set Up Lease'))
 
     await waitFor(() => expect(posted()).toBeDefined())
     expect(posted()!.body).toEqual({
-      landlord_name: 'Rajesh Kumar Sharma',
+      landlord_first_name: 'Rajesh',
+      landlord_middle_name: 'Kumar',
+      landlord_last_name: 'Sharma',
       monthly_rent_paise: 4500050,
       due_day_of_month: 7,
       // A new lease leaves the rent category to the backend.
@@ -202,7 +220,8 @@ describe('LeaseContractSection', () => {
     expect(panel).toHaveTextContent('Bank & payout details are managed under Payment Pools.')
     expect(within(panel).getByRole('link', { name: 'Payment Pools' })).toHaveAttribute('href', '/payments')
     // No landlord inputs on the page itself.
-    expect(screen.queryByLabelText(/Landlord name/)).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Landlord name' })).toBeNull()
+    expect(screen.queryByLabelText(/First Name/)).toBeNull()
     expect(screen.queryByRole('link', { name: 'Open monthly rent' })).toBeNull()
   })
 
@@ -370,6 +389,9 @@ describe('LeaseContractSection', () => {
     expect(body).toMatchObject({ monthly_rent_paise: 4500000, expense_definition_id: null })
     for (const field of [
       'landlord_name',
+      'landlord_first_name',
+      'landlord_middle_name',
+      'landlord_last_name',
       'landlord_phone',
       'landlord_pan',
       'landlord_bank_account',
@@ -398,7 +420,7 @@ describe('LeaseContractSection', () => {
   it('saves the contract term', async () => {
     renderPage(null)
     await userEvent.type(await screen.findByLabelText(/Monthly rent/), '28500')
-    await userEvent.type(screen.getByLabelText(/Landlord name/), 'Kumar Yadav')
+    await userEvent.type(landlordPart('First Name'), 'Kumar')
 
     await userEvent.click(screen.getByRole('button', { name: 'Next: Contract Term' }))
     // The date is shown in full; the labelled control is still a date input.
@@ -432,7 +454,7 @@ describe('LeaseContractSection', () => {
   it('projects the renewal rent for each escalation method', async () => {
     renderPage(null)
     await userEvent.type(await screen.findByLabelText(/Monthly rent/), '28500')
-    await userEvent.type(screen.getByLabelText(/Landlord name/), 'Kumar Yadav')
+    await userEvent.type(landlordPart('First Name'), 'Kumar')
     await goToStep('4. Escalation Clause')
     // The banner disappears while a rate is half typed, so look it up each time.
     const banner = () => screen.getByRole('status', { name: 'Projected renewal rent' })
@@ -520,24 +542,23 @@ describe('LeaseContractSection', () => {
     expect(posted()).toBeUndefined()
   })
 
-  it('needs the landlord name to set up a new lease', async () => {
+  it("needs the landlord's first name to set up a new lease", async () => {
     renderPage(null)
     await userEvent.type(await screen.findByLabelText(/Monthly rent/), '28500')
-    const name = screen.getByLabelText(/Landlord name/)
-    await userEvent.type(name, 'x')
-    await userEvent.clear(name)
-    expect(screen.getByText('Landlord name is required.')).toBeInTheDocument()
+    // A middle and last name are optional; without a first name there is no landlord.
+    await userEvent.type(landlordPart('Last Name'), 'Yadav')
+    expect(screen.getByText("Enter the landlord's first name.")).toBeInTheDocument()
     expect(await saveOnLastStep('Set Up Lease')).toBeDisabled()
     expect(screen.getByRole('tab', { name: '1. Monthly Rent (needs attention)' })).toBeInTheDocument()
     await goToStep('1. Monthly Rent')
-    await userEvent.type(screen.getByLabelText(/Landlord name/), 'Kumar Yadav')
+    await userEvent.type(landlordPart('First Name'), 'Kumar')
     expect(await saveOnLastStep('Set Up Lease')).toBeEnabled()
   })
 
   it('does not flag a new lease before anything is typed', async () => {
     renderPage(null)
     await screen.findByLabelText(/Monthly rent/)
-    expect(screen.queryByText('Landlord name is required.')).not.toBeInTheDocument()
+    expect(screen.queryByText("Enter the landlord's first name.")).not.toBeInTheDocument()
     expect(screen.queryByText('Monthly rent must be greater than zero.')).not.toBeInTheDocument()
     expect(await saveOnLastStep('Set Up Lease')).toBeDisabled()
   })

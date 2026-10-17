@@ -32,7 +32,7 @@ import {
   Stat,
   type BadgeTone,
 } from '../components/Primitives'
-import { DateField, MoneyInput, SelectField, TextAreaField, TextField } from '../components/Form'
+import { DateField, MoneyInput, PayoutBeneficiaryField, SelectField, TextAreaField, TextField } from '../components/Form'
 import {
   BUTTON_PRIMARY,
   BUTTON_SECONDARY,
@@ -48,6 +48,8 @@ import { type Resource, useDebounced, useMutation, useResource } from '../lib/us
 import {
   ACCOUNT_MESSAGE,
   ACCOUNT_PATTERN,
+  BENEFICIARY_MESSAGE,
+  BENEFICIARY_PATTERN,
   IFSC_MESSAGE,
   IFSC_PATTERN,
   UPI_MESSAGE,
@@ -929,15 +931,16 @@ export function HouseholdPoolCard({
   )
 }
 
-/** The name an account goes by, as its dialog asks for it. */
-interface NameField {
-  label: string
-  /** What to say when it is left empty. */
-  missing: string
-  hint?: string
-}
+/**
+ * How an account is named in its dialog: the kitty by a name of its own, the
+ * landlord by whose account it is -- theirs, or a payout beneficiary's.
+ */
+type AccountNaming =
+  | { kind: 'account'; label: string; missing: string }
+  | { kind: 'beneficiary'; landlordName: string }
 
-/** An account's name and where to pay it, as the edit dialog holds them. */
+/** An account's name and where to pay it, as the edit dialog holds them. For
+ * the landlord, `name` is the payout beneficiary's, empty when it is theirs. */
 interface AccountDetails {
   name: string
   account: string
@@ -948,13 +951,14 @@ interface AccountDetails {
 /**
  * The one dialog both payment accounts are edited in: the name the account
  * goes by, then its bank account, IFSC and UPI ID, checked as the backend
- * checks them. Empty details are sent as null, which clears them.
+ * checks them. Empty details are sent as null, which clears them, and so is
+ * the landlord's beneficiary when the account is the landlord's own.
  */
 function PaymentAccountModal({
   title,
   description,
   formId,
-  nameField,
+  naming,
   initial,
   save: send,
   onClose,
@@ -963,23 +967,37 @@ function PaymentAccountModal({
   title: string
   description: string
   formId: string
-  nameField: NameField
+  naming: AccountNaming
   initial: AccountDetails
-  save: (details: { name: string; account: string | null; ifsc: string | null; upi: string | null }) => Promise<unknown>
+  save: (details: {
+    name: string | null
+    account: string | null
+    ifsc: string | null
+    upi: string | null
+  }) => Promise<unknown>
   onClose: () => void
   onSaved: () => void
 }) {
   const [name, setName] = useState(initial.name)
+  // For the landlord: whether the account is someone else's.
+  const [custom, setCustom] = useState(Boolean(initial.name.trim()))
   const [account, setAccount] = useState(initial.account)
   const [ifsc, setIfsc] = useState(initial.ifsc)
   const [upi, setUpi] = useState(initial.upi)
   const [submitted, setSubmitted] = useState(false)
+  const named = naming.kind === 'account' || custom
   const errors = {
-    name: !name.trim()
-      ? nameField.missing
-      : name.trim().length > 200
-        ? 'Keep it to 200 characters.'
-        : null,
+    name: !named
+      ? null
+      : !name.trim()
+        ? naming.kind === 'account'
+          ? naming.missing
+          : 'Enter the beneficiary name.'
+        : name.trim().length > 200
+          ? 'Keep it to 200 characters.'
+          : naming.kind === 'beneficiary'
+            ? patternError(name, BENEFICIARY_PATTERN, BENEFICIARY_MESSAGE)
+            : null,
     account: patternError(account, ACCOUNT_PATTERN, ACCOUNT_MESSAGE),
     ifsc: patternError(ifsc.toUpperCase(), IFSC_PATTERN, IFSC_MESSAGE),
     upi: patternError(upi, UPI_PATTERN, UPI_MESSAGE),
@@ -988,7 +1006,7 @@ function PaymentAccountModal({
   const save = useMutation(
     () =>
       send({
-        name: name.trim(),
+        name: named ? name.trim() : null,
         account: account.trim() || null,
         ifsc: ifsc.trim().toUpperCase() || null,
         upi: upi.trim() || null,
@@ -1024,15 +1042,25 @@ function PaymentAccountModal({
         }}
       >
         {save.error && <ErrorNotice error={save.error} />}
-        <TextField
-          label={nameField.label}
-          value={name}
-          onChange={setName}
-          required
-          maxLength={210}
-          hint={nameField.hint}
-          error={submitted ? errors.name : null}
-        />
+        {naming.kind === 'account' ? (
+          <TextField
+            label={naming.label}
+            value={name}
+            onChange={setName}
+            required
+            maxLength={210}
+            error={submitted ? errors.name : null}
+          />
+        ) : (
+          <PayoutBeneficiaryField
+            landlordName={naming.landlordName}
+            custom={custom}
+            onCustomChange={setCustom}
+            value={name}
+            onChange={setName}
+            error={submitted ? errors.name : null}
+          />
+        )}
         <TextField
           label="Bank Account"
           value={account}
@@ -1077,7 +1105,7 @@ function HouseholdPoolModal({
       title={POOL_TITLE}
       description="Where residents send the House Kitty its money. Bank details and the UPI ID are optional."
       formId="house-kitty-form"
-      nameField={{ label: 'Account Name', missing: 'Enter the account name.' }}
+      naming={{ kind: 'account', label: 'Account Name', missing: 'Enter the account name.' }}
       initial={{
         name: apartment.pool_name || 'House Kitty',
         account: apartment.pool_bank_account ?? '',
@@ -1102,17 +1130,12 @@ function HouseholdPoolModal({
 
 const LANDLORD_TITLE = 'Landlord Account'
 
-/** Whether the payout account is in someone else's name than the owner's. */
-function heldForOwner(beneficiary: string | null | undefined, ownerName: string | null | undefined) {
-  return !!beneficiary?.trim() && beneficiary.trim().toLowerCase() !== (ownerName ?? '').trim().toLowerCase()
-}
-
 /** The owner's name and whose name their account is in: the lease's, or the
  * owner contact's while there is no lease. */
 function landlordNames(config: RentLeaseConfig | null, owner: HouseholdContact | null) {
   const ownerName = config ? config.landlord_name : owner?.name
   const beneficiary = config ? config.payout_beneficiary_name : owner?.beneficiary_name
-  return { ownerName, accountName: beneficiary || ownerName }
+  return { ownerName, beneficiary, accountName: beneficiary || ownerName }
 }
 
 /**
@@ -1209,8 +1232,8 @@ export function LandlordAccountCard({
 /**
  * The landlord's account in the shared dialog, saved to the lease, which the
  * backend copies to the owner contact. The landlord stays the owner on the
- * lease: a payout beneficiary other than them is saved as whose account it
- * is, and their own name clears that.
+ * lease: the account is either theirs, which saves no beneficiary, or a
+ * named payout beneficiary's. The landlord's name is never sent from here.
  */
 function LandlordAccountModal({
   config,
@@ -1223,32 +1246,27 @@ function LandlordAccountModal({
   onClose: () => void
   onSaved: () => void
 }) {
-  const { ownerName, accountName } = landlordNames(config, owner)
+  const { ownerName, beneficiary } = landlordNames(config, owner)
   return (
     <PaymentAccountModal
       title={LANDLORD_TITLE}
       description="Where rent and direct security deposits are paid. Saved to the lease and the owner contact together. Bank details and the UPI ID are optional."
       formId="landlord-account-form"
-      nameField={{
-        label: 'Payout Beneficiary',
-        missing: 'Enter the payout beneficiary.',
-        hint: 'Whose bank account or UPI ID receives payments. Defaults to the landlord.',
-      }}
+      naming={{ kind: 'beneficiary', landlordName: ownerName || 'the landlord' }}
       initial={{
-        name: accountName || '',
+        name: beneficiary ?? '',
         account: config?.landlord_bank_account || owner?.bank_account_no || '',
         ifsc: config?.landlord_bank_ifsc || owner?.bank_ifsc || '',
         upi: config?.landlord_upi_id || owner?.upi_id || '',
       }}
-      save={({ name, account, ifsc, upi }) => {
-        const bank = { landlord_bank_account: account, landlord_bank_ifsc: ifsc, landlord_upi_id: upi }
-        // With no landlord on file yet, the name is the landlord's.
-        if (!ownerName) return api.post('/api/rent/config', { landlord_name: name, ...bank })
-        return api.post('/api/rent/config', {
-          payout_beneficiary_name: heldForOwner(name, ownerName) ? name : null,
-          ...bank,
+      save={({ name, account, ifsc, upi }) =>
+        api.post('/api/rent/config', {
+          payout_beneficiary_name: name,
+          landlord_bank_account: account,
+          landlord_bank_ifsc: ifsc,
+          landlord_upi_id: upi,
         })
-      }}
+      }
       onClose={onClose}
       onSaved={onSaved}
     />

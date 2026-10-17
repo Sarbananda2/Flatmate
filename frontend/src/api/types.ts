@@ -878,7 +878,12 @@ export interface RentLeaseConfig {
   apartment_id: string
   expense_definition_id: string | null
   expense_definition_name: string | null
+  /** The whole name, composed from the parts below. */
   landlord_name: string
+  /** The landlord's name in parts; null on a lease saved before names had parts. */
+  landlord_first_name?: string | null
+  landlord_middle_name?: string | null
+  landlord_last_name?: string | null
   landlord_phone: string | null
   landlord_email: string | null
   landlord_pan: string | null
@@ -1411,7 +1416,12 @@ export interface HouseholdContact {
   contact_id: string
   apartment_id: string
   role: ContactRole
+  /** The whole name, composed from the parts below. Shown wherever a name is read. */
   name: string
+  /** The name in parts, as it is edited. */
+  first_name?: string | null
+  middle_name?: string | null
+  last_name?: string | null
   phone: string | null
   email: string | null
   pan: string | null

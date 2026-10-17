@@ -13,6 +13,7 @@ import { type ReactNode, useId } from 'react'
 import { Calendar } from 'lucide-react'
 import { clsx } from 'clsx'
 import { formatDateFull, parseKwh, parseRupees } from '../lib/format'
+import { NAME_PART_MAX_LENGTH, type PersonName } from '../lib/names'
 
 export function Field({
   label,
@@ -106,6 +107,141 @@ export function TextField({
         />
       )}
     </Field>
+  )
+}
+
+/**
+ * A person's name as three fields side by side -- a required first name, then
+ * an optional middle and last name, since many names have no surname -- that
+ * stack on a narrow screen. With a `legend` they are grouped under it, so each
+ * is announced as part of whose name it is.
+ */
+export function PersonNameFields({
+  value,
+  onChange,
+  firstNameError,
+  legend,
+  hint,
+}: {
+  value: PersonName
+  onChange: (value: PersonName) => void
+  firstNameError?: string | null
+  /** Whose name it is, where the form is about more than this person. */
+  legend?: string
+  /** Shown under the three fields. */
+  hint?: ReactNode
+}) {
+  const hintId = useId()
+  const set = (part: keyof PersonName) => (next: string) => onChange({ ...value, [part]: next })
+  const fields = (
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+      <TextField
+        label="First Name"
+        value={value.first}
+        onChange={set('first')}
+        required
+        maxLength={NAME_PART_MAX_LENGTH}
+        placeholder="e.g. Rajesh"
+        error={firstNameError}
+      />
+      <TextField
+        label="Middle Name"
+        value={value.middle}
+        onChange={set('middle')}
+        maxLength={NAME_PART_MAX_LENGTH}
+        placeholder="e.g. Kumar"
+      />
+      <TextField
+        label="Last Name"
+        value={value.last}
+        onChange={set('last')}
+        maxLength={NAME_PART_MAX_LENGTH}
+        placeholder="e.g. Sharma"
+      />
+    </div>
+  )
+  if (!legend && !hint) return fields
+  return (
+    <fieldset className="m-0 p-0 border-0 min-w-0" aria-describedby={hint ? hintId : undefined}>
+      {legend && <legend className="field-label p-0 mb-1.5">{legend}</legend>}
+      {fields}
+      {hint && (
+        <p className="field-hint m-0 mt-1.5" id={hintId}>
+          {hint}
+        </p>
+      )}
+    </fieldset>
+  )
+}
+
+/**
+ * Whose account a landlord's payouts go to: their own, the default, or someone
+ * else's -- a spouse, a parent, a family business -- named. An affirmative
+ * choice rather than a box to leave blank, so the landlord's own name is never
+ * typed in again as a beneficiary. The name box is always there: locked to the
+ * landlord's name for their own account, open to edit for someone else's.
+ */
+export function PayoutBeneficiaryField({
+  landlordName,
+  custom,
+  onCustomChange,
+  value,
+  onChange,
+  error,
+}: {
+  /** The landlord's whole name, as it stands in the form. */
+  landlordName: string
+  /** Whether the payouts go to someone other than the landlord. */
+  custom: boolean
+  onCustomChange: (custom: boolean) => void
+  /** That someone's name. */
+  value: string
+  onChange: (value: string) => void
+  error?: string | null
+}) {
+  const labelId = useId()
+  const choice = (selected: boolean) =>
+    clsx(
+      'px-3 py-1.5 text-xs font-semibold rounded-md text-left transition-colors cursor-pointer',
+      selected
+        ? 'bg-[var(--accent)] text-white shadow-xs'
+        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
+    )
+  return (
+    <div className="field">
+      <span className="field-label" id={labelId}>
+        Payout Beneficiary
+      </span>
+      <div
+        role="radiogroup"
+        aria-labelledby={labelId}
+        className="inline-flex flex-wrap justify-self-start max-w-full p-1 gap-1 rounded-lg border border-[var(--border-medium)] bg-[var(--bg-elevated)]"
+      >
+        <button type="button" role="radio" aria-checked={!custom} onClick={() => onCustomChange(false)} className={choice(!custom)}>
+          Same as Landlord ({landlordName})
+        </button>
+        <button type="button" role="radio" aria-checked={custom} onClick={() => onCustomChange(true)} className={choice(custom)}>
+          Custom Beneficiary
+        </button>
+      </div>
+      <div className="mt-1.5">
+        <TextField
+          label="Beneficiary Name"
+          value={custom ? value : landlordName}
+          onChange={onChange}
+          disabled={!custom}
+          required={custom}
+          maxLength={200}
+          placeholder="e.g. Anita Sharma"
+          hint={
+            custom
+              ? 'Whose bank account or UPI ID receives payouts (e.g., spouse, parent, family business).'
+              : "🔒 Locked to the landlord's legal name. Switch to 'Custom Beneficiary' above to edit."
+          }
+          error={custom ? error : null}
+        />
+      </div>
+    </div>
   )
 }
 

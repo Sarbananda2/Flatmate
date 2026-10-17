@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
-import { DateField, Field, MoneyInput, SelectField, TextField } from '../../components/Form'
+import { DateField, Field, MoneyInput, PersonNameFields, SelectField, TextField } from '../../components/Form'
 import { useToast } from '../../components/Toast'
 import {
   BUTTON_PRIMARY,
@@ -31,6 +31,7 @@ import { LeaseNoticeBanner } from './LeaseLifecycle'
 import { api } from '../../api/client'
 import { useMutation, useResource } from '../../lib/useApi'
 import { leaseDurationOptions } from '../../lib/lease'
+import { EMPTY_NAME, type PersonName, nameParts } from '../../lib/names'
 import {
   escalatedPaise,
   formatDate,
@@ -191,7 +192,7 @@ function LeaseForm({
   const [dueDay, setDueDay] = useState(String(config?.due_day_of_month ?? 5))
   // Only asked for when the lease is first set up; afterwards the landlord's
   // details are edited on the owner contact, which keeps the lease in step.
-  const [name, setName] = useState('')
+  const [landlord, setLandlord] = useState<PersonName>(EMPTY_NAME)
   const [touched, setTouched] = useState({ rent: false, name: false, renewal: false })
   const touch = (field: keyof typeof touched) =>
     setTouched((current) => (current[field] ? current : { ...current, [field]: true }))
@@ -219,13 +220,20 @@ function LeaseForm({
   const percentValue = percentage(percent)
   const durationOptions = leaseDurationOptions(durationMonths)
 
+  const landlordName = nameParts(landlord)
   const save = useMutation(
     () =>
       // Only the tenancy terms are sent. The backend keeps everything left
       // out -- the landlord's details, the deposit, the receipt preference --
-      // as the lease already has it.
+      // as the lease already has it. A new lease names its landlord, in parts.
       api.post<RentLeaseConfig>('/api/rent/config', {
-        ...(config ? {} : { landlord_name: name.trim() }),
+        ...(config
+          ? {}
+          : {
+              landlord_first_name: landlordName.first,
+              landlord_middle_name: landlordName.middle,
+              landlord_last_name: landlordName.last,
+            }),
         monthly_rent_paise: rentPaise,
         due_day_of_month: Number(dueDay),
         // The end date is left to the backend, which computes it from these two.
@@ -247,7 +255,7 @@ function LeaseForm({
       },
     },
   )
-  const nameError = !config && name.trim().length === 0 ? 'Landlord name is required.' : null
+  const nameError = !config && !landlordName.first ? "Enter the landlord's first name." : null
   const rentError = !rentOk || rentPaise <= 0 ? 'Monthly rent must be greater than zero.' : null
   const renewalError =
     escalation === 'fixed' && (!renewalOk || renewalPaise <= 0)
@@ -332,18 +340,19 @@ function LeaseForm({
         {step === 'contract' && (
           <div className={fieldLayout}>
             {!config && (
-              <TextField
-                label="Landlord name"
-                required
-                value={name}
-                onChange={(value) => {
-                  touch('name')
-                  setName(value)
-                }}
-                maxLength={200}
-                error={shownNameError}
-                hint="Their phone, PAN and bank details are added to the owner under Stakeholders & Contacts."
-              />
+              // The whole width of the page's two columns, so the three parts sit in a row.
+              <div className={inDialog ? undefined : 'md:col-span-2'}>
+                <PersonNameFields
+                  legend="Landlord name"
+                  value={landlord}
+                  onChange={(value) => {
+                    touch('name')
+                    setLandlord(value)
+                  }}
+                  firstNameError={shownNameError}
+                  hint="Their phone and PAN are added to the owner under Stakeholders & Contacts, and their bank details under Payment Pools."
+                />
+              </div>
             )}
             <MoneyInput
               label="Monthly rent"

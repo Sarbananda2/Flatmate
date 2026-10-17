@@ -24,7 +24,14 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
-import { MoneyInput, SelectField, TextAreaField, TextField } from '../../components/Form'
+import {
+  MoneyInput,
+  PayoutBeneficiaryField,
+  PersonNameFields,
+  SelectField,
+  TextAreaField,
+  TextField,
+} from '../../components/Form'
 import {
   BUTTON_PRIMARY,
   BUTTON_QUIET,
@@ -37,9 +44,12 @@ import { useToast } from '../../components/Toast'
 import { api } from '../../api/client'
 import { type Resource, useMutation, useResource } from '../../lib/useApi'
 import { paiseToInput, parseRupees } from '../../lib/format'
+import { NAME_PART_MAX_LENGTH, type PersonName, composeFullName, nameParts, nameToEdit } from '../../lib/names'
 import {
   ACCOUNT_MESSAGE,
   ACCOUNT_PATTERN,
+  BENEFICIARY_MESSAGE,
+  BENEFICIARY_PATTERN,
   IFSC_MESSAGE,
   IFSC_PATTERN,
   UPI_MESSAGE,
@@ -392,10 +402,14 @@ export function ContactModal({
   onDone: (contact: HouseholdContact) => void
 }) {
   const [role, setRole] = useState<ContactRole | ''>(contact?.role ?? fixedRole ?? '')
-  const [name, setName] = useState(contact?.name ?? '')
+  const [name, setName] = useState<PersonName>(() =>
+    nameToEdit({ first: contact?.first_name, middle: contact?.middle_name, last: contact?.last_name }, contact?.name),
+  )
   const [phone, setPhone] = useState(contact?.phone ?? '')
   const [email, setEmail] = useState(contact?.email ?? '')
   const [pan, setPan] = useState(contact?.pan ?? '')
+  // An owner is paid into their own account unless they name someone else's.
+  const [customBeneficiary, setCustomBeneficiary] = useState(Boolean(contact?.beneficiary_name?.trim()))
   const [beneficiary, setBeneficiary] = useState(contact?.beneficiary_name ?? '')
   const [account, setAccount] = useState(contact?.bank_account_no ?? '')
   const [ifsc, setIfsc] = useState(contact?.bank_ifsc ?? '')
@@ -422,14 +436,24 @@ export function ContactModal({
   const parsedFee = parseRupees(fee, { allowEmpty: true })
   const errors = {
     role: role ? null : 'Choose what this contact is to the household.',
-    name: name.trim() ? (name.trim().length > 200 ? 'Keep it to 200 characters.' : null) : 'Enter their name.',
+    firstName: !name.first.trim()
+      ? 'Enter first name.'
+      : name.first.trim().length > NAME_PART_MAX_LENGTH
+        ? `Keep it to ${NAME_PART_MAX_LENGTH} characters.`
+        : null,
     phone: phoneError(phone),
     email: patternError(email, EMAIL_PATTERN, 'Enter a valid email address.'),
     pan: uses.includes('owner')
       ? patternError(pan.toUpperCase(), PAN_PATTERN, 'A PAN looks like ABCDE1234F.')
       : null,
     beneficiary:
-      uses.includes('owner') && beneficiary.trim().length > 200 ? 'Keep it to 200 characters.' : null,
+      uses.includes('owner') && customBeneficiary
+        ? !beneficiary.trim()
+          ? 'Enter the beneficiary name.'
+          : beneficiary.trim().length > 200
+            ? 'Keep it to 200 characters.'
+            : patternError(beneficiary, BENEFICIARY_PATTERN, BENEFICIARY_MESSAGE)
+        : null,
     account: uses.includes('owner')
       ? patternError(account, ACCOUNT_PATTERN, ACCOUNT_MESSAGE)
       : null,
@@ -441,7 +465,7 @@ export function ContactModal({
   }
   // Which step each check belongs to, so a step's pill can say it needs attention.
   const stepErrors: Record<ContactStep, boolean> = {
-    contact: Boolean(errors.role || errors.name || errors.phone || errors.email),
+    contact: Boolean(errors.role || errors.firstName || errors.phone || errors.email),
     tax: Boolean(errors.pan),
     payout: Boolean(errors.beneficiary || errors.account || errors.ifsc || errors.upi),
     agency: Boolean(errors.fee),
@@ -454,14 +478,18 @@ export function ContactModal({
 
   const body = () => {
     const text = (value: string) => value.trim() || null
+    // The name goes in parts; the backend composes the whole from them.
+    const { first, middle, last } = nameParts(name)
     return {
       role,
-      name: name.trim(),
+      first_name: first,
+      middle_name: middle,
+      last_name: last,
       phone: text(phone),
       email: text(email),
       notes: text(notes),
       pan: uses.includes('owner') ? text(pan.toUpperCase()) : null,
-      beneficiary_name: uses.includes('owner') ? text(beneficiary) : null,
+      beneficiary_name: uses.includes('owner') && customBeneficiary ? text(beneficiary) : null,
       bank_account_no: uses.includes('owner') ? text(account) : null,
       bank_ifsc: uses.includes('owner') ? text(ifsc.toUpperCase()) : null,
       upi_id: uses.includes('upi') ? text(upi) : null,
@@ -492,7 +520,7 @@ export function ContactModal({
   }
   const goNext = () => {
     // The role decides the next steps, so it has to be chosen first.
-    if (current.id === 'contact' && (errors.role || errors.name)) {
+    if (current.id === 'contact' && (errors.role || errors.firstName)) {
       setAttempted(true)
       return
     }
@@ -557,7 +585,7 @@ export function ContactModal({
           flagged={stepErrors}
           onSelect={(id) => {
             // Leaving the first step needs a role, which decides the rest.
-            if (id !== 'contact' && (errors.role || errors.name)) setAttempted(true)
+            if (id !== 'contact' && (errors.role || errors.firstName)) setAttempted(true)
             else setStep(id)
           }}
           label="Contact steps"
@@ -593,7 +621,7 @@ export function ContactModal({
                   error={required(errors.role)}
                 />
               )}
-              <TextField label="Name" value={name} onChange={setName} required error={required(errors.name)} />
+              <PersonNameFields value={name} onChange={setName} firstNameError={required(errors.firstName)} />
               <TextField
                 label="Phone"
                 type="tel"
@@ -644,13 +672,15 @@ export function ContactModal({
           {current.id === 'payout' && (
             <>
               {uses.includes('owner') && (
-                <TextField
-                  label="Payout Beneficiary"
+                <PayoutBeneficiaryField
+                  // The landlord as Tab 1 names them now.
+                  landlordName={composeFullName(name) || contact?.name || 'Owner'}
+                  custom={customBeneficiary}
+                  onCustomChange={setCustomBeneficiary}
                   value={beneficiary}
                   onChange={setBeneficiary}
-                  placeholder="Leave blank if payments go to the owner"
-                  hint="Whose bank account or UPI ID receives payments if different from the owner."
-                  error={errors.beneficiary}
+                  // A name too long shows at once; a missing one once a save is tried.
+                  error={beneficiary.trim() ? errors.beneficiary : required(errors.beneficiary)}
                 />
               )}
               {uses.includes('owner') && (

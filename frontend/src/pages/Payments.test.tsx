@@ -340,31 +340,37 @@ describe('LandlordAccountCard', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))
     const dialog = screen.getByRole('dialog', { name: 'Landlord Account' })
     const field = (label: string) => within(dialog).getByLabelText(new RegExp(`^${label}`))
-    // The same four fields, in the same order, as the House Kitty's dialog.
+    // Whose account it is, as a choice: the landlord's own by default.
+    const choice = within(dialog).getByRole('radiogroup', { name: 'Payout Beneficiary' })
+    expect(within(choice).getByRole('radio', { name: 'Same as Landlord (Kumar Yadav)' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(within(choice).getByRole('radio', { name: 'Custom Beneficiary' })).toHaveAttribute('aria-checked', 'false')
+    // The name is shown for the landlord's own account too, locked to theirs;
+    // then the kitty dialog's payment fields.
     expect(within(dialog).getAllByRole('textbox').map((box) => box.closest('.field')?.querySelector('label')?.textContent)).toEqual([
-      'Payout Beneficiary* (required)',
+      'Beneficiary Name',
       'Bank Account',
       'IFSC',
       'UPI ID',
     ])
-    expect(field('Payout Beneficiary')).toHaveValue('Kumar Yadav')
-    expect(field('Payout Beneficiary')).toHaveAccessibleDescription(
-      'Whose bank account or UPI ID receives payments. Defaults to the landlord.',
-    )
+    const locked = field('Beneficiary Name')
+    expect(locked).toBeDisabled()
+    expect(locked).toHaveValue('Kumar Yadav')
+    expect(locked).not.toBeRequired()
+    expect(locked).toHaveAccessibleDescription("🔒 Locked to the landlord's legal name. Switch to 'Custom Beneficiary' above to edit.")
     expect(field('Bank Account')).toHaveValue('50100123456789')
     expect(field('IFSC')).toHaveValue('HDFC0001234')
     expect(field('UPI ID')).toHaveValue('kumar.yadav@okhdfcbank')
 
     // The same checks, before anything is sent.
-    await userEvent.clear(field('Payout Beneficiary'))
     await userEvent.clear(field('UPI ID'))
     await userEvent.type(field('UPI ID'), 'kumar')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
-    expect(within(dialog).getByText('Enter the payout beneficiary.')).toBeInTheDocument()
     expect(within(dialog).getByText('A UPI ID looks like name@bank.')).toBeInTheDocument()
     expect(stub!.calls.some((call) => call.method === 'POST')).toBe(false)
 
-    await userEvent.type(field('Payout Beneficiary'), ' kumar yadav ')
     await userEvent.clear(field('UPI ID'))
     await userEvent.clear(field('IFSC'))
     await userEvent.type(field('IFSC'), 'icic0004321')
@@ -373,7 +379,7 @@ describe('LandlordAccountCard', () => {
     await waitFor(() =>
       expect(stub!.calls.find((call) => call.method === 'POST' && call.path === '/api/rent/config')).toBeDefined(),
     )
-    // The landlord's own name: the account is theirs, and the landlord is not renamed.
+    // The landlord's own account: no beneficiary, and the landlord is not renamed.
     expect(stub!.calls.find((call) => call.method === 'POST')!.body).toEqual({
       payout_beneficiary_name: null,
       landlord_bank_account: '50100123456789',
@@ -387,12 +393,29 @@ describe('LandlordAccountCard', () => {
     expect(gets('/api/property/contacts')).toBe(before.contacts + 1)
   })
 
-  it('saves a different name as the payout beneficiary, never as the landlord', async () => {
+  it('names a custom beneficiary, never renaming the landlord', async () => {
     showLandlord()
     await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))
     const dialog = screen.getByRole('dialog', { name: 'Landlord Account' })
-    const name = within(dialog).getByLabelText(/^Payout Beneficiary/)
+    await userEvent.click(within(dialog).getByRole('radio', { name: 'Custom Beneficiary' }))
+    // Unlocked, empty, and required once chosen.
+    const name = within(dialog).getByLabelText(/^Beneficiary Name/)
+    expect(name).toBeEnabled()
+    expect(name).toBeRequired()
+    expect(name).toHaveValue('')
+    expect(name).toHaveAttribute('placeholder', 'e.g. Anita Sharma')
+    expect(name).toHaveAccessibleDescription(
+      'Whose bank account or UPI ID receives payouts (e.g., spouse, parent, family business).',
+    )
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    expect(within(dialog).getByText('Enter the beneficiary name.')).toBeInTheDocument()
+    // Anything that reads as code is refused before it is sent, as the backend would.
+    await userEvent.type(name, "'; DROP TABLE household_contact; --")
+    expect(within(dialog).getByText('Beneficiary name contains invalid characters.')).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
+    expect(stub!.calls.some((call) => call.method === 'POST')).toBe(false)
     await userEvent.clear(name)
+
     await userEvent.type(name, ' Anita Yadav ')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     await waitFor(() => expect(stub!.calls.some((call) => call.method === 'POST')).toBe(true))
@@ -419,13 +442,15 @@ describe('LandlordAccountCard', () => {
     // No landlord's name beside it.
     expect(facts).not.toHaveTextContent('Kumar Yadav')
 
-    // The dialog edits the beneficiary; the landlord's own name clears it.
+    // The dialog opens on the beneficiary; choosing the landlord's own account clears it.
     await userEvent.click(screen.getByRole('button', { name: 'Edit landlord' }))
     const dialog = screen.getByRole('dialog', { name: 'Landlord Account' })
-    const name = within(dialog).getByLabelText(/^Payout Beneficiary/)
-    expect(name).toHaveValue('Anita Yadav')
-    await userEvent.clear(name)
-    await userEvent.type(name, 'Kumar Yadav')
+    expect(within(dialog).getByRole('radio', { name: 'Custom Beneficiary' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(dialog).getByLabelText(/^Beneficiary Name/)).toHaveValue('Anita Yadav')
+    await userEvent.click(within(dialog).getByRole('radio', { name: 'Same as Landlord (Kumar Yadav)' }))
+    // Locked back to the landlord's name.
+    expect(within(dialog).getByLabelText(/^Beneficiary Name/)).toBeDisabled()
+    expect(within(dialog).getByLabelText(/^Beneficiary Name/)).toHaveValue('Kumar Yadav')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     await waitFor(() => expect(stub!.calls.some((call) => call.method === 'POST')).toBe(true))
     const body = stub!.calls.find((call) => call.method === 'POST')!.body

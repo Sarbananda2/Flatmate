@@ -53,7 +53,7 @@ from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, format_inr, paise_in_words
 from ..periods import normalize_month, parse_iso_date
 from ..persistence import Database, UnitOfWork
-from . import audit, definitions, expenses, payments
+from . import audit, definitions, expenses, names, payments
 from . import property as household
 from .allocation import plan_allocation
 from .apartments import premises_address
@@ -81,7 +81,11 @@ MAX_LANDLORD_RECEIPT_BYTES = 5 * 1024 * 1024
 PAN_REQUIRED_ABOVE_ANNUAL_PAISE = 10_000_000
 
 
-_CONFIG_FIELDS = ("landlord_name", "landlord_phone", "landlord_email", "landlord_pan",
+#: The landlord's name, in parts; ``landlord_name`` is composed from them.
+LANDLORD_NAME_PARTS = ("landlord_first_name", "landlord_middle_name", "landlord_last_name")
+
+_CONFIG_FIELDS = ("landlord_name", *LANDLORD_NAME_PARTS, "landlord_phone", "landlord_email",
+                  "landlord_pan",
                   "landlord_bank_account", "landlord_bank_ifsc", "landlord_upi_id",
                   "payout_beneficiary_name", "monthly_rent_paise", "due_day_of_month",
                   "requires_landlord_receipt", "expense_definition_id", "rent_split_mode")
@@ -217,10 +221,12 @@ def _clean_config(payload: Mapping[str, Any],
         raise ValidationError("requires_landlord_receipt must be true or false.",
                               details={"field": "requires_landlord_receipt"})
     # The landlord's details are the owner contact's too, so both are checked
-    # by the same rules.
-    landlord_name = require_text(kept("landlord_name"), "landlord_name", max_length=200)
+    # by the same rules. Their name is kept in parts, the whole composed from them.
+    landlord = names.resolve_name(payload, existing, parts=LANDLORD_NAME_PARTS,
+                                  whole="landlord_name")
+    landlord_name = landlord["landlord_name"]
     return {
-        "landlord_name": landlord_name,
+        **landlord,
         "landlord_phone": household.phone_number(kept("landlord_phone"),
                                                  "landlord_phone"),
         "landlord_email": household.email_address(kept("landlord_email"),

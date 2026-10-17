@@ -357,7 +357,8 @@ def test_owner_contact_syncs_to_lease(configured):
         "bank_account_no": "123456789012", "bank_ifsc": "hdfc0001234",
         "upi_id": "kumar@okhdfc", "pan": None})
     assert _lease_landlord(configured) == {
-        "name": "Kumar S. Yadav", "phone": "9123456780", "email": "kumar@example.com",
+        "name": "Kumar S. Yadav", "first_name": "Kumar", "middle_name": "S.",
+        "last_name": "Yadav", "phone": "9123456780", "email": "kumar@example.com",
         "pan": None, "bank_account_no": "123456789012", "bank_ifsc": "HDFC0001234",
         "upi_id": "kumar@okhdfc", "beneficiary_name": None}
     assert updated["bank_ifsc"] == "HDFC0001234"
@@ -365,8 +366,8 @@ def test_owner_contact_syncs_to_lease(configured):
                                "WHERE entity_type='rent_lease_config' AND reason IS NOT NULL")
     assert {row["reason"] for row in synced} == {"synced from the owner contact"}
     assert {row["field_name"] for row in synced} == {
-        "landlord_name", "landlord_phone", "landlord_email", "landlord_pan",
-        "landlord_bank_account", "landlord_bank_ifsc", "landlord_upi_id"}
+        "landlord_name", "landlord_middle_name", "landlord_phone", "landlord_email",
+        "landlord_pan", "landlord_bank_account", "landlord_bank_ifsc", "landlord_upi_id"}
 
 
 def test_a_new_owner_contact_fills_in_an_existing_lease(configured):
@@ -424,3 +425,69 @@ def test_the_sync_does_not_loop(configured):
     household.update_contact(configured, APARTMENT, owner["contact_id"], {"notes": "Hi"})
     assert len(_rows(configured, "SELECT 1 FROM audit_log "
                                  "WHERE entity_type='rent_lease_config'")) == lease_rows
+
+
+# The payout beneficiary: locked to the owner, or a name that looks like one
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("name", [
+    "Anita Sharma", "Sharma & Sons, Co.", "D'Souza Traders", "A. K. Rao-Iyer", "HUF 2",
+])
+def test_a_custom_beneficiary_that_is_a_name_is_kept(apartment, name):
+    assert _owner(apartment, beneficiary_name=name)["beneficiary_name"] == name
+
+
+@pytest.mark.parametrize("name", [None, "", "   ", "Kumar Yadav", "  kumar YADAV "])
+def test_no_beneficiary_or_the_owner_themself_is_the_owners_own_account(apartment, name):
+    assert _owner(apartment, beneficiary_name=name)["beneficiary_name"] is None
+
+
+@pytest.mark.parametrize("name", [
+    "'; DROP TABLE household_contact; --",
+    "<script>alert(1)</script>",
+    "Anita -- Sharma",
+    'Anita "Sharma"',
+    "Anita/*x*/Sharma",
+    "Anita\nSharma",
+    "Anita\tSharma",
+    "Robert'); DELETE FROM rent_lease_config;",
+])
+def test_a_beneficiary_that_could_be_read_as_code_is_refused(apartment, name):
+    with pytest.raises(ValidationError) as caught:
+        _owner(apartment, beneficiary_name=name)
+    assert caught.value.details["field"] == "beneficiary_name"
+    assert str(caught.value) == "Beneficiary name contains invalid characters."
+    assert household.list_contacts(apartment, APARTMENT)["total"] == 0
+
+
+def test_the_lease_refuses_such_a_beneficiary_too(configured):
+    from aem.services import rent
+    rent.save_lease_config(configured, APARTMENT, LEASE)
+    with pytest.raises(ValidationError) as caught:
+        rent.save_lease_config(configured, APARTMENT, {
+            "payout_beneficiary_name": "'; DROP TABLE rent_lease_config; --"})
+    assert caught.value.details["field"] == "payout_beneficiary_name"
+    assert rent.get_lease_config(configured, APARTMENT)["payout_beneficiary_name"] is None
+
+
+def test_the_endpoints_refuse_such_a_beneficiary_with_422(client):
+    client.post("/api/apartments", json={"apartment_id": APARTMENT, "name": "Flat"})
+    refused = client.post("/api/property/contacts", json={
+        "role": "owner", "first_name": "Kumar", "beneficiary_name": "<script>alert(1)</script>"})
+    assert refused.status_code == 422
+    assert client.get("/api/property/contacts").json()["total"] == 0
+    client.post("/api/rent/config", json={**LEASE})
+    refused = client.post("/api/rent/config", json={
+        "payout_beneficiary_name": "'; DROP TABLE household_contact; --"})
+    assert refused.status_code == 422
+    assert client.get("/api/rent/config").json()["config"]["payout_beneficiary_name"] is None
+
+
+def test_text_is_stored_as_sent_never_run_as_sql(apartment):
+    """Values go to PostgreSQL as bound parameters, so free text that looks
+    like SQL is only ever text: stored as sent, with every table intact."""
+    payload = "'; DROP TABLE household_contact; -- /* x */"
+    owner = _owner(apartment, notes=payload)
+    assert household.list_contacts(apartment, APARTMENT)["items"][0]["notes"] == payload
+    assert _rows(apartment, "SELECT notes FROM household_contact WHERE contact_id=%s",
+                 (owner["contact_id"],)) == [{"notes": payload}]

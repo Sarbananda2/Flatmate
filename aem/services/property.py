@@ -28,12 +28,14 @@ from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, format_inr
 from ..persistence import Database, UnitOfWork
 from ..persistence.repositories.property import CONTACT_COLUMNS
-from . import audit
+from . import audit, names
 from .common import get_apartment, get_resident, optional_text, require_text
 
 CONTACT_ENTITY = "household_contact"
 DOCUMENT_ENTITY = "household_document"
 
+#: A contact's name, in parts; ``name`` is composed from them.
+NAME_PARTS = ("first_name", "middle_name", "last_name")
 ROLES = ("owner", "broker", "caretaker", "society_manager", "emergency_utility")
 FEE_STATUSES = ("paid", "pending", "na")
 CATEGORIES = ("lease_agreement", "society_noc", "police_verification",
@@ -70,6 +72,10 @@ INLINE_TYPES = {"application/pdf", "image/png", "image/jpeg", "image/webp", "tex
 _PHONE = re.compile(r"^\+?[0-9 ()-]+$")
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _PAN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+# A payout beneficiary is a person or a business: letters, digits and spaces,
+# with . , ' & - for initials, firms and names like D'Souza. Nothing a query or
+# a page could read as code: no ; " / * < > or control characters, and no "--".
+_BENEFICIARY_NAME = re.compile(r"^(?!.*--)[A-Za-z0-9 .,'&-]{1,200}$")
 _IFSC = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 _ACCOUNT = re.compile(r"^[0-9]{9,18}$")
 _UPI = re.compile(r"^[A-Za-z0-9._-]{2,256}@[A-Za-z0-9.-]{2,64}$")
@@ -129,10 +135,16 @@ def upi_id(value: Any, field: str = "upi_id") -> str | None:
 def beneficiary_name(value: Any, owner_name: str | None,
                      field: str = "beneficiary_name") -> str | None:
     """Whose name the owner's payout account is in, when it is not the owner's
-    own. Naming the owner themself is the same as naming nobody."""
+    own. Naming nobody, or the owner themself, is the owner's own account:
+    None, whatever a client sent. Any other name must look like a name."""
     name = optional_text(value, field, max_length=200)
-    if name and owner_name and name.casefold() == owner_name.strip().casefold():
+    if not name:
         return None
+    if owner_name and name.casefold() == owner_name.strip().casefold():
+        return None
+    if not _BENEFICIARY_NAME.match(name):
+        raise ValidationError("Beneficiary name contains invalid characters.",
+                              details={"field": field})
     return name
 
 
@@ -155,17 +167,17 @@ def _clean_contact(fields: Mapping[str, Any]) -> dict[str, Any]:
                               details={"field": "fee_status"})
     if role == "broker" and fee is not None and fee_status is None:
         fee_status = "pending"
-    name = require_text(fields.get("name"), "name", max_length=200)
+    name = names.resolve_name(fields, None, parts=NAME_PARTS, whole="name")
     return {
         "role": role,
-        "name": name,
+        **name,
         "phone": phone_number(fields.get("phone")),
         "email": email_address(fields.get("email")),
         "pan": pan_number(fields.get("pan")),
         "bank_account_no": bank_account(fields.get("bank_account_no")),
         "bank_ifsc": ifsc_code(fields.get("bank_ifsc")),
         "upi_id": upi_id(fields.get("upi_id")),
-        "beneficiary_name": beneficiary_name(fields.get("beneficiary_name"), name),
+        "beneficiary_name": beneficiary_name(fields.get("beneficiary_name"), name["name"]),
         "agency_name": optional_text(fields.get("agency_name"), "agency_name",
                                      max_length=200),
         "fee_amount_paise": fee,
@@ -203,6 +215,9 @@ def _unknown(fields: Mapping[str, Any]) -> None:
 #: The owner contact's fields and the lease columns that hold the same thing.
 OWNER_LEASE_FIELDS = {
     "name": "landlord_name",
+    "first_name": "landlord_first_name",
+    "middle_name": "landlord_middle_name",
+    "last_name": "landlord_last_name",
     "phone": "landlord_phone",
     "email": "landlord_email",
     "pan": "landlord_pan",
@@ -307,6 +322,8 @@ def update_contact(db: Database, apartment_id: str, contact_id: str,
         before = _contact(uow, contact_id, apartment_id)
         merged = {column: before[column] for column in CONTACT_COLUMNS}
         merged.update(changes)
+        # The name follows what was sent: its parts, or a whole name to split.
+        merged.update(names.resolve_name(changes, before, parts=NAME_PARTS, whole="name"))
         role = merged["role"]
         if "role" in changes and changes["role"] != before["role"]:
             for field, roles in ROLE_FIELDS.items():

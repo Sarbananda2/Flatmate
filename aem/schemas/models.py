@@ -448,7 +448,14 @@ class RentLeaseConfigSave(ApiModel):
     """The lease, in whole or in part: a field left out keeps what the lease
     already says. Setting up a new lease needs the landlord's name and the rent."""
 
-    landlord_name: str | None = Field(None, min_length=1, max_length=200)
+    landlord_first_name: str | None = Field(None, min_length=1, max_length=100)
+    landlord_middle_name: str | None = Field(None, max_length=100)
+    landlord_last_name: str | None = Field(
+        None, max_length=100, description="Optional: many names have no surname.")
+    landlord_name: str | None = Field(
+        None, min_length=1, max_length=200,
+        description="The whole name, for clients that do not send its parts: it is split "
+                    "into them. When parts are sent, this is composed from them instead.")
     landlord_phone: str | None = Field(None, max_length=40)
     landlord_email: str | None = Field(None, max_length=254)
     landlord_pan: str | None = Field(
@@ -732,7 +739,14 @@ DocumentCategory = Literal["lease_agreement", "society_noc", "police_verificatio
 
 class ContactCreate(ApiModel):
     role: ContactRole
-    name: str = Field(min_length=1, max_length=200)
+    first_name: str | None = Field(None, min_length=1, max_length=100)
+    middle_name: str | None = Field(None, max_length=100)
+    last_name: str | None = Field(
+        None, max_length=100, description="Optional: many names have no surname.")
+    name: str | None = Field(
+        None, min_length=1, max_length=200,
+        description="The whole name, for clients that do not send its parts: it is split "
+                    "into them. When parts are sent, this is composed from them instead.")
     phone: str | None = Field(None, max_length=30, description="7 to 15 digits.")
     email: str | None = Field(None, max_length=320)
     notes: str | None = Field(None, max_length=2000)
@@ -756,6 +770,9 @@ class ContactCreate(ApiModel):
 
 class ContactUpdate(ApiModel):
     role: ContactRole | None = None
+    first_name: str | None = Field(None, min_length=1, max_length=100)
+    middle_name: str | None = Field(None, max_length=100)
+    last_name: str | None = Field(None, max_length=100)
     name: str | None = Field(None, min_length=1, max_length=200)
     phone: str | None = Field(None, max_length=30)
     email: str | None = Field(None, max_length=320)
@@ -775,9 +792,15 @@ class ContactResponse(PassthroughModel):
     contact_id: str
     apartment_id: str
     role: ContactRole
+    #: The whole name, composed from its parts.
     name: str
+    first_name: str | None = None
+    middle_name: str | None = None
+    last_name: str | None = None
     phone: str | None
     email: str | None
+    #: An owner's payout beneficiary; null when they are paid into their own account.
+    beneficiary_name: str | None = None
     fee_amount_paise: int | None
     fee_status: str | None
     fee_display: str | None
