@@ -8,6 +8,7 @@
  * each one as the backend will, so a mistake is shown before anything is sent.
  */
 import { useId, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRight,
@@ -248,14 +249,10 @@ function ContactCard({
             <Detail label="PAN">
               {contact.pan ? <Pill tone="accent">PAN {contact.pan}</Pill> : '—'}
             </Detail>
-            <Detail label="Bank">
-              {contact.bank_account_no
-                ? `${contact.bank_account_no}${contact.bank_ifsc ? ` · ${contact.bank_ifsc}` : ''}`
-                : '—'}
-            </Detail>
           </>
         )}
-        {contact.upi_id && <Detail label="UPI">{contact.upi_id}</Detail>}
+        {/* The owner is paid through Payment Pools, so their bank and UPI ID are kept there. */}
+        {contact.upi_id && contact.role !== 'owner' && <Detail label="UPI">{contact.upi_id}</Detail>}
         {contact.role === 'broker' && contact.fee_display && (
           <Detail label="Brokerage">
             <span className="inline-flex items-center gap-1.5">
@@ -274,6 +271,15 @@ function ContactCard({
           <Detail label="Looks after">{contact.responsibilities}</Detail>
         )}
       </dl>
+      {contact.role === 'owner' && (
+        <p className="m-0 text-[11px] text-[var(--text-secondary)]">
+          Bank & payout details are managed under{' '}
+          <Link to="/payments" className="font-semibold text-[var(--accent)]">
+            Payment Pools
+          </Link>
+          .
+        </p>
+      )}
       {contact.notes && (
         <p className="m-0 text-[11px] text-[var(--text-secondary)]">{contact.notes}</p>
       )}

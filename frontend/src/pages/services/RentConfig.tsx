@@ -4,6 +4,7 @@
  * it on the Rent screen.
  */
 import { useId, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   ArrowLeft,
   ArrowRight,
@@ -19,7 +20,6 @@ import { useToast } from '../../components/Toast'
 import {
   BUTTON_PRIMARY,
   BUTTON_SECONDARY,
-  CopyButton,
   EditButton,
   Panel,
   Pill,
@@ -643,7 +643,7 @@ function ProfileFact({ label, children }: { label: string; children: React.React
 // Each card's name, shared with the dialog that edits it, so a section keeps
 // its name whether it is being read or edited.
 const APARTMENT_TITLE = 'Apartment & Property Details'
-const LANDLORD_TITLE = 'Landlord Profile & Payout'
+const LANDLORD_TITLE = 'Landlord Profile'
 
 const NOT_RECORDED = <span className="text-[var(--text-tertiary)]">Not recorded</span>
 
@@ -843,33 +843,15 @@ export function LandlordProfileCard({
         <ProfileFact label="PAN">
           {config.landlord_pan ? <span className="tabular">{config.landlord_pan}</span> : NOT_RECORDED}
         </ProfileFact>
-        <ProfileFact label="Bank Account">
-          {config.landlord_bank_account ? (
-            <span className="tabular">{config.landlord_bank_account}</span>
-          ) : (
-            NOT_RECORDED
-          )}
-        </ProfileFact>
-        <ProfileFact label="IFSC">
-          {config.landlord_bank_ifsc ? (
-            <span className="tabular">{config.landlord_bank_ifsc}</span>
-          ) : (
-            NOT_RECORDED
-          )}
-        </ProfileFact>
-        <div className="sm:col-span-2">
-          <ProfileFact label="UPI ID">
-            {config.landlord_upi_id ? (
-              <span className="inline-flex items-center gap-1.5 min-w-0">
-                <span className="tabular break-all">{config.landlord_upi_id}</span>
-                <CopyButton text={config.landlord_upi_id} label="Copy landlord UPI ID" iconOnly />
-              </span>
-            ) : (
-              NOT_RECORDED
-            )}
-          </ProfileFact>
-        </div>
       </dl>
+      {/* Who the landlord is lives here; where to pay them, on Payment Pools. */}
+      <p className="m-0 text-xs text-[var(--text-secondary)]">
+        Bank & payout details are managed under{' '}
+        <Link to="/payments" className="font-semibold text-[var(--accent)]">
+          Payment Pools
+        </Link>
+        .
+      </p>
       {editing && (
         // Edited in a dialog named like the card, as every card is.
         <ContactModal

@@ -316,6 +316,48 @@ Add a read-only service function `get_payment_pools_statement(db, apartment_id)`
 ### 4.4 Dashboard Settlement (`frontend/src/pages/Dashboard.tsx`)
 1. In `SettleDialog` (and/or the transfer row), when `transfer.to_account === poolAccountId` and the pool account has a `upi_id`, display the Household Pool's UPI ID with a `CopyButton` so the resident can copy it right from the settlement dialog.
 
+### 4.5 Landlord Single Source of Truth: Communication vs. Banking Projections (`RentConfig.tsx`, `PropertyContacts.tsx`, `Payments.tsx`)
+1. **Architectural Separation of Concerns:**
+   - The Landlord entity in the backend (`OWNER_LEASE_FIELDS` between `rent_lease_config` and `household_contact [role='owner']`) is the **Single Source of Truth** for all landlord data.
+   - It comprises two distinct logical field groups projected into two distinct UI contexts:
+     - **Basic Communication Info:** `Name`, `Phone`, `Email`, `PAN`, `Notes`.
+       - Projected in **Housing Hub (`/housing`)** on the `Landlord Profile` card (`RentConfig.tsx`) and the `Property Owner` contact card (`PropertyContacts.tsx`).
+       - Used for tenant communication, calling, messaging, lease record, and HRA tax receipts.
+       - **Bank details are excluded here** to eliminate clutter and protect financial credentials where they are not actionable.
+     - **Bank & Settlement Details:** `Account Name`, `Bank Account`, `IFSC`, `UPI ID` + live balance metrics.
+       - Projected in **Payment Pools (`/payments`)** on the `Landlord Account` passbook card (`Payments.tsx`).
+       - Used for financial execution, UPI copying, rent disbursement, deposit transfers, and passbook accounting.
+       - **Communication details are excluded here** to maintain a clean bank passbook layout.
+2. **Housing Frontend Changes:**
+   - In `frontend/src/pages/services/RentConfig.tsx` (`LandlordProfileCard`):
+     - Remove `Bank Account`, `IFSC`, and `UPI ID` from `<dl aria-label="Landlord profile">`.
+     - Render the 4 communication facts: `Name`, `Phone`, `Email`, `PAN` in `grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4`.
+     - Under `<dl>`, add the link note:
+       ```tsx
+       <p className="m-0 text-xs text-[var(--text-secondary)]">
+         Bank & payout details are managed under{' '}
+         <Link to="/payments" className="font-semibold text-[var(--accent)]">
+           Payment Pools
+         </Link>.
+       </p>
+       ```
+   - In `frontend/src/pages/services/PropertyContacts.tsx` (`ContactCard`):
+     - When `contact.role === 'owner'`, remove the `Detail label="Bank"` and `Detail label="UPI"` rows. Keep `Phone`, `Email`, `PAN`, and the Call / WhatsApp / Mail shortcuts.
+     - Under the details list, add the link note:
+       ```tsx
+       <p className="m-0 text-[11px] text-[var(--text-secondary)]">
+         Bank & payout details are managed under{' '}
+         <Link to="/payments" className="font-semibold text-[var(--accent)]">
+           Payment Pools
+         </Link>.
+       </p>
+       ```
+3. **Test Suite Updates:**
+   - In `frontend/src/pages/services/RentConfig.test.tsx`:
+     - In `shows the landlord in full on a card of its own`, assert `card` has `Rajesh Kumar Sharma`, `+91 98765 43210`, `ABCPS1234K`, and that bank account (`50100012348912`), IFSC (`HDFC0000128`), and UPI ID (`rajeshsharma@okaxis`) are **not** present on the card.
+   - In `frontend/src/pages/services/PropertyContacts.test.tsx`:
+     - In `groups contacts into owner, broker, and caretaker & society cards`, assert `card` has `PAN ABCDE1234F` and does **not** have bank account `123456789012`.
+
 ---
 
 ## 5. Verification & Test Suite Requirements

@@ -188,17 +188,19 @@ describe('LeaseContractSection', () => {
   it('shows the landlord in full on a card of its own', async () => {
     renderPage(saved)
     const card = await screen.findByLabelText('Landlord profile')
-    for (const text of [
-      'Rajesh Kumar Sharma',
-      '+91 98765 43210',
-      'ABCPS1234K',
-      '50100012348912',
-      'HDFC0000128',
-      'rajeshsharma@okaxis',
-    ]) {
+    // Who the landlord is, to reach them and for HRA receipts.
+    for (const text of ['Rajesh Kumar Sharma', '+91 98765 43210', 'ABCPS1234K']) {
       expect(card).toHaveTextContent(text)
     }
-    expect(within(card).getByRole('button', { name: 'Copy landlord UPI ID' })).toBeInTheDocument()
+    // Where to pay them is kept on Payment Pools, not here.
+    for (const text of ['50100012348912', 'HDFC0000128', 'rajeshsharma@okaxis']) {
+      expect(card).not.toHaveTextContent(text)
+    }
+    expect(within(card).queryByRole('button', { name: /Copy/ })).toBeNull()
+    const panel = card.closest('section')!
+    expect(within(panel).getByRole('heading', { name: 'Landlord Profile' })).toBeInTheDocument()
+    expect(panel).toHaveTextContent('Bank & payout details are managed under Payment Pools.')
+    expect(within(panel).getByRole('link', { name: 'Payment Pools' })).toHaveAttribute('href', '/payments')
     // No landlord inputs on the page itself.
     expect(screen.queryByLabelText(/Landlord name/)).toBeNull()
     expect(screen.queryByRole('link', { name: 'Open monthly rent' })).toBeNull()
@@ -208,7 +210,7 @@ describe('LeaseContractSection', () => {
     renderPage(saved, { 'PATCH /api/property/contacts/owner-1': { ...OWNER, phone: '9123456780' } })
     await userEvent.click(await screen.findByRole('button', { name: 'Edit landlord' }))
     const dialog = screen.getByRole('dialog')
-    expect(within(dialog).getByRole('heading', { name: 'Landlord Profile & Payout' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('heading', { name: 'Landlord Profile' })).toBeInTheDocument()
     // The landlord card holds the owner, so the role is shown rather than chosen.
     expect(within(dialog).getByText('Property Owner')).toBeInTheDocument()
     expect(within(dialog).queryByLabelText(/Role/)).toBeNull()

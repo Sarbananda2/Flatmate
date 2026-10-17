@@ -4,6 +4,7 @@
  * is sent.
  */
 import { afterEach, describe, expect, it } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ContactsSection } from './PropertyContacts'
@@ -76,9 +77,11 @@ function open(items: HouseholdContact[] = [OWNER, BROKER, CARETAKER], extra = {}
     } as never,
   })
   render(
-    <ToastProvider>
-      <ContactsSection />
-    </ToastProvider>,
+    <MemoryRouter>
+      <ToastProvider>
+        <ContactsSection />
+      </ToastProvider>
+    </MemoryRouter>,
   )
 }
 
@@ -100,7 +103,10 @@ describe('ContactsSection', () => {
     const owner = await screen.findByRole('list', { name: 'Property Owner (Landlord)' })
     const card = within(owner).getByRole('listitem', { name: 'Kumar Yadav' })
     expect(card).toHaveTextContent('PAN ABCDE1234F')
-    expect(card).toHaveTextContent('123456789012 · HDFC0001234')
+    // The owner is paid through Payment Pools, so their bank details are kept there.
+    expect(card).not.toHaveTextContent('123456789012')
+    expect(card).not.toHaveTextContent('HDFC0001234')
+    expect(within(card).getByRole('link', { name: 'Payment Pools' })).toHaveAttribute('href', '/payments')
     expect(within(card).getByRole('link', { name: 'Call Kumar Yadav' })).toHaveAttribute(
       'href',
       'tel:+919876543210',
