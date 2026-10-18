@@ -644,19 +644,6 @@ function PreviewPanel({
   )
 }
 
-function Detail({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <dt className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-        {label}
-      </dt>
-      <dd className="m-0 mt-0.5 text-xs font-semibold text-[var(--text-primary)] break-words">
-        {children}
-      </dd>
-    </div>
-  )
-}
-
 function maskAccount(account: string): string {
   return account.length > 4 ? `****${account.slice(-4)}` : account
 }
@@ -1192,7 +1179,6 @@ function PayoutModal({
     Boolean(date) &&
     reference.trim().length > 0 &&
     (mode === 'pool' || Boolean(funder))
-  const funderName = residents.data?.items.find((r) => r.resident_id === funder)?.display_name
 
   return (
     <Modal
@@ -1210,43 +1196,14 @@ function PayoutModal({
             disabled={!valid || record.pending}
             onClick={() => void record.run(undefined)}
           >
-            {record.pending ? 'Recording…' : 'Confirm & Post Payout'}
+            {record.pending ? 'Recording…' : 'Record Payout'}
           </button>
         </>
       }
     >
       <div className="stack">
         {record.error && <ErrorNotice error={record.error} />}
-        <dl
-          className="m-0 grid grid-cols-3 gap-x-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3"
-          aria-label="Landlord payout so far"
-        >
-          <Detail label="Total Month's Rent">
-            <Rupees paise={total} />
-          </Detail>
-          <Detail label="Already Disbursed">
-            <Rupees paise={cycle.disbursed_paise} />
-          </Detail>
-          <Detail label="Remaining Unpaid to Landlord">
-            <Rupees paise={remaining} />
-          </Detail>
-        </dl>
-        <MoneyInput
-          label="Amount"
-          required
-          value={amount}
-          error={tooMuch ? `More than the ${formatInr(remaining)} still owed to the landlord.` : null}
-          hint={
-            fromCollection
-              ? `Pre-filled with collected funds. You can pay any amount up to ${formatInr(remaining)}.`
-              : `Pre-filled with the balance still owed. You can pay any amount up to ${formatInr(remaining)}.`
-          }
-          onChange={(raw, parsed) => {
-            setAmount(raw)
-            setAmountPaise(parsed.paise)
-            setAmountOk(parsed.ok)
-          }}
-        />
+        {/* Laid out as a resident's payment: where the money goes, then what was paid. */}
         <TransferDestination
           label="Payout destination"
           name={config.payout_beneficiary_name || config.landlord_name}
@@ -1265,7 +1222,34 @@ function PayoutModal({
           }
         />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+          <MoneyInput
+            label="Amount"
+            required
+            value={amount}
+            error={tooMuch ? `More than the ${formatInr(remaining)} still owed to the landlord.` : null}
+            hint={
+              fromCollection
+                ? `Pre-filled with collected funds. You can pay any amount up to ${formatInr(remaining)}.`
+                : `Pre-filled with the balance still owed. You can pay any amount up to ${formatInr(remaining)}.`
+            }
+            onChange={(raw, parsed) => {
+              setAmount(raw)
+              setAmountPaise(parsed.paise)
+              setAmountOk(parsed.ok)
+            }}
+          />
           <DateField label="Payment date" required value={date} onChange={setDate} />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+          <SelectField<RentDisbursementMode>
+            label="Who funded this payout?"
+            value={mode}
+            options={[
+              { value: 'pool', label: 'Apartment pool (direct transfer)' },
+              { value: 'resident_advance', label: 'A resident paid on the household’s behalf' },
+            ]}
+            onChange={setMode}
+          />
           <TextField
             label="Payment reference / UTR"
             required
@@ -1273,18 +1257,8 @@ function PayoutModal({
             onChange={setReference}
             maxLength={200}
             placeholder="e.g. 428919028471"
-            hint="The bank UTR or UPI transaction ID."
           />
         </div>
-        <SelectField<RentDisbursementMode>
-          label="Who funded this payout?"
-          value={mode}
-          options={[
-            { value: 'pool', label: 'Apartment pool (direct transfer)' },
-            { value: 'resident_advance', label: 'A resident paid on the household’s behalf' },
-          ]}
-          onChange={setMode}
-        />
         {mode === 'resident_advance' && (
           <SelectField
             label="Funding resident"
@@ -1306,13 +1280,6 @@ function PayoutModal({
           maxLength={500}
           placeholder="e.g. Balance after the late shares came in"
         />
-        <Callout>
-          Recording this payout registers a transfer to the landlord. Outstanding flatmate rent
-          shares and subsequent payout tranches can be recorded at any time.{' '}
-          {mode === 'pool'
-            ? 'Nothing is added to the ledger: the rent is already a cost to the pool.'
-            : `${funderName ?? 'The resident'} is credited ${amountValid ? formatInr(amountPaise) : 'the amount paid'} and keeps their own share.`}
-        </Callout>
       </div>
     </Modal>
   )

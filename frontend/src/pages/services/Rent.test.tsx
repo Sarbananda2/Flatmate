@@ -563,22 +563,22 @@ describe('RentMonth', () => {
     expect(destination).toHaveTextContent('rajeshsharma@okaxis')
     expect(within(destination).getByRole('button', { name: 'Copy UPI ID' })).toBeInTheDocument()
 
-    // The month so far, and a first tranche of what the residents have paid in.
-    const sofar = within(dialog).getByLabelText('Landlord payout so far')
-    expect(sofar).toHaveTextContent("Total Month's Rent₹45,000.00")
-    expect(sofar).toHaveTextContent('Already Disbursed₹0.00')
-    expect(sofar).toHaveTextContent('Remaining Unpaid to Landlord₹45,000.00')
-    expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('30000.00')
+    // Laid out as a resident's payment: where it goes first, then what was paid,
+    // with the balance still owed in the heading and no summary or explainer.
+    expect(dialog).toHaveTextContent('October 2026 · ₹45,000.00 still owed to Rajesh Kumar Sharma')
+    const amount = within(dialog).getByLabelText(/^Amount/)
+    expect(destination.compareDocumentPosition(amount) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(within(dialog).queryByLabelText('Landlord payout so far')).not.toBeInTheDocument()
+    expect(dialog).not.toHaveTextContent('Outstanding flatmate rent shares')
+    expect(dialog).not.toHaveTextContent('Nothing is added to the ledger')
+
+    // A first tranche of what the residents have paid in.
+    expect(amount).toHaveValue('30000.00')
     expect(dialog).toHaveTextContent(
       'Pre-filled with collected funds. You can pay any amount up to ₹45,000.00.',
     )
-    expect(dialog).toHaveTextContent(
-      'Outstanding flatmate rent shares and subsequent payout tranches can be recorded at any time.',
-    )
-    expect(dialog).not.toHaveTextContent('cannot be undone')
-    expect(dialog).toHaveTextContent('Nothing is added to the ledger')
 
-    const confirm = within(dialog).getByRole('button', { name: 'Confirm & Post Payout' })
+    const confirm = within(dialog).getByRole('button', { name: 'Record Payout' })
     expect(confirm).toBeDisabled()
     await userEvent.type(within(dialog).getByLabelText(/Payment reference/), '329188401928')
     await userEvent.selectOptions(
@@ -587,7 +587,9 @@ describe('RentMonth', () => {
     )
     expect(confirm).toBeDisabled()
     await userEvent.selectOptions(within(dialog).getByLabelText(/Funding resident/), 'alice')
-    expect(dialog).toHaveTextContent('Alice is credited ₹30,000.00 and keeps their own share.')
+    expect(dialog).toHaveTextContent(
+      'Credited this payout as a provider advance. They still owe their own share.',
+    )
     await userEvent.click(confirm)
 
     await waitFor(() => expect(posted('/disburse')).toBeDefined())
@@ -664,7 +666,7 @@ describe('RentMonth', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).queryByLabelText(/receipt/i)).not.toBeInTheDocument()
     await userEvent.type(within(dialog).getByLabelText(/Payment reference/), 'UTR1')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Confirm & Post Payout' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Record Payout' }))
 
     await waitFor(() => expect(posted('/disburse')).toBeDefined())
     expect(posted('/disburse')!.body).toMatchObject({ disbursement_mode: 'pool', reference: 'UTR1' })
@@ -974,9 +976,7 @@ describe('RentMonth', () => {
       renderRent(overview({ cycle: partCycle() }))
       await userEvent.click(await screen.findByRole('button', { name: 'Pay now to landlord' }))
       const dialog = await screen.findByRole('dialog')
-      const sofar = within(dialog).getByLabelText('Landlord payout so far')
-      expect(sofar).toHaveTextContent('Already Disbursed₹30,000.00')
-      expect(sofar).toHaveTextContent('Remaining Unpaid to Landlord₹15,000.00')
+      expect(dialog).toHaveTextContent('October 2026 · ₹15,000.00 still owed to Rajesh Kumar Sharma')
 
       const amount = within(dialog).getByLabelText(/^Amount/)
       expect(amount).toHaveValue('15000.00')
@@ -984,7 +984,7 @@ describe('RentMonth', () => {
         'Pre-filled with the balance still owed. You can pay any amount up to ₹15,000.00.',
       )
 
-      const confirm = within(dialog).getByRole('button', { name: 'Confirm & Post Payout' })
+      const confirm = within(dialog).getByRole('button', { name: 'Record Payout' })
       await userEvent.type(within(dialog).getByLabelText(/Payment reference/), 'UTR-SECOND')
       expect(confirm).toBeEnabled()
 
