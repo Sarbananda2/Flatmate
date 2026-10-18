@@ -167,6 +167,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                 />
                 <MasterTenancyCard config={config} />
                 <Metrics config={config} cycle={cycle} preview={preview} month={month} />
+                {cycle && <RentCashFlowTracker cycle={cycle} />}
                 {cycle ? (
                   <CyclePanel
                     cycle={cycle}
@@ -500,6 +501,54 @@ function ProgressLine({
   )
 }
 
+function RentCashFlowTracker({ cycle }: { cycle: RentCycle }) {
+  const share = percent(cycle.collected_paise, cycle.total_rent_paise)
+  const paidOut = percent(cycle.disbursed_paise, cycle.total_rent_paise)
+  const tranches = cycle.disbursements.length
+
+  return (
+    <section
+      aria-label="Monthly cash flow"
+      className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3.5 space-y-3"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-bold text-[var(--text-primary)]">
+          Monthly Cash Flow Tracker
+        </span>
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="text-[var(--text-secondary)]">
+            Pool Collection: <strong className="text-[var(--text-primary)]">{share}</strong>
+          </span>
+          <span className="text-[var(--border-subtle)]">·</span>
+          <span className="text-[var(--text-secondary)]">
+            Landlord Paid: <strong className="text-[var(--text-primary)]">{paidOut}</strong>
+          </span>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
+        <ProgressLine
+          label="Internal collection"
+          detail={`${formatInr(cycle.collected_paise)} of ${formatInr(cycle.total_rent_paise)} collected (${share}) · ${cycle.collected_count}/${cycle.participant_count} paid`}
+          ariaLabel="Rent collected from residents"
+          value={cycle.collected_paise}
+          max={cycle.total_rent_paise}
+          width={share}
+          barClass="bg-[var(--success)]"
+        />
+        <ProgressLine
+          label="Landlord disbursement"
+          detail={`${formatInr(cycle.disbursed_paise)} of ${formatInr(cycle.total_rent_paise)} disbursed (${paidOut}) · ${tranches} ${tranches === 1 ? 'tranche' : 'tranches'}`}
+          ariaLabel="Rent paid to the landlord"
+          value={cycle.disbursed_paise}
+          max={cycle.total_rent_paise}
+          width={paidOut}
+          barClass="bg-[var(--accent)]"
+        />
+      </div>
+    </section>
+  )
+}
+
 function CyclePanel({
   cycle,
   config,
@@ -509,9 +558,6 @@ function CyclePanel({
   config: RentLeaseConfig
   onPay: (participant: RentParticipant) => void
 }) {
-  const share = percent(cycle.collected_paise, cycle.total_rent_paise)
-  const paidOut = percent(cycle.disbursed_paise, cycle.total_rent_paise)
-  const tranches = cycle.disbursements.length
   return (
     <Panel
       title="Equal Split & Internal Collection"
@@ -549,41 +595,17 @@ function CyclePanel({
         </p>
       )}
 
-      {/* Two separate facts: what residents have paid the pool, and what has
-          gone to the landlord. The landlord can be paid before everyone has
-          paid in, and in tranches. */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
-        <ProgressLine
-          label="Internal collection"
-          detail={`${formatInr(cycle.collected_paise)} of ${formatInr(cycle.total_rent_paise)} collected (${share}) · ${cycle.collected_count}/${cycle.participant_count} paid`}
-          ariaLabel="Rent collected from residents"
-          value={cycle.collected_paise}
-          max={cycle.total_rent_paise}
-          width={share}
-          barClass="bg-[var(--success)]"
-        />
-        <ProgressLine
-          label="Landlord disbursement"
-          detail={`${formatInr(cycle.disbursed_paise)} of ${formatInr(cycle.total_rent_paise)} disbursed (${paidOut}) · ${tranches} ${tranches === 1 ? 'tranche' : 'tranches'}`}
-          ariaLabel="Rent paid to the landlord"
-          value={cycle.disbursed_paise}
-          max={cycle.total_rent_paise}
-          width={paidOut}
-          barClass="bg-[var(--accent)]"
-        />
-      </div>
-
       <div className="overflow-x-auto min-w-0">
-        <table className="w-full table-fixed text-left text-xs min-w-[960px] border-collapse">
+        <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse">
           <caption className="sr-only">Rent shares and collection</caption>
           <thead>
             <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[26%] pb-3 pr-3 font-bold text-center">Resident</th>
+              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-center">Resident</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Share</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid to pool</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still owed</th>
-              <th scope="col" className="w-[16%] pb-3 pr-3 font-bold text-center">Status</th>
-              <th scope="col" className="w-[16%] pb-3 pr-3 font-bold text-center">Actions</th>
+              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
+              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
