@@ -78,6 +78,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
   })
   const [dialog, setDialog] = useState<'payout' | null>(null)
   const [payingFor, setPayingFor] = useState<RentParticipant | null>(null)
+  const [viewingStatement, setViewingStatement] = useState<RentParticipant | null>(null)
 
   const generate = useMutation(
     () =>
@@ -150,6 +151,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                     cycle={cycle}
                     config={config}
                     onPay={setPayingFor}
+                    onViewStatement={setViewingStatement}
                   />
                 ) : (
                   preview && (
@@ -204,6 +206,18 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   )
                   overview.reload()
                 }}
+              />
+            )}
+            {viewingStatement && cycle && (
+              <RentStatementModal
+                month={month}
+                // Read from the month as it now stands, not as it was when opened.
+                participant={
+                  cycle.participants.find(
+                    (row) => row.resident_id === viewingStatement.resident_id,
+                  ) ?? viewingStatement
+                }
+                onClose={() => setViewingStatement(null)}
               />
             )}
             {payingFor && cycle && (
@@ -402,10 +416,12 @@ function CyclePanel({
   cycle,
   config,
   onPay,
+  onViewStatement,
 }: {
   cycle: RentCycle
   config: RentLeaseConfig
   onPay: (participant: RentParticipant) => void
+  onViewStatement: (participant: RentParticipant) => void
 }) {
   return (
     <Panel
@@ -440,7 +456,22 @@ function CyclePanel({
               const funded = participant.collection_status === 'funded_payout'
               const settled = funded || participant.collection_status === 'paid'
               return (
-                <tr key={participant.resident_id} className="align-middle">
+                // The whole row opens the resident's statement for the month; the
+                // link and the button in it do their own thing instead.
+                <tr
+                  key={participant.resident_id}
+                  className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
+                  tabIndex={0}
+                  title={`View ${participant.display_name}'s rent statement`}
+                  onClick={() => onViewStatement(participant)}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      onViewStatement(participant)
+                    }
+                  }}
+                >
                   <th scope="row" className="py-3 pr-3 text-left font-normal">
                     <span className="flex items-center gap-2.5 min-w-0">
                       <Avatar name={participant.display_name} />
@@ -448,6 +479,7 @@ function CyclePanel({
                         <Link
                           className="block font-semibold text-[var(--text-primary)] truncate"
                           to={`/residents/${participant.resident_id}`}
+                          onClick={(event) => event.stopPropagation()}
                         >
                           {participant.display_name}
                         </Link>
@@ -488,7 +520,10 @@ function CyclePanel({
                         <button
                           type="button"
                           className={BUTTON_SECONDARY}
-                          onClick={() => onPay(participant)}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            onPay(participant)
+                          }}
                           aria-label={`Record rent payment from ${participant.display_name}`}
                         >
                           <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -853,6 +888,118 @@ function LandlordPanel({
         </p>
       )}
     </Panel>
+  )
+}
+
+/* --------------------------------------------------- rent statement modal -- */
+
+/** One resident's rent for the month: what they owe, and every payment towards it. */
+function RentStatementModal({
+  month,
+  participant,
+  onClose,
+}: {
+  month: string
+  participant: RentParticipant
+  onClose: () => void
+}) {
+  const status = COLLECTION[participant.collection_status]
+  const funded = participant.collection_status === 'funded_payout'
+  const modes = new Map(PAYMENT_MODES.map((mode) => [mode.value, mode.label]))
+  const dash = <span className="text-[var(--text-tertiary)]">—</span>
+  return (
+    <Modal
+      title="Rent Statement"
+      description={`${participant.display_name} · ${formatMonth(month)}`}
+      onClose={onClose}
+    >
+      <div className="stack">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <MiniStat label="Share" value={<Rupees paise={participant.share_paise} />} />
+          <MiniStat label="Paid to Pool" value={<Rupees paise={participant.settled_paise} />} />
+          <MiniStat
+            label="Still Owed"
+            value={funded ? dash : <Rupees paise={participant.outstanding_paise} />}
+            note={funded ? 'Covered by paying the landlord' : undefined}
+          />
+        </div>
+
+        {participant.advanced_paise > 0 && (
+          <Callout>
+            {participant.display_name} paid {formatInr(participant.advanced_paise)} to the
+            landlord directly this month
+            {funded ? ', which covers their share' : ''}. It is credited to them as an
+            advance, not as a payment to the pool, so it is not listed below.
+          </Callout>
+        )}
+
+        <section aria-label="Payment history" className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="m-0 text-sm font-bold text-[var(--text-primary)]">Payment History</h3>
+            <Pill tone={status.tone}>
+              {participant.collection_status === 'paid' || funded ? (
+                <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
+              ) : (
+                <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
+              )}
+              {status.label}
+            </Pill>
+          </div>
+          {participant.payments.length === 0 ? (
+            <EmptyBlock title="No payments recorded yet for this month." />
+          ) : (
+            <div className="overflow-x-auto min-w-0">
+              <table className="w-full text-left text-xs min-w-[480px] border-collapse">
+                <caption className="sr-only">
+                  Payments towards {participant.display_name}'s rent
+                </caption>
+                <thead>
+                  <tr className={TABLE_HEAD}>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Mode</th>
+                    <th scope="col" className="pb-3 font-bold text-center">Reference / Note</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+                  {participant.payments.map((payment) => (
+                    <tr key={payment.payment_id} className="align-middle">
+                      <td className="py-2.5 pr-3 text-center tabular">
+                        {formatDate(payment.payment_date)}
+                      </td>
+                      <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
+                        <Rupees paise={payment.amount_paise} />
+                      </td>
+                      <td className="py-2.5 pr-3 text-center">
+                        {payment.payment_mode ? modes.get(payment.payment_mode) : dash}
+                      </td>
+                      <td className="py-2.5 text-center break-words">
+                        {payment.reference || payment.note ? (
+                          <>
+                            {payment.reference && (
+                              <span className="block tabular text-[var(--text-primary)]">
+                                {payment.reference}
+                              </span>
+                            )}
+                            {payment.note && (
+                              <span className="block text-[11px] text-[var(--text-secondary)]">
+                                {payment.note}
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          dash
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
+    </Modal>
   )
 }
 

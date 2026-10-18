@@ -967,6 +967,17 @@ export interface RentDisbursement {
 }
 export type RentCollectionStatus = 'paid' | 'partial' | 'unpaid' | 'funded_payout'
 
+/** A payment that settled part of a resident's rent share: only what it put towards the share. */
+export interface RentParticipantPayment {
+  payment_id: string
+  payment_date: string
+  amount_paise: number
+  payment_mode: 'upi' | 'bank_transfer' | 'cash' | 'other' | null
+  reference: string | null
+  note: string | null
+  created_at: string | null
+}
+
 export interface RentParticipant {
   resident_id: string
   display_name: string
@@ -976,6 +987,10 @@ export interface RentParticipant {
   last_payment_date: string | null
   collection_status: RentCollectionStatus
   receipt_available: boolean
+  /** What the resident paid the landlord directly this month: an advance, not a pool payment. */
+  advanced_paise: number
+  /** The payments that settled this share, oldest first. They add up to settled_paise. */
+  payments: RentParticipantPayment[]
 }
 
 interface RentStatementRef {

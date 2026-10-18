@@ -45,6 +45,8 @@ function participant(id: string, name: string, overrides: Record<string, unknown
     last_payment_date: null,
     collection_status: 'unpaid',
     receipt_available: false,
+    advanced_paise: 0,
+    payments: [],
     ...overrides,
   }
 }
@@ -236,6 +238,139 @@ describe('RentMonth', () => {
     expect(
       within(chris).getByRole('button', { name: 'Record rent payment from Chris' }),
     ).toBeInTheDocument()
+  })
+
+  describe("a resident's rent statement", () => {
+    const payment = (overrides: Record<string, unknown> = {}) => ({
+      payment_id: 'pay-1',
+      payment_date: '2026-10-08',
+      amount_paise: 500000,
+      payment_mode: 'upi',
+      reference: 'UPI 428391765102',
+      note: 'First part',
+      created_at: '2026-10-08T10:00:00+05:30',
+      ...overrides,
+    })
+    // Chris paid ₹5,000 by UPI after the due date, then ₹4,000 in cash.
+    const partPaid = () =>
+      cycle({
+        collected_paise: 3900000,
+        participants: cycle().participants.map((row) =>
+          row.resident_id === 'chris'
+            ? {
+                ...row,
+                settled_paise: 900000,
+                outstanding_paise: 600000,
+                last_payment_date: '2026-10-12',
+                collection_status: 'partial',
+                payments: [
+                  payment(),
+                  payment({
+                    payment_id: 'pay-2',
+                    payment_date: '2026-10-12',
+                    amount_paise: 400000,
+                    payment_mode: 'cash',
+                    reference: null,
+                    note: null,
+                  }),
+                ],
+              }
+            : row,
+        ),
+      })
+    const chrisRow = async () =>
+      within(await screen.findByRole('table', { name: 'Rent shares and collection' })).getByRole(
+        'row',
+        { name: /Chris/ },
+      )
+
+    it('opens from the resident\'s row with what they owe and each payment', async () => {
+      renderRent(overview({ cycle: partPaid() }))
+      await userEvent.click(await chrisRow())
+      const dialog = await screen.findByRole('dialog', { name: 'Rent Statement' })
+      expect(dialog).toHaveTextContent('Chris · October 2026')
+      expect(within(dialog).getByText('Share').parentElement).toHaveTextContent('₹15,000.00')
+      expect(within(dialog).getByText('Paid to Pool').parentElement).toHaveTextContent('₹9,000.00')
+      expect(within(dialog).getByText('Still Owed').parentElement).toHaveTextContent('₹6,000.00')
+
+      const history = within(dialog).getByRole('region', { name: 'Payment history' })
+      expect(history).toHaveTextContent('Part paid')
+      const table = within(history).getByRole('table', { name: "Payments towards Chris's rent" })
+      expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+        'Date',
+        'Amount',
+        'Mode',
+        'Reference / Note',
+      ])
+      const rows = within(table).getAllByRole('row').slice(1)
+      expect(rows.map((row) => row.textContent)).toEqual([
+        '8 Oct 2026₹5,000.00UPIUPI 428391765102First part',
+        '12 Oct 2026₹4,000.00Cash—',
+      ])
+      // Closed by its own ✕: there is no footer of actions.
+      expect(within(dialog).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
+        'Close dialog',
+      ])
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Close dialog' }))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    })
+
+    it('says when nothing has been paid yet', async () => {
+      renderRent(overview())
+      await userEvent.click(await chrisRow())
+      const dialog = await screen.findByRole('dialog', { name: 'Rent Statement' })
+      expect(dialog).toHaveTextContent('No payments recorded yet for this month.')
+      expect(within(dialog).queryByRole('table')).not.toBeInTheDocument()
+      expect(dialog).toHaveTextContent('Unpaid')
+    })
+
+    it('opens from the keyboard too', async () => {
+      renderRent(overview({ cycle: partPaid() }))
+      const row = await chrisRow()
+      row.focus()
+      await userEvent.keyboard('{Enter}')
+      expect(await screen.findByRole('dialog', { name: 'Rent Statement' })).toBeInTheDocument()
+    })
+
+    it('is not opened by the name link or the payment button in the row', async () => {
+      renderRent(overview())
+      const row = await chrisRow()
+      await userEvent.click(within(row).getByRole('link', { name: 'Chris' }))
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+      await userEvent.click(within(row).getByRole('button', { name: 'Record rent payment from Chris' }))
+      expect(await screen.findByRole('dialog', { name: 'Record Rent Payment' })).toBeInTheDocument()
+      expect(screen.queryByRole('dialog', { name: 'Rent Statement' })).not.toBeInTheDocument()
+    })
+
+    it('explains a share covered by paying the landlord directly', async () => {
+      renderRent(
+        overview({
+          cycle: cycle({
+            participants: cycle().participants.map((row) =>
+              row.resident_id === 'alice'
+                ? {
+                    ...row,
+                    settled_paise: 0,
+                    outstanding_paise: 1500000,
+                    collection_status: 'funded_payout',
+                    advanced_paise: 4500000,
+                  }
+                : row,
+            ),
+          }),
+        }),
+      )
+      const table = await screen.findByRole('table', { name: 'Rent shares and collection' })
+      await userEvent.click(within(table).getByRole('row', { name: /Alice/ }))
+      const dialog = await screen.findByRole('dialog', { name: 'Rent Statement' })
+      expect(dialog).toHaveTextContent(
+        'Alice paid ₹45,000.00 to the landlord directly this month, which covers their share.',
+      )
+      expect(within(dialog).getByText('Still Owed').parentElement).toHaveTextContent(
+        'Covered by paying the landlord',
+      )
+      expect(dialog).toHaveTextContent('No payments recorded yet for this month.')
+    })
   })
 
   it('records a rent payment pre-filled with the outstanding share', async () => {

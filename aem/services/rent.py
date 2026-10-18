@@ -584,9 +584,16 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
     The landlord may be paid in tranches: ``disbursements`` lists them,
     ``disbursed_paise`` is their total and ``remaining_disbursement_paise``
     what the landlord is still owed.
+
+    Each participant's ``payments`` are the payments that settled their
+    charge, oldest first, each with what it put towards the charge.
     """
     expense = get_expense(uow, cycle["expense_id"])
     charges = _charges(uow, cycle["expense_id"])
+    payments_by_resident: dict[str, list[dict[str, Any]]] = {}
+    for payment in uow.rent.payments_for_rent_expense(cycle["expense_id"]):
+        resident_id = payment.pop("resident_id")
+        payments_by_resident.setdefault(resident_id, []).append(payment)
     tranches = uow.rent.disbursements_for_cycle(cycle["cycle_id"])
     advanced = _advanced_by_resident(tranches)
     paid_out = cycle["disbursement_status"] != "pending"
@@ -605,6 +612,8 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
         collected += covered
         participants.append({
             **charge, "outstanding_paise": share - settled, "collection_status": status,
+            "advanced_paise": own_advance,
+            "payments": payments_by_resident.get(charge["resident_id"], []),
             "receipt_available": False})  # HRA receipt feature disabled (see DEBT-001)
     total = expense["amount_paise"]
     disbursed_paise = sum(t["amount_paise"] for t in tranches)

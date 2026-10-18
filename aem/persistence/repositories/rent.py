@@ -224,6 +224,23 @@ class RentRepository(Repository):
                 GROUP BY a.expense_id, a.resident_id, r.display_name
                 ORDER BY r.display_name, a.resident_id""", (expense_id,))
 
+    def payments_for_rent_expense(self, expense_id: str) -> list[dict[str, Any]]:
+        """Each payment that settled part of a resident's rent charge, oldest first,
+        with what it put towards the charge -- not the whole payment, whose excess
+        may have gone to other charges. A reversed payment's applications are
+        removed with it, so these always add up to the charge's settled amount."""
+        return self._s.fetch_all(
+            """SELECT a.resident_id, p.payment_id, p.payment_date,
+                      SUM(pa.amount_paise)::BIGINT AS amount_paise,
+                      p.payment_mode, p.reference, p.note, p.created_at
+                 FROM payment_application pa
+                 JOIN payment p ON p.payment_id = pa.payment_id
+                 JOIN allocation a ON a.allocation_id = pa.allocation_id
+                WHERE a.expense_id = %s AND p.status = 'active'
+                GROUP BY a.resident_id, p.payment_id, p.payment_date, p.payment_mode,
+                         p.reference, p.note, p.created_at
+                ORDER BY p.payment_date, p.created_at, p.payment_id""", (expense_id,))
+
     def resident_charges_for_expense(self, expense_id: str,
                                      resident_id: str) -> list[dict[str, Any]]:
         """One resident's allocations on an expense, oldest first, with what is still owed."""

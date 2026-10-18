@@ -430,6 +430,47 @@ def test_reversing_a_rent_payment_reopens_the_rent(owing):
         "unpaid", 0, 1_500_000)
 
 
+def _participant(cycle, resident_id):
+    return next(p for p in cycle["participants"] if p["resident_id"] == resident_id)
+
+
+def test_each_resident_lists_the_payments_that_settled_their_rent(owing):
+    _pay_rent(owing, "bob", 600_000, payment_date="2026-11-07", payment_mode="upi",
+              reference="UPI-1", note="First part")
+    # Over what is left of the share: the rest paid off the October dinner, and
+    # only what went to the rent is listed against it.
+    cycle = _pay_rent(owing, "bob", 1_000_000, payment_date="2026-11-12", payment_mode="cash")
+    bob = _participant(cycle, "bob")
+    assert [(p["payment_date"], p["amount_paise"], p["payment_mode"], p["reference"],
+             p["note"]) for p in bob["payments"]] == [
+        ("2026-11-07", 600_000, "upi", "UPI-1", "First part"),
+        ("2026-11-12", 900_000, "cash", None, "Rent for November 2026")]
+    assert sum(p["amount_paise"] for p in bob["payments"]) == bob["settled_paise"]
+    assert set(bob["payments"][0]) == {"payment_id", "payment_date", "amount_paise",
+                                       "payment_mode", "reference", "note", "created_at"}
+    assert (_participant(cycle, "alice")["payments"],
+            _participant(cycle, "chris")["payments"]) == ([], [])
+
+
+def test_a_reversed_payment_drops_out_of_the_history(owing):
+    bounced = _pay_rent(owing, "bob", 600_000)["payment"]["payment_id"]
+    _pay_rent(owing, "bob", 400_000, payment_date="2026-11-08")
+    payments.reverse_payment(owing, bounced, reason="bounced")
+    bob = _participant(rent.get_rent_cycle(owing, APARTMENT, MONTH), "bob")
+    assert [(p["payment_date"], p["amount_paise"]) for p in bob["payments"]] == [
+        ("2026-11-08", 400_000)]
+    assert bob["settled_paise"] == 400_000
+
+
+def test_what_a_resident_paid_the_landlord_is_not_a_payment_to_the_pool(leased):
+    _generate(leased)
+    cycle = _tranche(leased, 1_000_000, "resident_advance", funding_resident_id="alice")
+    alice = _participant(cycle, "alice")
+    assert (alice["advanced_paise"], alice["payments"], alice["settled_paise"]) == (
+        1_000_000, [], 0)
+    assert _participant(cycle, "bob")["advanced_paise"] == 0
+
+
 def test_a_rent_payment_is_refused_when_there_is_no_rent_share_to_pay(owing):
     with pytest.raises(NotFoundError):
         _pay_rent(owing, "bob", 1_500_000, month="2027-01")
