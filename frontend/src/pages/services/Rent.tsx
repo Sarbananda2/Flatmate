@@ -10,7 +10,6 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ArrowRight,
-  ArrowUpRight,
   Building2,
   CalendarDays,
   Check,
@@ -39,7 +38,7 @@ import {
 } from '../../components/ui'
 import { api } from '../../api/client'
 import { useMutation, useResource } from '../../lib/useApi'
-import { LeaseNoticeBanner, LeaseTermPill } from './LeaseLifecycle'
+import { LeaseNoticeBanner } from './LeaseLifecycle'
 import { formatDate, formatInr, formatMonth, paiseToInput, todayIso } from '../../lib/format'
 import type {
   Apartment,
@@ -111,13 +110,6 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
             subtitle="What residents have paid towards this month's rent, and whether the landlord has been paid, under the master lease."
             breadcrumbs={[{ label: 'Services & Utilities', to: '/services' }, { label: 'Rent' }]}
           >
-            {/* The month's status at a glance, on a row of its own so it never
-                wraps around the title. Each step's action is on its own panel. */}
-            <div className="flex flex-wrap items-center gap-2 min-w-0">
-              {config && <LeaseTermPill config={config} />}
-              <DisbursementPill cycle={cycle} configured={Boolean(config)} />
-            </div>
-
             {!config ? (
               <Panel
                 title="Set up the lease"
@@ -291,39 +283,6 @@ function DepositOverview({ config }: { config: RentLeaseConfig }) {
     </Panel>
   )
 }
-
-function DisbursementPill({ cycle, configured }: { cycle: RentCycle | null; configured: boolean }) {
-  if (!configured) return <Pill>Lease not set up</Pill>
-  if (!cycle) return <Pill>Rent not generated</Pill>
-  if (cycle.disbursement_status === 'disbursed') {
-    return (
-      <Pill tone="success">
-        <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-        Disbursed to Landlord
-      </Pill>
-    )
-  }
-  if (cycle.disbursement_status === 'partially_disbursed') {
-    return (
-      <Pill tone="accent">
-        <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
-        <span>
-          Partially Disbursed ·{' '}
-          <span className="tabular">
-            {formatInr(cycle.disbursed_paise)} of {formatInr(cycle.total_rent_paise)}
-          </span>
-        </span>
-      </Pill>
-    )
-  }
-  return (
-    <Pill tone="warning">
-      <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
-      Payout Pending
-    </Pill>
-  )
-}
-
 
 function Metrics({
   config,
@@ -825,24 +784,21 @@ function LandlordPanel({
                 )}
               </td>
               <td className="py-3 text-center whitespace-nowrap">
-                {owing ? (
-                  <button
-                    type="button"
-                    className={BUTTON_SECONDARY}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      onPayout()
-                    }}
-                    aria-label="Record Landlord Payout"
-                  >
-                    <ArrowUpRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                    Record Payout
-                  </button>
-                ) : cycle ? (
-                  <span className="text-[11px] text-[var(--text-tertiary)]">Settled</span>
-                ) : (
-                  dash
-                )}
+                {/* Always there, as on each resident's row; off until the month is
+                    generated and once the landlord has been paid in full. */}
+                <button
+                  type="button"
+                  className={BUTTON_SECONDARY}
+                  disabled={!owing || !cycle}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onPayout()
+                  }}
+                  aria-label="Pay now to landlord"
+                >
+                  <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  Pay Now
+                </button>
               </td>
             </tr>
           </tbody>
