@@ -422,7 +422,7 @@ describe('RentMonth', () => {
 
     const dialog = await screen.findByRole('dialog')
     expect(dialog).toHaveTextContent('Chris · October 2026 rent · ₹15,000.00 outstanding')
-    expect(within(dialog).getByLabelText(/Amount paid/)).toHaveValue('15000.00')
+    expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('15000.00')
     expect(within(dialog).getByLabelText(/Payment date/)).not.toHaveValue('')
     await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), 'UPI-778')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Record Payment' }))
@@ -486,7 +486,7 @@ describe('RentMonth', () => {
       await screen.findByRole('button', { name: 'Pay now for Chris' }),
     )
     const dialog = await screen.findByRole('dialog')
-    const amount = within(dialog).getByLabelText(/Amount paid/)
+    const amount = within(dialog).getByLabelText(/^Amount/)
     const record = within(dialog).getByRole('button', { name: 'Record Payment' })
 
     await userEvent.clear(amount)
@@ -583,7 +583,7 @@ describe('RentMonth', () => {
 
     const confirm = within(dialog).getByRole('button', { name: 'Record Payout' })
     expect(confirm).toBeDisabled()
-    await userEvent.type(within(dialog).getByLabelText(/Payment reference/), '329188401928')
+    await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), '329188401928')
     await userEvent.selectOptions(
       within(dialog).getByLabelText(/Who funded this payout/),
       'resident_advance',
@@ -668,7 +668,7 @@ describe('RentMonth', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Pay now to landlord' }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).queryByLabelText(/receipt/i)).not.toBeInTheDocument()
-    await userEvent.type(within(dialog).getByLabelText(/Payment reference/), 'UTR1')
+    await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), 'UTR1')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Record Payout' }))
 
     await waitFor(() => expect(posted('/disburse')).toBeDefined())
@@ -977,7 +977,7 @@ describe('RentMonth', () => {
       )
 
       const confirm = within(dialog).getByRole('button', { name: 'Record Payout' })
-      await userEvent.type(within(dialog).getByLabelText(/Payment reference/), 'UTR-SECOND')
+      await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), 'UTR-SECOND')
       expect(confirm).toBeEnabled()
 
       await userEvent.clear(amount)

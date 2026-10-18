@@ -1049,7 +1049,7 @@ function RentPaymentModal({
         />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <MoneyInput
-            label="Amount paid"
+            label="Amount"
             required
             value={amount}
             hint={
@@ -1219,7 +1219,7 @@ function PayoutModal({
             onChange={setMode}
           />
           <TextField
-            label="Payment reference / UTR"
+            label="Reference / UTR"
             required
             value={reference}
             onChange={setReference}
