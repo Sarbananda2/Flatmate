@@ -302,7 +302,7 @@ describe('RentMonth', () => {
         'Date',
         'Amount',
         'Mode',
-        'Transaction ID',
+        'Reference / UTR',
       ])
       const rows = within(table).getAllByRole('row').slice(1)
       expect(rows.map((row) => row.textContent)).toEqual([
@@ -418,7 +418,7 @@ describe('RentMonth', () => {
     expect(dialog).toHaveTextContent('Chris · October 2026 rent · ₹15,000.00 outstanding')
     expect(within(dialog).getByLabelText(/Amount paid/)).toHaveValue('15000.00')
     expect(within(dialog).getByLabelText(/Payment date/)).not.toHaveValue('')
-    await userEvent.type(within(dialog).getByLabelText(/UPI Transaction ID/), 'UPI-778')
+    await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), 'UPI-778')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Record Payment' }))
 
     await waitFor(() => expect(posted('/pay')).toBeDefined())
@@ -491,7 +491,7 @@ describe('RentMonth', () => {
     await userEvent.type(amount, '16500.50')
     expect(dialog).toHaveTextContent('₹1,500.50 more than this month\'s share')
     // The amount is fine, but a payment is not recorded without its transaction ID.
-    const transaction = within(dialog).getByLabelText(/UPI Transaction ID/)
+    const transaction = within(dialog).getByLabelText(/Reference \/ UTR/)
     expect(transaction).toBeRequired()
     expect(record).toBeDisabled()
     await userEvent.type(transaction, '   ')
@@ -507,19 +507,16 @@ describe('RentMonth', () => {
     })
   })
 
-  it('asks for the bank reference when the payment was not made by UPI', async () => {
+  it('asks for the same Reference / UTR whatever the payment mode', async () => {
     renderRent(overview())
     await userEvent.click(await screen.findByRole('button', { name: 'Pay now for Chris' }))
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByLabelText(/UPI Transaction ID/)).toHaveAttribute(
-      'placeholder',
-      'e.g. 428391765102',
-    )
-    await userEvent.selectOptions(within(dialog).getByLabelText(/Payment mode/), 'bank_transfer')
-    const transaction = within(dialog).getByLabelText(/Transaction Reference \/ ID/)
-    expect(transaction).toBeRequired()
-    expect(transaction).toHaveAttribute('placeholder', 'Bank UTR or reference')
-    expect(within(dialog).queryByLabelText(/UPI Transaction ID/)).not.toBeInTheDocument()
+    for (const mode of ['upi', 'bank_transfer', 'cash', 'other']) {
+      await userEvent.selectOptions(within(dialog).getByLabelText(/Payment mode/), mode)
+      const reference = within(dialog).getByLabelText(/Reference \/ UTR/)
+      expect(reference).toBeRequired()
+      expect(reference).toHaveAttribute('placeholder', 'e.g. UPI ref or bank UTR')
+    }
   })
 
   it("sends the payout to the account's holder, and says where to add a missing account", async () => {

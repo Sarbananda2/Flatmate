@@ -948,7 +948,7 @@ function RentStatementModal({
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Mode</th>
-                    <th scope="col" className="pb-3 font-bold text-center">Transaction ID</th>
+                    <th scope="col" className="pb-3 font-bold text-center">Reference / UTR</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -1094,12 +1094,12 @@ function RentPaymentModal({
             onChange={setMode}
           />
           <TextField
-            label={mode === 'upi' ? 'UPI Transaction ID' : 'Transaction Reference / ID'}
+            label="Reference / UTR"
             required
             value={reference}
             onChange={setReference}
             maxLength={200}
-            placeholder={mode === 'upi' ? 'e.g. 428391765102' : 'Bank UTR or reference'}
+            placeholder="e.g. UPI ref or bank UTR"
           />
         </div>
         <TextField
