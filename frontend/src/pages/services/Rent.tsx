@@ -79,6 +79,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
   const [dialog, setDialog] = useState<'payout' | null>(null)
   const [payingFor, setPayingFor] = useState<RentParticipant | null>(null)
   const [viewingStatement, setViewingStatement] = useState<RentParticipant | null>(null)
+  const [viewingLandlordStatement, setViewingLandlordStatement] = useState(false)
 
   const generate = useMutation(
     () =>
@@ -176,6 +177,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   config={config}
                   cycle={cycle}
                   onPayout={() => setDialog('payout')}
+                  onViewStatement={() => setViewingLandlordStatement(true)}
                 />
                 {/* The contract the rent is charged under, for reference. */}
                 <RentAgreementCard
@@ -206,6 +208,14 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   )
                   overview.reload()
                 }}
+              />
+            )}
+            {viewingLandlordStatement && cycle && config && (
+              <LandlordStatementModal
+                month={month}
+                config={config}
+                cycle={cycle}
+                onClose={() => setViewingLandlordStatement(false)}
               />
             )}
             {viewingStatement && cycle && (
@@ -703,10 +713,12 @@ function LandlordPanel({
   config,
   cycle,
   onPayout,
+  onViewStatement,
 }: {
   config: RentLeaseConfig
   cycle: RentCycle | null
   onPayout: () => void
+  onViewStatement: () => void
 }) {
   const dash = <span className="text-[var(--text-tertiary)]">—</span>
   const tranches = cycle?.disbursements ?? []
@@ -731,7 +743,7 @@ function LandlordPanel({
     <Panel
       title="Landlord & Disbursement"
       icon={<Building2 className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="How much of this month's rent has reached the landlord, and each payment made."
+      hint="How much of this month's rent has reached the landlord. Select the row for each payment made."
     >
       {/* Laid out as the collection table above, so the two read column for
           column: what was due, what has been paid, what is still owed. */}
@@ -751,7 +763,28 @@ function LandlordPanel({
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-            <tr className="align-middle">
+            {/* Once the month is generated, the row opens the landlord's payout
+                statement, as a resident's row opens theirs; the button in it
+                does its own thing instead. */}
+            <tr
+              className={
+                cycle
+                  ? 'align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors'
+                  : 'align-middle'
+              }
+              {...(cycle && {
+                tabIndex: 0,
+                title: 'View the landlord payout statement',
+                onClick: onViewStatement,
+                onKeyDown: (event: React.KeyboardEvent<HTMLTableRowElement>) => {
+                  if (event.target !== event.currentTarget) return
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onViewStatement()
+                  }
+                },
+              })}
+            >
               <th scope="row" className="py-3 pr-3 text-left font-normal">
                 <span className="flex items-center gap-2.5 min-w-0">
                   <Avatar name={config.landlord_name} />
@@ -786,8 +819,6 @@ function LandlordPanel({
                       <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
                     )}
                     {status.label}
-                    {cycle.disbursement_status === 'disbursed' &&
-                      ` · ${formatDate(cycle.disbursed_at)}`}
                   </Pill>
                 ) : (
                   <Pill>Not generated</Pill>
@@ -798,7 +829,10 @@ function LandlordPanel({
                   <button
                     type="button"
                     className={BUTTON_SECONDARY}
-                    onClick={onPayout}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onPayout()
+                    }}
                     aria-label="Record Landlord Payout"
                   >
                     <ArrowUpRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
@@ -811,63 +845,6 @@ function LandlordPanel({
                 )}
               </td>
             </tr>
-            {cycle && tranches.length > 0 && (
-              <tr>
-                <td colSpan={6} className="pt-1 pb-3">
-                  <div className="ml-4 border-l-2 border-[var(--border-subtle)] pl-3">
-                    <table className="w-full text-left text-xs border-collapse">
-                      <caption className="sr-only">Payments to the landlord</caption>
-                      <thead>
-                        <tr className={TABLE_HEAD}>
-                          <th scope="col" className="py-2 pr-3 font-bold text-center">Date</th>
-                          <th scope="col" className="py-2 pr-3 font-bold text-center">Amount</th>
-                          <th scope="col" className="py-2 pr-3 font-bold text-center">Funded From</th>
-                          <th scope="col" className="py-2 pr-3 font-bold text-center">Reference / UTR</th>
-                          <th scope="col" className="py-2 pr-3 font-bold text-center">Note</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-                        {tranches.map((tranche) => (
-                          <tr key={tranche.disbursement_id} className="align-middle">
-                            <td className="py-2.5 pr-3 text-center tabular">
-                              {formatDate(tranche.disbursed_at)}
-                            </td>
-                            <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
-                              <Rupees paise={tranche.amount_paise} />
-                            </td>
-                            <td className="py-2.5 pr-3 text-center">
-                              {tranche.disbursed_by === 'pool'
-                                ? 'House Kitty'
-                                : `${tranche.funding_resident_name ?? tranche.funding_resident_id} (advance)`}
-                            </td>
-                            <td className="py-2.5 pr-3 text-center tabular break-all">
-                              {tranche.disbursement_reference}
-                            </td>
-                            <td className="py-2.5 pr-3 text-center text-[var(--text-secondary)]">
-                              {tranche.note ?? dash}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr className="border-t border-[var(--border-subtle)]">
-                          <td colSpan={5} className="pt-2.5 text-[11px] text-[var(--text-secondary)]">
-                            Total disbursed{' '}
-                            <strong className="tabular text-[var(--text-primary)]">
-                              {formatInr(cycle.disbursed_paise)}
-                            </strong>{' '}
-                            · Balance remaining{' '}
-                            <strong className="tabular text-[var(--text-primary)]">
-                              {formatInr(cycle.remaining_disbursement_paise)}
-                            </strong>
-                          </td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
       </div>
@@ -965,6 +942,99 @@ function RentStatementModal({
                       </td>
                       <td className="py-2.5 text-center tabular break-all text-[var(--text-primary)]">
                         {payment.reference || dash}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
+    </Modal>
+  )
+}
+
+/* ----------------------------------------------- landlord statement modal -- */
+
+/** The landlord's side of the month: what is due to them, and every payment made. */
+function LandlordStatementModal({
+  month,
+  config,
+  cycle,
+  onClose,
+}: {
+  month: string
+  config: RentLeaseConfig
+  cycle: RentCycle
+  onClose: () => void
+}) {
+  const status = PAYOUT[cycle.disbursement_status]
+  const dash = <span className="text-[var(--text-tertiary)]">—</span>
+  return (
+    <Modal
+      title="Landlord Payout Statement"
+      description={`${config.landlord_name} · ${formatMonth(month)}`}
+      onClose={onClose}
+    >
+      <div className="stack">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <MiniStat label="Total Rent" value={<Rupees paise={cycle.total_rent_paise} />} />
+          <MiniStat label="Paid to Owner" value={<Rupees paise={cycle.disbursed_paise} />} />
+          <MiniStat
+            label="Still Owed"
+            value={<Rupees paise={cycle.remaining_disbursement_paise} />}
+          />
+        </div>
+
+        <section aria-label="Disbursement history" className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="m-0 text-sm font-bold text-[var(--text-primary)]">
+              Disbursement History
+            </h3>
+            <Pill tone={status.tone}>
+              {cycle.disbursement_status === 'disbursed' ? (
+                <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
+              ) : (
+                <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
+              )}
+              {status.label}
+            </Pill>
+          </div>
+          {cycle.disbursements.length === 0 ? (
+            <EmptyBlock title="No payouts recorded yet for this month." />
+          ) : (
+            <div className="overflow-x-auto min-w-0">
+              <table className="w-full text-left text-xs min-w-[560px] border-collapse">
+                <caption className="sr-only">Payments to the landlord</caption>
+                <thead>
+                  <tr className={TABLE_HEAD}>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Funded From</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Reference / UTR</th>
+                    <th scope="col" className="pb-3 font-bold text-center">Note</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+                  {cycle.disbursements.map((tranche) => (
+                    <tr key={tranche.disbursement_id} className="align-middle">
+                      <td className="py-2.5 pr-3 text-center tabular">
+                        {formatDate(tranche.disbursed_at)}
+                      </td>
+                      <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
+                        <Rupees paise={tranche.amount_paise} />
+                      </td>
+                      <td className="py-2.5 pr-3 text-center">
+                        {tranche.disbursed_by === 'pool'
+                          ? 'House Kitty'
+                          : `${tranche.funding_resident_name ?? tranche.funding_resident_id} (advance)`}
+                      </td>
+                      <td className="py-2.5 pr-3 text-center tabular break-all">
+                        {tranche.disbursement_reference}
+                      </td>
+                      <td className="py-2.5 text-center text-[var(--text-secondary)]">
+                        {tranche.note ?? dash}
                       </td>
                     </tr>
                   ))}

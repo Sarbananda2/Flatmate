@@ -817,8 +817,13 @@ describe('RentMonth', () => {
     expect(screen.queryByRole('button', { name: /HRA receipt/ })).not.toBeInTheDocument()
     expect(stub!.calls.some((call) => call.path.includes('/receipt/'))).toBe(false)
     expect(stat('Landlord Due Date')).toHaveTextContent('Paid 5 Oct 2026')
-    expect(landlordRow()).toHaveTextContent('₹45,000.00₹45,000.00₹0.00Paid · 5 Oct 2026')
-    const payments = screen.getByRole('table', { name: 'Payments to the landlord' })
+    expect(landlordRow()).toHaveTextContent('₹45,000.00₹45,000.00₹0.00Paid')
+    expect(landlordRow()).not.toHaveTextContent('5 Oct 2026')
+    // The payment itself is in the landlord's statement, not on the page.
+    expect(screen.queryByRole('table', { name: 'Payments to the landlord' })).not.toBeInTheDocument()
+    await userEvent.click(landlordRow())
+    const dialog = await screen.findByRole('dialog', { name: 'Landlord Payout Statement' })
+    const payments = within(dialog).getByRole('table', { name: 'Payments to the landlord' })
     expect(within(payments).getByRole('row', { name: /329188401928/ })).toHaveTextContent('₹45,000.00')
   })
 
@@ -852,6 +857,9 @@ describe('RentMonth', () => {
       expect(landlord).toHaveTextContent('₹45,000.00')
       expect(landlord).toHaveTextContent('Not generated')
       expect(screen.queryByRole('button', { name: 'Record Landlord Payout' })).not.toBeInTheDocument()
+      // Nothing to show until the month is generated, so the row opens nothing.
+      await userEvent.click(landlord)
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
 
     it('shows a part-paid month and still offers the next payout', async () => {
@@ -891,7 +899,20 @@ describe('RentMonth', () => {
           }),
         }),
       )
-      const table = await screen.findByRole('table', { name: 'Payments to the landlord' })
+      // The row says where the month stands; its statement lists the payments.
+      expect(await screen.findByRole('table', { name: 'Rent owed to the landlord' })).toBeInTheDocument()
+      expect(landlordRow()).toHaveTextContent('Paid')
+      expect(landlordRow()).not.toHaveTextContent('9 Oct 2026')
+      expect(landlordRow()).toHaveTextContent('Settled')
+      await userEvent.click(landlordRow())
+      const dialog = await screen.findByRole('dialog', { name: 'Landlord Payout Statement' })
+      expect(dialog).toHaveTextContent('Rajesh Kumar Sharma · October 2026')
+      expect(within(dialog).getByText('Total Rent').parentElement).toHaveTextContent('₹45,000.00')
+      expect(within(dialog).getByText('Paid to Owner').parentElement).toHaveTextContent('₹45,000.00')
+      expect(within(dialog).getByText('Still Owed').parentElement).toHaveTextContent('₹0.00')
+      const history = within(dialog).getByRole('region', { name: 'Disbursement history' })
+      expect(history).toHaveTextContent('Paid')
+      const table = within(history).getByRole('table', { name: 'Payments to the landlord' })
       expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
         'Date',
         'Amount',
@@ -908,11 +929,41 @@ describe('RentMonth', () => {
       expect(second).toHaveTextContent('9 Oct 2026')
       expect(second).toHaveTextContent('₹15,000.00')
       expect(second).toHaveTextContent('Alice (advance)')
-      expect(table).toHaveTextContent('Total disbursed ₹45,000.00 · Balance remaining ₹0.00')
-      const landlord = within(screen.getByRole('table', { name: 'Rent owed to the landlord' }))
-        .getAllByRole('row', { name: /Rajesh Kumar Sharma/ })[0]
-      expect(landlord).toHaveTextContent('Paid · 9 Oct 2026')
-      expect(landlord).toHaveTextContent('Settled')
+      // Closed by its own ✕: there is no footer of actions.
+      expect(within(dialog).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
+        'Close dialog',
+      ])
+    })
+
+    it('opens an empty statement before the landlord is paid, but not from the payout button', async () => {
+      renderRent(overview())
+      await userEvent.click(
+        within(await screen.findByRole('table', { name: 'Rent owed to the landlord' })).getByRole(
+          'button',
+          { name: 'Record Landlord Payout' },
+        ),
+      )
+      const payout = await screen.findByRole('dialog', { name: 'Record Landlord Payout' })
+      expect(screen.queryByRole('dialog', { name: 'Landlord Payout Statement' })).not.toBeInTheDocument()
+      await userEvent.click(within(payout).getByRole('button', { name: 'Cancel' }))
+
+      await userEvent.click(landlordRow())
+      const dialog = await screen.findByRole('dialog', { name: 'Landlord Payout Statement' })
+      expect(within(dialog).getByText('Still Owed').parentElement).toHaveTextContent('₹45,000.00')
+      expect(within(dialog).getByRole('region', { name: 'Disbursement history' })).toHaveTextContent(
+        'Unpaid',
+      )
+      expect(dialog).toHaveTextContent('No payouts recorded yet for this month.')
+      expect(within(dialog).queryByRole('table')).not.toBeInTheDocument()
+    })
+
+    it('opens the landlord statement from the keyboard too', async () => {
+      renderRent(overview({ cycle: partCycle() }))
+      await screen.findByRole('table', { name: 'Rent owed to the landlord' })
+      landlordRow().focus()
+      await userEvent.keyboard('{Enter}')
+      const dialog = await screen.findByRole('dialog', { name: 'Landlord Payout Statement' })
+      expect(within(dialog).getByRole('row', { name: /UTR-FIRST/ })).toHaveTextContent('₹30,000.00')
     })
 
     it('offers the balance as the next tranche and refuses more than is owed', async () => {
