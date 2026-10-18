@@ -231,13 +231,15 @@ describe('RentMonth', () => {
   it('offers no HRA slip to residents who have paid', async () => {
     renderRent(overview())
     const table = await screen.findByRole('table', { name: 'Rent shares and collection' })
-    expect(within(table).getByRole('row', { name: /Alice/ })).toHaveTextContent('Settled')
+    // Every row has the payment button: off once the share is paid, on while some is owed.
+    const alice = within(table).getByRole('row', { name: /Alice/ })
+    expect(within(alice).getByRole('button', { name: 'Record rent payment from Alice' })).toBeDisabled()
     const chris = within(table).getByRole('row', { name: /Chris/ })
-    expect(chris).not.toHaveTextContent('Settled')
+    expect(within(chris).getByRole('button', { name: 'Record rent payment from Chris' })).toBeEnabled()
+    // The status says paid, with no date beside it.
+    expect(within(alice).getByText('Paid').textContent).toBe('Paid')
+    expect(table).not.toHaveTextContent('Settled')
     expect(screen.queryByText(/HRA slip/)).not.toBeInTheDocument()
-    expect(
-      within(chris).getByRole('button', { name: 'Record rent payment from Chris' }),
-    ).toBeInTheDocument()
   })
 
   describe("a resident's rent statement", () => {
@@ -402,8 +404,12 @@ describe('RentMonth', () => {
     })
 
     const table = await screen.findByRole('table', { name: 'Rent shares and collection' })
-    // Only residents who still owe rent get the action.
-    expect(within(table).getAllByRole('button', { name: /Record rent payment from/ })).toHaveLength(1)
+    // Every resident has the action; only one who still owes rent can use it.
+    const actions = within(table).getAllByRole('button', { name: /Record rent payment from/ })
+    expect(actions).toHaveLength(3)
+    expect(actions.filter((button) => !(button as HTMLButtonElement).disabled)).toEqual([
+      within(table).getByRole('button', { name: 'Record rent payment from Chris' }),
+    ])
     await userEvent.click(
       within(table).getByRole('button', { name: 'Record rent payment from Chris' }),
     )
@@ -424,12 +430,12 @@ describe('RentMonth', () => {
       note: null,
     })
     expect(await screen.findByText('3 of 3 covered · 100.0%')).toBeInTheDocument()
-    expect(
-      within(screen.getByRole('table', { name: 'Rent shares and collection' })).queryByRole(
-        'button',
-        { name: /Record rent payment from/ },
-      ),
-    ).not.toBeInTheDocument()
+    // Everyone has paid, so every row's payment button is off.
+    for (const button of within(
+      screen.getByRole('table', { name: 'Rent shares and collection' }),
+    ).getAllByRole('button', { name: /Record rent payment from/ })) {
+      expect(button).toBeDisabled()
+    }
   })
 
   it('shows where to pay the household pool, or where to add its details', async () => {

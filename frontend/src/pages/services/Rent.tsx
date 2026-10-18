@@ -508,34 +508,24 @@ function CyclePanel({
                         <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
                       )}
                       {status.label}
-                      {participant.collection_status === 'paid' &&
-                        participant.last_payment_date &&
-                        ` · ${formatDate(participant.last_payment_date)}`}
                     </Pill>
                   </td>
                   <td className="py-3 text-center whitespace-nowrap">
-                    <span className="inline-flex flex-wrap items-center justify-center gap-2">
-                      {(participant.collection_status === 'unpaid' ||
-                        participant.collection_status === 'partial') && (
-                        <button
-                          type="button"
-                          className={BUTTON_SECONDARY}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            onPay(participant)
-                          }}
-                          aria-label={`Record rent payment from ${participant.display_name}`}
-                        >
-                          <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                          Record Payment
-                        </button>
-                      )}
-                      {settled && (
-                        <span className="text-[11px] text-[var(--text-tertiary)]">
-                          Settled
-                        </span>
-                      )}
-                    </span>
+                    {/* On every row, so the column reads the same down the table;
+                        there is nothing to record once the share is covered. */}
+                    <button
+                      type="button"
+                      className={BUTTON_SECONDARY}
+                      disabled={settled || participant.outstanding_paise <= 0}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onPay(participant)
+                      }}
+                      aria-label={`Record rent payment from ${participant.display_name}`}
+                    >
+                      <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      Record Payment
+                    </button>
                   </td>
                 </tr>
               )
