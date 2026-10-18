@@ -922,9 +922,20 @@ class StatementCloseRequest(ApiModel):
 # --------------------------------------------------------------------------- #
 
 class SetupApartmentRequest(ApiModel):
-    name: str = Field(min_length=1, max_length=200,
-                      description="The identifier is derived from this; the operator "
-                                  "never types one.")
+    """Where the apartment is, part by part, in Indian postal order. The name is
+    the society and flat number unless one is given; the identifier is derived
+    from the name, so the operator never types one."""
+
+    name: str | None = Field(None, max_length=200,
+                             description="Friendly name. If omitted, derived from society "
+                                         "and flat number.")
+    flat_number: str | None = Field(None, max_length=50)
+    tower_block: str | None = Field(None, max_length=50)
+    society_name: str | None = Field(None, max_length=150)
+    locality_street: str | None = Field(None, max_length=200)
+    city: str | None = Field(None, max_length=100)
+    state: str | None = Field(None, max_length=100)
+    pincode: str | None = Field(None, pattern=PINCODE_PATTERN)
     currency_code: str = Field("INR", min_length=3, max_length=3)
     timezone: str = Field("Asia/Kolkata", min_length=1, max_length=64)
     apartment_id: str | None = Field(None, max_length=64,

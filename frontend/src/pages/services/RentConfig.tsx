@@ -32,6 +32,7 @@ import { api } from '../../api/client'
 import { useMutation, useResource } from '../../lib/useApi'
 import { leaseDurationOptions } from '../../lib/lease'
 import { EMPTY_NAME, type PersonName, nameParts } from '../../lib/names'
+import { PINCODE_MESSAGE, PINCODE_PATTERN } from '../../lib/validation'
 import {
   escalatedPaise,
   formatDate,
@@ -656,9 +657,6 @@ const LANDLORD_TITLE = 'Landlord Profile'
 
 const NOT_RECORDED = <span className="text-[var(--text-tertiary)]">Not recorded</span>
 
-/** A PIN code: six digits, the first never 0. The backend checks the same. */
-const PINCODE_PATTERN = /^[1-9][0-9]{5}$/
-
 /** The address parts, in postal order, with what each is called and may hold. */
 const ADDRESS_PARTS = [
   { field: 'flat_number', label: 'Flat Number', maxLength: 50, placeholder: '1805' },
@@ -744,8 +742,7 @@ function EditApartmentModal({
   }
   const pincode = values.pincode.trim()
   // Checked as it is typed, unlike the rest, so a mistyped PIN shows at once.
-  const pincodeError =
-    pincode && !PINCODE_PATTERN.test(pincode) ? 'A PIN code is 6 digits and does not start with 0.' : null
+  const pincodeError = pincode && !PINCODE_PATTERN.test(pincode) ? PINCODE_MESSAGE : null
   const valid = Object.keys(errors).length === 0 && !pincodeError
   const save = useMutation(
     () =>

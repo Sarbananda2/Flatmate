@@ -136,7 +136,9 @@ def setup_catalogue() -> dict[str, Any]:
              summary="Step 1 — create the apartment")
 def setup_apartment(payload: SetupApartmentRequest, db: Db,
                     settings: AppSettings) -> dict[str, Any]:
-    """The identifier is derived from the name, so the operator never types one."""
+    """The apartment's address, part by part. Its name is the society and flat
+    number unless one is given, and the identifier is derived from the name, so
+    the operator never types one."""
     try:
         result = setup_service.create_apartment_step(
             db, actor=settings.operator_name, **payload.model_dump(exclude_none=True))

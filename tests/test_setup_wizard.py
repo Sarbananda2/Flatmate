@@ -85,6 +85,71 @@ def test_a_clashing_derived_identifier_gets_a_suffix(db):
     assert second["apartment_id"] == "home-2"
 
 
+# Step 1 is the apartment's address, part by part
+# --------------------------------------------------------------------------- #
+
+CAPETOWN = {"flat_number": "1805", "tower_block": "CG6", "society_name": "Supertech Capetown",
+            "locality_street": "Sector 74", "city": "Noida", "state": "Uttar Pradesh",
+            "pincode": "201301"}
+
+
+def test_step_one_keeps_the_address_and_names_the_apartment_after_it(db):
+    created = setup_service.create_apartment_step(db, **CAPETOWN)
+    apartment = created["apartment"]
+    assert {field: apartment[field] for field in CAPETOWN} == CAPETOWN
+    # Named after the society and flat, and identified from that name.
+    assert (apartment["name"], created["apartment_id"]) == (
+        "Supertech Capetown 1805", "supertech-capetown-1805")
+    assert apartment["premises_address"] == (
+        "1805, CG6, Supertech Capetown, Sector 74, Noida, Uttar Pradesh - 201301")
+    # The address was part of the apartment from the moment it was made.
+    with connect(db, read_only=True) as conn:
+        [entry] = conn.execute("SELECT new_value FROM audit_log WHERE entity_type='apartment' "
+                               "AND action='create'").fetchall()
+    assert '"society_name": "Supertech Capetown"' in entry["new_value"]
+    assert setup_service.setup_state(db)["next_step"] == "residents"
+
+
+def test_only_the_parts_given_are_kept(db):
+    created = setup_service.create_apartment_step(
+        db, flat_number=" 402 ", society_name="Lakeview", city="Pune", tower_block="")
+    apartment = created["apartment"]
+    assert (apartment["flat_number"], apartment["tower_block"], apartment["pincode"]) == (
+        "402", None, None)
+    assert apartment["name"] == "Lakeview 402"
+
+
+def test_a_name_given_is_kept_and_nothing_given_still_makes_an_apartment(db):
+    named = setup_service.create_apartment_step(db, name="Flat 402", **CAPETOWN)
+    assert named["apartment"]["name"] == "Flat 402"
+    assert named["apartment"]["city"] == "Noida"
+    assert setup_service.create_apartment_step(db)["apartment"]["name"] == "My Apartment"
+
+
+@pytest.mark.parametrize("field, value", [
+    ("pincode", "012345"), ("pincode", "20130"), ("flat_number", "x" * 51),
+    ("society_name", "x" * 151),
+])
+def test_a_bad_address_part_makes_no_apartment(db, field, value):
+    with pytest.raises(ValidationError) as refused:
+        setup_service.create_apartment_step(db, **{**CAPETOWN, field: value})
+    assert refused.value.details["field"] == field
+    assert setup_service.setup_state(db)["apartment_count"] == 0
+
+
+def test_step_one_over_http_takes_the_address(client):
+    created = client.post("/api/setup/apartment", json=CAPETOWN)
+    assert created.status_code == 201
+    assert created.json()["apartment_id"] == "supertech-capetown-1805"
+    assert created.json()["state"]["next_step"] == "residents"
+    apartment = client.get("/api/apartments/supertech-capetown-1805").json()
+    assert apartment["premises_address"] == (
+        "1805, CG6, Supertech Capetown, Sector 74, Noida, Uttar Pradesh - 201301")
+    refused = client.post("/api/setup/apartment", json={**CAPETOWN, "pincode": "1234"})
+    assert refused.status_code == 422
+    assert client.get("/api/apartments").json()["total"] == 1
+
+
 def test_two_residents_with_similar_names_get_distinct_identifiers(apartment):
     result = setup_service.create_residents_step(
         apartment, apartment_id=APARTMENT, names=["Alice B", "Alice-B"])

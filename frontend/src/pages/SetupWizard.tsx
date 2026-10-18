@@ -31,7 +31,9 @@ import {
   formatMonth,
   parseRupees,
 } from '../lib/format'
+import { PINCODE_MESSAGE, PINCODE_PATTERN, patternError } from '../lib/validation'
 import type {
+  Apartment,
   CatalogueEntry,
   PeriodRule,
   Recurrence,
@@ -41,9 +43,50 @@ import type {
 
 const DRAFT_KEY = 'aem.setup-draft'
 
+/** The apartment's postal address, part by part, as step 1 holds it. */
+interface AddressDraft {
+  flat_number: string
+  tower_block: string
+  society_name: string
+  locality_street: string
+  city: string
+  state: string
+  pincode: string
+}
+
+const EMPTY_ADDRESS: AddressDraft = {
+  flat_number: '',
+  tower_block: '',
+  society_name: '',
+  locality_street: '',
+  city: '',
+  state: '',
+  pincode: '',
+}
+
+const ADDRESS_FIELDS = Object.keys(EMPTY_ADDRESS) as Array<keyof AddressDraft>
+
+/** What an apartment is called when it is not given a name, as the backend names it. */
+function apartmentName(societyName: string | null | undefined, flatNumber: string | null | undefined): string {
+  return [societyName, flatNumber].map((part) => (part ?? '').trim()).filter(Boolean).join(' ') || 'My Apartment'
+}
+
+/** An apartment's address, as step 1 shows it for editing. */
+function addressOf(apartment: Apartment): AddressDraft {
+  return {
+    flat_number: apartment.flat_number ?? '',
+    tower_block: apartment.tower_block ?? '',
+    society_name: apartment.society_name ?? '',
+    locality_street: apartment.locality_street ?? '',
+    city: apartment.city ?? '',
+    state: apartment.state ?? '',
+    pincode: apartment.pincode ?? '',
+  }
+}
+
 /** Half-typed input for the step in progress. Never the source of truth. */
 interface Draft {
-  apartmentName: string
+  address: AddressDraft
   residentNames: string[]
   picked: Record<string, boolean>
   amounts: Record<string, string>
@@ -52,7 +95,7 @@ interface Draft {
 }
 
 const EMPTY_DRAFT: Draft = {
-  apartmentName: '',
+  address: EMPTY_ADDRESS,
   residentNames: ['', '', ''],
   picked: {},
   amounts: {},
@@ -64,7 +107,8 @@ function readDraft(): Draft {
   try {
     const raw = window.localStorage.getItem(DRAFT_KEY)
     if (!raw) return EMPTY_DRAFT
-    return { ...EMPTY_DRAFT, ...(JSON.parse(raw) as Partial<Draft>) }
+    const saved = JSON.parse(raw) as Partial<Draft>
+    return { ...EMPTY_DRAFT, ...saved, address: { ...EMPTY_ADDRESS, ...saved.address } }
   } catch {
     // Private window, blocked storage, or stale shape. The wizard works
     // without it; only the half-typed text in the current step is lost.
@@ -122,7 +166,7 @@ export default function SetupWizardPage() {
     setTouched(false)
     setActiveStepOverride(target === serverStep ? null : target)
     if (target === 'apartment' && state.data?.apartment) {
-      patch({ apartmentName: state.data.apartment.name })
+      patch({ address: addressOf(state.data.apartment) })
     }
     // Saved residents are listed and edited in place, so the boxes below them
     // start empty and are only for adding someone new.
@@ -153,15 +197,38 @@ export default function SetupWizardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catalogue.data])
 
+  // Step 1: the flat, its society and its city are needed; a PIN code, if
+  // typed, is checked as it is typed.
+  const address = draft.address
+  const addressErrors = {
+    flat_number: address.flat_number.trim() ? null : 'Enter flat/unit number.',
+    society_name: address.society_name.trim() ? null : 'Enter society/complex name.',
+    city: address.city.trim() ? null : 'Enter city.',
+  }
+  const pincodeError = patternError(address.pincode, PINCODE_PATTERN, PINCODE_MESSAGE)
+  const addressValid = Object.values(addressErrors).every((error) => !error) && !pincodeError
   const saveApartment = useMutation(
     async () => {
-      const name = draft.apartmentName.trim()
+      const parts = {
+        flat_number: address.flat_number.trim(),
+        tower_block: address.tower_block.trim() || null,
+        society_name: address.society_name.trim(),
+        locality_street: address.locality_street.trim() || null,
+        city: address.city.trim(),
+        state: address.state.trim() || null,
+        pincode: address.pincode.trim() || null,
+      }
       const existing = state.data?.apartment
-      // Going back to this step renames the apartment; it never makes a second one.
+      // Going back to this step changes the address; it never makes a second
+      // apartment. A name still the one its address gave it follows the address.
       if (!existing) {
-        await api.post<{ state: SetupState }>('/api/setup/apartment', { name })
-      } else if (existing.name !== name) {
-        await api.patch(`/api/apartments/${encodeURIComponent(existing.apartment_id)}`, { name })
+        await api.post<{ state: SetupState }>('/api/setup/apartment', parts)
+      } else if (ADDRESS_FIELDS.some((field) => (existing[field] ?? null) !== parts[field])) {
+        const named = existing.name === apartmentName(existing.society_name, existing.flat_number)
+        await api.patch(`/api/apartments/${encodeURIComponent(existing.apartment_id)}`, {
+          ...parts,
+          ...(named ? { name: apartmentName(parts.society_name, parts.flat_number) } : {}),
+        })
       }
     },
     {
@@ -343,32 +410,87 @@ export default function SetupWizardPage() {
         <section className="card">
           <div className="card-header">
             <div>
-              <h2 className="card-title">Step 1 · What is this place called?</h2>
+              <h2 className="card-title">Step 1 · Where is your apartment?</h2>
               <div className="card-hint">
-                Only the name. Everything else has a sensible default you can change later.
+                Enter your apartment and address details. These will be used on your household dashboard,
+                lease terms, and HRA rent receipts.
               </div>
             </div>
           </div>
           <div className="card-body">
             <form
               className="stack"
+              // The fields say what is missing themselves, rather than the browser.
+              noValidate
               onSubmit={(event) => {
                 event.preventDefault()
                 setTouched(true)
-                if (draft.apartmentName.trim()) void saveApartment.run(undefined)
+                if (addressValid) void saveApartment.run(undefined)
               }}
             >
               <ErrorNotice error={saveApartment.error} />
-              <TextField
-                label="Apartment name"
-                value={draft.apartmentName}
-                onChange={(value) => patch({ apartmentName: value })}
-                required
-                error={touched && !draft.apartmentName.trim() ? 'Give it a name.' : null}
-                placeholder="e.g. Palm Grove 302"
-                hint="The short identifier used in exports is worked out from this."
-                maxLength={200}
-              />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+                <TextField
+                  label="Flat / Unit Number"
+                  value={address.flat_number}
+                  onChange={(value) => patch({ address: { ...address, flat_number: value } })}
+                  required
+                  maxLength={50}
+                  placeholder="e.g. 1805"
+                  error={touched ? addressErrors.flat_number : null}
+                />
+                <TextField
+                  label="Tower / Wing / Block"
+                  value={address.tower_block}
+                  onChange={(value) => patch({ address: { ...address, tower_block: value } })}
+                  maxLength={50}
+                  placeholder="e.g. CG6 or Tower B"
+                />
+                <div className="md:col-span-2">
+                  <TextField
+                    label="Society / Complex Name"
+                    value={address.society_name}
+                    onChange={(value) => patch({ address: { ...address, society_name: value } })}
+                    required
+                    maxLength={150}
+                    placeholder="e.g. Supertech Capetown"
+                    error={touched ? addressErrors.society_name : null}
+                  />
+                </div>
+                <TextField
+                  label="Locality / Sector / Street"
+                  value={address.locality_street}
+                  onChange={(value) => patch({ address: { ...address, locality_street: value } })}
+                  maxLength={200}
+                  placeholder="e.g. Sector 74"
+                />
+                <TextField
+                  label="City"
+                  value={address.city}
+                  onChange={(value) => patch({ address: { ...address, city: value } })}
+                  required
+                  maxLength={100}
+                  placeholder="e.g. Noida"
+                  error={touched ? addressErrors.city : null}
+                />
+                <TextField
+                  label="State"
+                  value={address.state}
+                  onChange={(value) => patch({ address: { ...address, state: value } })}
+                  maxLength={100}
+                  placeholder="e.g. Uttar Pradesh"
+                />
+                <TextField
+                  label="PIN Code"
+                  value={address.pincode}
+                  onChange={(value) => patch({ address: { ...address, pincode: value } })}
+                  inputMode="numeric"
+                  maxLength={6}
+                  placeholder="201301"
+                  hint="6 digits"
+                  error={pincodeError}
+                />
+              </div>
               <div className="form-actions">
                 <button type="submit" className="btn btn--primary" disabled={saveApartment.pending}>
                   {saveApartment.pending ? 'Saving…' : 'Continue'}

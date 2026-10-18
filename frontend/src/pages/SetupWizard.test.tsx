@@ -55,6 +55,26 @@ const CATALOGUE = {
   ],
 }
 
+/** The apartment as step 1 saved it: named after its society and flat. */
+const LAKEVIEW = {
+  apartment_id: 'flat-402',
+  name: 'Lakeview 402',
+  currency_code: 'INR',
+  timezone: 'Asia/Kolkata',
+  created_at: '2026-10-11T10:00:00+05:30',
+  flat_number: '402',
+  tower_block: null,
+  society_name: 'Lakeview',
+  locality_street: null,
+  city: 'Pune',
+  state: null,
+  pincode: null,
+}
+
+/** Step 1's fields, by their labels as the operator reads them. */
+const addressLabels = () =>
+  screen.getAllByRole('textbox').map((box) => box.closest('.field')?.querySelector('label')?.textContent)
+
 function state(next: SetupStepKey, overrides: Record<string, unknown> = {}) {
   const done = (key: SetupStepKey) =>
     ['apartment', 'residents', 'categories', 'finish'].indexOf(key) <
@@ -64,10 +84,7 @@ function state(next: SetupStepKey, overrides: Record<string, unknown> = {}) {
     is_complete: next === 'done',
     completed_at: next === 'done' ? '2026-10-11T12:00:00+05:30' : null,
     apartment_count: next === 'apartment' ? 0 : 1,
-    apartment: next === 'apartment' ? null : {
-      apartment_id: 'flat-402', name: 'Flat 402', currency_code: 'INR',
-      timezone: 'Asia/Kolkata', created_at: '2026-10-11T10:00:00+05:30',
-    },
+    apartment: next === 'apartment' ? null : LAKEVIEW,
     apartment_id: next === 'apartment' ? null : 'flat-402',
     resident_count: done('residents') || next === 'done' ? 3 : 0,
     active_resident_count: done('residents') || next === 'done' ? 3 : 0,
@@ -91,7 +108,7 @@ function state(next: SetupStepKey, overrides: Record<string, unknown> = {}) {
     current_month: '2026-10',
     steps: [
       { key: 'apartment' as const, label: 'Your apartment', done: done('apartment') || next !== 'apartment',
-        summary: next === 'apartment' ? null : 'Flat 402' },
+        summary: next === 'apartment' ? null : 'Lakeview 402' },
       { key: 'residents' as const, label: 'Who lives here',
         done: done('residents') || next === 'done',
         summary: done('residents') || next === 'done' ? 'Alice, Bob, Chris' : null },
@@ -138,28 +155,63 @@ function renderAt(next: SetupStepKey, extraRoutes: Record<string, unknown> = {})
 }
 
 describe('SetupWizardPage', () => {
-  it('starts at the apartment step on an empty database', async () => {
+  it('starts at the apartment step on an empty database, asking for its address', async () => {
     renderAt('apartment')
-    expect(await screen.findByText(/What is this place called/)).toBeInTheDocument()
-    expect(screen.getByLabelText(/Apartment name/)).toBeInTheDocument()
+    expect(await screen.findByText('Step 1 · Where is your apartment?')).toBeInTheDocument()
+    expect(addressLabels()).toEqual([
+      'Flat / Unit Number* (required)',
+      'Tower / Wing / Block',
+      'Society / Complex Name* (required)',
+      'Locality / Sector / Street',
+      'City* (required)',
+      'State',
+      'PIN Code',
+    ])
   })
 
-  it('never asks the operator to invent an identifier', async () => {
+  it('never asks the operator to invent an identifier, or talks about one', async () => {
     renderAt('apartment')
-    await screen.findByLabelText(/Apartment name/)
+    await screen.findByLabelText(/^Flat \/ Unit Number/)
     expect(screen.queryByLabelText(/Apartment ID/i)).not.toBeInTheDocument()
-    expect(screen.getByText(/worked out from this/)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/Apartment name/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/identifier|exports/)).not.toBeInTheDocument()
+    expect(
+      screen.getByText(/These will be used on your household dashboard, lease terms, and HRA rent receipts\./),
+    ).toBeInTheDocument()
   })
 
-  it('sends only the name, and the backend derives the rest', async () => {
+  it('sends the address part by part, and the backend names the apartment', async () => {
     renderAt('apartment')
-    await userEvent.type(await screen.findByLabelText(/Apartment name/), 'Flat 402, Lakeview')
+    await userEvent.type(await screen.findByLabelText(/^Flat \/ Unit Number/), '1805')
+    await userEvent.type(screen.getByLabelText(/^Tower \/ Wing/), 'CG6')
+    await userEvent.type(screen.getByLabelText(/^Society \/ Complex/), ' Supertech Capetown ')
+    await userEvent.type(screen.getByLabelText(/^City/), 'Noida')
+    await userEvent.type(screen.getByLabelText(/^PIN Code/), '201301')
     await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
     await waitFor(() =>
       expect(stub!.calls.some((call) => call.path === '/api/setup/apartment')).toBe(true),
     )
     const call = stub!.calls.find((item) => item.path === '/api/setup/apartment')
-    expect(call!.body).toEqual({ name: 'Flat 402, Lakeview' })
+    expect(call!.body).toEqual({
+      flat_number: '1805',
+      tower_block: 'CG6',
+      society_name: 'Supertech Capetown',
+      locality_street: null,
+      city: 'Noida',
+      state: null,
+      pincode: '201301',
+    })
+  })
+
+  it('needs the flat, the society and the city, and checks a PIN code as it is typed', async () => {
+    renderAt('apartment')
+    await userEvent.type(await screen.findByLabelText(/^PIN Code/), '0123')
+    expect(screen.getByText('A PIN code is 6 digits and does not start with 0.')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    for (const message of ['Enter flat/unit number.', 'Enter society/complex name.', 'Enter city.']) {
+      expect(screen.getByText(message)).toBeInTheDocument()
+    }
+    expect(stub!.calls.some((call) => call.path === '/api/setup/apartment')).toBe(false)
   })
 
   // ---------------------------------------------------------------- resume --
@@ -177,7 +229,7 @@ describe('SetupWizardPage', () => {
     expect(await screen.findByText(/What does the household pay for/)).toBeInTheDocument()
     // What is already saved is read off the stepper, from the server.
     const stepper = screen.getByRole('list', { name: 'Setup progress' })
-    expect(within(stepper).getByText(/Flat 402/)).toBeInTheDocument()
+    expect(within(stepper).getByText(/Lakeview 402/)).toBeInTheDocument()
   })
 
   it('tells the operator what is already saved when resuming', async () => {
@@ -364,8 +416,11 @@ describe('SetupWizardPage', () => {
       expect(within(stepper).queryByRole('button', { name: /Ready/ })).not.toBeInTheDocument()
 
       await userEvent.click(within(stepper).getByRole('button', { name: /Your apartment/ }))
-      expect(screen.getByText(/What is this place called/)).toBeInTheDocument()
-      expect(screen.getByLabelText(/Apartment name/)).toHaveValue('Flat 402')
+      expect(screen.getByText('Step 1 · Where is your apartment?')).toBeInTheDocument()
+      // The address as it was saved, ready to change.
+      expect(screen.getByLabelText(/^Flat \/ Unit Number/)).toHaveValue('402')
+      expect(screen.getByLabelText(/^Society \/ Complex/)).toHaveValue('Lakeview')
+      expect(screen.getByLabelText(/^City/)).toHaveValue('Pune')
       expect(within(stepper).getAllByRole('listitem')[0]).toHaveAttribute('aria-current', 'step')
 
       await userEvent.click(within(stepper).getByRole('button', { name: /What you pay for/ }))
@@ -380,24 +435,49 @@ describe('SetupWizardPage', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Back' }))
       expect(screen.getByText(/Who lives here\?/)).toBeInTheDocument()
       await userEvent.click(screen.getByRole('button', { name: 'Back' }))
-      expect(screen.getByText(/What is this place called/)).toBeInTheDocument()
+      expect(screen.getByText('Step 1 · Where is your apartment?')).toBeInTheDocument()
       expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument()
     })
 
-    it('renames the apartment instead of creating a second one', async () => {
+    it('changes the address instead of creating a second apartment, the name following it', async () => {
       renderAt('categories', { 'PATCH /api/apartments/flat-402': { apartment_id: 'flat-402' } })
       await screen.findByText(/What does the household pay for/)
       await userEvent.click(screen.getByRole('button', { name: /Your apartment/ }))
-      const name = screen.getByLabelText(/Apartment name/)
-      await userEvent.clear(name)
-      await userEvent.type(name, 'Palm Grove 302')
+      const flat = screen.getByLabelText(/^Flat \/ Unit Number/)
+      await userEvent.clear(flat)
+      await userEvent.type(flat, '403')
+      await userEvent.type(screen.getByLabelText(/^State/), 'Maharashtra')
       await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
       await waitFor(() => expect(calls('PATCH', '/api/apartments/flat-402')).toHaveLength(1))
-      expect(calls('PATCH', '/api/apartments/flat-402')[0].body).toEqual({ name: 'Palm Grove 302' })
+      // Its name was the one its address gave it, so it follows the address.
+      expect(calls('PATCH', '/api/apartments/flat-402')[0].body).toEqual({
+        flat_number: '403',
+        tower_block: null,
+        society_name: 'Lakeview',
+        locality_street: null,
+        city: 'Pune',
+        state: 'Maharashtra',
+        pincode: null,
+        name: 'Lakeview 403',
+      })
       expect(calls('POST', '/api/setup/apartment')).toHaveLength(0)
       // Continuing moves on to the next step, not straight to the end.
       expect(await screen.findByText(/Who lives here\?/)).toBeInTheDocument()
+    })
+
+    it('keeps a name of its own when the address changes', async () => {
+      renderAt('categories', {
+        '/api/setup/state': state('categories', { apartment: { ...LAKEVIEW, name: 'Our Flat' } }),
+        'PATCH /api/apartments/flat-402': { apartment_id: 'flat-402' },
+      })
+      await screen.findByText(/What does the household pay for/)
+      await userEvent.click(screen.getByRole('button', { name: /Your apartment/ }))
+      await userEvent.type(screen.getByLabelText(/^PIN Code/), '411001')
+      await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
+      await waitFor(() => expect(calls('PATCH', '/api/apartments/flat-402')).toHaveLength(1))
+      expect(calls('PATCH', '/api/apartments/flat-402')[0].body).toMatchObject({ pincode: '411001' })
+      expect(calls('PATCH', '/api/apartments/flat-402')[0].body).not.toHaveProperty('name')
     })
 
     it('saves nothing when a revisited step is continued unchanged', async () => {
@@ -523,3 +603,4 @@ describe('SetupWizardPage', () => {
     })
   })
 })
+

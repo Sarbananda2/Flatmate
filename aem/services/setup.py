@@ -160,19 +160,37 @@ def catalogue() -> list[dict[str, Any]]:
 # Steps. Each commits, so closing the tab after one never loses it.
 # --------------------------------------------------------------------------- #
 
-def create_apartment_step(db: Database, *, name: str, currency_code: str = "INR",
-                          timezone: str = "Asia/Kolkata",
+def apartment_name(society_name: str | None, flat_number: str | None) -> str:
+    """What an apartment is called when no name is given: its society and flat
+    number, as in "Supertech Capetown 1805"."""
+    parts = [part.strip() for part in (society_name, flat_number) if part and part.strip()]
+    return " ".join(parts) if parts else "My Apartment"
+
+
+def create_apartment_step(db: Database, *, name: str | None = None,
+                          flat_number: str | None = None, tower_block: str | None = None,
+                          society_name: str | None = None,
+                          locality_street: str | None = None, city: str | None = None,
+                          state: str | None = None, pincode: str | None = None,
+                          currency_code: str = "INR", timezone: str = "Asia/Kolkata",
                           apartment_id: str | None = None,
                           actor: str = "operator") -> dict[str, Any]:
-    """Step 1. The operator types a name; the identifier is derived from it."""
+    """Step 1. Where the apartment is: its postal address, part by part. It is
+    named after its society and flat number unless a name is given, as older
+    clients do, and the identifier is derived from the name."""
+    if name is None:
+        name = apartment_name(society_name, flat_number)
     name = require_text(name, "name", max_length=200)
+    address = {"flat_number": flat_number, "tower_block": tower_block,
+               "society_name": society_name, "locality_street": locality_street,
+               "city": city, "state": state, "pincode": pincode}
     with db.read() as uow:
         resolved_id = (slugify(apartment_id, fallback="home", max_length=64)
                        if apartment_id else slugify(name, fallback="home", max_length=64))
         resolved_id = _unique_id(uow, "apartment", "apartment_id", resolved_id)
     created = apartments.create_apartment(
         db, apartment_id=resolved_id, name=name, currency_code=currency_code,
-        timezone=timezone, actor=actor)
+        timezone=timezone, address=address, actor=actor)
     return {"apartment": created, "apartment_id": resolved_id}
 
 

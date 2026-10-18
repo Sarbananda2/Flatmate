@@ -39,8 +39,11 @@ up:
 Open the app on a new database and it takes you there automatically. Four
 steps:
 
-1. **What is this place called?** Just the name. The short identifier used in
-   exports is worked out from it.
+1. **Where is your apartment?** Its address, part by part: the flat or unit
+   number, society or complex and city are needed; the tower, locality, state
+   and PIN code are optional. The address is printed on HRA rent receipts, and
+   the apartment is named after its society and flat ("Supertech Capetown
+   1805").
 2. **Who lives here?** Everyone at once. Leave spare boxes empty.
 3. **What does the household pay for?** The usual essentials are pre-ticked,
    each with the right accounting month already chosen. Untick what you do not

@@ -16,11 +16,17 @@ class ApartmentsRepository(Repository):
                                  (apartment_id,)) is not None
 
     def insert(self, *, apartment_id: str, name: str, currency_code: str, timezone: str,
-               created_at: str) -> None:
+               created_at: str, flat_number: str | None = None,
+               tower_block: str | None = None, society_name: str | None = None,
+               locality_street: str | None = None, city: str | None = None,
+               state: str | None = None, pincode: str | None = None) -> None:
         self._s.execute(
-            """INSERT INTO apartment (apartment_id, name, currency_code, timezone, created_at)
-               VALUES (%s,%s,%s,%s,%s)""",
-            (apartment_id, name, currency_code, timezone, created_at))
+            """INSERT INTO apartment (apartment_id, name, currency_code, timezone, created_at,
+                                     flat_number, tower_block, society_name, locality_street,
+                                     city, state, pincode)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (apartment_id, name, currency_code, timezone, created_at, flat_number,
+             tower_block, society_name, locality_street, city, state, pincode))
 
     def update(self, apartment_id: str, *, name: str, currency_code: str, timezone: str,
                flat_number: str | None, tower_block: str | None, society_name: str | None,

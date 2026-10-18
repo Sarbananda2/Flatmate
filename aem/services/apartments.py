@@ -61,13 +61,31 @@ def _pincode(value: Any) -> str | None:
     return pincode
 
 
+def _address(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """The address parts among ``fields``, checked: a part given is set, and
+    ``None`` or an empty string leaves it empty."""
+    address = {field: optional_text(fields[field], field, max_length=max_length)
+               for field, max_length in ADDRESS_FIELDS if field in fields}
+    if "pincode" in fields:
+        address["pincode"] = _pincode(fields["pincode"])
+    return address
+
+
 def create_apartment(db: Database, *, apartment_id: str, name: str,
                      currency_code: str = "INR", timezone: str = "Asia/Kolkata",
+                     address: Mapping[str, Any] | None = None,
                      actor: str = "operator", created_at: str | None = None) -> dict[str, Any]:
+    """A new apartment, with its postal address when one is given -- in the
+    same transaction, so it never exists without the address it was given."""
     apartment_id = require_text(apartment_id, "apartment_id", max_length=64)
     name = require_text(name, "name", max_length=200)
     currency_code = require_text(currency_code, "currency_code", max_length=3).upper()
     timezone = require_text(timezone, "timezone", max_length=64)
+    unknown = sorted(set(address or {}) - {*(field for field, _ in ADDRESS_FIELDS), "pincode"})
+    if unknown:
+        raise ValidationError(f"Not address fields: {', '.join(unknown)}.",
+                              details={"unsupported_fields": unknown})
+    parts = _address(address or {})
     timestamp = created_at or now_timestamp()
     with db.transaction() as uow:
         if apartment_exists(uow, apartment_id):
@@ -76,11 +94,12 @@ def create_apartment(db: Database, *, apartment_id: str, name: str,
                                 details={"apartment_id": apartment_id})
         uow.apartments.insert(apartment_id=apartment_id, name=name,
                               currency_code=currency_code, timezone=timezone,
-                              created_at=timestamp)
+                              created_at=timestamp, **parts)
         audit.record(uow, entity_type="apartment", entity_id=apartment_id,
                      action="create", actor=actor, apartment_id=apartment_id,
                      new_value={"name": name, "currency_code": currency_code,
-                                "timezone": timezone})
+                                "timezone": timezone,
+                                **{field: value for field, value in parts.items() if value}})
         if _get_setting(uow, DEFAULT_APARTMENT_SETTING) is None:
             _set_setting(uow, DEFAULT_APARTMENT_SETTING, apartment_id)
         return _present(get_apartment(uow, apartment_id))
@@ -111,11 +130,7 @@ def update_apartment(db: Database, apartment_id: str, *, actor: str = "operator"
                                                   max_length=3).upper()
         if changes.get("timezone") is not None:
             after["timezone"] = require_text(changes["timezone"], "timezone", max_length=64)
-        for field, max_length in ADDRESS_FIELDS:
-            if field in changes:
-                after[field] = optional_text(changes[field], field, max_length=max_length)
-        if "pincode" in changes:
-            after["pincode"] = _pincode(changes["pincode"])
+        after.update(_address(changes))
         if "pool_name" in changes:
             after["pool_name"] = (optional_text(changes["pool_name"], "pool_name",
                                                 max_length=200) or DEFAULT_POOL_NAME)
