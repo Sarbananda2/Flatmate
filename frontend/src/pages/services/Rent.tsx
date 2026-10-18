@@ -337,34 +337,6 @@ const COLLECTION: Record<RentCollectionStatus, { tone: Tone; label: string }> = 
   funded_payout: { tone: 'accent', label: 'Paid the landlord' },
 }
 
-function SplitRule({
-  total,
-  count,
-  base,
-  remainder,
-}: {
-  total: number
-  count: number
-  base: number
-  remainder: number
-}) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3.5 py-2.5 text-xs text-[var(--text-secondary)]">
-      <div>
-        Equal split:{' '}
-        <strong className="tabular text-[var(--text-primary)]">
-          {formatInr(total)} ÷ {count} = {formatInr(base)}
-        </strong>{' '}
-        each · Remainder:{' '}
-        <span className="tabular">
-          {remainder} paise
-          {remainder > 0 && ', one each in resident order, the landlord payer last'}
-        </span>
-      </div>
-    </div>
-  )
-}
-
 function CyclePanel({
   cycle,
   config,
@@ -574,14 +546,6 @@ function PreviewPanel({
           The recorded expense is {formatInr(preview.total_rent_paise)}, which differs from the
           lease. It is linked as recorded.
         </p>
-      )}
-      {preview.participant_count > 0 && !tiered && (
-        <SplitRule
-          total={preview.total_rent_paise}
-          count={preview.participant_count}
-          base={preview.base_share_paise}
-          remainder={preview.remainder_paise}
-        />
       )}
       <div className="overflow-x-auto min-w-0">
         <table className="w-full text-left text-xs min-w-[420px] border-collapse">
