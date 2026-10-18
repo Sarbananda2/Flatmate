@@ -40,6 +40,7 @@ This register documents architectural trade-offs, deferred features, and legal/d
 │   • DEBT-002: Move-In / Move-Out Daily Proration Policy                       │
 │   • DEBT-004: Vehicle & Parking Slot Allocation                               │
 │   • DEBT-007: Explicit Shortfall Float / Bridge Advance (Rent Arrears)        │
+│   • DEBT-008: Landlord Receipt Tracking & Document Attachment                 │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -99,4 +100,19 @@ This register documents architectural trade-offs, deferred features, and legal/d
 - **Context:** In Approach 2 research, we evaluated an explicit bridge advance model where a resident who floats the missing share (e.g. ₹15,000 for Tenant C on the 5th) is credited an internal bridge float, which automatically reimburses them when Tenant C settles on the 7th.
 - **Decision:** Deferred to technical debt. The household prioritized **Approach 3 (Tranche / Split Landlord Disbursement)** to disburse collected funds in tranches as they arrive directly to the landlord.
 - **Future Resolution Path:** If single-transfer full payouts are mandated without a pooled buffer, introduce an internal `shortfall_advance` entity that links delinquent allocation shares to the funding resident and automatically routes late payments to settle the advance.
+
+---
+
+### DEBT-008: Landlord Receipt Tracking & Document Attachment
+- **Category:** Document Management & Operations / Domain Simplification
+- **Status:** [FEATURE DISABLED ACROSS APP]
+- **Previous Behavior:** The lease configuration tracked whether the landlord issues receipts (`requires_landlord_receipt`). After payout, the rent cycle flagged a pending landlord receipt, prompting the admin to upload an external PDF or image file (stored in Postgres as BYTEA).
+- **Domain Issues & Decision:**
+  1. *Bank UTR is Definitive Proof:* In shared Indian apartments, rent is transferred directly via UPI or IMPS/NEFT. The bank UTR / UPI transaction ID recorded with each tranche serves as immutable, legally recognized proof of payment.
+  2. *Low Practical Utility:* Landlords rarely issue separate stamped paper or PDF receipts once funds hit their bank account. Tracking and prompting for landlord receipts added administrative overhead and UI clutter (pills, modals, file size checks, replace workflows) for negligible value.
+  3. *Vault Consolidation:* Master lease agreements and permanent property contracts are already securely stored in the Document Vault (`/services/vault`).
+- **Action Taken:** Disabled landlord receipt tracking, `requires_landlord_receipt` preferences, `LandlordReceiptPill`, and receipt upload/replace modals across the application.
+- **Future Resolution Path (When Re-enabling):**
+  - If re-enabled, integrate receipt attachment as optional file attachments directly in the Document Vault or as attachments on individual financial ledger entries rather than a dedicated lifecycle state on the rent cycle.
+
 

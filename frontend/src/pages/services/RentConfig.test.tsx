@@ -1,8 +1,8 @@
 /**
  * The Tenancy & Master Lease tab. Its form sends only the tenancy terms, in
- * integer paise: the landlord's details are edited on the owner contact, the
- * deposit on the Deposit tab and the receipt preference on the Rent screen,
- * and the backend keeps whatever a save leaves out.
+ * integer paise: the landlord's details are edited on the owner contact and
+ * the deposit on the Deposit tab, and the backend keeps whatever a save leaves
+ * out.
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
@@ -563,7 +563,7 @@ describe('LeaseContractSection', () => {
     expect(await saveOnLastStep('Set Up Lease')).toBeDisabled()
   })
 
-  it('leaves how the rent is divided and receipted to the Rent screen', async () => {
+  it('leaves how the rent is divided to the Rent screen', async () => {
     renderPage(saved)
     await editTerms()
     // The lease says what the flat costs; who pays which part is set with the rent.

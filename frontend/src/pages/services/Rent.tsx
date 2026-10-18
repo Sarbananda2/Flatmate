@@ -9,24 +9,21 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  AlertTriangle,
   ArrowRight,
   ArrowUpRight,
   Building2,
   CalendarDays,
   Check,
   Clock,
-  Download,
   Plus,
   Settings,
   ShieldCheck,
-  Upload,
   Users,
 } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
 import { RentAgreementCard } from './RentAgreement'
 import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
-import { DateField, Field, MoneyInput, SelectField, TextField } from '../../components/Form'
+import { DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
 import { useToast } from '../../components/Toast'
 import {
   Avatar,
@@ -58,9 +55,6 @@ import type {
   Resident,
 } from '../../api/types'
 
-const RECEIPT_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']
-const MAX_RECEIPT_BYTES = 5 * 1024 * 1024
-
 const TABLE_HEAD =
   'border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold'
 
@@ -83,7 +77,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
   const overview = useResource<RentMonthOverview>(`/api/rent/cycle/${month}`, {
     exclude: excluded.join(',') || undefined,
   })
-  const [dialog, setDialog] = useState<'payout' | 'attach' | null>(null)
+  const [dialog, setDialog] = useState<'payout' | null>(null)
   const [payingFor, setPayingFor] = useState<RentParticipant | null>(null)
 
   const generate = useMutation(
@@ -121,7 +115,6 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
             <div className="flex flex-wrap items-center gap-2 min-w-0">
               {config && <LeaseTermPill config={config} />}
               <DisbursementPill cycle={cycle} configured={Boolean(config)} />
-              {cycle && <LandlordReceiptPill status={cycle.landlord_receipt_status} />}
             </div>
 
             {!config ? (
@@ -182,9 +175,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                 <LandlordPanel
                   config={config}
                   cycle={cycle}
-                  month={month}
                   onPayout={() => setDialog('payout')}
-                  onAttach={() => setDialog('attach')}
                 />
                 {/* The contract the rent is charged under, for reference. */}
                 <RentAgreementCard
@@ -211,26 +202,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                     updated.warnings?.[0] ??
                       (updated.disbursement_status === 'partially_disbursed'
                         ? `${formatInr(updated.remaining_disbursement_paise)} is still owed to the landlord.`
-                        : updated.landlord_receipt_status === 'pending'
-                          ? 'Attach the landlord’s receipt when it arrives.'
-                          : undefined),
-                  )
-                  overview.reload()
-                }}
-              />
-            )}
-            {dialog === 'attach' && cycle && (
-              <AttachReceiptModal
-                month={month}
-                cycle={cycle}
-                onClose={() => setDialog(null)}
-                onAttached={(updated) => {
-                  setDialog(null)
-                  toast.success(
-                    updated.replaced_landlord_receipt
-                      ? 'Landlord receipt replaced'
-                      : 'Landlord receipt attached',
-                    updated.landlord_receipt?.filename,
+                        : undefined),
                   )
                   overview.reload()
                 }}
@@ -330,26 +302,6 @@ function DisbursementPill({ cycle, configured }: { cycle: RentCycle | null; conf
   )
 }
 
-/** Shown only when the lease expects a receipt and the landlord has been paid. */
-function LandlordReceiptPill({ status }: { status: RentCycle['landlord_receipt_status'] }) {
-  if (status === 'pending') {
-    return (
-      <Pill tone="warning">
-        <AlertTriangle className="w-3 h-3 shrink-0" aria-hidden="true" />
-        Receipt Pending
-      </Pill>
-    )
-  }
-  if (status === 'attached') {
-    return (
-      <Pill tone="success">
-        <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-        Receipt Attached
-      </Pill>
-    )
-  }
-  return null
-}
 
 function Metrics({
   config,
@@ -821,15 +773,11 @@ const PAYOUT: Record<RentDisbursementStatus, { tone: Tone; label: string }> = {
 function LandlordPanel({
   config,
   cycle,
-  month,
   onPayout,
-  onAttach,
 }: {
   config: RentLeaseConfig
   cycle: RentCycle | null
-  month: string
   onPayout: () => void
-  onAttach: () => void
 }) {
   const dash = <span className="text-[var(--text-tertiary)]">—</span>
   const tranches = cycle?.disbursements ?? []
@@ -994,52 +942,6 @@ function LandlordPanel({
           </tbody>
         </table>
       </div>
-      {cycle && cycle.landlord_receipt_status !== 'not_required' && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3.5 py-3">
-          <div className="min-w-0 space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-bold text-[var(--text-primary)]">
-                Landlord's receipt
-              </span>
-              <LandlordReceiptPill status={cycle.landlord_receipt_status} />
-            </div>
-            <p className="m-0 text-[11px] text-[var(--text-secondary)] break-words">
-              {cycle.landlord_receipt ? (
-                <>
-                  {cycle.landlord_receipt.filename} · attached{' '}
-                  <span className="tabular">
-                    {formatDate(cycle.landlord_receipt.uploaded_at)}
-                  </span>
-                </>
-              ) : (
-                'The payout is recorded. Attach the receipt whenever the landlord sends it.'
-              )}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            {cycle.landlord_receipt && (
-              <a className={BUTTON_QUIET} href={`/api/rent/cycle/${month}/landlord-receipt`}>
-                <Download className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                Download
-              </a>
-            )}
-            {/* Attaching is offered only while the lease expects receipts; a file
-                attached earlier stays downloadable after that is turned off. */}
-            {config.requires_landlord_receipt &&
-              (cycle.landlord_receipt ? (
-                <button type="button" className={BUTTON_SECONDARY} onClick={onAttach}>
-                  <Upload className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  Replace
-                </button>
-              ) : (
-                <button type="button" className={BUTTON_PRIMARY} onClick={onAttach}>
-                  <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  Attach Landlord Receipt
-                </button>
-              ))}
-          </div>
-        </div>
-      )}
       {advanced && (
         <p className="m-0 text-[11px] text-[var(--text-secondary)]">
           A resident who paid the landlord directly is credited what they paid as a provider
@@ -1186,58 +1088,6 @@ function RentPaymentModal({
 
 /* ----------------------------------------------------------- payout modal -- */
 
-function readAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read the file.'))
-    reader.onload = () => resolve(String(reader.result).split(',', 2)[1] ?? '')
-    reader.readAsDataURL(file)
-  })
-}
-
-function receiptFileError(file: File | null): string | null {
-  if (!file) return null
-  if (!RECEIPT_TYPES.includes(file.type)) return 'Choose a PDF, JPEG, PNG, or WebP file.'
-  if (file.size > MAX_RECEIPT_BYTES) return 'That file is over 5 MB.'
-  return null
-}
-
-async function toUpload(file: File) {
-  return {
-    filename: file.name,
-    content_type: file.type,
-    content_base64: await readAsBase64(file),
-  }
-}
-
-function ReceiptFileField({
-  file,
-  onChange,
-  required,
-  hint,
-}: {
-  file: File | null
-  onChange: (file: File | null) => void
-  required?: boolean
-  hint: string
-}) {
-  return (
-    <Field label="Landlord's receipt" required={required} error={receiptFileError(file)} hint={hint}>
-      {({ id, describedBy, invalid }) => (
-        <input
-          id={id}
-          type="file"
-          accept={RECEIPT_TYPES.join(',')}
-          aria-describedby={describedBy}
-          aria-invalid={invalid || undefined}
-          required={required}
-          onChange={(event) => onChange(event.target.files?.[0] ?? null)}
-        />
-      )}
-    </Field>
-  )
-}
-
 function PayoutModal({
   month,
   cycle,
@@ -1267,12 +1117,9 @@ function PayoutModal({
   const [date, setDate] = useState(todayIso())
   const [reference, setReference] = useState('')
   const [note, setNote] = useState('')
-  const [file, setFile] = useState<File | null>(null)
-
-  const expectsReceipt = config.requires_landlord_receipt
 
   const record = useMutation(
-    async () =>
+    () =>
       api.post<RentCycle>(`/api/rent/cycle/${month}/disburse`, {
         amount_paise: amountPaise,
         disbursement_mode: mode,
@@ -1280,7 +1127,6 @@ function PayoutModal({
         reference: reference.trim(),
         disbursed_date: date,
         note: note.trim() || null,
-        landlord_receipt: expectsReceipt && file ? await toUpload(file) : null,
       }),
     { onSuccess: onRecorded },
   )
@@ -1291,9 +1137,7 @@ function PayoutModal({
     amountValid &&
     Boolean(date) &&
     reference.trim().length > 0 &&
-    (mode === 'pool' || Boolean(funder)) &&
-    // The receipt is optional, but a file that was chosen must be usable.
-    !receiptFileError(file)
+    (mode === 'pool' || Boolean(funder))
   const funderName = residents.data?.items.find((r) => r.resident_id === funder)?.display_name
 
   return (
@@ -1408,13 +1252,6 @@ function PayoutModal({
           maxLength={500}
           placeholder="e.g. Balance after the late shares came in"
         />
-        {expectsReceipt && (
-          <ReceiptFileField
-            file={file}
-            onChange={setFile}
-            hint="Optional. Attach it now if you have it, or later from this page when the landlord sends it. PDF or photo, up to 5 MB."
-          />
-        )}
         <Callout>
           Recording this payout registers a transfer to the landlord. Outstanding flatmate rent
           shares and subsequent payout tranches can be recorded at any time.{' '}
@@ -1422,64 +1259,6 @@ function PayoutModal({
             ? 'Nothing is added to the ledger: the rent is already a cost to the pool.'
             : `${funderName ?? 'The resident'} is credited ${amountValid ? formatInr(amountPaise) : 'the amount paid'} and keeps their own share.`}
         </Callout>
-      </div>
-    </Modal>
-  )
-}
-
-function AttachReceiptModal({
-  month,
-  cycle,
-  onClose,
-  onAttached,
-}: {
-  month: string
-  cycle: RentCycle
-  onClose: () => void
-  onAttached: (cycle: RentCycle) => void
-}) {
-  const [file, setFile] = useState<File | null>(null)
-  const replacing = Boolean(cycle.landlord_receipt)
-  const attach = useMutation(
-    async () =>
-      api.post<RentCycle>(`/api/rent/cycle/${month}/landlord-receipt`, await toUpload(file!)),
-    { onSuccess: onAttached },
-  )
-  return (
-    <Modal
-      title={replacing ? 'Replace Landlord Receipt' : 'Attach Landlord Receipt'}
-      description={`${formatMonth(month)} · ${cycle.disbursements.length > 1 ? 'last payout' : 'paid'} ${formatDate(cycle.disbursed_at)} · ref ${cycle.disbursement_reference}`}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className={BUTTON_SECONDARY} onClick={onClose} disabled={attach.pending}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className={BUTTON_PRIMARY}
-            disabled={!file || Boolean(receiptFileError(file)) || attach.pending}
-            onClick={() => void attach.run(undefined)}
-          >
-            {attach.pending ? 'Uploading…' : replacing ? 'Replace Receipt' : 'Attach Receipt'}
-          </button>
-        </>
-      }
-    >
-      <div className="stack">
-        {attach.error && <ErrorNotice error={attach.error} />}
-        <ReceiptFileField
-          file={file}
-          onChange={setFile}
-          required
-          hint="PDF or photo of the receipt the landlord issued, up to 5 MB."
-        />
-        {replacing && (
-          <p className="m-0 text-[11px] text-[var(--text-secondary)]">
-            This removes {cycle.landlord_receipt?.filename}. The swap is noted in the audit
-            log. Nothing else about the recorded payout changes.
-          </p>
-        )}
       </div>
     </Modal>
   )

@@ -1,7 +1,6 @@
 /**
- * The master lease: what the rent is, who it goes to, and whether the landlord
- * issues receipts. One lease per apartment; each month's rent is generated from
- * it on the Rent screen.
+ * The master lease: what the rent is and who it goes to. One lease per
+ * apartment; each month's rent is generated from it on the Rent screen.
  */
 import { useId, useState } from 'react'
 import { Link } from 'react-router-dom'
@@ -225,7 +224,7 @@ function LeaseForm({
   const save = useMutation(
     () =>
       // Only the tenancy terms are sent. The backend keeps everything left
-      // out -- the landlord's details, the deposit, the receipt preference --
+      // out -- the landlord's details, the deposit --
       // as the lease already has it. A new lease names its landlord, in parts.
       api.post<RentLeaseConfig>('/api/rent/config', {
         ...(config

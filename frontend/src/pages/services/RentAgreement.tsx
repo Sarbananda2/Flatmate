@@ -1,11 +1,11 @@
 /**
  * The household's rental agreement: how the rent is divided between
- * flatmates, and whether the landlord issues receipts.
+ * flatmates.
  *
  * It belongs with the monthly rent, not with the lease: the lease says what
  * the flat costs, the agreement says who pays which part of it. It is shown
  * read-only; "Change Agreement Model" opens a dialog to change it, and saving
- * sends only these two settings, so the rest of the lease is left as it is.
+ * sends only the split, so the rest of the lease is left as it is.
  */
 import { useState } from 'react'
 import { clsx } from 'clsx'
@@ -145,53 +145,6 @@ export function AgreementModelPicker({
   )
 }
 
-/** On or off: does the landlord issue a receipt for each payout? */
-export function ReceiptSwitch({
-  checked,
-  onChange,
-  disabled,
-}: {
-  checked: boolean
-  onChange: (checked: boolean) => void
-  disabled?: boolean
-}) {
-  return (
-    <div className="flex items-start justify-between gap-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-4">
-      <div className="min-w-0">
-        <span id="landlord-receipts-label" className="block text-sm font-bold text-[var(--text-primary)]">
-          Do you receive receipts from the landlord?
-        </span>
-        <p id="landlord-receipts-hint" className="m-0 mt-1 text-xs text-[var(--text-secondary)]" aria-live="polite">
-          {checked
-            ? "Receipts enabled — A paid month displays a 'Receipt Pending' badge until attached. Payouts are never blocked."
-            : 'Reference only — Payouts require only date, funder, and UTR/reference. No landlord receipt is requested.'}
-        </p>
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-labelledby="landlord-receipts-label"
-        aria-describedby="landlord-receipts-hint"
-        disabled={disabled}
-        onClick={() => onChange(!checked)}
-        className={clsx(
-          'relative w-10 h-6 rounded-full shrink-0 transition-colors cursor-pointer border border-[var(--border-medium)]',
-          checked ? 'bg-[var(--accent)]' : 'bg-[var(--bg-surface)]',
-        )}
-      >
-        <span
-          className={clsx(
-            'absolute top-0.5 left-0.5 w-[18px] h-[18px] rounded-full transition-transform',
-            checked ? 'translate-x-4 bg-white' : 'bg-[var(--text-tertiary)]',
-          )}
-          aria-hidden="true"
-        />
-      </button>
-    </div>
-  )
-}
-
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0 space-y-1">
@@ -228,12 +181,12 @@ export function RentAgreementCard({
     <Panel
       title={AGREEMENT_TITLE}
       icon={<Layers className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="How the household divides the rent between flatmates, and how the landlord confirms a payout."
+      hint="How the household divides the rent between flatmates."
       actions={
         <EditButton label="Edit agreement model" onClick={() => setChanging(true)} />
       }
     >
-      <dl className="m-0 grid grid-cols-1 md:grid-cols-3 gap-4" aria-label="Rental agreement">
+      <dl className="m-0 grid grid-cols-1 md:grid-cols-2 gap-4" aria-label="Rental agreement">
         <Fact label="Active Agreement Model">
           <div className="text-sm font-bold text-[var(--text-primary)]">{MODEL_TITLES[model]}</div>
           {cycle && cycle.split_mode !== model && (
@@ -259,11 +212,6 @@ export function RentAgreementCard({
           {!cycle && model === 'room_tiered' && preview && !tieredAvailable && (
             <div className="text-[var(--warning)]">{preview.room_tiered.blocked_reason}</div>
           )}
-        </Fact>
-        <Fact label="Receipt Preferences">
-          <div className="font-semibold text-[var(--text-primary)]">
-            {`Requires Landlord Receipts: ${config.requires_landlord_receipt ? 'Yes' : 'No'}`}
-          </div>
         </Fact>
       </dl>
 
@@ -295,16 +243,11 @@ function ChangeAgreementModal({
 }) {
   const toast = useToast()
   const [model, setModel] = useState<RentSplitMode>(config.rent_split_mode)
-  const [receipts, setReceipts] = useState(config.requires_landlord_receipt)
-  const unchanged =
-    model === config.rent_split_mode && receipts === config.requires_landlord_receipt
+  const unchanged = model === config.rent_split_mode
 
   const save = useMutation(
     () =>
-      api.post<RentLeaseConfig>('/api/rent/config', {
-        rent_split_mode: model,
-        requires_landlord_receipt: receipts,
-      }),
+      api.post<RentLeaseConfig>('/api/rent/config', { rent_split_mode: model }),
     {
       onSuccess: (saved) => {
         toast.success('Agreement saved', MODEL_TITLES[saved.rent_split_mode])
@@ -349,7 +292,6 @@ function ChangeAgreementModal({
             this way until they do. Set them under Housing, in Rooms Inventory.
           </p>
         )}
-        <ReceiptSwitch checked={receipts} onChange={setReceipts} disabled={save.pending} />
       </div>
     </Modal>
   )

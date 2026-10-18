@@ -57,6 +57,7 @@ describe('RentAgreementCard', () => {
     )
     // The month's own split decides its share line.
     expect(agreement).toHaveTextContent('Equal share among 3 participants (₹9,500.00/resident)')
-    expect(agreement).toHaveTextContent('Requires Landlord Receipts: Yes')
+    // Receipts are not tracked, even where the lease once said the landlord issues them.
+    expect(agreement).not.toHaveTextContent(/receipt/i)
   })
 })

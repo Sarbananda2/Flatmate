@@ -1,8 +1,8 @@
 /**
- * The rent screen has one workflow switch -- whether the landlord issues
- * receipts -- and it sends money to the backend. These tests cover both: the
- * receipt upload appears only when the lease asks for it, and every body the
- * screen posts carries integer paise and the exact fields the operator chose.
+ * The rent screen sends money to the backend: every body it posts carries
+ * integer paise and the exact fields the operator chose. The bank reference
+ * recorded with each payout is the proof of payment, so the screen never asks
+ * for the landlord's receipt (DEBT-008), whatever an older lease says.
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
@@ -177,10 +177,6 @@ function renderRent(
       [`POST /api/rent/cycle/${MONTH}/disburse`]: cycle({ disbursement_status: 'disbursed' }),
       [`POST /api/rent/cycle/${MONTH}/generate`]: cycle(),
       [`POST /api/rent/cycle/${MONTH}/pay`]: cycle(),
-      [`POST /api/rent/cycle/${MONTH}/landlord-receipt`]: cycle({
-        disbursement_status: 'disbursed',
-        landlord_receipt_status: 'attached',
-      }),
       'POST /api/rent/config': config,
       ...routes,
     } as never,
@@ -222,8 +218,8 @@ describe('RentMonth', () => {
     expect(screen.queryByRole('table', { name: 'Payments to the landlord' })).not.toBeInTheDocument()
   })
 
-  it('offers no HRA slip, even when the lease tracks the landlord\'s receipts', async () => {
-    renderRent(overview({ config: receiptsOn }))
+  it('offers no HRA slip to residents who have paid', async () => {
+    renderRent(overview())
     const table = await screen.findByRole('table', { name: 'Rent shares and collection' })
     expect(within(table).getByRole('row', { name: /Alice/ })).toHaveTextContent('Settled')
     const chris = within(table).getByRole('row', { name: /Chris/ })
@@ -376,7 +372,7 @@ describe('RentMonth', () => {
     )
   })
 
-  it('asks only for date, funder, and reference when the landlord issues no receipts', async () => {
+  it('asks only for the amount, date, funder, and reference', async () => {
     renderRent(overview())
     await userEvent.click(await screen.findByRole('button', { name: 'Record Landlord Payout' }))
     const dialog = await screen.findByRole('dialog')
@@ -425,8 +421,8 @@ describe('RentMonth', () => {
       funding_resident_id: 'alice',
       reference: '329188401928',
       note: null,
-      landlord_receipt: null,
     })
+    expect(posted('/disburse')!.body).not.toHaveProperty('landlord_receipt')
   })
 
   it('offers the whole rent on a first payout when nothing has been collected', async () => {
@@ -482,140 +478,32 @@ describe('RentMonth', () => {
       ],
       ...overrides,
     })
+  // A lease saved before receipts were dropped may still say the landlord
+  // issues them, and its months may still report one as pending.
   const receiptsOn = { ...config, requires_landlord_receipt: true }
-  const attachedReceipt = {
-    filename: 'receipt-oct.pdf',
-    content_type: 'application/pdf',
-    size_bytes: 7,
-    sha256: 'b'.repeat(64),
-    uploaded_at: '2026-10-09T18:00:00+05:30',
-  }
 
-  it('records a payout without the receipt even when the lease expects one', async () => {
+  it('asks for no landlord receipt, even on a lease that once expected one', async () => {
     renderRent(overview({ config: receiptsOn }))
     await userEvent.click(await screen.findByRole('button', { name: 'Record Landlord Payout' }))
     const dialog = await screen.findByRole('dialog')
-    const upload = within(dialog).getByLabelText(/Landlord's receipt/)
-    expect(upload).not.toBeRequired()
-    const confirm = within(dialog).getByRole('button', { name: 'Confirm & Post Payout' })
-
+    expect(within(dialog).queryByLabelText(/receipt/i)).not.toBeInTheDocument()
     await userEvent.type(within(dialog).getByLabelText(/Payment reference/), 'UTR1')
-    expect(confirm).toBeEnabled()
-    await userEvent.click(confirm)
-
-    await waitFor(() => expect(posted('/disburse')).toBeDefined())
-    expect(posted('/disburse')!.body).toMatchObject({
-      disbursement_mode: 'pool',
-      funding_resident_id: null,
-      reference: 'UTR1',
-      landlord_receipt: null,
-    })
-  })
-
-  it('sends the receipt with the payout when one is chosen', async () => {
-    renderRent(overview({ config: receiptsOn }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Record Landlord Payout' }))
-    const dialog = await screen.findByRole('dialog')
-    await userEvent.type(within(dialog).getByLabelText(/Payment reference/), 'UTR1')
-    await userEvent.upload(
-      within(dialog).getByLabelText(/Landlord's receipt/),
-      new File(['receipt'], 'receipt.pdf', { type: 'application/pdf' }),
-    )
     await userEvent.click(within(dialog).getByRole('button', { name: 'Confirm & Post Payout' }))
 
     await waitFor(() => expect(posted('/disburse')).toBeDefined())
-    expect((posted('/disburse')!.body as { landlord_receipt: unknown }).landlord_receipt).toEqual({
-      filename: 'receipt.pdf',
-      content_type: 'application/pdf',
-      content_base64: btoa('receipt'),
-    })
+    expect(posted('/disburse')!.body).toMatchObject({ disbursement_mode: 'pool', reference: 'UTR1' })
+    expect(posted('/disburse')!.body).not.toHaveProperty('landlord_receipt')
   })
 
-  it('flags a paid month whose receipt has not arrived and lets it be attached', async () => {
+  it('shows no receipt badge or action on a paid month', async () => {
     renderRent(
-      overview({
-        config: receiptsOn,
-        cycle: paidCycle({ landlord_receipt_status: 'pending' }),
-      }),
+      overview({ config: receiptsOn, cycle: paidCycle({ landlord_receipt_status: 'pending' }) }),
     )
-    expect((await screen.findAllByText('Receipt Pending')).length).toBeGreaterThan(0)
-    expect(screen.queryByRole('link', { name: /Download/ })).not.toBeInTheDocument()
-
-    await userEvent.click(screen.getByRole('button', { name: 'Attach Landlord Receipt' }))
-    const dialog = await screen.findByRole('dialog')
-    const attach = within(dialog).getByRole('button', { name: 'Attach Receipt' })
-    expect(attach).toBeDisabled()
-    await userEvent.upload(
-      within(dialog).getByLabelText(/Landlord's receipt/),
-      new File(['receipt'], 'receipt-oct.pdf', { type: 'application/pdf' }),
-    )
-    await userEvent.click(attach)
-
-    await waitFor(() => expect(posted('/landlord-receipt')).toBeDefined())
-    expect(posted('/landlord-receipt')!.body).toEqual({
-      filename: 'receipt-oct.pdf',
-      content_type: 'application/pdf',
-      content_base64: btoa('receipt'),
-    })
-  })
-
-  it('offers download and replace once the receipt is attached', async () => {
-    renderRent(
-      overview({
-        config: receiptsOn,
-        cycle: paidCycle({
-          landlord_receipt_status: 'attached',
-          landlord_receipt: attachedReceipt,
-        }),
-      }),
-    )
-    expect((await screen.findAllByText('Receipt Attached')).length).toBeGreaterThan(0)
-    expect(screen.queryByText('Receipt Pending')).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /Download/ })).toHaveAttribute(
-      'href',
-      `/api/rent/cycle/${MONTH}/landlord-receipt`,
-    )
-    expect(screen.queryByRole('button', { name: 'Attach Landlord Receipt' })).not.toBeInTheDocument()
-
-    await userEvent.click(screen.getByRole('button', { name: 'Replace' }))
-    const dialog = await screen.findByRole('dialog')
-    expect(dialog).toHaveTextContent('This removes receipt-oct.pdf')
-    await userEvent.upload(
-      within(dialog).getByLabelText(/Landlord's receipt/),
-      new File(['v2'], 'corrected.png', { type: 'image/png' }),
-    )
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Replace Receipt' }))
-    await waitFor(() => expect(posted('/landlord-receipt')).toBeDefined())
-    expect((posted('/landlord-receipt')!.body as { filename: string }).filename).toBe(
-      'corrected.png',
-    )
-  })
-
-  it('refuses an unusable file before anything is sent', async () => {
-    renderRent(
-      overview({
-        config: receiptsOn,
-        cycle: paidCycle({ landlord_receipt_status: 'pending' }),
-      }),
-    )
-    await userEvent.click(await screen.findByRole('button', { name: 'Attach Landlord Receipt' }))
-    const dialog = await screen.findByRole('dialog')
-    await userEvent.upload(
-      within(dialog).getByLabelText(/Landlord's receipt/),
-      new File(['<html>'], 'receipt.html', { type: 'text/html' }),
-      { applyAccept: false },
-    )
-    expect(within(dialog).getByText('Choose a PDF, JPEG, PNG, or WebP file.')).toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: 'Attach Receipt' })).toBeDisabled()
-  })
-
-  it('shows no receipt badge or action when the landlord issues none', async () => {
-    renderRent(overview({ cycle: paidCycle() }))
     expect(await screen.findByText('Disbursed to Landlord')).toBeInTheDocument()
-    expect(screen.queryByText('Receipt Pending')).not.toBeInTheDocument()
-    expect(screen.queryByText('Receipt Attached')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Attach Landlord Receipt' })).not.toBeInTheDocument()
-    expect(screen.queryByText("Landlord's receipt")).not.toBeInTheDocument()
+    expect(screen.queryByText(/Receipt Pending|Receipt Attached/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Landlord's receipt/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Attach|Replace/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Download/ })).not.toBeInTheDocument()
   })
 
   it('shows the deposit total and links to its own screen instead of embedding it', async () => {
@@ -644,14 +532,14 @@ describe('RentMonth', () => {
     const agreement = await screen.findByLabelText('Rental agreement')
     expect(agreement).toHaveTextContent('Single Master Lease (Equal Split)')
     expect(agreement).toHaveTextContent('Equal share among 3 participants (₹15,000.00/resident)')
-    expect(agreement).toHaveTextContent('Requires Landlord Receipts: No')
+    expect(agreement).not.toHaveTextContent(/receipt/i)
     // The choices only appear once the operator asks to change the model.
     expect(screen.queryByRole('radiogroup', { name: 'Rental agreement structure' })).toBeNull()
     expect(screen.queryByRole('switch')).toBeNull()
     expect(screen.queryByRole('radio', { name: 'Room-Tiered' })).toBeNull()
   })
 
-  it('changes the agreement model and receipts in a dialog that saves only those', async () => {
+  it('changes the agreement model in a dialog that saves only that', async () => {
     renderRent(overview({ cycle: null, preview: tieredPreview }), {
       'POST /api/rent/config': { ...config, rent_split_mode: 'room_tiered' },
     })
@@ -666,16 +554,11 @@ describe('RentMonth', () => {
     // This month's room rents add up, so room-tiered can be chosen.
     expect(within(group).getByText('Room Rents Add Up')).toBeInTheDocument()
     expect(within(group).getByRole('radio', { name: 'Square Footage / Floor-Area Ratio' })).toBeDisabled()
+    expect(within(dialog).queryByRole('switch')).toBeNull()
     await userEvent.click(within(group).getByRole('radio', { name: 'Room-Tiered Fixed Pricing' }))
-    await userEvent.click(
-      within(dialog).getByRole('switch', { name: 'Do you receive receipts from the landlord?' }),
-    )
     await userEvent.click(save)
     await waitFor(() => expect(posted('/api/rent/config')).toBeDefined())
-    expect(posted('/api/rent/config')!.body).toEqual({
-      rent_split_mode: 'room_tiered',
-      requires_landlord_receipt: true,
-    })
+    expect(posted('/api/rent/config')!.body).toEqual({ rent_split_mode: 'room_tiered' })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 
