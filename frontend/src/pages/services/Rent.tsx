@@ -67,6 +67,21 @@ function percent(part: number, whole: number): string {
   return `${((part < whole ? Math.min(tenths, 999) : tenths) / 10).toFixed(1)}%`
 }
 
+/**
+ * How long a payment has been past its due date, as `13 days overdue`, or
+ * null when it is not yet due. Calendar days, so no time zone can shift it.
+ */
+function overdueNotice(dueDate: string | null | undefined): string | null {
+  if (!dueDate) return null
+  const day = (iso: string) => {
+    const [year, month, date] = iso.split('-').map(Number)
+    return Date.UTC(year, month - 1, date) / 86_400_000
+  }
+  const days = day(todayIso()) - day(dueDate)
+  if (!(days > 0)) return null
+  return days === 1 ? '1 day overdue' : `${days} days overdue`
+}
+
 export function RentMonth({ month, apartment = null }: { month: string; apartment?: Apartment | null }) {
   const toast = useToast()
   const [excluded, setExcluded] = useState<string[]>([])
@@ -210,6 +225,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
             {viewingStatement && cycle && (
               <RentStatementModal
                 month={month}
+                dueDate={cycle.due_date}
                 // Read from the month as it now stands, not as it was when opened.
                 participant={
                   cycle.participants.find(
@@ -360,6 +376,8 @@ function CyclePanel({
   onPay: (participant: RentParticipant) => void
   onViewStatement: (participant: RentParticipant) => void
 }) {
+  // Rent is due by the landlord's due date; a share still owed after it is overdue.
+  const overdue = overdueNotice(cycle.due_date)
   return (
     <Panel
       title="Resident Collection"
@@ -433,7 +451,14 @@ function CyclePanel({
                     {funded ? (
                       <span className="text-[var(--text-tertiary)]">—</span>
                     ) : (
-                      <Rupees paise={participant.outstanding_paise} />
+                      <>
+                        <Rupees paise={participant.outstanding_paise} />
+                        {participant.outstanding_paise > 0 && overdue && (
+                          <span className="block text-[10px] font-semibold text-[var(--danger)] tabular">
+                            {overdue}
+                          </span>
+                        )}
+                      </>
                     )}
                   </td>
                   <td className="py-3 pr-3 text-center whitespace-nowrap">
@@ -640,6 +665,7 @@ function LandlordPanel({
   // Open until the landlord has been paid in full: the rent can go in tranches.
   const owing = cycle != null && cycle.disbursement_status !== 'disbursed'
   const status = cycle ? PAYOUT[cycle.disbursement_status] : null
+  const overdue = overdueNotice(cycle?.due_date)
   const beneficiary = config.payout_beneficiary_name || config.landlord_name
   const bank = [
     config.landlord_bank_ifsc,
@@ -722,7 +748,18 @@ function LandlordPanel({
                 {cycle ? <Rupees paise={cycle.disbursed_paise} /> : dash}
               </td>
               <td className="py-3 pr-3 text-center">
-                {cycle ? <Rupees paise={cycle.remaining_disbursement_paise} /> : dash}
+                {cycle ? (
+                  <>
+                    <Rupees paise={cycle.remaining_disbursement_paise} />
+                    {cycle.remaining_disbursement_paise > 0 && overdue && (
+                      <span className="block text-[10px] font-semibold text-[var(--danger)] tabular">
+                        {overdue}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  dash
+                )}
               </td>
               <td className="py-3 pr-3 text-center whitespace-nowrap">
                 {cycle && status ? (
@@ -774,15 +811,18 @@ function LandlordPanel({
 /** One resident's rent for the month: what they owe, and every payment towards it. */
 function RentStatementModal({
   month,
+  dueDate,
   participant,
   onClose,
 }: {
   month: string
+  dueDate: string | null
   participant: RentParticipant
   onClose: () => void
 }) {
   const status = COLLECTION[participant.collection_status]
   const funded = participant.collection_status === 'funded_payout'
+  const overdue = !funded && participant.outstanding_paise > 0 ? overdueNotice(dueDate) : null
   const modes = new Map(PAYMENT_MODES.map((mode) => [mode.value, mode.label]))
   const dash = <span className="text-[var(--text-tertiary)]">—</span>
   return (
@@ -798,7 +838,13 @@ function RentStatementModal({
           <MiniStat
             label="Still Owed"
             value={funded ? dash : <Rupees paise={participant.outstanding_paise} />}
-            note={funded ? 'Covered by paying the landlord' : undefined}
+            note={
+              funded ? (
+                'Covered by paying the landlord'
+              ) : overdue ? (
+                <span className="font-semibold text-[var(--danger)]">{overdue}</span>
+              ) : undefined
+            }
           />
         </div>
 

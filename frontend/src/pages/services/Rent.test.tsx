@@ -4,7 +4,7 @@
  * recorded with each payout is the proof of payment, so the screen never asks
  * for the landlord's receipt (DEBT-008), whatever an older lease says.
  */
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -162,9 +162,20 @@ function overview(overrides: Record<string, unknown> = {}) {
 }
 
 let stub: { calls: Recorded[]; restore: () => void } | null = null
+
+// The sample month's rent is due on 5 October. Every test runs on the 3rd,
+// before it falls due, unless it sets a day of its own; only the date is
+// pinned, so timers run as normal.
+const today = (iso: string) => vi.setSystemTime(new Date(`${iso}T12:00:00`))
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  today('2026-10-03')
+})
+
 afterEach(() => {
   stub?.restore()
   stub = null
+  vi.useRealTimers()
 })
 
 function renderRent(
@@ -823,6 +834,61 @@ describe('RentMonth', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Landlord Payout Statement' })
     const payments = within(dialog).getByRole('table', { name: 'Payments to the landlord' })
     expect(within(payments).getByRole('row', { name: /329188401928/ })).toHaveTextContent('₹45,000.00')
+  })
+
+  describe('a month past its due date', () => {
+    it('marks what is still owed as overdue, under the amount', async () => {
+      today('2026-10-18')
+      renderRent(overview())
+      const residents = await screen.findByRole('table', { name: 'Rent shares and collection' })
+      const chris = within(residents).getByRole('row', { name: /Chris/ })
+      expect(within(chris).getByText('13 days overdue').closest('td')).toHaveTextContent(
+        '₹15,000.0013 days overdue',
+      )
+      // Alice has paid her share: nothing of hers is overdue.
+      expect(within(residents).getByRole('row', { name: /Alice/ })).not.toHaveTextContent('overdue')
+      expect(landlordRow()).toHaveTextContent('₹45,000.0013 days overdue')
+
+      await userEvent.click(chris)
+      const dialog = await screen.findByRole('dialog', { name: 'Rent Statement' })
+      expect(within(dialog).getByText('Still Owed').parentElement).toHaveTextContent(
+        '₹15,000.0013 days overdue',
+      )
+    })
+
+    it('counts one day the day after it falls due, and none on the day itself', async () => {
+      today('2026-10-06')
+      const dayAfter = renderRent(overview())
+      const residents = await screen.findByRole('table', { name: 'Rent shares and collection' })
+      expect(within(residents).getByText('1 day overdue')).toBeInTheDocument()
+      dayAfter.unmount()
+      stub?.restore()
+
+      today('2026-10-05')
+      renderRent(overview())
+      await screen.findByRole('table', { name: 'Rent shares and collection' })
+      expect(screen.queryByText(/overdue/)).not.toBeInTheDocument()
+    })
+
+    it('says nothing once everything due has been paid', async () => {
+      today('2026-10-18')
+      renderRent(
+        overview({
+          cycle: paidCycle({
+            collected_paise: 4500000,
+            collected_count: 3,
+            participants: cycle().participants.map((row) => ({
+              ...row,
+              settled_paise: 1500000,
+              outstanding_paise: 0,
+              collection_status: 'paid',
+            })),
+          }),
+        }),
+      )
+      await screen.findByRole('table', { name: 'Rent shares and collection' })
+      expect(screen.queryByText(/overdue/)).not.toBeInTheDocument()
+    })
   })
 
   describe('paying the landlord in tranches', () => {
