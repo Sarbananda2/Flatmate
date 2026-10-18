@@ -233,9 +233,9 @@ describe('RentMonth', () => {
     const table = await screen.findByRole('table', { name: 'Rent shares and collection' })
     // Every row has the payment button: off once the share is paid, on while some is owed.
     const alice = within(table).getByRole('row', { name: /Alice/ })
-    expect(within(alice).getByRole('button', { name: 'Record rent payment from Alice' })).toBeDisabled()
+    expect(within(alice).getByRole('button', { name: 'Pay now for Alice' })).toBeDisabled()
     const chris = within(table).getByRole('row', { name: /Chris/ })
-    expect(within(chris).getByRole('button', { name: 'Record rent payment from Chris' })).toBeEnabled()
+    expect(within(chris).getByRole('button', { name: 'Pay now for Chris' })).toBeEnabled()
     // The status says paid, with no date beside it.
     expect(within(alice).getByText('Paid').textContent).toBe('Paid')
     expect(table).not.toHaveTextContent('Settled')
@@ -339,7 +339,7 @@ describe('RentMonth', () => {
       const row = await chrisRow()
       await userEvent.click(within(row).getByRole('link', { name: 'Chris' }))
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-      await userEvent.click(within(row).getByRole('button', { name: 'Record rent payment from Chris' }))
+      await userEvent.click(within(row).getByRole('button', { name: 'Pay now for Chris' }))
       expect(await screen.findByRole('dialog', { name: 'Record Rent Payment' })).toBeInTheDocument()
       expect(screen.queryByRole('dialog', { name: 'Rent Statement' })).not.toBeInTheDocument()
     })
@@ -405,13 +405,13 @@ describe('RentMonth', () => {
 
     const table = await screen.findByRole('table', { name: 'Rent shares and collection' })
     // Every resident has the action; only one who still owes rent can use it.
-    const actions = within(table).getAllByRole('button', { name: /Record rent payment from/ })
+    const actions = within(table).getAllByRole('button', { name: /Pay now for/ })
     expect(actions).toHaveLength(3)
     expect(actions.filter((button) => !(button as HTMLButtonElement).disabled)).toEqual([
-      within(table).getByRole('button', { name: 'Record rent payment from Chris' }),
+      within(table).getByRole('button', { name: 'Pay now for Chris' }),
     ])
     await userEvent.click(
-      within(table).getByRole('button', { name: 'Record rent payment from Chris' }),
+      within(table).getByRole('button', { name: 'Pay now for Chris' }),
     )
 
     const dialog = await screen.findByRole('dialog')
@@ -433,7 +433,7 @@ describe('RentMonth', () => {
     // Everyone has paid, so every row's payment button is off.
     for (const button of within(
       screen.getByRole('table', { name: 'Rent shares and collection' }),
-    ).getAllByRole('button', { name: /Record rent payment from/ })) {
+    ).getAllByRole('button', { name: /Pay now for/ })) {
       expect(button).toBeDisabled()
     }
   })
@@ -451,7 +451,7 @@ describe('RentMonth', () => {
       pool_upi_id: 'flat402@okicici',
     }
     const { unmount } = renderRent(overview(), {}, apartment)
-    await userEvent.click(await screen.findByRole('button', { name: 'Record rent payment from Chris' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Pay now for Chris' }))
     let dialog = screen.getByRole('dialog', { name: 'Record Rent Payment' })
     let destination = within(dialog).getByRole('region', { name: 'Payment destination' })
     expect(destination).toHaveTextContent('Transfer toFlat 402 Kitty₹15,000.00')
@@ -464,7 +464,7 @@ describe('RentMonth', () => {
 
     // Nothing on file for the pool yet.
     renderRent(overview(), {}, { ...apartment, pool_name: 'House Kitty', pool_bank_account: null, pool_bank_ifsc: null, pool_upi_id: null })
-    await userEvent.click(await screen.findByRole('button', { name: 'Record rent payment from Chris' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Pay now for Chris' }))
     dialog = screen.getByRole('dialog', { name: 'Record Rent Payment' })
     destination = within(dialog).getByRole('region', { name: 'Payment destination' })
     expect(destination).toHaveTextContent('Transfer toHouse Kitty')
@@ -477,7 +477,7 @@ describe('RentMonth', () => {
   it('says where the money goes when the amount is not exactly the share', async () => {
     renderRent(overview())
     await userEvent.click(
-      await screen.findByRole('button', { name: 'Record rent payment from Chris' }),
+      await screen.findByRole('button', { name: 'Pay now for Chris' }),
     )
     const dialog = await screen.findByRole('dialog')
     const amount = within(dialog).getByLabelText(/Amount paid/)

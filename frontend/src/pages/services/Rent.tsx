@@ -15,7 +15,7 @@ import {
   CalendarDays,
   Check,
   Clock,
-  Plus,
+  CreditCard,
   Settings,
   ShieldCheck,
   Users,
@@ -521,10 +521,10 @@ function CyclePanel({
                         event.stopPropagation()
                         onPay(participant)
                       }}
-                      aria-label={`Record rent payment from ${participant.display_name}`}
+                      aria-label={`Pay now for ${participant.display_name}`}
                     >
-                      <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      Record Payment
+                      <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      Pay Now
                     </button>
                   </td>
                 </tr>
