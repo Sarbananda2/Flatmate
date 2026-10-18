@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { ServicesHub } from './ServicesHub'
 import { installFetchStub } from '../../test/server'
 
@@ -104,13 +104,17 @@ describe('ServicesHub', () => {
     expect(await within(rent).findByText('Kumar Yadav')).toBeInTheDocument()
     expect(fact(rent, 'Contract')).toHaveTextContent('₹28,500.00/mo')
     expect(fact(rent, 'Due date')).toHaveTextContent('5 Oct 2026')
-    expect(fact(rent, 'Payment completed by')).toHaveTextContent('Not settled yet')
     expect(within(rent).getByText('Pending')).toBeInTheDocument()
     // One paisa short must not read as fully collected.
-    const kitty = within(rent).getByRole('progressbar', { name: 'Kitty Collection (99%)' })
-    expect(kitty).toHaveAttribute('aria-valuenow', '99')
-    expect(within(rent).getByText('₹0.01 remaining')).toBeInTheDocument()
-    expect(within(rent).queryByText('100% collected')).toBeNull()
+    expect(fact(rent, 'Kitty collection')).toHaveTextContent('₹28,499.99 of ₹28,500.00 (99%)')
+    // Four facts, and nothing more: no progress bar.
+    expect(Array.from(rent.querySelectorAll('dt'), (term) => term.textContent)).toEqual([
+      'Contract',
+      'Landlord',
+      'Due date',
+      'Kitty collection',
+    ])
+    expect(within(rent).queryByRole('progressbar')).toBeNull()
     expect(within(rent).getByRole('link', { name: 'Open Rent Hub' })).toHaveAttribute('href', '/services/rent')
     expect(within(rent).queryByRole('link', { name: 'Config' })).toBeNull()
 
@@ -131,57 +135,30 @@ describe('ServicesHub', () => {
     const rent = screen.getByRole('region', { name: 'Rent' })
     expect(await within(rent).findByText('Kumar Yadav')).toBeInTheDocument()
     expect(fact(rent, 'Due date')).toHaveTextContent('Day 5')
-    expect(fact(rent, 'Payment completed by')).toHaveTextContent('Not configured')
-    expect(within(rent).queryByRole('progressbar')).toBeNull()
+    expect(fact(rent, 'Kitty collection')).toHaveTextContent('Not generated')
     // The lease's term is shown under Housing, not here.
     expect(within(rent).queryByText(/Month Term/)).toBeNull()
   })
 
-  it('says how much is left to pay the landlord, and when it was paid in full', async () => {
-    const month = {
-      due_date: '2026-10-05',
-      total_rent_paise: 2850000,
-      collected_paise: 2850000,
-    }
+  it('says when everyone has paid into the kitty', async () => {
     renderHub({
       rent: {
         config,
         cycle: {
-          ...month,
+          due_date: '2026-10-05',
           disbursement_status: 'partially_disbursed',
           disbursed_at: '2026-10-05',
           remaining_disbursement_paise: 850000,
+          total_rent_paise: 2850000,
+          collected_paise: 2850000,
         },
       },
       electricity: { bill: null, bills_for_month: 0, latest_bill: null },
     })
-    let rent = screen.getByRole('region', { name: 'Rent' })
+    const rent = screen.getByRole('region', { name: 'Rent' })
     expect(await within(rent).findByText('Kumar Yadav')).toBeInTheDocument()
-    expect(fact(rent, 'Payment completed by')).toHaveTextContent('Partially settled (₹8,500.00 left)')
     // Everyone has paid into the kitty, even though the landlord is still owed.
-    expect(within(rent).getByRole('progressbar', { name: 'Kitty Collection (100%)' })).toHaveAttribute(
-      'aria-valuenow',
-      '100',
-    )
-    expect(within(rent).getByText('100% collected')).toBeInTheDocument()
-    stub?.restore()
-    cleanup()
-
-    renderHub({
-      rent: {
-        config,
-        cycle: {
-          ...month,
-          disbursement_status: 'disbursed',
-          disbursed_at: '2026-10-09',
-          remaining_disbursement_paise: 0,
-        },
-      },
-      electricity: { bill: null, bills_for_month: 0, latest_bill: null },
-    })
-    rent = screen.getByRole('region', { name: 'Rent' })
-    expect(await within(rent).findByText('Kumar Yadav')).toBeInTheDocument()
-    expect(fact(rent, 'Payment completed by')).toHaveTextContent('9 Oct 2026')
+    expect(fact(rent, 'Kitty collection')).toHaveTextContent('100% collected')
   })
 
   it('shows the planned services as placeholders with no actions', async () => {

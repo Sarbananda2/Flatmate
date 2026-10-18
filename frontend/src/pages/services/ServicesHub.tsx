@@ -28,7 +28,7 @@ import {
 } from '../../components/ui'
 import { type Resource, useResource } from '../../lib/useApi'
 import { formatDate, formatInr, formatMonth, formatMonthShort } from '../../lib/format'
-import type { RentCycle, ServicesOverview } from '../../api/types'
+import type { ServicesOverview } from '../../api/types'
 
 const PLANNED_SERVICES: Array<{ title: string; icon: LucideIcon; body: string }> = [
   {
@@ -201,64 +201,24 @@ function RentCard({ overview }: CardProps) {
                   ? `Day ${config.due_day_of_month}`
                   : NOT_CONFIGURED}
             </Fact>
-            {/* When the landlord was paid in full, or how far from it the month is. */}
-            <Fact label="Payment completed by">
+            {/* What residents have paid into the house kitty towards the month's rent. */}
+            <Fact label="Kitty collection">
               {!cycle ? (
-                NOT_CONFIGURED
-              ) : cycle.disbursement_status === 'disbursed' ? (
-                cycle.disbursed_at ? (
-                  formatDate(cycle.disbursed_at)
+                config ? (
+                  <span className="font-normal text-[var(--text-tertiary)]">Not generated</span>
                 ) : (
-                  'Settled'
+                  NOT_CONFIGURED
                 )
-              ) : cycle.disbursement_status === 'partially_disbursed' ? (
-                <span className="text-[var(--warning)]">
-                  Partially settled ({formatInr(cycle.remaining_disbursement_paise)} left)
-                </span>
+              ) : collectedPercent === 100 ? (
+                '100% collected'
               ) : (
-                <span className="text-[var(--warning)] font-normal">Not settled yet</span>
+                `${formatInr(cycle.collected_paise)} of ${formatInr(cycle.total_rent_paise)} (${collectedPercent}%)`
               )}
             </Fact>
-            {cycle && <RentCollectionProgress cycle={cycle} percent={collectedPercent} />}
           </dl>
         )}
       </AsyncSection>
     </ServiceCard>
-  )
-}
-
-/** How much of the month's rent residents have paid into the house kitty. */
-function RentCollectionProgress({ cycle, percent }: { cycle: RentCycle; percent: number }) {
-  const complete = percent === 100
-  const label = `Kitty Collection (${percent}%)`
-  return (
-    <div className="pt-1 space-y-1.5">
-      <div className="flex items-center justify-between gap-2 text-xs min-w-0">
-        <dt className="text-[var(--text-secondary)] truncate">{label}</dt>
-        <dd className="m-0 shrink-0">
-          <Pill tone={complete ? 'success' : 'neutral'}>
-            {complete
-              ? '100% collected'
-              : `${formatInr(cycle.total_rent_paise - cycle.collected_paise)} remaining`}
-          </Pill>
-        </dd>
-      </div>
-      <div
-        role="progressbar"
-        aria-label={label}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-        className="h-1.5 rounded-full bg-[var(--bg-elevated)] overflow-hidden"
-      >
-        <div
-          className={
-            complete ? 'h-full rounded-full bg-[var(--success)]' : 'h-full rounded-full bg-[var(--accent)]'
-          }
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-    </div>
   )
 }
 
