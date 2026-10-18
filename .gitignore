@@ -29,3 +29,9 @@ frontend/dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Local deployment and maintenance scripts
+deploy/audit_aws_resources.sh
+deploy/cleanup_*.sh
+deploy/link_custom_domain.sh
+deploy/setup_*.sh
