@@ -1023,7 +1023,8 @@ function RentPaymentModal({
       }),
     { onSuccess: onRecorded },
   )
-  const valid = amountOk && amountPaise > 0 && Boolean(date)
+  // Every payment into the pool carries the bank's or UPI app's transaction ID.
+  const valid = amountOk && amountPaise > 0 && Boolean(date) && Boolean(reference.trim())
 
   return (
     <Modal
@@ -1093,11 +1094,12 @@ function RentPaymentModal({
             onChange={setMode}
           />
           <TextField
-            label="Reference"
+            label={mode === 'upi' ? 'UPI Transaction ID' : 'Transaction Reference / ID'}
+            required
             value={reference}
             onChange={setReference}
             maxLength={200}
-            placeholder="UPI or bank reference"
+            placeholder={mode === 'upi' ? 'e.g. 428391765102' : 'Bank UTR or reference'}
           />
         </div>
         <TextField

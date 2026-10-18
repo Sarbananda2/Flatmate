@@ -418,7 +418,7 @@ describe('RentMonth', () => {
     expect(dialog).toHaveTextContent('Chris · October 2026 rent · ₹15,000.00 outstanding')
     expect(within(dialog).getByLabelText(/Amount paid/)).toHaveValue('15000.00')
     expect(within(dialog).getByLabelText(/Payment date/)).not.toHaveValue('')
-    await userEvent.type(within(dialog).getByLabelText('Reference'), 'UPI-778')
+    await userEvent.type(within(dialog).getByLabelText(/UPI Transaction ID/), 'UPI-778')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Record Payment' }))
 
     await waitFor(() => expect(posted('/pay')).toBeDefined())
@@ -490,9 +490,36 @@ describe('RentMonth', () => {
     await userEvent.clear(amount)
     await userEvent.type(amount, '16500.50')
     expect(dialog).toHaveTextContent('₹1,500.50 more than this month\'s share')
+    // The amount is fine, but a payment is not recorded without its transaction ID.
+    const transaction = within(dialog).getByLabelText(/UPI Transaction ID/)
+    expect(transaction).toBeRequired()
+    expect(record).toBeDisabled()
+    await userEvent.type(transaction, '   ')
+    expect(record).toBeDisabled()
+    await userEvent.clear(transaction)
+    await userEvent.type(transaction, 'UPI-9876543210')
+    expect(record).toBeEnabled()
     await userEvent.click(record)
     await waitFor(() => expect(posted('/pay')).toBeDefined())
-    expect((posted('/pay')!.body as { amount_paise: number }).amount_paise).toBe(1650050)
+    expect(posted('/pay')!.body).toMatchObject({
+      amount_paise: 1650050,
+      reference: 'UPI-9876543210',
+    })
+  })
+
+  it('asks for the bank reference when the payment was not made by UPI', async () => {
+    renderRent(overview())
+    await userEvent.click(await screen.findByRole('button', { name: 'Pay now for Chris' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByLabelText(/UPI Transaction ID/)).toHaveAttribute(
+      'placeholder',
+      'e.g. 428391765102',
+    )
+    await userEvent.selectOptions(within(dialog).getByLabelText(/Payment mode/), 'bank_transfer')
+    const transaction = within(dialog).getByLabelText(/Transaction Reference \/ ID/)
+    expect(transaction).toBeRequired()
+    expect(transaction).toHaveAttribute('placeholder', 'Bank UTR or reference')
+    expect(within(dialog).queryByLabelText(/UPI Transaction ID/)).not.toBeInTheDocument()
   })
 
   it("sends the payout to the account's holder, and says where to add a missing account", async () => {
