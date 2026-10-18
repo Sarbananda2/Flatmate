@@ -302,11 +302,11 @@ describe('RentMonth', () => {
         'Date',
         'Amount',
         'Mode',
-        'Reference / Note',
+        'Transaction ID',
       ])
       const rows = within(table).getAllByRole('row').slice(1)
       expect(rows.map((row) => row.textContent)).toEqual([
-        '8 Oct 2026₹5,000.00UPIUPI 428391765102First part',
+        '8 Oct 2026₹5,000.00UPIUPI 428391765102',
         '12 Oct 2026₹4,000.00Cash—',
       ])
       // Closed by its own ✕: there is no footer of actions.

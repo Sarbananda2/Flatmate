@@ -948,7 +948,7 @@ function RentStatementModal({
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Mode</th>
-                    <th scope="col" className="pb-3 font-bold text-center">Reference / Note</th>
+                    <th scope="col" className="pb-3 font-bold text-center">Transaction ID</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -963,23 +963,8 @@ function RentStatementModal({
                       <td className="py-2.5 pr-3 text-center">
                         {payment.payment_mode ? modes.get(payment.payment_mode) : dash}
                       </td>
-                      <td className="py-2.5 text-center break-words">
-                        {payment.reference || payment.note ? (
-                          <>
-                            {payment.reference && (
-                              <span className="block tabular text-[var(--text-primary)]">
-                                {payment.reference}
-                              </span>
-                            )}
-                            {payment.note && (
-                              <span className="block text-[11px] text-[var(--text-secondary)]">
-                                {payment.note}
-                              </span>
-                            )}
-                          </>
-                        ) : (
-                          dash
-                        )}
+                      <td className="py-2.5 text-center tabular break-all text-[var(--text-primary)]">
+                        {payment.reference || dash}
                       </td>
                     </tr>
                   ))}
