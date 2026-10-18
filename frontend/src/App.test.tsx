@@ -219,7 +219,8 @@ describe('signed in', () => {
   it('does not show the login page to someone already signed in', async () => {
     renderApp('/login', { '/api/auth/status': SIGNED_IN })
     await screen.findByRole('group', { name: 'Signed in' })
-    expect(location()).toBe('/')
+    // The redirect is a <Navigate>, which moves on after the render it is in.
+    await waitFor(() => expect(location()).toBe('/'))
   })
 
   it('goes back to the login page when the session has lapsed', async () => {

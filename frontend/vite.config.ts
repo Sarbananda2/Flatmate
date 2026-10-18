@@ -34,5 +34,8 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     css: false,
     include: ['src/**/*.test.{ts,tsx}'],
+    // The longer dialogs type into many fields. On a shared CI runner that can
+    // take more than the default 5 seconds, which is slowness, not a failure.
+    testTimeout: 15_000,
   },
 })

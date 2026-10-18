@@ -313,7 +313,10 @@ describe('SetupWizardPage', () => {
   it('pre-ticks the suggested essentials so the common case is one click', async () => {
     renderAt('categories')
     await screen.findByText(/What does the household pay for/)
-    expect(screen.getByRole('checkbox', { name: 'Include Rent' })).toBeChecked()
+    // The ticks are put in once the catalogue has arrived, a render after it shows.
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: 'Include Rent' })).toBeChecked(),
+    )
     expect(screen.getByRole('checkbox', { name: 'Include Electricity' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: 'Include DTH or cable' })).not.toBeChecked()
     expect(
