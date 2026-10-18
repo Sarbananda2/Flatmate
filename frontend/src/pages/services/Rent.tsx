@@ -552,9 +552,9 @@ function PreviewPanel({
           <caption className="sr-only">Shares that generating rent would charge</caption>
           <thead>
             <tr className={TABLE_HEAD}>
-              <th scope="col" className="pb-3 pr-3 font-bold text-center">Resident</th>
-              <th scope="col" className="pb-3 pr-3 font-bold text-center">Takes part</th>
-              <th scope="col" className="pb-3 font-bold text-center">Share</th>
+              <th scope="col" className="w-[40%] pb-3 pr-3 font-bold text-left">Resident</th>
+              <th scope="col" className="w-[30%] pb-3 pr-3 font-bold text-center">Takes part</th>
+              <th scope="col" className="w-[30%] pb-3 pr-3 font-bold text-center">Share</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -568,11 +568,11 @@ function PreviewPanel({
                     </span>
                   )}
                 </th>
-                <td className="py-3 pr-3">
+                <td className="py-3 pr-3 text-center">
                   {adopting ? (
                     <Pill tone="success">Charged</Pill>
                   ) : (
-                    <label className="inline-flex items-center gap-2 cursor-pointer text-[var(--text-secondary)]">
+                    <label className="inline-flex items-center justify-center gap-2 cursor-pointer text-[var(--text-secondary)]">
                       <input
                         type="checkbox"
                         className="w-auto"
@@ -589,7 +589,7 @@ function PreviewPanel({
                     </label>
                   )}
                 </td>
-                <td className="py-3 text-right font-bold text-[var(--text-primary)]">
+                <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
                   <Rupees paise={row.share_paise} />
                 </td>
               </tr>
