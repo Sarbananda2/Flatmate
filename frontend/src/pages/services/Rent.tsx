@@ -144,7 +144,6 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   }}
                 />
                 <Metrics config={config} cycle={cycle} preview={preview} month={month} />
-                {cycle && <RentCashFlowTracker cycle={cycle} />}
                 {/* The month's two steps, in order: collect from residents, then
                     pay the landlord. */}
                 {cycle ? (
@@ -397,92 +396,6 @@ function SplitRule({
         </span>
       </div>
     </div>
-  )
-}
-
-function ProgressLine({
-  label,
-  detail,
-  ariaLabel,
-  value,
-  max,
-  width,
-  barClass,
-}: {
-  label: string
-  detail: string
-  ariaLabel: string
-  value: number
-  max: number
-  width: string
-  barClass: string
-}) {
-  return (
-    <div className="space-y-1.5 min-w-0">
-      <div className="flex flex-wrap items-center justify-between gap-x-3 text-[11px] font-medium text-[var(--text-secondary)]">
-        <span>{label}</span>
-        <span className="tabular">{detail}</span>
-      </div>
-      <div
-        className="h-2 rounded-full bg-[var(--bg-elevated)] overflow-hidden"
-        role="progressbar"
-        aria-label={ariaLabel}
-        aria-valuemin={0}
-        aria-valuemax={max}
-        aria-valuenow={value}
-        aria-valuetext={detail}
-      >
-        <div className={`h-full rounded-full transition-all ${barClass}`} style={{ width }} />
-      </div>
-    </div>
-  )
-}
-
-function RentCashFlowTracker({ cycle }: { cycle: RentCycle }) {
-  const share = percent(cycle.collected_paise, cycle.total_rent_paise)
-  const paidOut = percent(cycle.disbursed_paise, cycle.total_rent_paise)
-  const tranches = cycle.disbursements.length
-
-  return (
-    <section
-      aria-label="Monthly cash flow"
-      className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3.5 space-y-3"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs font-bold text-[var(--text-primary)]">
-          Monthly Cash Flow Tracker
-        </span>
-        <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-[var(--text-secondary)]">
-            Pool Collection: <strong className="text-[var(--text-primary)]">{share}</strong>
-          </span>
-          <span className="text-[var(--border-subtle)]">·</span>
-          <span className="text-[var(--text-secondary)]">
-            Landlord Paid: <strong className="text-[var(--text-primary)]">{paidOut}</strong>
-          </span>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
-        <ProgressLine
-          label="Internal collection"
-          detail={`${formatInr(cycle.collected_paise)} of ${formatInr(cycle.total_rent_paise)} collected (${share}) · ${cycle.collected_count}/${cycle.participant_count} paid`}
-          ariaLabel="Rent collected from residents"
-          value={cycle.collected_paise}
-          max={cycle.total_rent_paise}
-          width={share}
-          barClass="bg-[var(--success)]"
-        />
-        <ProgressLine
-          label="Landlord disbursement"
-          detail={`${formatInr(cycle.disbursed_paise)} of ${formatInr(cycle.total_rent_paise)} disbursed (${paidOut}) · ${tranches} ${tranches === 1 ? 'tranche' : 'tranches'}`}
-          ariaLabel="Rent paid to the landlord"
-          value={cycle.disbursed_paise}
-          max={cycle.total_rent_paise}
-          width={paidOut}
-          barClass="bg-[var(--accent)]"
-        />
-      </div>
-    </section>
   )
 }
 

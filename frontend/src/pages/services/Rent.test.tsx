@@ -193,28 +193,34 @@ function renderRent(
 const posted = (suffix: string) =>
   stub!.calls.find((call) => call.method === 'POST' && call.path.endsWith(suffix))
 
+/** A summary card at the top of the page, by its label. */
+const stat = (label: string) => screen.getByText(label).parentElement!
+
+/** The landlord's row in the landlord panel's summary table. */
+const landlordRow = () =>
+  within(screen.getByRole('table', { name: 'Rent owed to the landlord' })).getAllByRole('row', {
+    name: /Rajesh Kumar Sharma/,
+  })[0]
+
 describe('RentMonth', () => {
   it('shows the rent, the equal share, and what has been collected', async () => {
     renderRent(overview())
     expect(await screen.findByText('Payout Pending')).toBeInTheDocument()
-    expect(screen.getByText('Equal Share (1/3)')).toBeInTheDocument()
-    expect(screen.getByText('2 of 3 covered · 66.7%')).toBeInTheDocument()
-    expect(screen.getByText('5 Oct 2026')).toBeInTheDocument()
+    expect(stat('Contract Rent')).toHaveTextContent('₹45,000.00')
+    expect(stat('Equal Share (1/3)')).toHaveTextContent('₹15,000.00')
+    expect(stat('Internal Collection')).toHaveTextContent('₹30,000.00')
+    expect(stat('Internal Collection')).toHaveTextContent('2 of 3 covered · 66.7%')
+    expect(stat('Landlord Due Date')).toHaveTextContent('5 Oct 2026')
+    expect(stat('Landlord Due Date')).toHaveTextContent('Rajesh Kumar Sharma')
 
     const table = screen.getByRole('table', { name: 'Rent shares and collection' })
     const chris = within(table).getByRole('row', { name: /Chris/ })
     expect(chris).toHaveTextContent('₹15,000.00')
     expect(chris).toHaveTextContent('Unpaid')
 
-    // Collecting from residents and paying the landlord are tracked apart.
-    expect(screen.getByRole('progressbar', { name: 'Rent collected from residents' })).toHaveAttribute(
-      'aria-valuetext',
-      '₹30,000.00 of ₹45,000.00 collected (66.7%) · 2/3 paid',
-    )
-    expect(screen.getByRole('progressbar', { name: 'Rent paid to the landlord' })).toHaveAttribute(
-      'aria-valuetext',
-      '₹0.00 of ₹45,000.00 disbursed (0.0%) · 0 tranches',
-    )
+    // Collecting from residents and paying the landlord are read apart: the
+    // collection above, and the landlord's own row, with nothing paid yet.
+    expect(landlordRow()).toHaveTextContent('₹45,000.00₹0.00₹45,000.00Unpaid')
     expect(screen.queryByRole('table', { name: 'Payments to the landlord' })).not.toBeInTheDocument()
   })
 
@@ -643,10 +649,10 @@ describe('RentMonth', () => {
     expect(screen.queryByRole('button', { name: 'Record Landlord Payout' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /HRA receipt/ })).not.toBeInTheDocument()
     expect(stub!.calls.some((call) => call.path.includes('/receipt/'))).toBe(false)
-    expect(screen.getByRole('progressbar', { name: 'Rent paid to the landlord' })).toHaveAttribute(
-      'aria-valuetext',
-      '₹45,000.00 of ₹45,000.00 disbursed (100.0%) · 1 tranche',
-    )
+    expect(stat('Landlord Due Date')).toHaveTextContent('Paid 5 Oct 2026')
+    expect(landlordRow()).toHaveTextContent('₹45,000.00₹45,000.00₹0.00Paid · 5 Oct 2026')
+    const payments = screen.getByRole('table', { name: 'Payments to the landlord' })
+    expect(within(payments).getByRole('row', { name: /329188401928/ })).toHaveTextContent('₹45,000.00')
   })
 
   describe('paying the landlord in tranches', () => {
@@ -687,13 +693,8 @@ describe('RentMonth', () => {
         await screen.findByText('Partially Disbursed ·', { exact: false }),
       ).toHaveTextContent('Partially Disbursed · ₹30,000.00 of ₹45,000.00')
       expect(screen.getByRole('button', { name: 'Record Landlord Payout' })).toBeInTheDocument()
-      expect(screen.getByRole('progressbar', { name: 'Rent paid to the landlord' })).toHaveAttribute(
-        'aria-valuetext',
-        '₹30,000.00 of ₹45,000.00 disbursed (66.7%) · 1 tranche',
-      )
-      const landlord = within(screen.getByRole('table', { name: 'Rent owed to the landlord' }))
-        .getByRole('row', { name: /Rajesh Kumar Sharma/ })
-      expect(landlord).toHaveTextContent('₹45,000.00₹30,000.00₹15,000.00Part paid')
+      expect(stat('Landlord Due Date')).toHaveTextContent('₹15,000.00 still to pay')
+      expect(landlordRow()).toHaveTextContent('₹45,000.00₹30,000.00₹15,000.00Part paid')
     })
 
     it('lists each tranche with who funded it and the totals', async () => {
