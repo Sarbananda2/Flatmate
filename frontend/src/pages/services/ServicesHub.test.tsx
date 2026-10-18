@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
-import { render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import { ServicesHub } from './ServicesHub'
 import { installFetchStub } from '../../test/server'
 
@@ -18,6 +18,9 @@ const config = {
 }
 
 let stub: ReturnType<typeof installFetchStub> | null = null
+
+/** One line of a card's facts, label and value together. */
+const fact = (card: HTMLElement, label: string) => within(card).getByText(label).parentElement!
 
 afterEach(() => {
   stub?.restore()
@@ -86,7 +89,10 @@ describe('ServicesHub', () => {
       rent: {
         config,
         cycle: {
+          due_date: '2026-10-05',
           disbursement_status: 'pending',
+          disbursed_at: null,
+          remaining_disbursement_paise: 2850000,
           total_rent_paise: 2850000,
           collected_paise: 2849999,
         },
@@ -96,10 +102,15 @@ describe('ServicesHub', () => {
 
     const rent = screen.getByRole('region', { name: 'Rent' })
     expect(await within(rent).findByText('Kumar Yadav')).toBeInTheDocument()
-    expect(within(rent).getByText('Day 5')).toBeInTheDocument()
+    expect(fact(rent, 'Contract')).toHaveTextContent('₹28,500.00/mo')
+    expect(fact(rent, 'Due date')).toHaveTextContent('5 Oct 2026')
+    expect(fact(rent, 'Payment completed by')).toHaveTextContent('Not settled yet')
     expect(within(rent).getByText('Pending')).toBeInTheDocument()
     // One paisa short must not read as fully collected.
-    expect(await within(rent).findByText('99% collected')).toBeInTheDocument()
+    const kitty = within(rent).getByRole('progressbar', { name: 'Kitty Collection (99%)' })
+    expect(kitty).toHaveAttribute('aria-valuenow', '99')
+    expect(within(rent).getByText('₹0.01 remaining')).toBeInTheDocument()
+    expect(within(rent).queryByText('100% collected')).toBeNull()
     expect(within(rent).getByRole('link', { name: 'Open Rent Hub' })).toHaveAttribute('href', '/services/rent')
     expect(within(rent).queryByRole('link', { name: 'Config' })).toBeNull()
 
@@ -112,28 +123,65 @@ describe('ServicesHub', () => {
     )
   })
 
-  it('shows how far through its term the lease is', async () => {
+  it('shows the lease due day and no collection before the month is generated', async () => {
     renderHub({
-      rent: {
-        config: {
-          ...config,
-          lease_status: 'active',
-          lifecycle: {
-            duration_months: 11,
-            elapsed_percent: 85,
-            days_until_expiry: 48,
-            is_notice_window_active: false,
-            is_expired: false,
-          },
-        },
-        cycle: null,
-      },
+      rent: { config, cycle: null },
       electricity: { bill: null, bills_for_month: 0, latest_bill: null },
     })
     const rent = screen.getByRole('region', { name: 'Rent' })
-    expect(await within(rent).findByText('11-Month Term (85% elapsed)')).toBeInTheDocument()
-    expect(within(rent).getByText('Expires in 48d')).toBeInTheDocument()
-    expect(within(rent).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '85')
+    expect(await within(rent).findByText('Kumar Yadav')).toBeInTheDocument()
+    expect(fact(rent, 'Due date')).toHaveTextContent('Day 5')
+    expect(fact(rent, 'Payment completed by')).toHaveTextContent('Not configured')
+    expect(within(rent).queryByRole('progressbar')).toBeNull()
+    // The lease's term is shown under Housing, not here.
+    expect(within(rent).queryByText(/Month Term/)).toBeNull()
+  })
+
+  it('says how much is left to pay the landlord, and when it was paid in full', async () => {
+    const month = {
+      due_date: '2026-10-05',
+      total_rent_paise: 2850000,
+      collected_paise: 2850000,
+    }
+    renderHub({
+      rent: {
+        config,
+        cycle: {
+          ...month,
+          disbursement_status: 'partially_disbursed',
+          disbursed_at: '2026-10-05',
+          remaining_disbursement_paise: 850000,
+        },
+      },
+      electricity: { bill: null, bills_for_month: 0, latest_bill: null },
+    })
+    let rent = screen.getByRole('region', { name: 'Rent' })
+    expect(await within(rent).findByText('Kumar Yadav')).toBeInTheDocument()
+    expect(fact(rent, 'Payment completed by')).toHaveTextContent('Partially settled (₹8,500.00 left)')
+    // Everyone has paid into the kitty, even though the landlord is still owed.
+    expect(within(rent).getByRole('progressbar', { name: 'Kitty Collection (100%)' })).toHaveAttribute(
+      'aria-valuenow',
+      '100',
+    )
+    expect(within(rent).getByText('100% collected')).toBeInTheDocument()
+    stub?.restore()
+    cleanup()
+
+    renderHub({
+      rent: {
+        config,
+        cycle: {
+          ...month,
+          disbursement_status: 'disbursed',
+          disbursed_at: '2026-10-09',
+          remaining_disbursement_paise: 0,
+        },
+      },
+      electricity: { bill: null, bills_for_month: 0, latest_bill: null },
+    })
+    rent = screen.getByRole('region', { name: 'Rent' })
+    expect(await within(rent).findByText('Kumar Yadav')).toBeInTheDocument()
+    expect(fact(rent, 'Payment completed by')).toHaveTextContent('9 Oct 2026')
   })
 
   it('shows the planned services as placeholders with no actions', async () => {

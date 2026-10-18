@@ -27,8 +27,8 @@ import {
   StatementPill,
 } from '../../components/ui'
 import { type Resource, useResource } from '../../lib/useApi'
-import { formatMonth, formatMonthShort } from '../../lib/format'
-import type { LeaseLifecycle, ServicesOverview } from '../../api/types'
+import { formatDate, formatInr, formatMonth, formatMonthShort } from '../../lib/format'
+import type { RentCycle, ServicesOverview } from '../../api/types'
 
 const PLANNED_SERVICES: Array<{ title: string; icon: LucideIcon; body: string }> = [
   {
@@ -148,11 +148,9 @@ interface CardProps {
   overview: Resource<ServicesOverview>
 }
 
-function RentCard({ month, overview }: CardProps) {
+function RentCard({ overview }: CardProps) {
   const config = overview.data?.rent.config ?? null
   const cycle = overview.data?.rent.cycle ?? null
-  const lifecycle = config?.lifecycle ?? null
-  const noticeServed = config?.lease_status === 'notice_served'
 
   // Whole percent, rounded down so an incomplete collection never reads as 100%.
   const collectedPercent =
@@ -195,17 +193,33 @@ function RentCard({ month, overview }: CardProps) {
               )}
             </Fact>
             <Fact label="Landlord">{config ? config.landlord_name : NOT_CONFIGURED}</Fact>
-            <Fact label="Due day">
-              {config ? `Day ${config.due_day_of_month}` : NOT_CONFIGURED}
+            {/* The month's own due date once its rent is generated; until then, the lease's day. */}
+            <Fact label="Due date">
+              {cycle?.due_date
+                ? formatDate(cycle.due_date)
+                : config
+                  ? `Day ${config.due_day_of_month}`
+                  : NOT_CONFIGURED}
             </Fact>
-            <Fact label={formatMonthShort(month)}>
-              {!config
-                ? NOT_CONFIGURED
-                : cycle
-                  ? `${collectedPercent}% collected`
-                  : 'Cycle not generated'}
+            {/* When the landlord was paid in full, or how far from it the month is. */}
+            <Fact label="Payment completed by">
+              {!cycle ? (
+                NOT_CONFIGURED
+              ) : cycle.disbursement_status === 'disbursed' ? (
+                cycle.disbursed_at ? (
+                  formatDate(cycle.disbursed_at)
+                ) : (
+                  'Settled'
+                )
+              ) : cycle.disbursement_status === 'partially_disbursed' ? (
+                <span className="text-[var(--warning)]">
+                  Partially settled ({formatInr(cycle.remaining_disbursement_paise)} left)
+                </span>
+              ) : (
+                <span className="text-[var(--warning)] font-normal">Not settled yet</span>
+              )}
             </Fact>
-            {lifecycle && <TermProgress lifecycle={lifecycle} noticeServed={noticeServed} />}
+            {cycle && <RentCollectionProgress cycle={cycle} percent={collectedPercent} />}
           </dl>
         )}
       </AsyncSection>
@@ -213,27 +227,19 @@ function RentCard({ month, overview }: CardProps) {
   )
 }
 
-function TermProgress({
-  lifecycle,
-  noticeServed,
-}: {
-  lifecycle: LeaseLifecycle
-  noticeServed: boolean
-}) {
-  const days = lifecycle.days_until_expiry
-  const urgent = lifecycle.is_notice_window_active || lifecycle.is_expired
-  const label = `${lifecycle.duration_months}-Month Term (${lifecycle.elapsed_percent}% elapsed)`
+/** How much of the month's rent residents have paid into the house kitty. */
+function RentCollectionProgress({ cycle, percent }: { cycle: RentCycle; percent: number }) {
+  const complete = percent === 100
+  const label = `Kitty Collection (${percent}%)`
   return (
     <div className="pt-1 space-y-1.5">
       <div className="flex items-center justify-between gap-2 text-xs min-w-0">
         <dt className="text-[var(--text-secondary)] truncate">{label}</dt>
         <dd className="m-0 shrink-0">
-          <Pill tone={urgent ? 'warning' : 'neutral'}>
-            {noticeServed
-              ? 'Notice served'
-              : lifecycle.is_expired
-                ? `Expired ${-days}d ago`
-                : `Expires in ${days}d`}
+          <Pill tone={complete ? 'success' : 'neutral'}>
+            {complete
+              ? '100% collected'
+              : `${formatInr(cycle.total_rent_paise - cycle.collected_paise)} remaining`}
           </Pill>
         </dd>
       </div>
@@ -242,14 +248,14 @@ function TermProgress({
         aria-label={label}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-valuenow={lifecycle.elapsed_percent}
+        aria-valuenow={percent}
         className="h-1.5 rounded-full bg-[var(--bg-elevated)] overflow-hidden"
       >
         <div
           className={
-            urgent ? 'h-full rounded-full bg-amber-500' : 'h-full rounded-full bg-[var(--accent)]'
+            complete ? 'h-full rounded-full bg-[var(--success)]' : 'h-full rounded-full bg-[var(--accent)]'
           }
-          style={{ width: `${lifecycle.elapsed_percent}%` }}
+          style={{ width: `${percent}%` }}
         />
       </div>
     </div>
