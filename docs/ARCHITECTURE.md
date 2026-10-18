@@ -423,6 +423,12 @@ The frontend enforces strict UX, state-separation, and visual presentation invar
 * **Zero Table Layout Shift:** Inspecting a row's details must **never** mutate row height or insert inline expansion/drop-down rows into the table body.
 * **Keyboard & Screen-Reader Accessibility:** Every openable row must provide an accessible keyboard trigger (with `aria-haspopup="dialog"`) that opens the detail dialog on `Enter`/`Space` and returns focus to the trigger when closed.
 
+### Rule U8: Full-Measure Subtitles and Hints (Zero Artificial max-width Capping)
+* **Invariant:** Page subtitles, section hints, card descriptions, and dialog subtitles must span the full available width of their container, aligning naturally with the right margin (or adjacent action triggers).
+* **Prohibition:** Arbitrary typographic character clamps (such as `max-width: 70ch`, `max-width: 72ch`, or narrow prose constraints) are **strictly prohibited** on UI subtitles, card hints, and page headers.
+* **Rationale:** Editorial "measure" rules (capping lines at 65–75 characters) are designed for multi-paragraph prose (essays, blog posts, and documentation) to prevent tracking fatigue. In modern application dashboards with wide cards and responsive layouts, capping subtitles causes premature, unbalanced line breaks—often stranding 3–4 trailing words on a second line while leaving 40–60% of the right-hand canvas completely empty.
+* **Implementation Standard:** Subtitles and hints must take full width (`width: 100%` or `flex: 1; min-width: 0;`), wrapping naturally only when text reaches the actual right padding of the container or collides with trailing action buttons.
+
 ---
 
 ## Domain Modeling & Field Atomicity Standards
