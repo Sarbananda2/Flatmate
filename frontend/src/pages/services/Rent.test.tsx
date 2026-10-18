@@ -206,6 +206,8 @@ describe('RentMonth', () => {
   it('shows the rent, the equal share, and what has been collected', async () => {
     renderRent(overview())
     expect(await screen.findByText('Payout Pending')).toBeInTheDocument()
+    // The period bar names the month, so the title does not repeat it.
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(/^Rent$/)
     expect(stat('Contract Rent')).toHaveTextContent('₹45,000.00')
     expect(stat('Equal Share (1/3)')).toHaveTextContent('₹15,000.00')
     expect(stat('Internal Collection')).toHaveTextContent('₹30,000.00')

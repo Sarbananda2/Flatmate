@@ -106,7 +106,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
         const { config, cycle, preview } = data
         return (
           <Page
-            title={`Rent · ${formatMonth(month)}`}
+            title="Rent"
             subtitle="What residents have paid towards this month's rent, and whether the landlord has been paid, under the master lease."
             breadcrumbs={[{ label: 'Services & Utilities', to: '/services' }, { label: 'Rent' }]}
           >
