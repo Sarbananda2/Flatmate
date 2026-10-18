@@ -437,13 +437,11 @@ function SplitRule({
   count,
   base,
   remainder,
-  aside,
 }: {
   total: number
   count: number
   base: number
   remainder: number
-  aside?: React.ReactNode
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3.5 py-2.5 text-xs text-[var(--text-secondary)]">
@@ -458,7 +456,6 @@ function SplitRule({
           {remainder > 0 && ', one each in resident order, the landlord payer last'}
         </span>
       </div>
-      {aside && <div>{aside}</div>}
     </div>
   )
 }
@@ -572,21 +569,6 @@ function CyclePanel({
         </>
       }
     >
-      <SplitRule
-        total={cycle.total_rent_paise}
-        count={cycle.participant_count}
-        base={cycle.base_share_paise}
-        remainder={cycle.remainder_paise}
-        aside={
-          <>
-            Collected:{' '}
-            <strong className="tabular text-[var(--text-primary)]">
-              {formatInr(cycle.collected_paise)}
-            </strong>{' '}
-            / <span className="tabular">{formatInr(cycle.total_rent_paise)}</span>
-          </>
-        }
-      />
 
       {!cycle.matches_lease_rent && (
         <p className="m-0 text-xs text-[var(--warning)]">
