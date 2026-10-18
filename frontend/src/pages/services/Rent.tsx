@@ -28,7 +28,6 @@ import { useToast } from '../../components/Toast'
 import {
   Avatar,
   BUTTON_PRIMARY,
-  BUTTON_QUIET,
   BUTTON_SECONDARY,
   EmptyBlock,
   MiniStat,
@@ -413,14 +412,6 @@ function CyclePanel({
       title="Equal Split & Internal Collection"
       icon={<Users className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint="What each resident owes for this month's rent, and how much of it has reached the pool."
-      actions={
-        <>
-          <Pill>Service period {cycle.service_period}</Pill>
-          <Link className={BUTTON_QUIET} to="/expenses" title={cycle.description}>
-            View in expenses
-          </Link>
-        </>
-      }
     >
 
       {!cycle.matches_lease_rent && (
