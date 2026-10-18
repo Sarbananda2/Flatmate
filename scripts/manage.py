@@ -119,8 +119,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
     host = args.host or settings.host
     port = args.port or settings.port
     if host not in {"127.0.0.1", "localhost", "::1"}:
-        print(f"WARNING: binding {host} exposes the household's accounts to the network.")
-        print("         This application has no authentication. Use 127.0.0.1 instead.")
+        print(f"WARNING: binding {host} makes the app reachable from the network. Every")
+        print("         route needs a signed-in user, but put HTTPS in front of it so")
+        print("         passwords and session cookies are not sent in the clear.")
     print(f"Database: {settings.database.describe()}")
     print(f"Serving on http://{host}:{port}   (API docs at /docs)")
     if not (ROOT / "frontend" / "dist").is_dir():
