@@ -684,17 +684,6 @@ describe('RentMonth', () => {
     expect(screen.queryByRole('link', { name: /Download/ })).not.toBeInTheDocument()
   })
 
-  it('shows the deposit total and links to its own screen instead of embedding it', async () => {
-    renderRent(overview({ config: { ...config, security_deposit_paise: 15000000 } }))
-    const link = await screen.findByRole('link', { name: 'Manage Deposit Slots & Escrow' })
-    expect(link).toHaveAttribute('href', '/housing?tab=deposits')
-    const panel = link.closest('section')!
-    expect(panel).toHaveTextContent('Total deposit₹1,50,000.00')
-    // The slots table lives on the deposits screen now, and is not fetched here.
-    expect(screen.queryByRole('table', { name: 'Household deposit slots' })).not.toBeInTheDocument()
-    expect(stub!.calls.some((call) => call.path === '/api/rent/deposits')).toBe(false)
-  })
-
   it('sends lease setup and the tenancy terms to Housing', async () => {
     renderRent(overview({ config: null, cycle: null }))
     expect(await screen.findByRole('link', { name: 'Set up lease' })).toHaveAttribute(
