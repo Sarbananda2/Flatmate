@@ -50,6 +50,7 @@ import type {
   RentCollectionStatus,
   RentCycle,
   RentDisbursementMode,
+  RentDisbursementStatus,
   RentLeaseConfig,
   RentMonthOverview,
   RentParticipant,
@@ -109,34 +110,18 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
     <AsyncSection resource={overview} loadingLabel="Loading rent…">
       {(data) => {
         const { config, cycle, preview } = data
-        // Open until the landlord has been paid in full: the rent can go in tranches.
-        const owingLandlord = cycle != null && cycle.disbursement_status !== 'disbursed'
         return (
           <Page
             title={`Rent · ${formatMonth(month)}`}
             subtitle="What residents have paid towards this month's rent, and whether the landlord has been paid, under the master lease."
             breadcrumbs={[{ label: 'Services & Utilities', to: '/services' }, { label: 'Rent' }]}
           >
-            {/* Status on the left, actions on the right, on a row of their own so
-                the two never wrap around the title. */}
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-2 min-w-0">
-                {config && <LeaseTermPill config={config} />}
-                <DisbursementPill cycle={cycle} configured={Boolean(config)} />
-                {cycle && <LandlordReceiptPill status={cycle.landlord_receipt_status} />}
-              </div>
-              <div className="flex flex-wrap items-center gap-2 ml-auto">
-                {owingLandlord && (
-                  <button
-                    type="button"
-                    className={BUTTON_PRIMARY}
-                    onClick={() => setDialog('payout')}
-                  >
-                    <ArrowUpRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                    Record Landlord Payout
-                  </button>
-                )}
-              </div>
+            {/* The month's status at a glance, on a row of its own so it never
+                wraps around the title. Each step's action is on its own panel. */}
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              {config && <LeaseTermPill config={config} />}
+              <DisbursementPill cycle={cycle} configured={Boolean(config)} />
+              {cycle && <LandlordReceiptPill status={cycle.landlord_receipt_status} />}
             </div>
 
             {!config ? (
@@ -198,10 +183,10 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   config={config}
                   cycle={cycle}
                   month={month}
+                  onPayout={() => setDialog('payout')}
                   onAttach={() => setDialog('attach')}
                 />
                 {/* The contract the rent is charged under, for reference. */}
-                <MasterTenancyCard config={config} />
                 <RentAgreementCard
                   config={config}
                   cycle={cycle}
@@ -610,9 +595,6 @@ function CyclePanel({
                         >
                           {participant.display_name}
                         </Link>
-                        <span className="block text-[11px] text-[var(--text-tertiary)] tabular">
-                          1 / {cycle.participant_count}
-                        </span>
                       </span>
                     </span>
                   </th>
@@ -829,23 +811,42 @@ function maskAccount(account: string): string {
   return account.length > 4 ? `****${account.slice(-4)}` : account
 }
 
+/** The landlord's side of the month, worded as the collection table words a resident's. */
+const PAYOUT: Record<RentDisbursementStatus, { tone: Tone; label: string }> = {
+  pending: { tone: 'warning', label: 'Unpaid' },
+  partially_disbursed: { tone: 'warning', label: 'Part paid' },
+  disbursed: { tone: 'success', label: 'Paid' },
+}
+
 function LandlordPanel({
   config,
   cycle,
   month,
+  onPayout,
   onAttach,
 }: {
   config: RentLeaseConfig
   cycle: RentCycle | null
   month: string
+  onPayout: () => void
   onAttach: () => void
 }) {
-  const none = <span className="font-normal text-[var(--text-tertiary)]">Not on file</span>
+  const dash = <span className="text-[var(--text-tertiary)]">—</span>
   const tranches = cycle?.disbursements ?? []
   const advanced = tranches.some((tranche) => tranche.disbursed_by === 'resident_advance')
+  // Open until the landlord has been paid in full: the rent can go in tranches.
+  const owing = cycle != null && cycle.disbursement_status !== 'disbursed'
+  const status = cycle ? PAYOUT[cycle.disbursement_status] : null
+  const beneficiary = config.payout_beneficiary_name || config.landlord_name
   const bank = [
     config.landlord_bank_ifsc,
     config.landlord_bank_account && maskAccount(config.landlord_bank_account),
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  const destination = [
+    beneficiary !== config.landlord_name ? `To ${beneficiary}` : null,
+    config.landlord_upi_id || bank || 'No bank account or UPI ID on file',
   ]
     .filter(Boolean)
     .join(' · ')
@@ -853,88 +854,146 @@ function LandlordPanel({
     <Panel
       title="Landlord & Disbursement"
       icon={<Building2 className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="Who the rent goes to, and how this month's payout was made."
+      hint="How much of this month's rent has reached the landlord, and each payment made."
     >
-      <dl className="m-0 grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-4">
-        <Detail label="Landlord">{config.landlord_name}</Detail>
-        <Detail label="Landlord PAN (for HRA)">
-          {config.landlord_pan ? <span className="tabular">{config.landlord_pan}</span> : none}
-        </Detail>
-        <Detail label="Bank account">
-          {bank ? <span className="tabular">{bank}</span> : none}
-        </Detail>
-        <Detail label="UPI ID">
-          {config.landlord_upi_id ? (
-            <span className="tabular">{config.landlord_upi_id}</span>
-          ) : (
-            none
-          )}
-        </Detail>
-        <Detail label="Phone">{config.landlord_phone ?? none}</Detail>
-        <Detail label="Landlord receipts">
-          {config.requires_landlord_receipt ? 'Issued — attached when it arrives' : 'Not issued'}
-        </Detail>
-        <Detail label="Disbursement">
-          {!cycle
-            ? 'Rent not generated'
-            : cycle.disbursement_status === 'pending'
-              ? 'Pending'
-              : cycle.disbursement_status === 'partially_disbursed'
-                ? `Part paid · ${formatInr(cycle.disbursed_paise)} of ${formatInr(cycle.total_rent_paise)}`
-                : `Paid in full · ${formatDate(cycle.disbursed_at)}`}
-        </Detail>
-      </dl>
-      {cycle && tranches.length > 0 && (
-        <div className="overflow-x-auto min-w-0">
-          <table className="w-full text-left text-xs min-w-[640px] border-collapse">
-            <caption className="sr-only">Payments to the landlord</caption>
-            <thead>
-              <tr className={TABLE_HEAD}>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Funded From</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Reference / UTR</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Note</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-              {tranches.map((tranche) => (
-                <tr key={tranche.disbursement_id} className="align-middle">
-                  <td className="py-2.5 pr-3 text-center tabular">{formatDate(tranche.disbursed_at)}</td>
-                  <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
-                    <Rupees paise={tranche.amount_paise} />
-                  </td>
-                  <td className="py-2.5 pr-3 text-center">
-                    {tranche.disbursed_by === 'pool'
-                      ? 'House Kitty'
-                      : `${tranche.funding_resident_name ?? tranche.funding_resident_id} (advance)`}
-                  </td>
-                  <td className="py-2.5 pr-3 text-center tabular break-all">
-                    {tranche.disbursement_reference}
-                  </td>
-                  <td className="py-2.5 pr-3 text-center text-[var(--text-secondary)]">
-                    {tranche.note ?? <span className="text-[var(--text-tertiary)]">—</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr className="border-t border-[var(--border-subtle)]">
-                <td colSpan={5} className="pt-2.5 text-[11px] text-[var(--text-secondary)]">
-                  Total disbursed{' '}
-                  <strong className="tabular text-[var(--text-primary)]">
-                    {formatInr(cycle.disbursed_paise)}
-                  </strong>{' '}
-                  · Balance remaining{' '}
-                  <strong className="tabular text-[var(--text-primary)]">
-                    {formatInr(cycle.remaining_disbursement_paise)}
-                  </strong>
+      {/* Laid out as the collection table above, so the two read column for
+          column: what was due, what has been paid, what is still owed. */}
+      <div className="overflow-x-auto min-w-0">
+        <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse">
+          <caption className="sr-only">Rent owed to the landlord</caption>
+          <thead>
+            <tr className={TABLE_HEAD}>
+              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-center">
+                Landlord / Destination
+              </th>
+              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Total Rent</th>
+              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid to Owner</th>
+              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still Owed</th>
+              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
+              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+            <tr className="align-middle">
+              <th scope="row" className="py-3 pr-3 text-left font-normal">
+                <span className="flex items-center gap-2.5 min-w-0">
+                  <Avatar name={config.landlord_name} />
+                  <span className="min-w-0">
+                    <span className="block font-semibold text-[var(--text-primary)] truncate">
+                      {config.landlord_name}
+                    </span>
+                    <span
+                      className="block text-[11px] text-[var(--text-tertiary)] tabular truncate"
+                      title={destination}
+                    >
+                      {destination}
+                    </span>
+                  </span>
+                </span>
+              </th>
+              <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
+                <Rupees paise={cycle ? cycle.total_rent_paise : config.monthly_rent_paise} />
+              </td>
+              <td className="py-3 pr-3 text-center">
+                {cycle ? <Rupees paise={cycle.disbursed_paise} /> : dash}
+              </td>
+              <td className="py-3 pr-3 text-center">
+                {cycle ? <Rupees paise={cycle.remaining_disbursement_paise} /> : dash}
+              </td>
+              <td className="py-3 pr-3 text-center whitespace-nowrap">
+                {cycle && status ? (
+                  <Pill tone={status.tone}>
+                    {cycle.disbursement_status === 'disbursed' ? (
+                      <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
+                    ) : (
+                      <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
+                    )}
+                    {status.label}
+                    {cycle.disbursement_status === 'disbursed' &&
+                      ` · ${formatDate(cycle.disbursed_at)}`}
+                  </Pill>
+                ) : (
+                  <Pill>Not generated</Pill>
+                )}
+              </td>
+              <td className="py-3 text-center whitespace-nowrap">
+                {owing ? (
+                  <button
+                    type="button"
+                    className={BUTTON_SECONDARY}
+                    onClick={onPayout}
+                    aria-label="Record Landlord Payout"
+                  >
+                    <ArrowUpRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    Record Payout
+                  </button>
+                ) : cycle ? (
+                  <span className="text-[11px] text-[var(--text-tertiary)]">Settled</span>
+                ) : (
+                  dash
+                )}
+              </td>
+            </tr>
+            {cycle && tranches.length > 0 && (
+              <tr>
+                <td colSpan={6} className="pt-1 pb-3">
+                  <div className="ml-4 border-l-2 border-[var(--border-subtle)] pl-3">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <caption className="sr-only">Payments to the landlord</caption>
+                      <thead>
+                        <tr className={TABLE_HEAD}>
+                          <th scope="col" className="py-2 pr-3 font-bold text-center">Date</th>
+                          <th scope="col" className="py-2 pr-3 font-bold text-center">Amount</th>
+                          <th scope="col" className="py-2 pr-3 font-bold text-center">Funded From</th>
+                          <th scope="col" className="py-2 pr-3 font-bold text-center">Reference / UTR</th>
+                          <th scope="col" className="py-2 pr-3 font-bold text-center">Note</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+                        {tranches.map((tranche) => (
+                          <tr key={tranche.disbursement_id} className="align-middle">
+                            <td className="py-2.5 pr-3 text-center tabular">
+                              {formatDate(tranche.disbursed_at)}
+                            </td>
+                            <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
+                              <Rupees paise={tranche.amount_paise} />
+                            </td>
+                            <td className="py-2.5 pr-3 text-center">
+                              {tranche.disbursed_by === 'pool'
+                                ? 'House Kitty'
+                                : `${tranche.funding_resident_name ?? tranche.funding_resident_id} (advance)`}
+                            </td>
+                            <td className="py-2.5 pr-3 text-center tabular break-all">
+                              {tranche.disbursement_reference}
+                            </td>
+                            <td className="py-2.5 pr-3 text-center text-[var(--text-secondary)]">
+                              {tranche.note ?? dash}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t border-[var(--border-subtle)]">
+                          <td colSpan={5} className="pt-2.5 text-[11px] text-[var(--text-secondary)]">
+                            Total disbursed{' '}
+                            <strong className="tabular text-[var(--text-primary)]">
+                              {formatInr(cycle.disbursed_paise)}
+                            </strong>{' '}
+                            · Balance remaining{' '}
+                            <strong className="tabular text-[var(--text-primary)]">
+                              {formatInr(cycle.remaining_disbursement_paise)}
+                            </strong>
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
                 </td>
               </tr>
-            </tfoot>
-          </table>
-        </div>
-      )}
+            )}
+          </tbody>
+        </table>
+      </div>
       {cycle && cycle.landlord_receipt_status !== 'not_required' && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3.5 py-3">
           <div className="min-w-0 space-y-1">
@@ -1423,40 +1482,5 @@ function AttachReceiptModal({
         )}
       </div>
     </Modal>
-  )
-}
-
-/**
- * The tenancy the rent is charged under, in one line, with the way to the
- * terms themselves. The terms are edited under Housing; this only reads them.
- */
-function MasterTenancyCard({ config }: { config: RentLeaseConfig }) {
-  const lifecycle = config.lifecycle
-  const term =
-    config.lease_start_date && config.lease_end_date
-      ? `${formatDate(config.lease_start_date)} – ${formatDate(config.lease_end_date)}`
-      : 'Term not entered'
-  const progress =
-    lifecycle && lifecycle.current_month_index > 0
-      ? ` (Month ${Math.min(lifecycle.current_month_index, lifecycle.duration_months)} of ${lifecycle.duration_months})`
-      : ''
-  return (
-    <section
-      aria-label="Master tenancy"
-      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3"
-    >
-      <div className="min-w-0 text-xs text-[var(--text-secondary)]">
-        <span className="font-bold text-[var(--text-primary)]">Master Tenancy</span>
-        {' · '}
-        <span className="tabular">{term + progress}</span>
-        {' · '}Landlord: {config.landlord_name}
-        {config.notice_period_days != null && ` · ${config.notice_period_days}-day notice`}
-      </div>
-      <Link to="/housing?tab=lease" className={BUTTON_SECONDARY}>
-        <Settings className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-        Manage Master Tenancy &amp; Renewal
-        <ArrowRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-      </Link>
-    </section>
   )
 }

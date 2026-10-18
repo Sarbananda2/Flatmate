@@ -639,29 +639,6 @@ describe('RentMonth', () => {
     expect(screen.queryByRole('radiogroup', { name: 'Rental agreement structure' })).toBeNull()
   })
 
-  it('shows the master tenancy in one line, with the way to its terms', async () => {
-    renderRent(
-      overview({
-        config: {
-          ...config,
-          lease_start_date: '2026-04-01',
-          lease_end_date: '2027-02-28',
-          notice_period_days: 30,
-          lifecycle: { current_month_index: 7, duration_months: 11 },
-        },
-        cycle: null,
-        preview,
-      }),
-    )
-    const card = await screen.findByRole('region', { name: 'Master tenancy' })
-    expect(card).toHaveTextContent('1 Apr 2026 – 28 Feb 2027 (Month 7 of 11)')
-    expect(card).toHaveTextContent('Landlord: Rajesh Kumar Sharma')
-    expect(card).toHaveTextContent('30-day notice')
-    expect(
-      within(card).getByRole('link', { name: /Manage Master Tenancy & Renewal/ }),
-    ).toHaveAttribute('href', '/housing?tab=lease')
-  })
-
   it('shows the rental agreement read-only, with no inputs on the page', async () => {
     renderRent(overview({ cycle: null, preview }))
     const agreement = await screen.findByLabelText('Rental agreement')
@@ -790,6 +767,37 @@ describe('RentMonth', () => {
   })
 
   describe('paying the landlord in tranches', () => {
+    it("lays out the landlord's side as the collection table, with the one payout button in it", async () => {
+      renderRent(overview())
+      const table = await screen.findByRole('table', { name: 'Rent owed to the landlord' })
+      expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+        'Landlord / Destination',
+        'Total Rent',
+        'Paid to Owner',
+        'Still Owed',
+        'Status',
+        'Actions',
+      ])
+      const landlord = within(table).getByRole('row', { name: /Rajesh Kumar Sharma/ })
+      expect(landlord).toHaveTextContent('rajeshsharma@okaxis')
+      expect(landlord).toHaveTextContent('₹45,000.00₹0.00₹45,000.00Unpaid')
+      // Nothing paid yet, so there are no payments to list beneath it.
+      expect(screen.queryByRole('table', { name: 'Payments to the landlord' })).not.toBeInTheDocument()
+
+      const payout = screen.getAllByRole('button', { name: 'Record Landlord Payout' })
+      expect(payout).toHaveLength(1)
+      expect(within(landlord).getByRole('button', { name: 'Record Landlord Payout' })).toBe(payout[0])
+    })
+
+    it('shows the landlord with nothing owed before the month is generated', async () => {
+      renderRent(overview({ cycle: null, preview }))
+      const table = await screen.findByRole('table', { name: 'Rent owed to the landlord' })
+      const landlord = within(table).getByRole('row', { name: /Rajesh Kumar Sharma/ })
+      expect(landlord).toHaveTextContent('₹45,000.00')
+      expect(landlord).toHaveTextContent('Not generated')
+      expect(screen.queryByRole('button', { name: 'Record Landlord Payout' })).not.toBeInTheDocument()
+    })
+
     it('shows a part-paid month and still offers the next payout', async () => {
       renderRent(overview({ cycle: partCycle() }))
       expect(
@@ -800,7 +808,9 @@ describe('RentMonth', () => {
         'aria-valuetext',
         '₹30,000.00 of ₹45,000.00 disbursed (66.7%) · 1 tranche',
       )
-      expect(screen.getByText('Part paid · ₹30,000.00 of ₹45,000.00')).toBeInTheDocument()
+      const landlord = within(screen.getByRole('table', { name: 'Rent owed to the landlord' }))
+        .getByRole('row', { name: /Rajesh Kumar Sharma/ })
+      expect(landlord).toHaveTextContent('₹45,000.00₹30,000.00₹15,000.00Part paid')
     })
 
     it('lists each tranche with who funded it and the totals', async () => {
@@ -848,7 +858,10 @@ describe('RentMonth', () => {
       expect(second).toHaveTextContent('₹15,000.00')
       expect(second).toHaveTextContent('Alice (advance)')
       expect(table).toHaveTextContent('Total disbursed ₹45,000.00 · Balance remaining ₹0.00')
-      expect(screen.getByText('Paid in full · 9 Oct 2026')).toBeInTheDocument()
+      const landlord = within(screen.getByRole('table', { name: 'Rent owed to the landlord' }))
+        .getAllByRole('row', { name: /Rajesh Kumar Sharma/ })[0]
+      expect(landlord).toHaveTextContent('Paid · 9 Oct 2026')
+      expect(landlord).toHaveTextContent('Settled')
     })
 
     it('offers the balance as the next tranche and refuses more than is owed', async () => {
