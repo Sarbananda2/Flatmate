@@ -362,7 +362,7 @@ function CyclePanel({
 }) {
   return (
     <Panel
-      title="Equal Split & Internal Collection"
+      title="Resident Collection"
       icon={<Users className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint="What each resident owes for this month's rent, and how much of it has reached the pool."
     >
@@ -655,9 +655,9 @@ function LandlordPanel({
     .join(' · ')
   return (
     <Panel
-      title="Landlord & Disbursement"
+      title="Landlord Payout"
       icon={<Building2 className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="How much of this month's rent has reached the landlord. Select the row for each payment made."
+      hint="What is owed to the landlord, and payouts made to them. Select the row for each payment made."
     >
       {/* Laid out as the collection table above, so the two read column for
           column: what was due, what has been paid, what is still owed. */}

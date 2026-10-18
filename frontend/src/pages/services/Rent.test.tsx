@@ -210,6 +210,9 @@ describe('RentMonth', () => {
     // The period bar names the month, so the title does not repeat it; and the
     // month's state is read from the tables, with no pills above them.
     expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent(/^Rent$/)
+    // The month's two steps, each in its own section.
+    expect(screen.getByRole('heading', { level: 2, name: 'Resident Collection' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Landlord Payout' })).toBeInTheDocument()
     expect(
       screen.queryByText(/Payout Pending|Disbursed to Landlord|Partially Disbursed|^Term:/),
     ).not.toBeInTheDocument()
