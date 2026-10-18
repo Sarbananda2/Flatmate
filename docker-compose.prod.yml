@@ -1,0 +1,73 @@
+# The production stack: PostgreSQL, the app, and Caddy in front for HTTPS.
+# Every password comes from .env (see .env.production.example); the stack
+# refuses to start without them rather than fall back to a default.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      # The bootstrap administrator: a superuser, used only to create the roles
+      # and the database on first start (deploy/postgres-init/).
+      POSTGRES_USER: ${AEM_PG_ADMIN_USER:-aem_admin}
+      POSTGRES_PASSWORD: ${AEM_PG_ADMIN_PASSWORD:?Set AEM_PG_ADMIN_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      AEM_DB_NAME: ${AEM_DB_NAME:-aem}
+      AEM_DB_MIGRATION_USER: ${AEM_DB_MIGRATION_USER:-aem_owner}
+      AEM_DB_MIGRATION_PASSWORD: ${AEM_DB_MIGRATION_PASSWORD:?Set AEM_DB_MIGRATION_PASSWORD in .env}
+      AEM_DB_USER: ${AEM_DB_USER:-aem}
+      AEM_DB_PASSWORD: ${AEM_DB_PASSWORD:?Set AEM_DB_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
+      - ./scripts/sql/trigger_guard.sql:/aem/trigger_guard.sql:ro
+    healthcheck:
+      # Over TCP, so it passes only once first-start setup has finished: the
+      # setup runs against a server that listens on a local socket alone.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$AEM_DB_USER\" -d \"$$AEM_DB_NAME\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      AEM_DB_HOST: db
+      AEM_DB_PORT: 5432
+      AEM_DB_NAME: ${AEM_DB_NAME:-aem}
+      # Requests are served as the runtime role, which owns nothing; the
+      # migration role is used only by 'manage.py init' when the container starts.
+      AEM_DB_USER: ${AEM_DB_USER:-aem}
+      AEM_DB_PASSWORD: ${AEM_DB_PASSWORD:?Set AEM_DB_PASSWORD in .env}
+      AEM_DB_MIGRATION_USER: ${AEM_DB_MIGRATION_USER:-aem_owner}
+      AEM_DB_MIGRATION_PASSWORD: ${AEM_DB_MIGRATION_PASSWORD:?Set AEM_DB_MIGRATION_PASSWORD in .env}
+      # Caddy terminates HTTPS and forwards plain HTTP, so the app cannot see
+      # that the browser used HTTPS: mark the session cookie Secure regardless.
+      AEM_SECURE_COOKIES: "1"
+    expose:
+      - "8787"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
