@@ -341,6 +341,27 @@ Append-only, enforced by triggers. One row per field changed.
 
 Operator settings, such as the default apartment.
 
+### `app_user`
+
+A person who signs in. The first to sign up is the `household_admin`, who manages
+the apartment and is named as the actor in the audit log.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `user_id` | TEXT PK | |
+| `email` | TEXT UNIQUE | Stored trimmed and in lower case (`CHECK`) |
+| `full_name` | TEXT | |
+| `password_hash` | TEXT | `scrypt$N$r$p$salt$hash`; never returned by the API |
+| `role` | TEXT | `household_admin`, `resident` or `auditor` |
+| `is_active` | BOOLEAN | A deactivated user can neither log in nor use a session |
+| `created_at`, `updated_at` | TEXT | |
+
+### `user_session`
+
+One signed-in browser or script. `session_id` is the SHA-256 of the token in the
+`aem_session` cookie, never the token itself. Sessions last 30 days and are
+renewed while in use; expired ones are removed at the next login.
+
 ### `schema_migration`
 
 | Column | Notes |
@@ -413,6 +434,7 @@ The API maps each marker to an HTTP 409 with the matching error code.
 | 0015 | `apartment` pool account; deposit payees | The household pool's `pool_name`, `pool_bank_account`, `pool_bank_ifsc` and `pool_upi_id`; `household_deposit_slot.paid_to_party` and `household_deposit_transaction.counterparty_party` (`resident`, `landlord` or `pool`) |
 | 0016 | `rent_lease_config.payout_beneficiary_name`; `household_contact.beneficiary_name` | Whose name the landlord's payout account is in, when it is not the landlord's own |
 | 0017 | `household_contact` and `rent_lease_config` name parts | `first_name`, `middle_name`, `last_name` on a contact and `landlord_first_name`, `landlord_middle_name`, `landlord_last_name` on the lease, filled in from the names already on file |
+| 0019 | `app_user`, `user_session`; `apartment.admin_user_id`, `resident.user_id` | Platform users and their sessions. The first to sign up is the household admin, put in charge of the apartment; a resident seat can later be linked to a user of its own |
 | 0018 | `apartment.pool_account_holder` | The legal name on the bank account or UPI ID that holds the House Kitty. `pool_name` became the fixed `House Kitty` (also its default); a pool name changed from the defaults was kept as the account holder |
 
 Versions 0001 to 0006 are the SQLite history. The PostgreSQL schema starts from a single `0001_baseline.sql` that carries all six, so its migration files are `0001` and then `0007` onward: the numbering continues the history above rather than restarting.

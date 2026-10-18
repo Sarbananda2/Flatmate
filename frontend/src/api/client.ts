@@ -29,6 +29,13 @@ export class ApiError extends Error {
 
 export type Query = Record<string, string | number | boolean | null | undefined>
 
+/**
+ * Sent on `window` when the API turns a request away for want of a signed-in
+ * user, so the app can go back to the login page. The sign-in routes
+ * themselves are left out: a wrong password is not a lapsed session.
+ */
+export const UNAUTHORIZED_EVENT = 'aem:unauthorized'
+
 function buildUrl(path: string, query?: Query): string {
   const url = new URL(path, window.location.origin)
   if (query) {
@@ -84,6 +91,9 @@ async function request<T>(method: string, path: string, options: {
   }
 
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith('/api/auth/')) {
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+    }
     const envelope = parsed as { error?: ApiErrorBody } | null
     throw new ApiError(
       response.status,

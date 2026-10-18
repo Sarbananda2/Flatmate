@@ -82,7 +82,7 @@ export function TextField({
   error?: string | null
   required?: boolean
   placeholder?: string
-  type?: 'text' | 'search' | 'email' | 'tel' | 'date' | 'month'
+  type?: 'text' | 'search' | 'email' | 'tel' | 'date' | 'month' | 'password'
   maxLength?: number
   disabled?: boolean
   autoComplete?: string

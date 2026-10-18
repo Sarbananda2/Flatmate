@@ -1,6 +1,7 @@
 """API routers, one module per screen area."""
 from . import (  # noqa: F401
     audit,
+    auth,
     clearance,
     dashboard,
     definitions,
@@ -24,6 +25,7 @@ from . import (  # noqa: F401
 
 ALL_ROUTERS = [
     health.router,
+    auth.router,
     setup.router,
     dashboard.router,
     residents.router,
@@ -44,3 +46,7 @@ ALL_ROUTERS = [
     audit.router,
     reports.router,
 ]
+
+# Reachable without signing in: liveness, and the routes that sign someone in.
+# Every other router answers only a signed-in user.
+PUBLIC_ROUTERS = [health.router, auth.router]

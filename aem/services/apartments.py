@@ -102,6 +102,10 @@ def create_apartment(db: Database, *, apartment_id: str, name: str,
                                 **{field: value for field, value in parts.items() if value}})
         if _get_setting(uow, DEFAULT_APARTMENT_SETTING) is None:
             _set_setting(uow, DEFAULT_APARTMENT_SETTING, apartment_id)
+        # Managed by the household admin, once someone has signed up as one.
+        admin_user_id = uow.auth.household_admin_id()
+        if admin_user_id:
+            uow.auth.link_apartment_admin(apartment_id, admin_user_id)
         return _present(get_apartment(uow, apartment_id))
 
 

@@ -10,6 +10,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import { flushSync } from 'react-dom'
@@ -19,6 +20,7 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  LogOut,
   Moon,
   Plus,
   Settings,
@@ -29,7 +31,9 @@ import { useResource } from '../lib/useApi'
 import { currentMonth, formatMonth, shiftMonth } from '../lib/format'
 import type { Apartment, Health, SetupState } from '../api/types'
 import { ExpenseFormDialog } from '../pages/ExpenseForm'
+import { useOptionalAuth } from '../context/AuthContext'
 import { useToast } from './Toast'
+import { Avatar, Pill } from './ui'
 
 type Section =
   | 'hub'
@@ -77,7 +81,7 @@ function sectionFor(pathname: string): Section {
   return match ? match[1] : 'hub'
 }
 
-interface AppContextValue {
+export interface AppContextValue {
   month: string
   setMonth: (month: string) => void
   availableMonths: string[]
@@ -87,7 +91,8 @@ interface AppContextValue {
   reloadApartment: () => void
 }
 
-const AppContext = createContext<AppContextValue | null>(null)
+/** Exported so a test can render one page with the context the Layout gives it. */
+export const AppContext = createContext<AppContextValue | null>(null)
 
 /**
  * The apartment as the ribbon shows it: "1805, CG6 · Supertech Capetown" once
@@ -134,6 +139,37 @@ function readStoredTheme(): Theme {
 const ICON_BUTTON =
   'relative p-2 rounded-xl text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] transition-colors cursor-pointer active:scale-95'
 
+/** The signed-in user in the ribbon: initials, name, role, and the way out. */
+function SignedInUser() {
+  const auth = useOptionalAuth()
+  const [leaving, setLeaving] = useState(false)
+  if (!auth?.user) return null
+  const { user, logout } = auth
+  return (
+    <div className="flex items-center gap-2 min-w-0 mr-1" role="group" aria-label="Signed in">
+      <Avatar name={user.full_name} size="sm" tone="accent" />
+      <span className="sr-only sm:not-sr-only text-xs font-semibold text-[var(--text-primary)] truncate max-w-[160px]">
+        {user.full_name}
+      </span>
+      {user.role === 'household_admin' && <Pill tone="accent">Admin</Pill>}
+      <button
+        type="button"
+        className={clsx(ICON_BUTTON, 'flex items-center gap-1.5 text-xs font-semibold')}
+        title="Log out"
+        aria-label="Log out"
+        disabled={leaving}
+        onClick={() => {
+          setLeaving(true)
+          void logout().finally(() => setLeaving(false))
+        }}
+      >
+        <LogOut className="w-4 h-4 shrink-0" aria-hidden="true" />
+        <span className="hidden xl:inline">Log out</span>
+      </button>
+    </div>
+  )
+}
+
 export function Layout({ children }: { children: ReactNode }) {
   const location = useLocation()
   const navigate = useNavigate()
@@ -148,7 +184,25 @@ export function Layout({ children }: { children: ReactNode }) {
   const apartments = useResource<{ items: Apartment[]; default_apartment_id: string | null }>(
     '/api/apartments',
   )
-  const setup = useResource<SetupState>('/api/setup/state')
+  // Asked for the apartment the shell shows, once the list says which that is;
+  // a change of apartment fetches it again.
+  const preferredApartmentId = apartments.data?.default_apartment_id ?? null
+  const setup = useResource<SetupState>(
+    apartments.initialLoading ? null : '/api/setup/state',
+    preferredApartmentId ? { apartment_id: preferredApartmentId } : undefined,
+  )
+
+  // The Layout outlives every page, so what it fetched before the guided setup
+  // is stale once the operator leaves it: fetch both again on the way out.
+  const previousPath = useRef(location.pathname)
+  useEffect(() => {
+    const leftWizard = previousPath.current === '/welcome' && location.pathname !== '/welcome'
+    previousPath.current = location.pathname
+    if (leftWizard) {
+      setup.reload()
+      apartments.reload()
+    }
+  }, [location.pathname, setup.reload, apartments.reload])
 
   const setMonth = (next: string) => {
     if (!/^\d{4}-\d{2}$/.test(next)) return
@@ -202,8 +256,9 @@ export function Layout({ children }: { children: ReactNode }) {
     if (needsFirstRun && !onWizard) navigate('/welcome', { replace: true })
   }, [needsFirstRun, onWizard, navigate])
 
+  // Not while it is being fetched again: the state it holds may be the stale one.
   const setupIncomplete = Boolean(
-    setup.data && !setup.data.is_complete && setup.data.next_step !== 'apartment',
+    setup.data && !setup.loading && !setup.data.is_complete && setup.data.next_step !== 'apartment',
   )
 
   const degraded = Boolean(health.data && health.data.status !== 'ok')
@@ -349,8 +404,9 @@ export function Layout({ children }: { children: ReactNode }) {
             </nav>
           )}
 
-          {/* RIGHT: theme toggle, then settings as the right-most element */}
+          {/* RIGHT: who is signed in, the theme toggle, then settings as the right-most element */}
           <div className="flex items-center gap-1.5 shrink-0 md:col-start-3 md:justify-self-end">
+            <SignedInUser />
             <button
               type="button"
               onClick={toggleTheme}

@@ -4,21 +4,36 @@ from __future__ import annotations
 import csv
 import io
 import logging
+from dataclasses import replace
 from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from ..config import Settings
-from ..errors import AemError, NotFoundError
+from ..errors import AemError, AuthenticationError, NotFoundError
 from ..persistence import Database
-from ..services import apartments
+from ..services import apartments, auth
 
 logger = logging.getLogger("aem.api")
 
 
+SESSION_COOKIE = "aem_session"
+
+
 def get_settings(request: Request) -> Settings:
-    return request.app.state.settings
+    """The settings, as they apply to this request.
+
+    On a route that needs a signed-in user, ``operator_name`` -- the actor every
+    route records in the audit log -- is that user's name. Such routes resolve
+    :func:`current_user` before anything else (it is a dependency of their
+    router), so it is known by the time this runs.
+    """
+    settings: Settings = request.app.state.settings
+    user = getattr(request.state, "user", None)
+    if user is not None:
+        return replace(settings, operator_name=user["full_name"])
+    return settings
 
 
 def get_database(request: Request) -> Database:
@@ -30,6 +45,31 @@ def get_database(request: Request) -> Database:
 
 Db = Annotated[Database, Depends(get_database)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
+
+
+def session_token(request: Request) -> str | None:
+    """The session token sent with the request: the browser's cookie, or an
+    ``Authorization: Bearer`` header for scripts."""
+    header = request.headers.get("authorization", "")
+    scheme, _, credentials = header.partition(" ")
+    if scheme.lower() == "bearer" and credentials.strip():
+        return credentials.strip()
+    return request.cookies.get(SESSION_COOKIE) or None
+
+
+def current_user(request: Request, db: Db) -> dict[str, Any]:
+    """The signed-in user, or a 401. Every private route depends on this."""
+    cached = getattr(request.state, "user", None)
+    if cached is not None:
+        return cached
+    user = auth.validate_session(db, session_token(request))
+    if user is None:
+        raise to_http(AuthenticationError("Log in to continue."))
+    request.state.user = user
+    return user
+
+
+CurrentUser = Annotated[dict[str, Any], Depends(current_user)]
 
 
 def resolve_apartment_id(

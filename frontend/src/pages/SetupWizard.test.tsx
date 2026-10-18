@@ -7,11 +7,12 @@
  * stubbed `/api/setup/state`, and one of them wipes localStorage first.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { MemoryRouter } from 'react-router-dom'
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import SetupWizardPage from './SetupWizard'
 import { ToastProvider } from '../components/Toast'
+import { AppContext, Layout, type AppContextValue } from '../components/Layout'
 import { installFetchStub, type Recorded } from '../test/server'
 import type { SetupStepKey } from '../api/types'
 
@@ -122,9 +123,25 @@ function state(next: SetupStepKey, overrides: Record<string, unknown> = {}) {
 }
 
 let stub: { calls: Recorded[]; restore: () => void } | null = null
+/** How often the wizard asked the shell to fetch the apartment and setup again. */
+let shellReloads = 0
+
+/** What the Layout would give the page; only the reload is looked at. */
+const appContext = (): AppContextValue => ({
+  month: '2026-10',
+  setMonth: () => {},
+  availableMonths: [],
+  apartment: null,
+  health: null,
+  setup: null,
+  reloadApartment: () => {
+    shellReloads += 1
+  },
+})
 
 beforeEach(() => {
   window.localStorage.clear()
+  shellReloads = 0
 })
 
 afterEach(() => {
@@ -148,7 +165,9 @@ function renderAt(next: SetupStepKey, extraRoutes: Record<string, unknown> = {})
   return render(
     <MemoryRouter initialEntries={['/welcome']}>
       <ToastProvider>
-        <SetupWizardPage />
+        <AppContext.Provider value={appContext()}>
+          <SetupWizardPage />
+        </AppContext.Provider>
       </ToastProvider>
     </MemoryRouter>,
   )
@@ -402,6 +421,18 @@ describe('SetupWizardPage', () => {
     expect(screen.getByRole('link', { name: 'Go to the dashboard' })).toBeInTheDocument()
   })
 
+  it('has the shell fetch the setup state again once setup is finished', async () => {
+    renderAt('finish')
+    await userEvent.click(await screen.findByRole('button', { name: 'Finish setup' }))
+    await waitFor(() => expect(shellReloads).toBe(1))
+  })
+
+  it('has the shell fetch the setup state again on the way to the dashboard', async () => {
+    renderAt('done')
+    await userEvent.click(await screen.findByRole('link', { name: 'Go to the dashboard' }))
+    expect(shellReloads).toBe(1)
+  })
+
   // ------------------------------------------------------------ going back --
 
   describe('going back', () => {
@@ -604,3 +635,70 @@ describe('SetupWizardPage', () => {
   })
 })
 
+/* ------------------------------------------------- the shell after setup -- */
+
+describe('the setup banner after leaving the guided setup', () => {
+  const BANNER = /Setup is half finished/
+
+  /** The app's own shell around the wizard and a stand-in dashboard. */
+  function renderShell(serverState: () => unknown, welcome: JSX.Element) {
+    stub = installFetchStub({
+      routes: {
+        '/health': { status: 'ok', schema_version: 16 },
+        '/api/apartments': { items: [LAKEVIEW], default_apartment_id: 'flat-402' },
+        '/api/setup/state': () => serverState(),
+        '/api/setup/catalogue': CATALOGUE,
+        'POST /api/setup/finish': { statement_id: null, is_complete: true },
+      } as never,
+    })
+    render(
+      <MemoryRouter initialEntries={['/welcome']}>
+        <ToastProvider>
+          <Layout>
+            <Routes>
+              <Route path="/welcome" element={welcome} />
+              <Route path="/" element={<p>Dashboard</p>} />
+            </Routes>
+          </Layout>
+        </ToastProvider>
+      </MemoryRouter>,
+    )
+  }
+  const setupFetches = () =>
+    stub!.calls.filter((call) => call.method === 'GET' && call.path === '/api/setup/state').length
+
+  it('is not left behind when setup finished while the shell held an older state', async () => {
+    let current: SetupStepKey = 'residents'
+    renderShell(
+      () => state(current),
+      <Link to="/">Leave setup</Link>,
+    )
+    await waitFor(() => expect(setupFetches()).toBe(1))
+    // Setup is completed elsewhere; the shell still holds "residents".
+    current = 'done'
+    await userEvent.click(screen.getByRole('link', { name: 'Leave setup' }))
+    expect(await screen.findByText('Dashboard')).toBeInTheDocument()
+    expect(screen.queryByText(BANNER)).toBeNull()
+    await waitFor(() => expect(setupFetches()).toBe(2))
+    expect(screen.queryByText(BANNER)).toBeNull()
+  })
+
+  it('still shows when setup really is unfinished', async () => {
+    renderShell(() => state('residents'), <Link to="/">Leave setup</Link>)
+    await waitFor(() => expect(setupFetches()).toBe(1))
+    await userEvent.click(screen.getByRole('link', { name: 'Leave setup' }))
+    const banner = (await screen.findByText(BANNER)).closest('[role="status"]')
+    expect(banner).toHaveTextContent('Next: who lives here.')
+  })
+
+  it('does not follow the operator from Finish setup to the dashboard', async () => {
+    let current: SetupStepKey = 'finish'
+    renderShell(() => state(current), <SetupWizardPage />)
+    const finish = await screen.findByRole('button', { name: 'Finish setup' })
+    current = 'done'
+    await userEvent.click(finish)
+    expect(await screen.findByText('Dashboard')).toBeInTheDocument()
+    expect(screen.queryByText(BANNER)).toBeNull()
+    await waitFor(() => expect(screen.queryByText(BANNER)).toBeNull())
+  })
+})

@@ -1478,3 +1478,18 @@ export interface DocumentList {
   total_bytes: number
   categories_on_file: DocumentCategory[]
 }
+
+/** A platform user: the household admin, for now the only kind that signs up. */
+export interface AuthUser {
+  user_id: string
+  email: string
+  full_name: string
+  role: 'household_admin' | 'resident' | 'auditor'
+}
+
+export interface AuthStatus {
+  /** Nobody has signed up yet: the first to do so becomes the household admin. */
+  setup_required: boolean
+  authenticated: boolean
+  user: AuthUser | null
+}

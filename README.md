@@ -349,10 +349,14 @@ never overwrite one. Full procedure: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 
 ## Security
 
-This is a **single-operator, local-first** application with **no
-authentication**, and none is implied. Anyone who can reach the HTTP port can
-read and change the household's accounts. The defaults keep that to your own
-machine:
+Every page and API route needs a signed-in user. The first person to open a
+new installation creates the **household admin** account; after that the app
+asks for a login. Passwords are hashed with scrypt, and the session is an
+HTTP-only cookie (or an `Authorization: Bearer` token for scripts). Only
+`/health` and `/api/auth/*` answer without one. The audit log names the
+signed-in user as the actor.
+
+The defaults still keep the app to your own machine:
 
 - the server binds `127.0.0.1`; it warns loudly if configured otherwise;
 - CORS allows only the local Vite dev origins;
@@ -360,8 +364,10 @@ machine:
 - the frontend can only call the documented API — no endpoint accepts SQL, and
   no endpoint exposes the filesystem.
 
-Do not expose this to the internet, and do not put it behind a reverse proxy
-without adding authentication first.
+Before exposing it to a network, put HTTPS in front of it, so passwords and
+session cookies are not sent in the clear. The session cookie is marked
+`Secure` on HTTPS requests; behind a proxy that terminates TLS and does not pass
+the scheme on, set `AEM_SECURE_COOKIES=1`.
 
 ---
 
@@ -396,7 +402,8 @@ including the database password, go in `.env.local` (ignored by Git; copy
 | `AEM_TAPO_PASSWORD`           | unset                     | Read from the environment only; never stored or returned |
 | `AEM_TAPO_PLUGS`              | unset                     | `alice=192.168.1.21:Room 1 AC,bob=192.168.1.22`      |
 | `AEM_CORRECTION_WINDOW_HOURS` | `72`                      | Default correction window                            |
-| `AEM_OPERATOR_NAME`           | `operator`                | Recorded as the actor in the audit trail             |
+| `AEM_OPERATOR_NAME`           | `operator`                | No longer used by the API: every change is recorded under the signed-in user's name |
+| `AEM_SECURE_COOKIES`          | off                       | Mark the session cookie `Secure` even over plain HTTP, for a TLS-terminating proxy |
 | `AEM_CORS_ORIGINS`            | the Vite dev origins      | Comma-separated                                      |
 | `AEM_LOG_LEVEL`               | `INFO`                    | Python log level                                     |
 

@@ -32,7 +32,7 @@ from aem.services import (
 )
 
 from .conftest import APARTMENT
-from .support import DatabaseRefusal, connect
+from .support import DatabaseRefusal, connect, sign_in
 
 MONTH = "2026-11"
 LEASE = {
@@ -882,6 +882,7 @@ def api(apartment):
 
     settings = get_settings()
     with TestClient(create_app(settings, database=apartment)) as test_client:
+        sign_in(test_client)
         yield test_client
 
 
@@ -1452,6 +1453,7 @@ def test_the_rent_api_previews_and_generates_tiered_rent(configured):
     _lease(configured)
     _rooms(configured)
     with TestClient(create_app(get_settings(), database=configured)) as client:
+        sign_in(client)
         preview = client.get(f"/api/rent/cycle/{MONTH}?split_mode=room_tiered").json()["preview"]
         assert _shares(preview) == ROOM_RENTS
         assert client.get(f"/api/rent/cycle/{MONTH}?split_mode=nope").status_code == 422
@@ -1507,6 +1509,7 @@ def test_the_api_saves_part_of_the_lease(configured):
     from aem.main import create_app
     _lease(configured)
     with TestClient(create_app(get_settings(), database=configured)) as client:
+        sign_in(client)
         saved = client.post("/api/rent/config", json={"requires_landlord_receipt": True})
         assert saved.status_code == 200, saved.text
         body = saved.json()

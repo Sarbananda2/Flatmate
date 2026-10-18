@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from aem.config import get_settings
 from aem.main import create_app
+from tests.support import sign_in
 
 
 def _check(response, *expected):
@@ -32,6 +33,7 @@ def test_the_whole_household_workflow(db, tmp_path):
     settings = replace(get_settings(), auto_close_expired_statements=False)
 
     with TestClient(create_app(settings, database=db)) as client:
+        sign_in(client)
         # ---------------------------------------------------------- setup ----
         assert _check(client.get("/health"))["apartment_count"] == 0
         _check(client.post("/api/apartments",
@@ -292,6 +294,7 @@ def test_the_whole_household_workflow(db, tmp_path):
 
     # ------------------------------------------- survives a restart ----
     with TestClient(create_app(settings, database=db)) as restarted:
+        sign_in(restarted)
         assert _check(restarted.get("/health"))["apartment_count"] == 1
         again = _check(restarted.get("/api/reconciliation"))
         assert again["totals"] == expected_totals
@@ -310,6 +313,7 @@ def test_expired_correction_windows_close_at_startup(db):
 
     settings = get_settings()
     with TestClient(create_app(settings, database=db)) as client:
+        sign_in(client)
         _check(client.post("/api/apartments", json={"apartment_id": "home", "name": "Flat"}), 201)
         _check(client.post("/api/residents",
                            json={"resident_id": "alice", "display_name": "Alice"}), 201)
@@ -327,6 +331,7 @@ def test_expired_correction_windows_close_at_startup(db):
                      (past, statement["statement_id"]))
 
     with TestClient(create_app(settings, database=db)) as restarted:
+        sign_in(restarted)
         row = _check(restarted.get(f"/api/statements/{statement['statement_id']}"))
         assert row["status"] == "closed"
         assert row["closed_by"] == "startup"

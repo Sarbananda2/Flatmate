@@ -24,6 +24,7 @@ import { Badge, Callout, ErrorNotice, LoadingState } from '../components/Primiti
 import { Avatar } from '../components/ui'
 import { SelectField, TextField } from '../components/Form'
 import { useToast } from '../components/Toast'
+import { useApp } from '../components/Layout'
 import { useMutation, useResource } from '../lib/useApi'
 import {
   PERIOD_RULE_LABELS,
@@ -137,6 +138,7 @@ const STEP_ORDER: SetupStepKey[] = ['apartment', 'residents', 'categories', 'fin
 export default function SetupWizardPage() {
   const navigate = useNavigate()
   const toast = useToast()
+  const { reloadApartment } = useApp()
   const state = useResource<SetupState>('/api/setup/state')
   const catalogue = useResource<{ items: CatalogueEntry[] }>('/api/setup/catalogue')
   const [draft, setDraft] = useState<Draft>(readDraft)
@@ -321,6 +323,9 @@ export default function SetupWizardPage() {
     {
       onSuccess: () => {
         clearDraft()
+        // The shell fetched the setup state before it was finished; without
+        // this its "half finished" banner would follow the operator out.
+        reloadApartment()
         toast.success('Setup complete', 'You can change any of this later.')
         navigate('/')
       },
@@ -914,7 +919,7 @@ export default function SetupWizardPage() {
                   <Link className="btn" to="/definitions">
                     Add more categories
                   </Link>
-                  <Link className="btn btn--primary" to="/">
+                  <Link className="btn btn--primary" to="/" onClick={() => reloadApartment()}>
                     Go to the dashboard
                   </Link>
                 </div>

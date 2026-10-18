@@ -202,3 +202,23 @@ def connect(database: PostgresDatabase, *, read_only: bool = False,
         yield conn
     finally:
         conn.close()
+
+
+# ----------------------------------------------------------- signing in --
+
+# The household admin the API tests act as.
+ADMIN = {"full_name": "Asha Rao", "email": "asha@example.com",
+         "password": "correct horse battery"}
+
+
+def sign_in(client: Any) -> dict[str, Any]:
+    """Sign a test client in as :data:`ADMIN`: signing up on a database nobody
+    has signed up to yet, logging in on one that has them. The client keeps
+    the session cookie, so every later request is made as the admin."""
+    if client.get("/api/auth/status").json()["setup_required"]:
+        response = client.post("/api/auth/signup", json=ADMIN)
+    else:
+        response = client.post("/api/auth/login",
+                               json={"email": ADMIN["email"], "password": ADMIN["password"]})
+    assert response.status_code in (200, 201), response.text
+    return response.json()["user"]

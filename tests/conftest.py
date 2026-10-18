@@ -47,6 +47,17 @@ APARTMENT = "home"
 RESIDENTS = (("alice", "Alice"), ("bob", "Bob"), ("chris", "Chris"))
 
 
+@pytest.fixture(autouse=True)
+def cheap_password_hashing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hash test passwords at a far lower scrypt cost than the real one, which
+    is deliberately slow. Hashes record their own cost, so they still verify;
+    tests/test_auth.py checks the real cost on its own."""
+    from aem.services import auth
+
+    monkeypatch.setattr(auth, "SCRYPT_N", 1024)
+    auth._decoy_hash.cache_clear()
+
+
 @pytest.fixture(scope="session")
 def test_database_config() -> support.TestTarget:
     """Where the test database is, for both roles. Checked once: reachable, and
@@ -212,6 +223,7 @@ def client(db: Database):
 
     settings = get_settings()
     with TestClient(create_app(settings, database=db)) as test_client:
+        support.sign_in(test_client)
         yield test_client
 
 
@@ -223,4 +235,5 @@ def household_client(household: Database):
 
     settings = replace(get_settings(), auto_close_expired_statements=False)
     with TestClient(create_app(settings, database=household)) as test_client:
+        support.sign_in(test_client)
         yield test_client

@@ -24,7 +24,7 @@ from aem.services import (
 )
 
 from .conftest import APARTMENT
-from .support import connect
+from .support import connect, sign_in
 
 
 def _set(db, resident_id, amount_paise, as_of_date="2026-08-31", **extra):
@@ -349,6 +349,7 @@ def api(apartment):
     settings = replace(get_settings(),
                        auto_close_expired_statements=False)
     with TestClient(create_app(settings, database=apartment)) as test_client:
+        sign_in(test_client)
         yield test_client
 
 

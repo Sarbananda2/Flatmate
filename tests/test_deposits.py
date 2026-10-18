@@ -17,7 +17,7 @@ from aem.errors import ConflictError, NotFoundError, ValidationError
 from aem.services import deposits, reconciliation, rent, residents
 
 from .conftest import APARTMENT
-from .support import DatabaseRefusal, connect
+from .support import DatabaseRefusal, connect, sign_in
 
 MASTER = 15_000_000   # ₹1,50,000 held by the landlord
 SHARE = 5_000_000     # ₹50,000 a slot between three
@@ -702,6 +702,7 @@ def test_the_link_room_api(signatory):
     room = _room(signatory, "Room 3")
     slot_id = _slot(_summary(signatory), 3)["slot_id"]
     with TestClient(create_app(get_settings(), database=signatory)) as client:
+        sign_in(client)
         linked = client.post(f"/api/rent/deposits/slots/{slot_id}/link-room",
                              json={"room_id": room["room_id"]})
         assert linked.status_code == 200, linked.text

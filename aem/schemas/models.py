@@ -1006,8 +1006,44 @@ class RecurringGenerateRequest(ApiModel):
         return value
 
 
+class SignupRequest(ApiModel):
+    """The household admin's account. The password is checked, not stripped."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
+    full_name: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=254)
+    # Its minimum length is checked by the service, which says so in words.
+    password: str = Field(max_length=1024)
+
+
+class LoginRequest(ApiModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
+    email: str = Field(min_length=1, max_length=254)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+class AuthUser(BaseModel):
+    user_id: str
+    email: str
+    full_name: str
+    role: Literal["household_admin", "resident", "auditor"]
+
+
+class AuthUserResponse(BaseModel):
+    user: AuthUser
+
+
+class AuthStatusResponse(BaseModel):
+    setup_required: bool
+    authenticated: bool
+    user: AuthUser | None
+
+
 __all__ = [
-    "AdjustmentCreate", "AdjustmentReverse", "AllocationMethod", "OpeningBalanceCreate", "OpeningBalanceItem",
+    "AdjustmentCreate", "AdjustmentReverse", "AuthStatusResponse", "AuthUser",
+    "AuthUserResponse", "LoginRequest", "SignupRequest", "AllocationMethod", "OpeningBalanceCreate", "OpeningBalanceItem",
     "AllocationPreviewRequest", "ApartmentCreate", "ApartmentResponse", "ApartmentUpdate",
     "ApiModel", "PINCODE_PATTERN",
     "BillComponentInput", "CreditApplyRequest", "DATE_PATTERN", "DefinitionCreate",

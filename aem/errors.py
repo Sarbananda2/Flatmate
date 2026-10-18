@@ -37,6 +37,13 @@ class NotFoundError(AemError):
     http_status = 404
 
 
+class AuthenticationError(AemError):
+    """No signed-in user, or credentials that do not match one."""
+
+    code = "authentication_required"
+    http_status = 401
+
+
 class ConflictError(AemError):
     """The request is well-formed but conflicts with current state."""
 

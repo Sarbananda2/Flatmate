@@ -81,8 +81,9 @@ def read_settings(db: Db, settings: AppSettings) -> dict[str, Any]:
         "default_apartment_id": apartments.default_apartment_id(db),
         "server": settings.describe(),
         "security_note": (
-            "This application has no authentication and is intended to run on the "
-            "operator's own machine, bound to localhost. Do not expose it to a network."),
+            "Every page and API route needs a signed-in user. Put HTTPS in front of the "
+            "app before exposing it to a network, so passwords and session cookies are "
+            "not sent in the clear."),
     }
 
 

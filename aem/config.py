@@ -154,6 +154,10 @@ class Settings:
     auto_close_interval_minutes: int = 60
     default_correction_window_hours: int = 72
     operator_name: str = "operator"
+    # Mark the session cookie Secure even when the request reaches the app over
+    # plain HTTP, as it does behind a TLS-terminating proxy that does not pass
+    # the original scheme on. Over HTTPS it is marked Secure regardless.
+    secure_cookies: bool = False
     log_level: str = "INFO"
     log_sql: bool = False
     tapo_username: str | None = None
@@ -247,6 +251,7 @@ def get_settings(*, project_root: Path | None = None) -> Settings:
         auto_close_expired_statements=_env_bool("AUTO_CLOSE_EXPIRED", True),
         default_correction_window_hours=_env_int("CORRECTION_WINDOW_HOURS", 72),
         operator_name=_env("OPERATOR_NAME", "operator") or "operator",
+        secure_cookies=_env_bool("SECURE_COOKIES", False),
         log_level=(_env("LOG_LEVEL", "INFO") or "INFO").upper(),
         log_sql=_env_bool("LOG_SQL", False),
         auto_close_interval_minutes=max(0, _env_int("AUTO_CLOSE_INTERVAL_MINUTES", 60)),

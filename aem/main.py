@@ -37,7 +37,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -67,8 +67,10 @@ twice: the household incurred a cost; each resident owes a share of it; somebody
 funded it. A payment -- into the pool, to a provider, or between residents -- is
 never a household expense.
 
-**Security.** There is no authentication. This app is meant to run on the
-operator's own machine, bound to localhost. Do not expose it to a network.
+**Security.** Every route except `/health` and `/api/auth/*` needs a signed-in
+user: the session cookie set by `/api/auth/login` (or `/api/auth/signup`, which
+creates the household admin), or `Authorization: Bearer <token>`. The audit log
+records that user as the actor.
 """
 
 
@@ -138,9 +140,9 @@ async def lifespan(app: FastAPI):
 
     if not settings.describe()["binds_loopback_only"]:
         logger.warning(
-            "The server is configured to bind %s, which is not loopback. This "
-            "application has no authentication; anyone who can reach this port can "
-            "read and change the household's accounts.", settings.host)
+            "The server is configured to bind %s, which is not loopback. Every route "
+            "needs a signed-in user, but passwords and session cookies cross the "
+            "network in the clear unless HTTPS is in front of it.", settings.host)
 
     closer: asyncio.Task[None] | None = None
     if (settings.auto_close_expired_statements and schema_current
@@ -186,6 +188,7 @@ def create_app(settings: Settings | None = None,
         lifespan=lifespan,
         openapi_tags=[
             {"name": "health", "description": "Liveness and database status."},
+            {"name": "auth", "description": "The household admin's account and sessions."},
             {"name": "setup", "description": "Apartments and operator settings."},
             {"name": "dashboard", "description": "Current balances and month totals."},
             {"name": "residents", "description": "Residents and their financial history."},
@@ -255,10 +258,13 @@ def create_app(settings: Settings | None = None,
                      exc.message, exc.details.get("detail", ""))
         return _error_response(exc.http_status, exc.code, exc.message, exc.details)
 
-    from .api.routers import ALL_ROUTERS
+    from .api.deps import current_user
+    from .api.routers import ALL_ROUTERS, PUBLIC_ROUTERS
 
     for router in ALL_ROUTERS:
-        app.include_router(router)
+        app.include_router(
+            router,
+            dependencies=[] if router in PUBLIC_ROUTERS else [Depends(current_user)])
 
     # The built frontend, when it exists. Unknown non-API paths fall through to
     # index.html so the client-side router can handle them; nothing outside this
