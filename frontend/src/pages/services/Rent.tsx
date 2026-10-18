@@ -165,9 +165,10 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                     overview.reload()
                   }}
                 />
-                <MasterTenancyCard config={config} />
                 <Metrics config={config} cycle={cycle} preview={preview} month={month} />
                 {cycle && <RentCashFlowTracker cycle={cycle} />}
+                {/* The month's two steps, in order: collect from residents, then
+                    pay the landlord. */}
                 {cycle ? (
                   <CyclePanel
                     cycle={cycle}
@@ -193,18 +194,20 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                     />
                   )
                 )}
+                <LandlordPanel
+                  config={config}
+                  cycle={cycle}
+                  month={month}
+                  onAttach={() => setDialog('attach')}
+                />
+                {/* The contract the rent is charged under, for reference. */}
+                <MasterTenancyCard config={config} />
                 <RentAgreementCard
                   config={config}
                   cycle={cycle}
                   preview={preview}
                   month={month}
                   onSaved={overview.reload}
-                />
-                <LandlordPanel
-                  config={config}
-                  cycle={cycle}
-                  month={month}
-                  onAttach={() => setDialog('attach')}
                 />
                 <DepositOverview config={config} />
               </>
