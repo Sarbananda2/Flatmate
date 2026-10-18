@@ -17,9 +17,7 @@ import {
   Check,
   Clock,
   Download,
-  FileText,
   Plus,
-  Printer,
   Settings,
   ShieldCheck,
   Upload,
@@ -56,7 +54,6 @@ import type {
   RentMonthOverview,
   RentParticipant,
   RentPreview,
-  RentReceipt,
   Resident,
 } from '../../api/types'
 
@@ -86,7 +83,6 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
     exclude: excluded.join(',') || undefined,
   })
   const [dialog, setDialog] = useState<'payout' | 'attach' | null>(null)
-  const [receiptFor, setReceiptFor] = useState<RentParticipant | null>(null)
   const [payingFor, setPayingFor] = useState<RentParticipant | null>(null)
 
   const generate = useMutation(
@@ -113,7 +109,8 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
     <AsyncSection resource={overview} loadingLabel="Loading rent…">
       {(data) => {
         const { config, cycle, preview } = data
-        const pending = cycle?.disbursement_status === 'pending'
+        // Open until the landlord has been paid in full: the rent can go in tranches.
+        const owingLandlord = cycle != null && cycle.disbursement_status !== 'disbursed'
         return (
           <Page
             title={`Rent · ${formatMonth(month)}`}
@@ -129,7 +126,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                 {cycle && <LandlordReceiptPill status={cycle.landlord_receipt_status} />}
               </div>
               <div className="flex flex-wrap items-center gap-2 ml-auto">
-                {pending && (
+                {owingLandlord && (
                   <button
                     type="button"
                     className={BUTTON_PRIMARY}
@@ -174,7 +171,6 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   <CyclePanel
                     cycle={cycle}
                     config={config}
-                    onReceipt={setReceiptFor}
                     onPay={setPayingFor}
                   />
                 ) : (
@@ -224,9 +220,11 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   toast.success(
                     'Landlord payout recorded',
                     updated.warnings?.[0] ??
-                      (updated.landlord_receipt_status === 'pending'
-                        ? 'HRA receipts are available. Attach the landlord’s receipt when it arrives.'
-                        : 'HRA receipts are now available for each resident.'),
+                      (updated.disbursement_status === 'partially_disbursed'
+                        ? `${formatInr(updated.remaining_disbursement_paise)} is still owed to the landlord.`
+                        : updated.landlord_receipt_status === 'pending'
+                          ? 'Attach the landlord’s receipt when it arrives.'
+                          : undefined),
                   )
                   overview.reload()
                 }}
@@ -275,13 +273,6 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                 }}
               />
             )}
-            {receiptFor && (
-              <ReceiptModal
-                month={month}
-                participant={receiptFor}
-                onClose={() => setReceiptFor(null)}
-              />
-            )}
           </Page>
         )
       }}
@@ -325,14 +316,27 @@ function DisbursementPill({ cycle, configured }: { cycle: RentCycle | null; conf
     return (
       <Pill tone="success">
         <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-        Disbursed
+        Disbursed to Landlord
+      </Pill>
+    )
+  }
+  if (cycle.disbursement_status === 'partially_disbursed') {
+    return (
+      <Pill tone="accent">
+        <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
+        <span>
+          Partially Disbursed ·{' '}
+          <span className="tabular">
+            {formatInr(cycle.disbursed_paise)} of {formatInr(cycle.total_rent_paise)}
+          </span>
+        </span>
       </Pill>
     )
   }
   return (
     <Pill tone="warning">
       <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
-      Disbursement Pending
+      Payout Pending
     </Pill>
   )
 }
@@ -411,7 +415,9 @@ function Metrics({
         note={
           cycle?.disbursement_status === 'disbursed'
             ? `Paid ${formatDate(cycle.disbursed_at)}`
-            : config.landlord_name
+            : cycle?.disbursement_status === 'partially_disbursed'
+              ? `${formatInr(cycle.remaining_disbursement_paise)} still to pay`
+              : config.landlord_name
         }
       />
     </div>
@@ -456,18 +462,56 @@ function SplitRule({
   )
 }
 
+function ProgressLine({
+  label,
+  detail,
+  ariaLabel,
+  value,
+  max,
+  width,
+  barClass,
+}: {
+  label: string
+  detail: string
+  ariaLabel: string
+  value: number
+  max: number
+  width: string
+  barClass: string
+}) {
+  return (
+    <div className="space-y-1.5 min-w-0">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 text-[11px] font-medium text-[var(--text-secondary)]">
+        <span>{label}</span>
+        <span className="tabular">{detail}</span>
+      </div>
+      <div
+        className="h-2 rounded-full bg-[var(--bg-elevated)] overflow-hidden"
+        role="progressbar"
+        aria-label={ariaLabel}
+        aria-valuemin={0}
+        aria-valuemax={max}
+        aria-valuenow={value}
+        aria-valuetext={detail}
+      >
+        <div className={`h-full rounded-full transition-all ${barClass}`} style={{ width }} />
+      </div>
+    </div>
+  )
+}
+
 function CyclePanel({
   cycle,
   config,
-  onReceipt,
   onPay,
 }: {
   cycle: RentCycle
   config: RentLeaseConfig
-  onReceipt: (participant: RentParticipant) => void
   onPay: (participant: RentParticipant) => void
 }) {
   const share = percent(cycle.collected_paise, cycle.total_rent_paise)
+  const paidOut = percent(cycle.disbursed_paise, cycle.total_rent_paise)
+  const tranches = cycle.disbursements.length
   return (
     <Panel
       title="Equal Split & Internal Collection"
@@ -505,25 +549,28 @@ function CyclePanel({
         </p>
       )}
 
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between text-[11px] font-medium text-[var(--text-secondary)]">
-          <span>Internal collection</span>
-          <span className="tabular">{share} collected</span>
-        </div>
-        <div
-          className="h-2 rounded-full bg-[var(--bg-elevated)] overflow-hidden"
-          role="progressbar"
-          aria-label="Rent collected from residents"
-          aria-valuemin={0}
-          aria-valuemax={cycle.total_rent_paise}
-          aria-valuenow={cycle.collected_paise}
-          aria-valuetext={`${share} collected`}
-        >
-          <div
-            className="h-full rounded-full bg-[var(--success)] transition-all"
-            style={{ width: share }}
-          />
-        </div>
+      {/* Two separate facts: what residents have paid the pool, and what has
+          gone to the landlord. The landlord can be paid before everyone has
+          paid in, and in tranches. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
+        <ProgressLine
+          label="Internal collection"
+          detail={`${formatInr(cycle.collected_paise)} of ${formatInr(cycle.total_rent_paise)} collected (${share}) · ${cycle.collected_count}/${cycle.participant_count} paid`}
+          ariaLabel="Rent collected from residents"
+          value={cycle.collected_paise}
+          max={cycle.total_rent_paise}
+          width={share}
+          barClass="bg-[var(--success)]"
+        />
+        <ProgressLine
+          label="Landlord disbursement"
+          detail={`${formatInr(cycle.disbursed_paise)} of ${formatInr(cycle.total_rent_paise)} disbursed (${paidOut}) · ${tranches} ${tranches === 1 ? 'tranche' : 'tranches'}`}
+          ariaLabel="Rent paid to the landlord"
+          value={cycle.disbursed_paise}
+          max={cycle.total_rent_paise}
+          width={paidOut}
+          barClass="bg-[var(--accent)]"
+        />
       </div>
 
       <div className="overflow-x-auto min-w-0">
@@ -603,26 +650,10 @@ function CyclePanel({
                           Record Payment
                         </button>
                       )}
-                      {participant.receipt_available ? (
-                        <button
-                          type="button"
-                          className={BUTTON_QUIET}
-                          onClick={() => onReceipt(participant)}
-                          aria-label={`View HRA receipt for ${participant.display_name}`}
-                        >
-                          <FileText className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                          View HRA Slip
-                        </button>
-                      ) : (
-                        // Only worth saying to someone who has paid and is
-                        // waiting on the landlord, and only when the lease
-                        // tracks the landlord's receipts.
-                        config.requires_landlord_receipt &&
-                        settled && (
-                          <span className="text-[11px] text-[var(--text-tertiary)]">
-                            HRA slip after payout
-                          </span>
-                        )
+                      {settled && (
+                        <span className="text-[11px] text-[var(--text-tertiary)]">
+                          Settled
+                        </span>
                       )}
                     </span>
                   </td>
@@ -803,7 +834,8 @@ function LandlordPanel({
   onAttach: () => void
 }) {
   const none = <span className="font-normal text-[var(--text-tertiary)]">Not on file</span>
-  const disbursed = cycle?.disbursement_status === 'disbursed'
+  const tranches = cycle?.disbursements ?? []
+  const advanced = tranches.some((tranche) => tranche.disbursed_by === 'resident_advance')
   const bank = [
     config.landlord_bank_ifsc,
     config.landlord_bank_account && maskAccount(config.landlord_bank_account),
@@ -838,18 +870,64 @@ function LandlordPanel({
         <Detail label="Disbursement">
           {!cycle
             ? 'Rent not generated'
-            : !disbursed
+            : cycle.disbursement_status === 'pending'
               ? 'Pending'
-              : cycle.disbursed_by === 'pool'
-                ? `From the pool · ${formatDate(cycle.disbursed_at)}`
-                : `Paid by ${cycle.funding_resident_name} · ${formatDate(cycle.disbursed_at)}`}
+              : cycle.disbursement_status === 'partially_disbursed'
+                ? `Part paid · ${formatInr(cycle.disbursed_paise)} of ${formatInr(cycle.total_rent_paise)}`
+                : `Paid in full · ${formatDate(cycle.disbursed_at)}`}
         </Detail>
-        {disbursed && cycle && (
-          <Detail label="Bank reference / UTR">
-            <span className="tabular">{cycle.disbursement_reference}</span>
-          </Detail>
-        )}
       </dl>
+      {cycle && tranches.length > 0 && (
+        <div className="overflow-x-auto min-w-0">
+          <table className="w-full text-left text-xs min-w-[640px] border-collapse">
+            <caption className="sr-only">Payments to the landlord</caption>
+            <thead>
+              <tr className={TABLE_HEAD}>
+                <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
+                <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
+                <th scope="col" className="pb-3 pr-3 font-bold text-center">Funded From</th>
+                <th scope="col" className="pb-3 pr-3 font-bold text-center">Reference / UTR</th>
+                <th scope="col" className="pb-3 pr-3 font-bold text-center">Note</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+              {tranches.map((tranche) => (
+                <tr key={tranche.disbursement_id} className="align-middle">
+                  <td className="py-2.5 pr-3 text-center tabular">{formatDate(tranche.disbursed_at)}</td>
+                  <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
+                    <Rupees paise={tranche.amount_paise} />
+                  </td>
+                  <td className="py-2.5 pr-3 text-center">
+                    {tranche.disbursed_by === 'pool'
+                      ? 'House Kitty'
+                      : `${tranche.funding_resident_name ?? tranche.funding_resident_id} (advance)`}
+                  </td>
+                  <td className="py-2.5 pr-3 text-center tabular break-all">
+                    {tranche.disbursement_reference}
+                  </td>
+                  <td className="py-2.5 pr-3 text-center text-[var(--text-secondary)]">
+                    {tranche.note ?? <span className="text-[var(--text-tertiary)]">—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t border-[var(--border-subtle)]">
+                <td colSpan={5} className="pt-2.5 text-[11px] text-[var(--text-secondary)]">
+                  Total disbursed{' '}
+                  <strong className="tabular text-[var(--text-primary)]">
+                    {formatInr(cycle.disbursed_paise)}
+                  </strong>{' '}
+                  · Balance remaining{' '}
+                  <strong className="tabular text-[var(--text-primary)]">
+                    {formatInr(cycle.remaining_disbursement_paise)}
+                  </strong>
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
       {cycle && cycle.landlord_receipt_status !== 'not_required' && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3.5 py-3">
           <div className="min-w-0 space-y-1">
@@ -896,11 +974,10 @@ function LandlordPanel({
           </div>
         </div>
       )}
-      {disbursed && cycle?.disbursed_by === 'resident_advance' && (
+      {advanced && (
         <p className="m-0 text-[11px] text-[var(--text-secondary)]">
-          {cycle.funding_resident_name} is credited the whole{' '}
-          <span className="tabular">{formatInr(cycle.total_rent_paise)}</span> as a provider
-          advance and is still charged their own share.
+          A resident who paid the landlord directly is credited what they paid as a provider
+          advance, and is still charged their own share.
         </p>
       )}
     </Panel>
@@ -1109,10 +1186,21 @@ function PayoutModal({
   onRecorded: (cycle: RentCycle) => void
 }) {
   const residents = useResource<{ items: Resident[] }>('/api/residents')
+  const total = cycle.total_rent_paise
+  const remaining = cycle.remaining_disbursement_paise
+  // The landlord is due on a fixed day and flatmates pay when they can, so a
+  // first payout offers what has been collected so far; after that, the rest.
+  const fromCollection =
+    cycle.disbursements.length === 0 && cycle.collected_paise > 0 && cycle.collected_paise < total
+  const suggested = fromCollection ? cycle.collected_paise : remaining
+  const [amount, setAmount] = useState(paiseToInput(suggested))
+  const [amountPaise, setAmountPaise] = useState(suggested)
+  const [amountOk, setAmountOk] = useState(true)
   const [mode, setMode] = useState<RentDisbursementMode>('pool')
   const [funder, setFunder] = useState('')
   const [date, setDate] = useState(todayIso())
   const [reference, setReference] = useState('')
+  const [note, setNote] = useState('')
   const [file, setFile] = useState<File | null>(null)
 
   const expectsReceipt = config.requires_landlord_receipt
@@ -1120,16 +1208,21 @@ function PayoutModal({
   const record = useMutation(
     async () =>
       api.post<RentCycle>(`/api/rent/cycle/${month}/disburse`, {
+        amount_paise: amountPaise,
         disbursement_mode: mode,
         funding_resident_id: mode === 'resident_advance' ? funder : null,
         reference: reference.trim(),
         disbursed_date: date,
+        note: note.trim() || null,
         landlord_receipt: expectsReceipt && file ? await toUpload(file) : null,
       }),
     { onSuccess: onRecorded },
   )
 
+  const tooMuch = amountOk && amountPaise > remaining
+  const amountValid = amountOk && amountPaise > 0 && amountPaise <= remaining
   const valid =
+    amountValid &&
     Boolean(date) &&
     reference.trim().length > 0 &&
     (mode === 'pool' || Boolean(funder)) &&
@@ -1140,7 +1233,7 @@ function PayoutModal({
   return (
     <Modal
       title="Record Landlord Payout"
-      description={`${formatMonth(month)} · ${formatInr(cycle.total_rent_paise)} to ${config.landlord_name}`}
+      description={`${formatMonth(month)} · ${formatInr(remaining)} still owed to ${config.landlord_name}`}
       onClose={onClose}
       footer={
         <>
@@ -1160,10 +1253,40 @@ function PayoutModal({
     >
       <div className="stack">
         {record.error && <ErrorNotice error={record.error} />}
+        <dl
+          className="m-0 grid grid-cols-3 gap-x-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3"
+          aria-label="Landlord payout so far"
+        >
+          <Detail label="Total Month's Rent">
+            <Rupees paise={total} />
+          </Detail>
+          <Detail label="Already Disbursed">
+            <Rupees paise={cycle.disbursed_paise} />
+          </Detail>
+          <Detail label="Remaining Unpaid to Landlord">
+            <Rupees paise={remaining} />
+          </Detail>
+        </dl>
+        <MoneyInput
+          label="Amount"
+          required
+          value={amount}
+          error={tooMuch ? `More than the ${formatInr(remaining)} still owed to the landlord.` : null}
+          hint={
+            fromCollection
+              ? `Pre-filled with collected funds. You can pay any amount up to ${formatInr(remaining)}.`
+              : `Pre-filled with the balance still owed. You can pay any amount up to ${formatInr(remaining)}.`
+          }
+          onChange={(raw, parsed) => {
+            setAmount(raw)
+            setAmountPaise(parsed.paise)
+            setAmountOk(parsed.ok)
+          }}
+        />
         <TransferDestination
           label="Payout destination"
           name={config.payout_beneficiary_name || config.landlord_name}
-          amountPaise={cycle.total_rent_paise}
+          amountPaise={amountValid ? amountPaise : null}
           bankAccount={config.landlord_bank_account}
           bankIfsc={config.landlord_bank_ifsc}
           upiId={config.landlord_upi_id}
@@ -1209,9 +1332,16 @@ function PayoutModal({
               label: resident.display_name,
             }))}
             onChange={setFunder}
-            hint="Credited the whole rent as a provider advance. They still owe their own share."
+            hint="Credited this payout as a provider advance. They still owe their own share."
           />
         )}
+        <TextField
+          label="Note"
+          value={note}
+          onChange={setNote}
+          maxLength={500}
+          placeholder="e.g. Balance after the late shares came in"
+        />
         {expectsReceipt && (
           <ReceiptFileField
             file={file}
@@ -1219,12 +1349,12 @@ function PayoutModal({
             hint="Optional. Attach it now if you have it, or later from this page when the landlord sends it. PDF or photo, up to 5 MB."
           />
         )}
-        <Callout tone="warn" title="This cannot be undone">
-          Recording the payout locks this month's rent cycle: it cannot be edited or removed
-          afterwards, and it issues an immutable HRA receipt for each resident.{' '}
+        <Callout>
+          Recording this payout registers a transfer to the landlord. Outstanding flatmate rent
+          shares and subsequent payout tranches can be recorded at any time.{' '}
           {mode === 'pool'
             ? 'Nothing is added to the ledger: the rent is already a cost to the pool.'
-            : `${funderName ?? 'The resident'} is credited ${formatInr(cycle.total_rent_paise)} and keeps their own share.`}
+            : `${funderName ?? 'The resident'} is credited ${amountValid ? formatInr(amountPaise) : 'the amount paid'} and keeps their own share.`}
         </Callout>
       </div>
     </Modal>
@@ -1252,7 +1382,7 @@ function AttachReceiptModal({
   return (
     <Modal
       title={replacing ? 'Replace Landlord Receipt' : 'Attach Landlord Receipt'}
-      description={`${formatMonth(month)} · paid ${formatDate(cycle.disbursed_at)} · ref ${cycle.disbursement_reference}`}
+      description={`${formatMonth(month)} · ${cycle.disbursements.length > 1 ? 'last payout' : 'paid'} ${formatDate(cycle.disbursed_at)} · ref ${cycle.disbursement_reference}`}
       onClose={onClose}
       footer={
         <>
@@ -1286,128 +1416,6 @@ function AttachReceiptModal({
         )}
       </div>
     </Modal>
-  )
-}
-
-/* ---------------------------------------------------------- receipt modal -- */
-
-function ReceiptModal({
-  month,
-  participant,
-  onClose,
-}: {
-  month: string
-  participant: RentParticipant
-  onClose: () => void
-}) {
-  const receipt = useResource<RentReceipt>(
-    `/api/rent/cycle/${month}/receipt/${encodeURIComponent(participant.resident_id)}`,
-  )
-  return (
-    <Modal
-      title="HRA Rent Receipt"
-      description={`${participant.display_name} · ${formatMonth(month)}`}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
-            Close
-          </button>
-          <button
-            type="button"
-            className={BUTTON_PRIMARY}
-            disabled={!receipt.data}
-            onClick={() => window.print()}
-          >
-            <Printer className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            Print / PDF
-          </button>
-        </>
-      }
-    >
-      <AsyncSection resource={receipt} loadingLabel="Loading receipt…">
-        {(data) => (
-          <div className="stack">
-            {!data.hash_matches && (
-              <p className="m-0 text-xs font-semibold text-[var(--danger)]" role="alert">
-                This receipt no longer matches its verification hash. The stored record was
-                changed outside the application; do not rely on it.
-              </p>
-            )}
-            {data.landlord_pan_advised && (
-              <p className="m-0 text-xs text-[var(--warning)]">
-                No landlord PAN is on file. Employers ask for it when rent is above ₹1,00,000
-                a year. Receipts already issued keep the details they were issued with.
-              </p>
-            )}
-            {!data.share_settled && (
-              <p className="m-0 text-xs text-[var(--text-secondary)]">
-                {data.resident_name} has not yet settled this share with the household.
-              </p>
-            )}
-            <ReceiptSheet receipt={data} />
-          </div>
-        )}
-      </AsyncSection>
-    </Modal>
-  )
-}
-
-function ReceiptSheet({ receipt }: { receipt: RentReceipt }) {
-  return (
-    <article className="receipt-sheet rounded-xl border border-[var(--border-medium)] bg-[var(--bg-surface)] p-5 space-y-4 text-[var(--text-primary)]">
-      <header className="flex items-start justify-between gap-4 border-b border-[var(--border-subtle)] pb-3">
-        <div>
-          <div className="text-sm font-bold tracking-wide">RENT RECEIPT</div>
-          <div className="text-[11px] text-[var(--text-secondary)]">
-            For House Rent Allowance, Section 10(13A)
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="tabular text-xs font-bold">{receipt.receipt_number}</div>
-          <div className="text-[11px] text-[var(--text-secondary)]">
-            Date: <span className="tabular">{formatDate(receipt.disbursed_at)}</span>
-          </div>
-        </div>
-      </header>
-      <p className="m-0 text-sm leading-relaxed">
-        Received from <strong>{receipt.resident_name}</strong> the sum of{' '}
-        <strong className="tabular">{formatInr(receipt.amount_paise)}</strong> (
-        {receipt.amount_in_words}), being their equal 1/{receipt.participant_count} share of
-        the rent of <span className="tabular">{formatInr(receipt.total_rent_paise)}</span> for
-        the premises at <strong>{receipt.premises}</strong> for the month of{' '}
-        <strong>{receipt.month_label}</strong>.
-      </p>
-      <dl className="m-0 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-        <div>
-          <dt className="inline font-bold">Landlord: </dt>
-          <dd className="inline m-0">{receipt.landlord_name}</dd>
-        </div>
-        <div>
-          <dt className="inline font-bold">Payment ref: </dt>
-          <dd className="inline m-0 tabular break-all">{receipt.disbursement_reference}</dd>
-        </div>
-        <div>
-          <dt className="inline font-bold">Landlord PAN: </dt>
-          <dd className="inline m-0 tabular">{receipt.landlord_pan ?? 'Not provided'}</dd>
-        </div>
-        <div>
-          <dt className="inline font-bold">Paid to landlord: </dt>
-          <dd className="inline m-0 tabular">{formatDate(receipt.disbursed_at)}</dd>
-        </div>
-      </dl>
-      <footer className="border-t border-[var(--border-subtle)] pt-3 space-y-1">
-        <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-          Verification hash (SHA-256)
-        </div>
-        <div className="tabular text-[10px] break-all text-[var(--text-secondary)]">
-          {receipt.verification_hash}
-        </div>
-        <div className="text-[10px] text-[var(--text-tertiary)]">
-          Generated by the household's expense records, not issued by the landlord.
-        </div>
-      </footer>
-    </article>
   )
 }
 

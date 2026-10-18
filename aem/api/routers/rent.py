@@ -134,11 +134,13 @@ def pay_rent(payload: RentPaymentCreate, db: Db, apartment_id: ApartmentId,
         raise to_http(exc) from exc
 
 
-@router.post("/cycle/{settlement_month}/disburse", summary="Record the landlord payout")
+@router.post("/cycle/{settlement_month}/disburse",
+             summary="Record a landlord payout (the whole rent, or a tranche of it)")
 def disburse_cycle(payload: RentDisburseRequest, db: Db, apartment_id: ApartmentId,
                    settings: AppSettings, settlement_month: SettlementMonth) -> dict[str, Any]:
-    """Paid from the pool, or by one resident (recorded as a provider advance
-    linked to the rent). Issues the HRA receipts. Cannot be recorded twice.
+    """Paid from the pool, or by a resident (recorded as a provider advance
+    linked to the rent). ``amount_paise`` is this tranche; left out, it is
+    everything still owed. Tranches can never add up to more than the rent.
 
     The landlord's receipt is optional here even when the lease expects one;
     attach it later with ``POST .../landlord-receipt``."""

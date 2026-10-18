@@ -947,6 +947,24 @@ export interface LeaseLifecycle {
 }
 
 export type RentDisbursementMode = 'pool' | 'resident_advance'
+
+/** Whether the landlord has been paid this month's rent: not yet, in part, or in full. */
+export type RentDisbursementStatus = 'pending' | 'partially_disbursed' | 'disbursed'
+
+/** One payment to the landlord towards a month's rent: the rent can go in tranches. */
+export interface RentDisbursement {
+  disbursement_id: string
+  cycle_id: string
+  amount_paise: number
+  disbursed_at: string
+  disbursement_reference: string
+  disbursed_by: RentDisbursementMode
+  funding_resident_id: string | null
+  funding_resident_name: string | null
+  funding_payment_id: string | null
+  note: string | null
+  created_at: string
+}
 export type RentCollectionStatus = 'paid' | 'partial' | 'unpaid' | 'funded_payout'
 
 export interface RentParticipant {
@@ -989,10 +1007,18 @@ export interface RentCycle {
   collected_count: number
   participants: RentParticipant[]
   excluded_residents: Array<{ resident_id: string; display_name: string }>
-  disbursement_status: 'pending' | 'disbursed'
+  disbursement_status: RentDisbursementStatus
+  /** Paid to the landlord so far, across every tranche. */
+  disbursed_paise: number
+  /** Still owed to the landlord for the month. */
+  remaining_disbursement_paise: number
+  /** Each payment to the landlord, oldest first. */
+  disbursements: RentDisbursement[]
+  /** The latest tranche's date and reference. */
   disbursed_at: string | null
   disbursement_reference: string | null
-  disbursed_by: RentDisbursementMode | null
+  /** One mode, or 'mixed' when tranches were paid different ways. */
+  disbursed_by: RentDisbursementMode | 'mixed' | null
   funding_resident_id: string | null
   funding_resident_name: string | null
   funding_payment_id: string | null

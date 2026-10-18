@@ -23,6 +23,7 @@ from aem.services import (
     apartments,
     expenses,
     payments,
+    pool_statements,
     reconciliation,
     recurring,
     rent,
@@ -420,9 +421,6 @@ def test_rent_can_be_paid_after_the_landlord_has_been_paid(owing):
     cycle = _pay_rent(owing, "chris", 1_500_000)
     assert _status(cycle, "chris")[0] == "paid"
     assert (cycle["collected_paise"], cycle["collected_count"]) == (3_000_000, 2)
-    receipt = rent.get_resident_rent_receipt(owing, apartment_id=APARTMENT,
-                                             settlement_month=MONTH, resident_id="chris")
-    assert receipt["share_settled"] is True
 
 
 def test_reversing_a_rent_payment_reopens_the_rent(owing):
@@ -619,11 +617,14 @@ def test_a_failed_payout_changes_nothing(leased, monkeypatch):
     def explode(*args, **kwargs):
         raise ValidationError("boom")
 
-    monkeypatch.setattr(rent, "receipt_hash", explode)
+    # Fails after the advance, the tranche and the cycle's new state are written.
+    monkeypatch.setattr(rent, "_public_tranche", explode)
     with pytest.raises(ValidationError):
         _disburse(leased, "resident_advance", funding_resident_id="alice")
+    monkeypatch.undo()
     assert _positions(leased) == before
     assert _rows(leased, "SELECT 1 FROM payment") == []
+    assert _rows(leased, "SELECT 1 FROM rent_disbursement") == []
     assert rent.get_rent_cycle(leased, APARTMENT, MONTH)["disbursement_status"] == "pending"
 
 
@@ -663,8 +664,9 @@ def test_with_landlord_receipts_a_payout_is_not_held_up_by_a_missing_one(receipt
     assert cycle["disbursement_status"] == "disbursed"
     assert cycle["landlord_receipt"] is None
     assert cycle["landlord_receipt_status"] == "pending"
-    # The payout is complete in every other respect without the file.
-    assert len(_rows(receipted, "SELECT 1 FROM rent_receipt")) == 3
+    # The payout is complete in every other respect without the file. (It writes
+    # no HRA receipts: they are switched off, DEBT-001.)
+    assert _rows(receipted, "SELECT 1 FROM rent_receipt") == []
     assert _positions(receipted) == {"alice": 3_000_000, "bob": -1_500_000,
                                      "chris": -1_500_000, "__pool__": 0}
     with pytest.raises(NotFoundError):
@@ -780,6 +782,36 @@ def test_an_unusable_landlord_receipt_is_refused(receipted, bad):
 
 
 # --------------------------------------------------------------- HRA receipts --
+#
+# Payouts no longer write HRA receipts (DEBT-001), but the receipts written
+# before that are kept, immutable, and still served. These tests put such
+# receipts on file the way a payout used to, then read them.
+
+def _receipts_on_file(db, month=MONTH):
+    """HRA receipts for a paid month, written as payouts wrote them before DEBT-001."""
+    with db.transaction() as uow:
+        cycle = uow.rent.cycle_for_month(APARTMENT, month)
+        config = rent._config_row(uow, APARTMENT)
+        timestamp = "2026-11-04T10:00:00+05:30"
+        for charge in rent._charges(uow, cycle["expense_id"]):
+            receipt = {
+                "receipt_id": f"rentreceipt_{charge['resident_id']}", "cycle_id": cycle["cycle_id"],
+                "resident_id": charge["resident_id"], "settlement_month": month,
+                "amount_paise": charge["share_paise"], "landlord_name": config["landlord_name"],
+                "landlord_pan": config["landlord_pan"] or "", "created_at": timestamp}
+            uow.rent.insert_receipt(**receipt, verification_hash=rent.receipt_hash(receipt))
+
+
+def test_a_payout_writes_no_hra_receipts(leased):
+    _generate(leased)
+    _disburse(leased, "pool")
+    assert _rows(leased, "SELECT 1 FROM rent_receipt") == []
+    cycle = rent.get_rent_cycle(leased, APARTMENT, MONTH)
+    assert all(p["receipt_available"] is False for p in cycle["participants"])
+    with pytest.raises(NotFoundError) as none:
+        rent.get_resident_rent_receipt(leased, apartment_id=APARTMENT,
+                                       settlement_month=MONTH, resident_id="alice")
+    assert none.value.code == "rent_receipt_not_found"
 
 def test_each_participant_gets_a_verifiable_receipt_for_their_share(leased):
     _generate(leased, excluded=["chris"])
@@ -789,6 +821,7 @@ def test_each_participant_gets_a_verifiable_receipt_for_their_share(leased):
     assert early.value.code == "rent_not_disbursed"
 
     _disburse(leased, "pool")
+    _receipts_on_file(leased)
     receipt = rent.get_resident_rent_receipt(leased, apartment_id=APARTMENT,
                                              settlement_month=MONTH, resident_id="alice")
     assert receipt["amount_paise"] == 2_250_000
@@ -811,6 +844,7 @@ def test_each_participant_gets_a_verifiable_receipt_for_their_share(leased):
 def test_a_receipt_states_the_premises_by_its_postal_address(leased):
     _generate(leased)
     _disburse(leased, "pool")
+    _receipts_on_file(leased)
     apartments.update_apartment(leased, APARTMENT, flat_number="402", tower_block="B",
                                 society_name="Green Meadows", city="Pune",
                                 state="Maharashtra", pincode="411045")
@@ -823,6 +857,7 @@ def test_a_receipt_states_the_premises_by_its_postal_address(leased):
 def test_a_receipt_keeps_the_landlord_details_it_was_issued_with(leased):
     _generate(leased)
     _disburse(leased, "pool")
+    _receipts_on_file(leased)
     _lease(leased, landlord_name="Someone Else", landlord_pan="ZZZZZ9999Z")
     receipt = rent.get_resident_rent_receipt(leased, apartment_id=APARTMENT,
                                              settlement_month=MONTH, resident_id="bob")
@@ -834,6 +869,7 @@ def test_a_receipt_keeps_the_landlord_details_it_was_issued_with(leased):
 def test_receipts_are_immutable_and_tampering_is_detectable(leased):
     _generate(leased)
     _disburse(leased, "pool")
+    _receipts_on_file(leased)
     # As the table's owner: the runtime role may not update a receipt at all,
     # and could not remove the guard below.
     with connect(leased, as_owner=True) as conn:
@@ -854,6 +890,7 @@ def test_a_missing_pan_is_flagged_when_the_rent_is_large_enough_to_need_one(apar
     _lease(apartment, landlord_pan=None)
     _generate(apartment)
     _disburse(apartment, "pool")
+    _receipts_on_file(apartment)
     receipt = rent.get_resident_rent_receipt(apartment, apartment_id=APARTMENT,
                                              settlement_month=MONTH, resident_id="alice")
     assert receipt["landlord_pan"] is None and receipt["landlord_pan_advised"] is True
@@ -916,8 +953,10 @@ def test_the_rent_workflow_over_http(api):
     assert overview["cycle"]["funding_resident_name"] == "Alice"
     assert overview["cycle"]["landlord_receipt_status"] == "pending"
 
-    receipt = api.get(f"/api/rent/cycle/{MONTH}/receipt/bob").json()
-    assert receipt["amount_paise"] == 1_500_000 and receipt["hash_matches"] is True
+    # HRA receipts are switched off (DEBT-001): the payout issued none.
+    no_receipt = api.get(f"/api/rent/cycle/{MONTH}/receipt/bob")
+    assert (no_receipt.status_code, no_receipt.json()["error"]["code"]) == (
+        404, "rent_receipt_not_found")
 
     # The landlord sends it later.
     attached = api.post(receipt_url, json=PDF)
@@ -1572,3 +1611,229 @@ def test_an_equal_month_reports_its_split(configured):
 
 def _preview_default(db):
     return rent.rent_month_overview(db, APARTMENT, MONTH)["preview"]
+
+
+# ------------------------------------------------- paying the landlord in parts --
+#
+# The landlord is due on the 5th; Alice and Bob have paid the pool by then and
+# Chris pays on the 7th. The household pays the landlord ₹30,000 on the 5th and
+# the last ₹15,000 on the 7th.
+
+def _tranche(db, amount_paise, mode="pool", **extra):
+    return _disburse(db, mode, amount_paise=amount_paise, **extra)
+
+
+def test_tranche_disbursement_two_parts(leased):
+    _generate(leased)
+    before = _positions(leased)
+    first = _tranche(leased, 3_000_000, reference="UTR-0005", disbursed_date="2026-11-05",
+                     note="What was collected by the due date")
+    assert (first["disbursement_status"], first["disbursed_paise"],
+            first["remaining_disbursement_paise"]) == ("partially_disbursed", 3_000_000, 1_500_000)
+    assert [(t["amount_paise"], t["disbursement_reference"], t["note"])
+            for t in first["disbursements"]] == [
+        (3_000_000, "UTR-0005", "What was collected by the due date")]
+    assert first["disbursement_id"] == first["disbursements"][0]["disbursement_id"]
+
+    # Left out, the amount is everything still owed.
+    second = _disburse(leased, "pool", reference="UTR-0007", disbursed_date="2026-11-07")
+    assert (second["disbursement_status"], second["disbursed_paise"],
+            second["remaining_disbursement_paise"]) == ("disbursed", 4_500_000, 0)
+    assert [t["amount_paise"] for t in second["disbursements"]] == [3_000_000, 1_500_000]
+    assert (second["disbursed_at"], second["disbursement_reference"]) == (
+        "2026-11-07", "UTR-0007"), "the cycle shows the latest tranche"
+    assert second["disbursed_by"] == "pool"
+    assert _positions(leased) == before, "paying the landlord from the pool adds nothing"
+    assert validation.validate(leased, APARTMENT)["issues"] == []
+
+    with pytest.raises(ConflictError) as done:
+        _tranche(leased, 100)
+    assert done.value.code == "rent_already_disbursed"
+    with connect(leased) as conn, pytest.raises(DatabaseRefusal):
+        conn.execute("UPDATE rent_cycle SET disbursement_reference='edited'")
+
+
+def test_disbursement_cannot_exceed_remaining(leased):
+    _generate(leased)
+    with pytest.raises(ValidationError) as over:
+        _tranche(leased, 4_600_000)
+    assert over.value.code == "tranche_exceeds_remaining"
+    assert over.value.details["remaining_paise"] == 4_500_000
+    _tranche(leased, 3_000_000)
+    with pytest.raises(ValidationError) as over_rest:
+        _tranche(leased, 1_500_001)
+    assert over_rest.value.details["remaining_paise"] == 1_500_000
+    for bad in (0, -1, 1500.5, True):
+        with pytest.raises(ValidationError):
+            _tranche(leased, bad)
+    assert [r["amount_paise"] for r in _rows(leased, "SELECT amount_paise FROM rent_disbursement")] \
+        == [3_000_000]
+
+
+def test_a_tranche_out_of_order_does_not_move_the_latest_date_back(leased):
+    _generate(leased)
+    _tranche(leased, 1_000_000, reference="UTR-LATE", disbursed_date="2026-11-07")
+    cycle = _tranche(leased, 1_000_000, reference="UTR-EARLY", disbursed_date="2026-11-03")
+    assert (cycle["disbursed_at"], cycle["disbursement_reference"]) == ("2026-11-07", "UTR-LATE")
+    assert [t["disbursed_at"] for t in cycle["disbursements"]] == ["2026-11-03", "2026-11-07"]
+
+
+def test_resident_advance_tranche(leased):
+    _generate(leased)
+    _tranche(leased, 3_000_000)
+    cycle = _tranche(leased, 1_500_000, "resident_advance", funding_resident_id="alice",
+                     reference="UTR-ALICE")
+    assert (cycle["disbursement_status"], cycle["disbursed_by"]) == ("disbursed", "mixed")
+    advance = _rows(leased, "SELECT * FROM payment")
+    assert len(advance) == 1
+    assert (advance[0]["payment_kind"], advance[0]["payer_resident_id"],
+            advance[0]["amount_paise"], advance[0]["expense_id"], advance[0]["reference"]) == (
+        "provider_advance", "alice", 1_500_000, cycle["expense_id"], "UTR-ALICE")
+    assert cycle["disbursements"][1]["funding_payment_id"] == advance[0]["payment_id"]
+    assert cycle["disbursements"][1]["funding_resident_name"] == "Alice"
+    # Alice paid ₹15,000 and owes ₹15,000: she is square; the others still owe.
+    assert _positions(leased) == {"alice": 0, "bob": -1_500_000, "chris": -1_500_000,
+                                  "__pool__": 3_000_000}
+    assert expenses.read_expense(leased, cycle["expense_id"])["payer_resident_id"] is None, \
+        "a part payment does not make Alice the expense's payer"
+    status = {p["resident_id"]: p["collection_status"] for p in cycle["participants"]}
+    assert status == {"alice": "funded_payout", "bob": "unpaid", "chris": "unpaid"}
+    assert validation.validate(leased, APARTMENT)["issues"] == []
+
+
+def test_an_advance_larger_than_the_share_covers_it_and_is_owed_back(leased):
+    _generate(leased)
+    first = _tranche(leased, 3_000_000, "resident_advance", funding_resident_id="alice")
+    assert first["disbursement_status"] == "partially_disbursed"
+    assert first["funding_resident_id"] == "alice"
+    assert _positions(leased) == {"alice": 1_500_000, "bob": -1_500_000, "chris": -1_500_000,
+                                  "__pool__": 1_500_000}
+    assert (first["collected_paise"], first["collected_count"]) == (1_500_000, 1)
+    # A part advance is no reason to refuse the rest from the pool.
+    second = _tranche(leased, 1_500_000)
+    assert second["disbursement_status"] == "disbursed"
+    assert sum(_positions(leased).values()) == 0
+
+
+def test_a_resident_whose_advance_covers_their_share_cannot_pay_it_again(owing):
+    _tranche(owing, 500_000, "resident_advance", funding_resident_id="alice")
+    # ₹5,000 does not cover Alice's ₹15,000: she can still pay her share.
+    _pay_rent(owing, "alice", 1_500_000)
+    _tranche(owing, 1_500_000, "resident_advance", funding_resident_id="bob")
+    with pytest.raises(ConflictError) as covered:
+        _pay_rent(owing, "bob", 1_500_000)
+    assert covered.value.code == "rent_share_funded_by_payout"
+
+
+def test_an_advance_behind_a_tranche_cannot_be_reversed(leased):
+    _generate(leased)
+    cycle = _tranche(leased, 1_000_000, "resident_advance", funding_resident_id="bob")
+    with pytest.raises(ConflictError) as refused:
+        payments.reverse_payment(leased, cycle["disbursements"][0]["funding_payment_id"],
+                                 reason="wrong resident")
+    assert refused.value.code == "rent_funding_payment"
+
+
+def test_a_part_paid_month_keeps_its_record(leased):
+    _generate(leased)
+    cycle = _tranche(leased, 1_000_000)
+    with pytest.raises(ConflictError) as kept:
+        expenses.delete_expense(leased, cycle["expense_id"], apartment_id=APARTMENT)
+    assert kept.value.code == "rent_cycle_disbursed"
+    with connect(leased, as_owner=True) as conn:
+        with pytest.raises(DatabaseRefusal):
+            conn.execute("DELETE FROM rent_cycle")
+        with pytest.raises(DatabaseRefusal):
+            conn.execute("UPDATE rent_disbursement SET amount_paise = 1")
+        with pytest.raises(DatabaseRefusal):
+            conn.execute("DELETE FROM rent_disbursement")
+    # Even written directly, tranches cannot add up to more than the rent.
+    with connect(leased) as conn, pytest.raises(DatabaseRefusal) as overpaid:
+        conn.execute(
+            """INSERT INTO rent_disbursement (disbursement_id, cycle_id, apartment_id,
+                   settlement_month, amount_paise, disbursed_at, disbursement_reference,
+                   disbursed_by, created_at)
+               VALUES ('x', %s, %s, %s, 3500001, '2026-11-06', 'UTR-X', 'pool', 'now')""",
+            (cycle["cycle_id"], APARTMENT, MONTH))
+    assert "overpaid_rent" in str(overpaid.value)
+
+
+def test_the_pool_cannot_pay_in_parts_what_the_expense_says_a_resident_paid(configured):
+    _lease(configured)
+    recurring.generate(configured, apartment_id=APARTMENT, settlement_period=MONTH,
+                       lines=[{"expense_definition_id": "rent", "payer_resident_id": "bob"}])
+    _generate(configured)
+    for attempt in (dict(amount_paise=1_000_000),
+                    dict(amount_paise=1_000_000, mode="resident_advance",
+                         funding_resident_id="bob")):
+        mode = attempt.pop("mode", "pool")
+        with pytest.raises(ConflictError) as refused:
+            _disburse(configured, mode, **attempt)
+        assert refused.value.code == "rent_already_funded"
+    assert _rows(configured, "SELECT 1 FROM rent_disbursement") == []
+
+
+def test_the_landlords_receipt_can_be_attached_after_the_first_tranche(receipted):
+    cycle = _tranche(receipted, 3_000_000)
+    assert cycle["landlord_receipt_status"] == "pending"
+    attached = rent.attach_landlord_receipt(receipted, apartment_id=APARTMENT,
+                                            settlement_month=MONTH, landlord_receipt=PDF)
+    assert attached["landlord_receipt_status"] == "attached"
+    assert attached["disbursement_status"] == "partially_disbursed"
+
+
+def test_the_passbooks_list_each_tranche(leased):
+    _generate(leased)
+    _tranche(leased, 3_000_000, reference="UTR-0005", disbursed_date="2026-11-05")
+    _tranche(leased, 1_500_000, "resident_advance", funding_resident_id="chris",
+             reference="UTR-0007", disbursed_date="2026-11-07")
+    books = pool_statements.get_payment_pools_statement(leased, APARTMENT)
+    kitty = [e for e in books["pool_statement"]["items"] if e["category"] == "Rent Payout"]
+    landlord = [e for e in books["landlord_statement"]["items"]
+                if e["category"] == "Rent Payout"]
+    assert [(e["amount_paise"], e["reference"]) for e in kitty] == [(3_000_000, "UTR-0005")]
+    assert sorted((e["amount_paise"], e["counterparty_name"]) for e in landlord) == [
+        (1_500_000, "Chris (Advance)"), (3_000_000, "House Kitty")]
+    assert not [e for e in books["landlord_statement"]["items"]
+                if e["category"] == "Direct Advance"], "the advance is listed once"
+
+
+def test_tranches_over_http(api):
+    api.post("/api/rent/config", json=LEASE)
+    assert api.post(f"/api/rent/cycle/{MONTH}/generate", json={}).status_code == 201
+    url = f"/api/rent/cycle/{MONTH}/disburse"
+    body = {"disbursement_mode": "pool", "reference": "UTR-0005", "disbursed_date": "2026-11-05"}
+    too_much = api.post(url, json={**body, "amount_paise": 4_600_000})
+    assert (too_much.status_code, too_much.json()["error"]["code"]) == (
+        422, "tranche_exceeds_remaining")
+    assert api.post(url, json={**body, "amount_paise": 0}).status_code == 422
+    assert api.post(url, json={**body, "amount_paise": 1500.5}).status_code == 422
+    part = api.post(url, json={**body, "amount_paise": 3_000_000, "note": "By the due date"})
+    assert part.status_code == 200, part.text
+    assert (part.json()["disbursement_status"], part.json()["remaining_disbursement_paise"]) == (
+        "partially_disbursed", 1_500_000)
+    rest = api.post(url, json={**body, "reference": "UTR-0007", "disbursed_date": "2026-11-07"})
+    assert rest.json()["disbursement_status"] == "disbursed"
+    cycle = api.get(f"/api/rent/cycle/{MONTH}").json()["cycle"]
+    assert [t["amount_paise"] for t in cycle["disbursements"]] == [3_000_000, 1_500_000]
+
+
+def test_migration_0020_turns_each_paid_month_into_one_tranche(database_factory):
+    db = database_factory(migrated=False)
+    db.migrate(target_version=19)
+    with connect(db, as_owner=True) as conn:
+        conn.execute("INSERT INTO apartment (apartment_id, name, created_at) "
+                     "VALUES ('home', 'Flat', '2026-10-01T00:00:00+05:30')")
+        conn.execute(
+            """INSERT INTO rent_cycle (cycle_id, apartment_id, settlement_month,
+                   total_rent_paise, participant_count, disbursement_status, disbursed_at,
+                   disbursement_reference, disbursed_by, created_at)
+               VALUES ('paid', 'home', '2026-10', 4500000, 3, 'disbursed', '2026-10-05',
+                       'UTR-OCT', 'pool', '2026-10-01T09:00:00+05:30'),
+                      ('open', 'home', '2026-11', 4500000, 3, 'pending', NULL,
+                       NULL, NULL, '2026-11-01T09:00:00+05:30')""")
+    db.migrate()
+    rows = _rows(db, "SELECT cycle_id, amount_paise, disbursed_at, disbursement_reference, "
+                     "disbursed_by FROM rent_disbursement")
+    assert rows == [{"cycle_id": "paid", "amount_paise": 4_500_000, "disbursed_at": "2026-10-05",
+                     "disbursement_reference": "UTR-OCT", "disbursed_by": "pool"}]

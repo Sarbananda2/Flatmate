@@ -89,6 +89,9 @@ function cycle(overrides: Record<string, unknown> = {}) {
     funding_resident_id: null,
     funding_resident_name: null,
     funding_payment_id: null,
+    disbursed_paise: 0,
+    remaining_disbursement_paise: 4500000,
+    disbursements: [],
     lease_rent_paise: 4500000,
     matches_lease_rent: true,
     landlord_receipt: null,
@@ -197,7 +200,7 @@ const posted = (suffix: string) =>
 describe('RentMonth', () => {
   it('shows the rent, the equal share, and what has been collected', async () => {
     renderRent(overview())
-    expect(await screen.findByText('Disbursement Pending')).toBeInTheDocument()
+    expect(await screen.findByText('Payout Pending')).toBeInTheDocument()
     expect(screen.getByText('Equal Share (1/3)')).toBeInTheDocument()
     expect(screen.getByText('2 of 3 covered · 66.7%')).toBeInTheDocument()
     expect(screen.getByText('5 Oct 2026')).toBeInTheDocument()
@@ -206,18 +209,26 @@ describe('RentMonth', () => {
     const chris = within(table).getByRole('row', { name: /Chris/ })
     expect(chris).toHaveTextContent('₹15,000.00')
     expect(chris).toHaveTextContent('Unpaid')
-    // The landlord issues no receipts on this lease, so no row mentions a slip.
-    expect(table).not.toHaveTextContent('HRA slip after payout')
+
+    // Collecting from residents and paying the landlord are tracked apart.
+    expect(screen.getByRole('progressbar', { name: 'Rent collected from residents' })).toHaveAttribute(
+      'aria-valuetext',
+      '₹30,000.00 of ₹45,000.00 collected (66.7%) · 2/3 paid',
+    )
+    expect(screen.getByRole('progressbar', { name: 'Rent paid to the landlord' })).toHaveAttribute(
+      'aria-valuetext',
+      '₹0.00 of ₹45,000.00 disbursed (0.0%) · 0 tranches',
+    )
+    expect(screen.queryByRole('table', { name: 'Payments to the landlord' })).not.toBeInTheDocument()
   })
 
-  it('mentions the HRA slip only to residents who have paid, when receipts are tracked', async () => {
+  it('offers no HRA slip, even when the lease tracks the landlord\'s receipts', async () => {
     renderRent(overview({ config: receiptsOn }))
     const table = await screen.findByRole('table', { name: 'Rent shares and collection' })
-    expect(within(table).getByRole('row', { name: /Alice/ })).toHaveTextContent(
-      'HRA slip after payout',
-    )
+    expect(within(table).getByRole('row', { name: /Alice/ })).toHaveTextContent('Settled')
     const chris = within(table).getByRole('row', { name: /Chris/ })
-    expect(chris).not.toHaveTextContent('HRA slip after payout')
+    expect(chris).not.toHaveTextContent('Settled')
+    expect(screen.queryByText(/HRA slip/)).not.toBeInTheDocument()
     expect(
       within(chris).getByRole('button', { name: 'Record rent payment from Chris' }),
     ).toBeInTheDocument()
@@ -374,12 +385,25 @@ describe('RentMonth', () => {
     // Where to send it, in full, and what recording it commits to.
     const destination = within(dialog).getByRole('region', { name: 'Payout destination' })
     expect(destination).toHaveTextContent('Rajesh Kumar Sharma')
-    expect(destination).toHaveTextContent('₹45,000.00')
+    expect(destination).toHaveTextContent('₹30,000.00')
     expect(destination).toHaveTextContent('50100012348912')
     expect(destination).toHaveTextContent('HDFC0000128')
     expect(destination).toHaveTextContent('rajeshsharma@okaxis')
     expect(within(destination).getByRole('button', { name: 'Copy UPI ID' })).toBeInTheDocument()
-    expect(dialog).toHaveTextContent('locks this month\'s rent cycle')
+
+    // The month so far, and a first tranche of what the residents have paid in.
+    const sofar = within(dialog).getByLabelText('Landlord payout so far')
+    expect(sofar).toHaveTextContent("Total Month's Rent₹45,000.00")
+    expect(sofar).toHaveTextContent('Already Disbursed₹0.00')
+    expect(sofar).toHaveTextContent('Remaining Unpaid to Landlord₹45,000.00')
+    expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('30000.00')
+    expect(dialog).toHaveTextContent(
+      'Pre-filled with collected funds. You can pay any amount up to ₹45,000.00.',
+    )
+    expect(dialog).toHaveTextContent(
+      'Outstanding flatmate rent shares and subsequent payout tranches can be recorded at any time.',
+    )
+    expect(dialog).not.toHaveTextContent('cannot be undone')
     expect(dialog).toHaveTextContent('Nothing is added to the ledger')
 
     const confirm = within(dialog).getByRole('button', { name: 'Confirm & Post Payout' })
@@ -391,23 +415,71 @@ describe('RentMonth', () => {
     )
     expect(confirm).toBeDisabled()
     await userEvent.selectOptions(within(dialog).getByLabelText(/Funding resident/), 'alice')
+    expect(dialog).toHaveTextContent('Alice is credited ₹30,000.00 and keeps their own share.')
     await userEvent.click(confirm)
 
     await waitFor(() => expect(posted('/disburse')).toBeDefined())
     expect(posted('/disburse')!.body).toMatchObject({
+      amount_paise: 3000000,
       disbursement_mode: 'resident_advance',
       funding_resident_id: 'alice',
       reference: '329188401928',
+      note: null,
       landlord_receipt: null,
     })
   })
 
+  it('offers the whole rent on a first payout when nothing has been collected', async () => {
+    renderRent(overview({ cycle: cycle({ collected_paise: 0, collected_count: 0 }) }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Record Landlord Payout' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('45000.00')
+    expect(dialog).toHaveTextContent(
+      'Pre-filled with the balance still owed. You can pay any amount up to ₹45,000.00.',
+    )
+  })
+
+  const tranche = (overrides: Record<string, unknown> = {}) => ({
+    disbursement_id: 'rentdisb-1',
+    cycle_id: 'cycle-1',
+    amount_paise: 4500000,
+    disbursed_at: '2026-10-05',
+    disbursement_reference: '329188401928',
+    disbursed_by: 'pool',
+    funding_resident_id: null,
+    funding_resident_name: null,
+    funding_payment_id: null,
+    note: null,
+    created_at: '2026-10-05T10:00:00+05:30',
+    ...overrides,
+  })
   const paidCycle = (overrides: Record<string, unknown> = {}) =>
     cycle({
       disbursement_status: 'disbursed',
       disbursed_at: '2026-10-05',
       disbursement_reference: '329188401928',
       disbursed_by: 'pool',
+      disbursed_paise: 4500000,
+      remaining_disbursement_paise: 0,
+      disbursements: [tranche()],
+      ...overrides,
+    })
+  // The landlord paid what had come in by the due date; the rest is to follow.
+  const partCycle = (overrides: Record<string, unknown> = {}) =>
+    cycle({
+      disbursement_status: 'partially_disbursed',
+      disbursed_at: '2026-10-05',
+      disbursement_reference: 'UTR-FIRST',
+      disbursed_by: 'pool',
+      disbursed_paise: 3000000,
+      remaining_disbursement_paise: 1500000,
+      disbursements: [
+        tranche({
+          amount_paise: 3000000,
+          disbursement_reference: 'UTR-FIRST',
+          note: 'What had come in by the 5th',
+        }),
+      ],
       ...overrides,
     })
   const receiptsOn = { ...config, requires_landlord_receipt: true }
@@ -539,7 +611,7 @@ describe('RentMonth', () => {
 
   it('shows no receipt badge or action when the landlord issues none', async () => {
     renderRent(overview({ cycle: paidCycle() }))
-    expect(await screen.findByText('Disbursed')).toBeInTheDocument()
+    expect(await screen.findByText('Disbursed to Landlord')).toBeInTheDocument()
     expect(screen.queryByText('Receipt Pending')).not.toBeInTheDocument()
     expect(screen.queryByText('Receipt Attached')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Attach Landlord Receipt' })).not.toBeInTheDocument()
@@ -705,50 +777,121 @@ describe('RentMonth', () => {
     expect(screen.getByRole('button', { name: 'Generate October 2026 rent' })).toBeDisabled()
   })
 
-  it('shows a printable HRA receipt once the landlord has been paid', async () => {
-    const paid = cycle({
-      disbursement_status: 'disbursed',
-      disbursed_at: '2026-10-04',
-      disbursement_reference: '329188401928',
-      disbursed_by: 'pool',
-      participants: cycle().participants.map((row) => ({ ...row, receipt_available: true })),
-    })
-    renderRent(overview({ cycle: paid }), {
-      [`/api/rent/cycle/${MONTH}/receipt/alice`]: {
-        receipt_id: 'r1',
-        receipt_number: 'RCPT-2026-10-01',
-        cycle_id: 'cycle-1',
-        settlement_month: MONTH,
-        month_label: 'October 2026',
-        resident_id: 'alice',
-        resident_name: 'Alice',
-        premises: 'Flat 402',
-        amount_paise: 1500000,
-        amount_in_words: 'Fifteen Thousand Rupees Only',
-        total_rent_paise: 4500000,
-        participant_count: 3,
-        landlord_name: 'Rajesh Kumar Sharma',
-        landlord_pan: 'ABCPS1234K',
-        landlord_pan_advised: false,
-        disbursed_at: '2026-10-04',
-        disbursed_by: 'pool',
-        disbursement_reference: '329188401928',
-        share_settled: true,
-        issued_at: '2026-10-04T10:00:00+05:30',
-        verification_hash: 'a'.repeat(64),
-        hash_matches: true,
-      },
-    })
-    expect(await screen.findByText('Disbursed')).toBeInTheDocument()
+  it('shows a paid month as fully disbursed, with no HRA receipt on offer', async () => {
+    renderRent(overview({ cycle: paidCycle() }))
+    expect(await screen.findByText('Disbursed to Landlord')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Record Landlord Payout' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /HRA receipt/ })).not.toBeInTheDocument()
+    expect(stub!.calls.some((call) => call.path.includes('/receipt/'))).toBe(false)
+    expect(screen.getByRole('progressbar', { name: 'Rent paid to the landlord' })).toHaveAttribute(
+      'aria-valuetext',
+      '₹45,000.00 of ₹45,000.00 disbursed (100.0%) · 1 tranche',
+    )
+  })
 
-    await userEvent.click(screen.getByRole('button', { name: 'View HRA receipt for Alice' }))
-    const dialog = await screen.findByRole('dialog')
-    expect(await within(dialog).findByText('RCPT-2026-10-01')).toBeInTheDocument()
-    expect(dialog).toHaveTextContent('Fifteen Thousand Rupees Only')
-    expect(dialog).toHaveTextContent('ABCPS1234K')
-    expect(dialog).toHaveTextContent('a'.repeat(64))
-    expect(within(dialog).getByRole('button', { name: /Print/ })).toBeEnabled()
+  describe('paying the landlord in tranches', () => {
+    it('shows a part-paid month and still offers the next payout', async () => {
+      renderRent(overview({ cycle: partCycle() }))
+      expect(
+        await screen.findByText('Partially Disbursed ·', { exact: false }),
+      ).toHaveTextContent('Partially Disbursed · ₹30,000.00 of ₹45,000.00')
+      expect(screen.getByRole('button', { name: 'Record Landlord Payout' })).toBeInTheDocument()
+      expect(screen.getByRole('progressbar', { name: 'Rent paid to the landlord' })).toHaveAttribute(
+        'aria-valuetext',
+        '₹30,000.00 of ₹45,000.00 disbursed (66.7%) · 1 tranche',
+      )
+      expect(screen.getByText('Part paid · ₹30,000.00 of ₹45,000.00')).toBeInTheDocument()
+    })
+
+    it('lists each tranche with who funded it and the totals', async () => {
+      renderRent(
+        overview({
+          cycle: paidCycle({
+            disbursed_at: '2026-10-09',
+            disbursement_reference: 'UTR-SECOND',
+            disbursed_by: 'mixed',
+            disbursements: [
+              tranche({
+                amount_paise: 3000000,
+                disbursement_reference: 'UTR-FIRST',
+                note: 'What had come in by the 5th',
+              }),
+              tranche({
+                disbursement_id: 'rentdisb-2',
+                amount_paise: 1500000,
+                disbursed_at: '2026-10-09',
+                disbursement_reference: 'UTR-SECOND',
+                disbursed_by: 'resident_advance',
+                funding_resident_id: 'alice',
+                funding_resident_name: 'Alice',
+                funding_payment_id: 'pay-1',
+              }),
+            ],
+          }),
+        }),
+      )
+      const table = await screen.findByRole('table', { name: 'Payments to the landlord' })
+      expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+        'Date',
+        'Amount',
+        'Funded From',
+        'Reference / UTR',
+        'Note',
+      ])
+      const first = within(table).getByRole('row', { name: /UTR-FIRST/ })
+      expect(first).toHaveTextContent('5 Oct 2026')
+      expect(first).toHaveTextContent('₹30,000.00')
+      expect(first).toHaveTextContent('House Kitty')
+      expect(first).toHaveTextContent('What had come in by the 5th')
+      const second = within(table).getByRole('row', { name: /UTR-SECOND/ })
+      expect(second).toHaveTextContent('9 Oct 2026')
+      expect(second).toHaveTextContent('₹15,000.00')
+      expect(second).toHaveTextContent('Alice (advance)')
+      expect(table).toHaveTextContent('Total disbursed ₹45,000.00 · Balance remaining ₹0.00')
+      expect(screen.getByText('Paid in full · 9 Oct 2026')).toBeInTheDocument()
+    })
+
+    it('offers the balance as the next tranche and refuses more than is owed', async () => {
+      renderRent(overview({ cycle: partCycle() }))
+      await userEvent.click(await screen.findByRole('button', { name: 'Record Landlord Payout' }))
+      const dialog = await screen.findByRole('dialog')
+      const sofar = within(dialog).getByLabelText('Landlord payout so far')
+      expect(sofar).toHaveTextContent('Already Disbursed₹30,000.00')
+      expect(sofar).toHaveTextContent('Remaining Unpaid to Landlord₹15,000.00')
+
+      const amount = within(dialog).getByLabelText(/^Amount/)
+      expect(amount).toHaveValue('15000.00')
+      expect(dialog).toHaveTextContent(
+        'Pre-filled with the balance still owed. You can pay any amount up to ₹15,000.00.',
+      )
+
+      const confirm = within(dialog).getByRole('button', { name: 'Confirm & Post Payout' })
+      await userEvent.type(within(dialog).getByLabelText(/Payment reference/), 'UTR-SECOND')
+      expect(confirm).toBeEnabled()
+
+      await userEvent.clear(amount)
+      await userEvent.type(amount, '16000')
+      expect(within(dialog).getByText('More than the ₹15,000.00 still owed to the landlord.')).toBeInTheDocument()
+      expect(confirm).toBeDisabled()
+
+      await userEvent.clear(amount)
+      await userEvent.type(amount, '0')
+      expect(confirm).toBeDisabled()
+
+      await userEvent.clear(amount)
+      await userEvent.type(amount, '5000')
+      await userEvent.type(within(dialog).getByLabelText(/^Note/), 'Chris paid late')
+      expect(confirm).toBeEnabled()
+      await userEvent.click(confirm)
+
+      await waitFor(() => expect(posted('/disburse')).toBeDefined())
+      expect(posted('/disburse')!.body).toMatchObject({
+        amount_paise: 500000,
+        disbursement_mode: 'pool',
+        reference: 'UTR-SECOND',
+        note: 'Chris paid late',
+      })
+    })
   })
 
   describe('the contract term', () => {
@@ -797,7 +940,7 @@ describe('RentMonth', () => {
 
     it('shows no term pill or banner for a lease with no start date', async () => {
       renderRent(overview())
-      expect(await screen.findByText('Disbursement Pending')).toBeInTheDocument()
+      expect(await screen.findByText('Payout Pending')).toBeInTheDocument()
       expect(screen.queryByText(/^Term:/)).not.toBeInTheDocument()
       expect(screen.queryByRole('region', { name: 'Lease term' })).not.toBeInTheDocument()
     })
@@ -886,7 +1029,7 @@ describe('RentMonth', () => {
       expect(banner).toHaveTextContent('Lease Term Ended on 28 Feb 2027')
       expect(banner).toHaveTextContent('Rent keeps generating at the current rate')
       expect(screen.getByText('Term: Month 11 of 11 (Expired 28 Feb 2027)')).toBeInTheDocument()
-      expect(screen.getByText('Disbursement Pending')).toBeInTheDocument()
+      expect(screen.getByText('Payout Pending')).toBeInTheDocument()
     })
 
     it('shows the planned handover once notice is served, with renewing still open', async () => {

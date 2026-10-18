@@ -80,7 +80,7 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
         apartment = get_apartment(uow, apartment_id)
         lease = uow.rent.active_lease(apartment_id)
         payments = uow.payments.statement_payments(apartment_id)
-        cycles = uow.rent.disbursed_cycles(apartment_id)
+        tranches = uow.rent.disbursements_for_apartment(apartment_id)
         expenses = uow.expenses.kitty_paid_expenses(apartment_id)
         deposit = deposits.summary_in(uow, apartment_id)
 
@@ -113,27 +113,29 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
                 category="Resident Refund",
                 description=payment["note"] or "Refund from House Kitty", **common))
 
-    # Rent paid to the landlord: out of the kitty, or advanced by a resident.
-    advanced = {cycle["funding_payment_id"] for cycle in cycles if cycle["funding_payment_id"]}
-    for cycle in cycles:
-        month = month_label(cycle["settlement_month"])
-        common = dict(date=cycle["disbursed_at"], source_type="rent_cycle",
-                      order=cycle["settlement_month"], amount_paise=cycle["total_rent_paise"],
-                      reference=cycle["disbursement_reference"])
-        if cycle["disbursed_by"] == "pool":
+    # Rent paid to the landlord, tranche by tranche: out of the kitty, or
+    # advanced by a resident.
+    advanced = {t["funding_payment_id"] for t in tranches if t["funding_payment_id"]}
+    for tranche in tranches:
+        month = month_label(tranche["settlement_month"])
+        common = dict(date=tranche["disbursed_at"], source_type="rent_cycle",
+                      order=tranche["seq"], amount_paise=tranche["amount_paise"],
+                      reference=tranche["disbursement_reference"], note=tranche["note"])
+        if tranche["disbursed_by"] == "pool":
             pool.append(_entry(
-                entry_id=f"rent:{cycle['cycle_id']}", account="pool", direction="out",
+                entry_id=f"rent:{tranche['disbursement_id']}", account="pool", direction="out",
                 category="Rent Payout", description=f"Rent payout · {month}",
                 counterparty_name=landlord_name, **common))
             payer, payer_id = DEFAULT_KITTY_NAME, None
         else:
-            payer = f"{cycle['funding_resident_name'] or cycle['funding_resident_id']} (Advance)"
-            payer_id = cycle["funding_resident_id"]
+            payer = (f"{tranche['funding_resident_name'] or tranche['funding_resident_id']}"
+                     " (Advance)")
+            payer_id = tranche["funding_resident_id"]
         landlord.append(_entry(
-            entry_id=f"rent:{cycle['cycle_id']}", account="landlord", direction="in",
+            entry_id=f"rent:{tranche['disbursement_id']}", account="landlord", direction="in",
             category="Rent Payout", description=f"Monthly rent · {month}",
             counterparty_name=payer, counterparty_resident_id=payer_id,
-            payment_id=cycle["funding_payment_id"], **common))
+            payment_id=tranche["funding_payment_id"], **common))
 
     # Household expenses the kitty paid itself. A month's rent is not among them:
     # its payout above is the same money.

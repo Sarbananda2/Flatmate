@@ -39,6 +39,7 @@ This register documents architectural trade-offs, deferred features, and legal/d
 │   • DEBT-001: Single-Signatory Master Lease HRA Receipt Scrutiny              │
 │   • DEBT-002: Move-In / Move-Out Daily Proration Policy                       │
 │   • DEBT-004: Vehicle & Parking Slot Allocation                               │
+│   • DEBT-007: Explicit Shortfall Float / Bridge Advance (Rent Arrears)        │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -56,14 +57,19 @@ This register documents architectural trade-offs, deferred features, and legal/d
 
 ---
 
-### DEBT-001: Single-Signatory Master Lease HRA Receipt Scrutiny
-- **Category:** Legal & Tax Compliance
-- **Current Behavior:** The system issues individual HRA rent receipts for all participating flatmates with the landlord's PAN.
-- **Domain Issue:** In a Single Master Lease (Equal Split), the owner typically enters a contract with only one lead flatmate, or only accepts rent from a single bank account. Secondary flatmates lack direct privity of contract with the landlord, which can lead to employer HR audit queries during tax proof submission.
-- **Future Resolution Path:**
+### DEBT-001: HRA Rent Receipt Generation & Tax Proof Scrutiny
+- **Category:** Legal & Tax Compliance / Domain Simplification
+- **Status:** [FEATURE DISABLED ACROSS APP]
+- **Previous Behavior:** The system automatically generated and displayed individual HRA rent receipts for all participating flatmates with the landlord's PAN upon landlord payout.
+- **Domain Issues & Decision:**
+  1. *Master Lease Privity:* In a Single Master Lease (Equal Split), the owner typically enters a contract with only one anchor flatmate. Secondary flatmates lack privity of contract with the landlord, leading to rejection or queries during employer HR tax audit proof submissions.
+  2. *Tranche Disbursement Incompatibility:* Under the Tranche / Split Landlord Disbursement model (Approach 3), rent is paid in multiple tranches (e.g. 5th and 7th), making atomic HRA receipt generation for late or partial payers premature and legally ambiguous.
+  3. *Operational Focus:* The application prioritizes operational cash flow: tracking who paid into the House Kitty pool, tracking tranches sent to the landlord with bank UTRs, and attaching the landlord's actual signed/stamped receipt.
+- **Action Taken:** HRA receipt generation, HRA slip modal triggers, and "View HRA Slip" buttons are disabled across the application.
+- **Future Resolution Path (When Re-enabling):**
   1. Add a lease signatory configuration: `joint_all_signatories` vs `single_anchor_signatory`.
-  2. For single-signatory leases, generate an internal **Joint Tenancy / Flatmate Cost-Sharing Undertaking Annexure** for tax deduction compliance.
-  3. Support Model 5 (Anchor Tenant / Sublet structure).
+  2. For single-signatory leases, generate an internal **Joint Tenancy / Flatmate Cost-Sharing Undertaking Annexure** compliant with Indian income tax norms.
+  3. Support Model 5 (Anchor Tenant / Sublet structure) and tie receipt generation strictly to verified full-settlement cycles.
 
 ---
 
@@ -84,4 +90,13 @@ This register documents architectural trade-offs, deferred features, and legal/d
 ### DEBT-004: Vehicle & Parking Slot Allocation
 - **Category:** Property Management
 - **Resolution:** Scheduled as part of the **Household Property** modeling phase.
+
+---
+
+### DEBT-007: Explicit Shortfall Float / Bridge Advance (Rent Arrears)
+- **Category:** Accounting & Cash Flow / Rent Management
+- **Current Behavior:** System assumes rent to the landlord is funded either entirely from the pooled house kitty or by a single resident advancing the entire month's rent. There is no first-class intra-resident bridge loan mechanism when an admin or specific flatmate temporarily covers a delinquent flatmate's share during a full payout.
+- **Context:** In Approach 2 research, we evaluated an explicit bridge advance model where a resident who floats the missing share (e.g. ₹15,000 for Tenant C on the 5th) is credited an internal bridge float, which automatically reimburses them when Tenant C settles on the 7th.
+- **Decision:** Deferred to technical debt. The household prioritized **Approach 3 (Tranche / Split Landlord Disbursement)** to disburse collected funds in tranches as they arrive directly to the landlord.
+- **Future Resolution Path:** If single-transfer full payouts are mandated without a pooled buffer, introduce an internal `shortfall_advance` entity that links delinquent allocation shares to the funding resident and automatically routes late payments to settle the advance.
 

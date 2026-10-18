@@ -68,6 +68,7 @@ GUARD_CODES = {
     "append_only": "append_only_record",
     "overapplied_payment": "payment_overapplied",
     "overapplied_charge": "charge_overapplied",
+    "overpaid_rent": "rent_overpaid",
 }
 
 REFUSED = "The database refused the change and nothing was saved."

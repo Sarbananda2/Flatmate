@@ -212,9 +212,9 @@ class PaymentsRepository(Repository):
             "FROM expense_instance WHERE expense_id=%s", (expense_id,))
 
     def rent_cycle_funded_by(self, payment_id: str) -> dict[str, Any] | None:
-        """The rent cycle that names this payment as its landlord payout, if any."""
+        """The rent cycle one of whose landlord payouts this payment is, if any."""
         return self._s.fetch_one(
-            "SELECT cycle_id, settlement_month FROM rent_cycle WHERE funding_payment_id=%s",
+            "SELECT cycle_id, settlement_month FROM rent_disbursement WHERE funding_payment_id=%s",
             (payment_id,))
 
     def payer_display_name(self, resident_id: str) -> str | None:

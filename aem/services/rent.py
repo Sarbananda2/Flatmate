@@ -553,6 +553,23 @@ def _adoption_problem(expense: dict[str, Any], charges: list[dict[str, Any]]) ->
     return None
 
 
+def _advanced_by_resident(tranches: list[dict[str, Any]]) -> dict[str, int]:
+    """How much each resident has paid the landlord directly this month."""
+    advanced: dict[str, int] = {}
+    for tranche in tranches:
+        if tranche["disbursed_by"] == "resident_advance":
+            rid = tranche["funding_resident_id"]
+            advanced[rid] = advanced.get(rid, 0) + tranche["amount_paise"]
+    return advanced
+
+
+def _public_tranche(tranche: dict[str, Any]) -> dict[str, Any]:
+    return {key: tranche.get(key) for key in (
+        "disbursement_id", "cycle_id", "amount_paise", "disbursed_at", "disbursement_reference",
+        "disbursed_by", "funding_resident_id", "funding_resident_name", "funding_payment_id",
+        "note", "created_at")}
+
+
 def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
                config: dict[str, Any] | None) -> dict[str, Any]:
     """A rent cycle as the screen shows it.
@@ -560,30 +577,43 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
     Amounts are read from the expense and its allocations, which are the
     accounting record, so an edit made to the rent expense elsewhere is
     reflected here. ``collected_paise`` counts what residents have paid into
-    the pool against their rent charge, plus the own share of a resident who
-    paid the landlord directly -- their share was never going to come through
-    the pool.
+    the pool against their rent charge, plus what a resident paid the
+    landlord directly towards their own share -- that part was never going to
+    come through the pool.
+
+    The landlord may be paid in tranches: ``disbursements`` lists them,
+    ``disbursed_paise`` is their total and ``remaining_disbursement_paise``
+    what the landlord is still owed.
     """
     expense = get_expense(uow, cycle["expense_id"])
     charges = _charges(uow, cycle["expense_id"])
-    disbursed = cycle["disbursement_status"] == "disbursed"
-    funder = cycle["funding_resident_id"]
+    tranches = uow.rent.disbursements_for_cycle(cycle["cycle_id"])
+    advanced = _advanced_by_resident(tranches)
+    paid_out = cycle["disbursement_status"] != "pending"
     participants: list[dict[str, Any]] = []
     collected = 0
     for charge in charges:
-        outstanding = charge["share_paise"] - charge["settled_paise"]
-        if funder == charge["resident_id"]:
-            status, covered = "funded_payout", charge["share_paise"]
-        elif outstanding == 0:
-            status, covered = "paid", charge["share_paise"]
+        share, settled = charge["share_paise"], charge["settled_paise"]
+        own_advance = advanced.get(charge["resident_id"], 0)
+        covered = min(share, settled + own_advance)
+        if settled >= share:
+            status = "paid"
+        elif own_advance and covered >= share:
+            status = "funded_payout"
         else:
-            status = "partial" if charge["settled_paise"] else "unpaid"
-            covered = charge["settled_paise"]
+            status = "partial" if covered else "unpaid"
         collected += covered
         participants.append({
-            **charge, "outstanding_paise": outstanding, "collection_status": status,
-            "receipt_available": disbursed})
+            **charge, "outstanding_paise": share - settled, "collection_status": status,
+            "receipt_available": False})  # HRA receipt feature disabled (see DEBT-001)
     total = expense["amount_paise"]
+    disbursed_paise = sum(t["amount_paise"] for t in tranches)
+    remaining = (0 if cycle["disbursement_status"] == "disbursed"
+                 else max(0, total - disbursed_paise))
+    modes = {t["disbursed_by"] for t in tranches}
+    funders = sorted(advanced)
+    advances = [t for t in tranches if t["disbursed_by"] == "resident_advance"]
+    funder = funders[0] if len(funders) == 1 else None
     count = len(participants)
     names = _names(uow, cycle["apartment_id"])
     taking_part = {p["resident_id"] for p in participants}
@@ -620,20 +650,27 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
             for rid, name in sorted(names.items(), key=lambda item: (item[1], item[0]))
             if rid not in taking_part],
         "disbursement_status": cycle["disbursement_status"],
+        "disbursed_paise": disbursed_paise,
+        "remaining_disbursement_paise": remaining,
+        "disbursements": [_public_tranche(t) for t in tranches],
+        # The latest tranche's date and reference.
         "disbursed_at": cycle["disbursed_at"],
         "disbursement_reference": cycle["disbursement_reference"],
-        "disbursed_by": cycle["disbursed_by"],
+        # How the landlord was paid: one mode, or 'mixed' across tranches; and
+        # who advanced it, when that was one resident.
+        "disbursed_by": (next(iter(modes)) if len(modes) == 1 else "mixed" if modes else None),
         "funding_resident_id": funder,
         "funding_resident_name": names.get(funder) if funder else None,
-        "funding_payment_id": cycle["funding_payment_id"],
+        "funding_payment_id": (advances[0]["funding_payment_id"] if len(advances) == 1
+                               else None),
         "lease_rent_paise": config["monthly_rent_paise"] if config else None,
         "matches_lease_rent": config is None or config["monthly_rent_paise"] == total,
         "landlord_receipt": landlord_receipt,
-        # 'pending' only once the landlord has been paid: there is nothing to
-        # chase before that.
+        # 'pending' only once the landlord has been paid something: there is
+        # nothing to chase before that.
         "landlord_receipt_status": (
             "attached" if landlord_receipt
-            else "pending" if disbursed and config and config["requires_landlord_receipt"]
+            else "pending" if paid_out and config and config["requires_landlord_receipt"]
             else "not_required"),
         "statement": statement,
         "created_at": cycle["created_at"],
@@ -986,7 +1023,9 @@ def record_rent_payment(
                 f"{resident['display_name']} is not taking part in this month's rent.",
                 code="not_a_rent_participant",
                 details={"field": "resident_id", "resident_id": resident_id})
-        if cycle["funding_resident_id"] == resident_id:
+        own_advance = _advanced_by_resident(
+            uow.rent.disbursements_for_cycle(cycle["cycle_id"])).get(resident_id, 0)
+        if own_advance and own_advance >= sum(c["outstanding_paise"] for c in open_charges):
             raise ConflictError(
                 f"{resident['display_name']} paid the landlord for this month, which already "
                 "covers their share; the household owes them the rest.",
@@ -1070,31 +1109,37 @@ def receipt_hash(receipt: Mapping[str, Any]) -> str:
 
 def record_landlord_disbursement(
     db: Database, *, apartment_id: str, settlement_month: str, disbursement_mode: str,
-    reference: str, disbursed_date: str, funding_resident_id: str | None = None,
-    landlord_receipt: Mapping[str, Any] | None = None, actor: str = "operator",
+    reference: str, disbursed_date: str, amount_paise: int | None = None,
+    funding_resident_id: str | None = None, landlord_receipt: Mapping[str, Any] | None = None,
+    note: str | None = None, actor: str = "operator",
 ) -> dict[str, Any]:
-    """Record that the landlord has been paid the month's rent.
+    """Record a payment to the landlord towards the month's rent.
+
+    The landlord can be paid in tranches -- what has been collected by the due
+    date, and the rest when it comes in. ``amount_paise`` is this tranche;
+    left out, it is everything still owed. Each tranche is kept with its own
+    date and bank reference, and they can never add up to more than the rent.
+    The month is ``partially_disbursed`` until they reach it, then
+    ``disbursed`` and frozen.
 
     ``pool``
-        The rent left the apartment's pool. Nothing is added to the ledger: the
-        expense was already a cost to the pool, and the residents' payments into
-        the pool are what covered it.
+        The tranche left the apartment's pool. Nothing is added to the ledger:
+        the expense was already a cost to the pool, and the residents' payments
+        into the pool are what covered it.
 
     ``resident_advance``
-        One resident paid the landlord from their own account. A
-        ``provider_advance`` for the whole rent is linked to the rent expense,
-        crediting them the full amount while they keep their own share. While
-        the statement is still a draft and nobody has paid their rent charge
-        yet, the shares are also re-split so that any remainder paisa avoids
-        the resident who paid.
+        A resident paid it from their own account. A ``provider_advance`` for
+        the tranche is linked to the rent expense, crediting them with it while
+        they keep their own share. When one advance pays the whole rent at once,
+        the resident is also recorded as the expense's payer and -- while the
+        statement is still a draft and nobody has paid their rent charge yet --
+        the shares are re-split so that any remainder paisa avoids them.
 
-    Either way the cycle becomes ``disbursed`` and is frozen, and one immutable
-    HRA receipt is written for each participant.
-
-    The landlord's own receipt never holds up a payout. When the lease says the
+    No HRA receipts are written (they are switched off; see DEBT-001). The
+    landlord's own receipt never holds up a payout: when the lease says the
     landlord issues receipts, one may be attached here or later with
-    :func:`attach_landlord_receipt`, whenever it arrives. When the lease says
-    the landlord does not, attaching one is refused.
+    :func:`attach_landlord_receipt`. When it says they do not, attaching one is
+    refused.
     """
     settlement_month = normalize_month(settlement_month, "settlement_month")
     if disbursement_mode not in DISBURSEMENT_MODES:
@@ -1103,6 +1148,9 @@ def record_landlord_disbursement(
                                        "allowed": list(DISBURSEMENT_MODES)})
     reference = require_text(reference, "reference", max_length=200)
     disbursed_date = parse_iso_date(disbursed_date, "disbursed_date").isoformat()
+    note = optional_text(note, "note", max_length=500)
+    if amount_paise is not None:
+        amount_paise = ensure_paise(amount_paise, "amount_paise", allow_zero=False)
     if disbursement_mode == "pool" and funding_resident_id:
         raise ValidationError(
             "A payout from the pool has no funding resident.",
@@ -1122,10 +1170,10 @@ def record_landlord_disbursement(
             raise NotFoundError(
                 f"Rent for {month_label(settlement_month)} has not been generated.",
                 code="rent_cycle_not_found", details={"settlement_month": settlement_month})
-        if cycle["disbursement_status"] != "pending":
+        if cycle["disbursement_status"] == "disbursed":
             raise ConflictError(
-                f"The landlord payout for {month_label(settlement_month)} has already been "
-                "recorded.", code="rent_already_disbursed",
+                f"The rent for {month_label(settlement_month)} has already been paid to the "
+                "landlord in full.", code="rent_already_disbursed",
                 details={"cycle_id": cycle["cycle_id"], "disbursed_at": cycle["disbursed_at"]})
         config = _config_row(uow, apartment_id)
         if config is None:
@@ -1139,20 +1187,44 @@ def record_landlord_disbursement(
 
         expense = get_expense(uow, cycle["expense_id"], apartment_id)
         total = expense["amount_paise"]
-        linked = uow.rent.linked_advance_total_paise(expense["expense_id"])
+        tranches = uow.rent.disbursements_for_cycle(cycle["cycle_id"])
+        already = sum(t["amount_paise"] for t in tranches)
+        remaining = total - already
+        if remaining <= 0:
+            raise ConflictError(
+                f"The rent for {month_label(settlement_month)} has already been paid to the "
+                "landlord in full.", code="rent_already_disbursed",
+                details={"cycle_id": cycle["cycle_id"], "disbursed_paise": already})
+        amount = remaining if amount_paise is None else amount_paise
+        if amount > remaining:
+            raise ValidationError(
+                f"That is more than the {format_inr(remaining)} still owed to the landlord "
+                f"for {month_label(settlement_month)}.", code="tranche_exceeds_remaining",
+                details={"field": "amount_paise", "amount_paise": amount,
+                         "remaining_paise": remaining})
+        whole = not tranches and amount == total
+
+        # Advances linked to the expense other than this month's tranches mean
+        # someone already paid the landlord outside this screen.
+        tranche_advances = sum(t["amount_paise"] for t in tranches
+                               if t["disbursed_by"] == "resident_advance")
+        external = uow.rent.linked_advance_total_paise(expense["expense_id"]) - tranche_advances
+        named_payer = expense["payer_resident_id"] if not tranches else None
+        if external > 0 or (named_payer and not (disbursement_mode == "resident_advance"
+                                                 and whole)):
+            raise ConflictError(
+                "The rent expense already records a resident as having paid it, so the "
+                "payout cannot also have come from the pool or in parts. Record the whole "
+                "rent as that resident's advance, or correct the expense first.",
+                code="rent_already_funded",
+                details={"expense_id": expense["expense_id"],
+                         "payer_resident_id": expense["payer_resident_id"],
+                         "linked_advance_paise": external})
+
         funding_payment_id = None
-        if disbursement_mode == "pool":
-            if expense["payer_resident_id"] or linked:
-                raise ConflictError(
-                    "The rent expense already records a resident as having paid it, so the "
-                    "payout cannot also have come from the pool. Record it as a resident "
-                    "advance, or correct the expense first.", code="rent_already_funded",
-                    details={"expense_id": expense["expense_id"],
-                             "payer_resident_id": expense["payer_resident_id"],
-                             "linked_advance_paise": linked})
-        else:
+        if disbursement_mode == "resident_advance":
             get_resident(uow, funding_resident_id, apartment_id)
-            if statement_edit_mode(uow, expense["statement_id"]) == "free" \
+            if whole and statement_edit_mode(uow, expense["statement_id"]) == "free" \
                     and expense.get("allocation_method") == "equal":
                 current = {c["resident_id"]: c["share_paise"]
                            for c in _charges(uow, expense["expense_id"])}
@@ -1163,7 +1235,7 @@ def record_landlord_disbursement(
                 if {k: v for k, v in plan.shares_paise.items() if v} != current:
                     settled = sum(c["settled_paise"]
                                   for c in _charges(uow, expense["expense_id"]))
-                    if settled or expense.get("allocation_method") != "equal":
+                    if settled:
                         warnings.append(
                             "The rent does not divide evenly, and the remainder paisa was "
                             "left where it was because payments have already been applied "
@@ -1178,16 +1250,18 @@ def record_landlord_disbursement(
                             reason="Remainder paise moved away from the resident who paid "
                                    "the landlord",
                             new_value={k: v for k, v in plan.shares_paise.items() if v})
+            if whole:
                 uow.rent.set_expense_payer(expense["expense_id"],
                                            payer_resident_id=funding_resident_id,
                                            updated_at=timestamp)
             funding_payment_id = new_id("rent-advance")
             payments._record_payment(
                 uow, apartment_id=apartment_id, payment_id=funding_payment_id,
-                payer_resident_id=funding_resident_id, amount_paise=total,
+                payer_resident_id=funding_resident_id, amount_paise=amount,
                 payment_date=disbursed_date, payment_kind="provider_advance",
                 payee_or_provider=config["landlord_name"], reference=reference,
-                note=f"Rent for {month_label(settlement_month)} paid to the landlord",
+                note=(f"Rent for {month_label(settlement_month)} paid to the landlord"
+                      + ("" if whole else " (part payment)")),
                 timestamp=timestamp, expense_id=expense["expense_id"], actor=actor)
 
         charges = _charges(uow, expense["expense_id"])
@@ -1198,39 +1272,40 @@ def record_landlord_disbursement(
                 details={"expected_paise": total,
                          "allocated_paise": sum(c["share_paise"] for c in charges)})
 
-        uow.rent.mark_cycle_disbursed(
-            cycle["cycle_id"], disbursed_at=disbursed_date, disbursement_reference=reference,
-            disbursed_by=disbursement_mode, funding_resident_id=funding_resident_id,
-            funding_payment_id=funding_payment_id, total_rent_paise=total,
+        paid = already + amount
+        status = "disbursed" if paid >= total else "partially_disbursed"
+        # The cycle shows the latest tranche by date; one paid the same day as an
+        # earlier one is the later of the two.
+        latest = max([*tranches, {"disbursed_at": disbursed_date,
+                                  "disbursement_reference": reference, "seq": None}],
+                     key=lambda t: (t["disbursed_at"], t["seq"] is None, t["seq"] or 0))
+        uow.rent.update_cycle_disbursement_state(
+            cycle["cycle_id"], status=status, last_disbursed_at=latest["disbursed_at"],
+            last_reference=latest["disbursement_reference"], total_rent_paise=total,
             participant_count=len(charges))
-        for charge in charges:
-            receipt = {
-                "receipt_id": new_id("rentreceipt"), "cycle_id": cycle["cycle_id"],
-                "resident_id": charge["resident_id"], "settlement_month": settlement_month,
-                "amount_paise": charge["share_paise"],
-                "landlord_name": config["landlord_name"],
-                "landlord_pan": config["landlord_pan"] or "", "created_at": timestamp}
-            uow.rent.insert_receipt(
-                receipt_id=receipt["receipt_id"], cycle_id=receipt["cycle_id"],
-                resident_id=receipt["resident_id"],
-                settlement_month=receipt["settlement_month"],
-                amount_paise=receipt["amount_paise"], landlord_name=receipt["landlord_name"],
-                landlord_pan=receipt["landlord_pan"], verification_hash=receipt_hash(receipt),
-                created_at=receipt["created_at"])
+        disbursement_id = new_id("rentdisb")
+        uow.rent.insert_disbursement(
+            disbursement_id=disbursement_id, cycle_id=cycle["cycle_id"],
+            apartment_id=apartment_id, settlement_month=settlement_month, amount_paise=amount,
+            disbursed_at=disbursed_date, disbursement_reference=reference,
+            disbursed_by=disbursement_mode, funding_resident_id=funding_resident_id,
+            funding_payment_id=funding_payment_id, note=note, created_at=timestamp)
         if attachment:
             _store_landlord_receipt(uow, cycle["cycle_id"], attachment, timestamp)
         audit.record(
             uow, entity_type="rent_cycle", entity_id=cycle["cycle_id"], action="disburse",
             actor=actor, apartment_id=apartment_id,
-            new_value={"settlement_month": settlement_month, "total_rent_paise": total,
-                       "disbursed_by": disbursement_mode, "disbursed_at": disbursed_date,
-                       "disbursement_reference": reference,
+            new_value={"settlement_month": settlement_month, "disbursement_id": disbursement_id,
+                       "amount_paise": amount, "total_rent_paise": total,
+                       "disbursed_paise": paid, "remaining_paise": total - paid,
+                       "disbursement_status": status, "disbursed_by": disbursement_mode,
+                       "disbursed_at": disbursed_date, "disbursement_reference": reference,
                        "funding_resident_id": funding_resident_id,
-                       "funding_payment_id": funding_payment_id,
-                       "receipts_issued": len(charges),
+                       "funding_payment_id": funding_payment_id, "note": note,
                        "landlord_receipt_sha256": attachment["sha256"] if attachment else None})
         summary = _summarize(uow, _cycle_row(uow, apartment_id, settlement_month), config)
     summary["warnings"] = warnings
+    summary["disbursement_id"] = disbursement_id
     return summary
 
 
@@ -1322,7 +1397,7 @@ def attach_landlord_receipt(db: Database, *, apartment_id: str, settlement_month
             raise NotFoundError(
                 f"Rent for {month_label(settlement_month)} has not been generated.",
                 code="rent_cycle_not_found", details={"settlement_month": settlement_month})
-        if cycle["disbursement_status"] != "disbursed":
+        if cycle["disbursement_status"] == "pending":
             raise ConflictError(
                 "The landlord has not been paid for this month yet. Record the payout first; "
                 "the receipt can be attached then or afterwards.",

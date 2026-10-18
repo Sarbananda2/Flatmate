@@ -126,16 +126,41 @@ class RentRepository(Repository):
             "SELECT * FROM rent_cycle WHERE apartment_id=%s AND settlement_month=%s",
             (apartment_id, settlement_month))
 
-    def disbursed_cycles(self, apartment_id: str) -> list[dict[str, Any]]:
-        """Months whose rent has been paid to the landlord, in the order paid,
-        with the name of the resident who advanced it, if one did."""
+    def disbursements_for_apartment(self, apartment_id: str) -> list[dict[str, Any]]:
+        """Every payment made to the landlord, in the order paid, with the name of
+        the resident who advanced it, if one did."""
         return self._s.fetch_all(
-            """SELECT rc.*, r.display_name AS funding_resident_name
-                 FROM rent_cycle rc
-                 LEFT JOIN resident r ON r.resident_id = rc.funding_resident_id
-                WHERE rc.apartment_id = %s AND rc.disbursement_status = 'disbursed'
-                ORDER BY rc.disbursed_at, rc.settlement_month""",
+            """SELECT d.*, d.row_seq AS seq, r.display_name AS funding_resident_name
+                 FROM rent_disbursement d
+                 LEFT JOIN resident r ON r.resident_id = d.funding_resident_id
+                WHERE d.apartment_id = %s
+                ORDER BY d.disbursed_at, d.row_seq""",
             (apartment_id,))
+
+    def disbursements_for_cycle(self, cycle_id: str) -> list[dict[str, Any]]:
+        """The tranches a month's rent has been paid to the landlord in, oldest first."""
+        return self._s.fetch_all(
+            """SELECT d.*, d.row_seq AS seq, r.display_name AS funding_resident_name
+                 FROM rent_disbursement d
+                 LEFT JOIN resident r ON r.resident_id = d.funding_resident_id
+                WHERE d.cycle_id = %s
+                ORDER BY d.disbursed_at, d.row_seq""",
+            (cycle_id,))
+
+    def insert_disbursement(self, *, disbursement_id: str, cycle_id: str, apartment_id: str,
+                            settlement_month: str, amount_paise: int, disbursed_at: str,
+                            disbursement_reference: str, disbursed_by: str,
+                            funding_resident_id: str | None, funding_payment_id: str | None,
+                            note: str | None, created_at: str) -> None:
+        self._s.execute(
+            """INSERT INTO rent_disbursement
+               (disbursement_id, cycle_id, apartment_id, settlement_month, amount_paise,
+                disbursed_at, disbursement_reference, disbursed_by, funding_resident_id,
+                funding_payment_id, note, created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (disbursement_id, cycle_id, apartment_id, settlement_month, amount_paise,
+             disbursed_at, disbursement_reference, disbursed_by, funding_resident_id,
+             funding_payment_id, note, created_at))
 
     def insert_pending_cycle(self, *, cycle_id: str, apartment_id: str,
                              settlement_month: str, expense_id: str, total_rent_paise: int,
@@ -148,18 +173,17 @@ class RentRepository(Repository):
             (cycle_id, apartment_id, settlement_month, expense_id, total_rent_paise,
              participant_count, created_at))
 
-    def mark_cycle_disbursed(self, cycle_id: str, *, disbursed_at: str,
-                             disbursement_reference: str, disbursed_by: str,
-                             funding_resident_id: str | None,
-                             funding_payment_id: str | None, total_rent_paise: int,
-                             participant_count: int) -> int:
+    def update_cycle_disbursement_state(self, cycle_id: str, *, status: str,
+                                        last_disbursed_at: str, last_reference: str,
+                                        total_rent_paise: int, participant_count: int) -> int:
+        """The month's state after a tranche: its status, the latest tranche's date
+        and reference, and the rent and headcount the tranches were paid against."""
         return self._s.execute(
-            """UPDATE rent_cycle SET disbursement_status='disbursed', disbursed_at=%s,
-                      disbursement_reference=%s, disbursed_by=%s, funding_resident_id=%s,
-                      funding_payment_id=%s, total_rent_paise=%s, participant_count=%s
+            """UPDATE rent_cycle SET disbursement_status=%s, disbursed_at=%s,
+                      disbursement_reference=%s, total_rent_paise=%s, participant_count=%s
                 WHERE cycle_id=%s""",
-            (disbursed_at, disbursement_reference, disbursed_by, funding_resident_id,
-             funding_payment_id, total_rent_paise, participant_count, cycle_id))
+            (status, last_disbursed_at, last_reference, total_rent_paise, participant_count,
+             cycle_id))
 
     def statement_for_month(self, apartment_id: str,
                             settlement_month: str) -> dict[str, Any] | None:

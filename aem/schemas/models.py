@@ -862,6 +862,10 @@ class RentDisburseRequest(ApiModel):
     reference: str = Field(min_length=1, max_length=200,
                            description="Bank UTR or UPI transaction ID.")
     disbursed_date: str = Field(pattern=DATE_PATTERN)
+    amount_paise: int | None = _money_field(
+        "This tranche. Left out, everything still owed to the landlord for the month.",
+        ge=1, default=None)
+    note: str | None = Field(None, max_length=500)
     landlord_receipt: LandlordReceiptUpload | None = Field(
         None, description="Optional. It can be attached later, whenever the landlord sends it.")
 

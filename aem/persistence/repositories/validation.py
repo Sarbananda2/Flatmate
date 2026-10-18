@@ -60,10 +60,15 @@ class ValidationRepository(Repository):
                 WHERE e.apartment_id = %s""", (apartment_id,))
 
     def expenses_with_linked_advances(self, apartment_id: str) -> list[dict[str, Any]]:
-        """Expenses funded by at least one active linked advance, with the total."""
+        """Expenses funded by at least one active linked advance, with the total, and
+        how much of it is a resident's tranche of a month's landlord payout."""
         return self._s.fetch_all(
             """SELECT e.expense_id, e.description, e.amount_paise, e.payer_resident_id,
-                      COALESCE(SUM(p.amount_paise), 0)::BIGINT AS linked_paise
+                      COALESCE(SUM(p.amount_paise), 0)::BIGINT AS linked_paise,
+                      COALESCE(SUM(p.amount_paise) FILTER (WHERE EXISTS (
+                          SELECT 1 FROM rent_disbursement d
+                           WHERE d.funding_payment_id = p.payment_id)), 0)::BIGINT
+                          AS rent_tranche_paise
                  FROM expense_instance e
                  JOIN payment p ON p.expense_id = e.expense_id
                 WHERE e.apartment_id = %s AND p.payment_kind = 'provider_advance'
