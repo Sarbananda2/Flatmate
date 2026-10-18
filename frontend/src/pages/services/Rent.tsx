@@ -552,7 +552,7 @@ function PreviewPanel({
           <caption className="sr-only">Shares that generating rent would charge</caption>
           <thead>
             <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[40%] pb-3 pr-3 font-bold text-left">Resident</th>
+              <th scope="col" className="w-[40%] pb-3 pr-3 font-bold text-center">Resident</th>
               <th scope="col" className="w-[30%] pb-3 pr-3 font-bold text-center">Takes part</th>
               <th scope="col" className="w-[30%] pb-3 pr-3 font-bold text-center">Share</th>
             </tr>
