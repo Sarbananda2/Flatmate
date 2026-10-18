@@ -122,24 +122,8 @@ docker compose -f docker-compose.prod.yml up -d --build
 The app restarts (a few seconds of downtime) and applies any new database
 migrations as it starts. Data lives in the `postgres_data` volume and survives.
 
-## 7. Automatic deploys from GitHub Actions
+## 7. Automatic deploys
 
-Two workflows live in `.github/workflows/`:
-
-- **`ci.yml`** runs on every push to `main` and every pull request: the backend
-  tests against PostgreSQL, the frontend type check and tests, and a Docker build.
-- **`deploy.yml`** runs **only after CI passes** on `main` (or by hand from the
-  Actions tab). It connects to the server over SSH, checks out exactly the
-  commit CI tested, rebuilds, and waits for the app to answer.
-
-Until the server is set up, the deploy workflow just notes that there is
-nothing to deploy to. To switch it on, add these under
-**Settings → Secrets and variables → Actions → New repository secret**:
-
-| Secret | Value |
-| --- | --- |
-| `LIGHTSAIL_HOST` | the static IP |
-| `LIGHTSAIL_USER` | `ubuntu` |
-| `LIGHTSAIL_SSH_KEY` | the full contents of the Lightsail `.pem` key |
-
-From then on, every push to `main` that passes CI is deployed.
+The repository's deploy workflow publishes to **AWS App Runner** (see
+`deploy/DEPLOY_AWS_APPRUNNER_RDS.md`), not to a Lightsail server. On Lightsail,
+update by hand as in step 6. `ci.yml` still runs the tests on every push.

@@ -37,6 +37,8 @@ COPY --from=frontend-builder /build/frontend/dist ./frontend/dist
 
 EXPOSE 8787
 
-# Run migrations automatically, then start Uvicorn
-CMD ["sh", "-c", "python scripts/manage.py init && python scripts/manage.py serve --host 0.0.0.0 --port 8787"]
+# On a managed database's first start, create its roles (a no-op unless
+# AEM_DB_BOOTSTRAP_SECRET is set); then migrate as the migration role, and serve
+# as the runtime role.
+CMD ["sh", "-c", "python scripts/manage.py bootstrap-roles && python scripts/manage.py init && python scripts/manage.py serve --host 0.0.0.0 --port 8787"]
 

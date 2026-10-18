@@ -1,7 +1,8 @@
-name: CD - Deploy to AWS Lightsail
+name: CD - Publish to AWS App Runner
 
-# Deploys only what has passed CI: after the CI workflow succeeds on main, or
-# when started by hand from the Actions tab.
+# Publishes only what has passed CI: after the CI workflow succeeds on main, or
+# when started by hand from the Actions tab. The image goes to Amazon ECR as
+# :<commit> and :latest; App Runner deploys each new :latest by itself.
 on:
   workflow_run:
     workflows: [CI]
@@ -9,56 +10,68 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# One deployment at a time; a newer one waits rather than cutting one short.
+# One publish at a time; a newer one waits rather than cutting one short.
 concurrency:
   group: production-deploy
   cancel-in-progress: false
 
+permissions:
+  id-token: write   # to sign in to AWS with GitHub's OIDC token: no stored AWS keys
+  contents: read
+
 jobs:
-  deploy:
-    name: Deploy to Production
+  publish:
+    name: Build and publish the image
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     env:
-      # Until the server exists and its secrets are added, there is nothing to
-      # deploy to: say so instead of failing on every push.
-      SERVER_CONFIGURED: ${{ secrets.LIGHTSAIL_HOST != '' && secrets.LIGHTSAIL_SSH_KEY != '' }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY || 'flatmate-app' }}
       # The commit CI tested (or, run by hand, the tip of the chosen branch).
       DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
-      - name: Nothing to deploy to yet
-        if: env.SERVER_CONFIGURED != 'true'
+      - name: Nothing to publish to yet
+        if: vars.AWS_DEPLOY_ROLE_ARN == ''
         run: >-
-          echo "::notice::LIGHTSAIL_HOST and LIGHTSAIL_SSH_KEY are not set, so nothing was
-          deployed. Add them under Settings > Secrets and variables > Actions
-          (see deploy/DEPLOY_AWS_LIGHTSAIL.md)."
+          echo "::notice::The repository variable AWS_DEPLOY_ROLE_ARN is not set, so nothing
+          was published. See deploy/DEPLOY_AWS_APPRUNNER_RDS.md."
 
-      - name: Deploy to AWS Lightsail via SSH
-        if: env.SERVER_CONFIGURED == 'true'
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Check out the tested commit
+        if: vars.AWS_DEPLOY_ROLE_ARN != ''
+        uses: actions/checkout@v4
         with:
-          host: ${{ secrets.LIGHTSAIL_HOST }}
-          username: ${{ secrets.LIGHTSAIL_USER || 'ubuntu' }}
-          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
-          envs: DEPLOY_SHA
-          script: |
-            set -e
-            cd /home/ubuntu/aem
-            echo "==> Fetching $DEPLOY_SHA"
-            git fetch --quiet origin main
-            git checkout --quiet --detach "$DEPLOY_SHA"
-            echo "==> Rebuilding and restarting the containers (migrations run as the app starts)"
-            docker compose -f docker-compose.prod.yml up -d --build
-            docker compose -f docker-compose.prod.yml ps
-            echo "==> Waiting for the app to answer"
-            for attempt in $(seq 1 30); do
-              if docker compose -f docker-compose.prod.yml exec -T app \
-                   curl -fsS http://127.0.0.1:8787/health >/dev/null 2>&1; then
-                echo "==> Deployed $DEPLOY_SHA"
-                exit 0
-              fi
-              sleep 5
-            done
-            echo "The app did not come up healthy; recent logs:" >&2
-            docker compose -f docker-compose.prod.yml logs --tail 50 app >&2
-            exit 1
+          ref: ${{ env.DEPLOY_SHA }}
+
+      - name: Sign in to AWS
+        if: vars.AWS_DEPLOY_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sign in to Amazon ECR
+        if: vars.AWS_DEPLOY_ROLE_ARN != ''
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        if: vars.AWS_DEPLOY_ROLE_ARN != ''
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        if: vars.AWS_DEPLOY_ROLE_ARN != ''
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          # A plain image manifest: App Runner does not need attestations.
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.DEPLOY_SHA }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+
+      - name: Published
+        if: vars.AWS_DEPLOY_ROLE_ARN != ''
+        run: echo "::notice::Published ${{ env.ECR_REPOSITORY }}:${{ env.DEPLOY_SHA }} as :latest; App Runner deploys it."

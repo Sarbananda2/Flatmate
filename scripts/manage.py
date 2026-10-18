@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Database and server management for the Apartment Expense Manager.
 
+    python scripts/manage.py bootstrap-roles      first start on a managed database: roles  [master user]
     python scripts/manage.py init                 create or upgrade the schema  [migration role]
     python scripts/manage.py status               connection, schema version, record counts
     python scripts/manage.py serve                run the API (and the built UI)
@@ -21,6 +22,7 @@ or stops a database server: locally, ``./scripts/dev.sh`` or
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -66,6 +68,81 @@ def _migrating_database():
 
     settings = get_settings()
     return PostgresDatabase(settings.database, migration_config=_migration_settings())
+
+
+def cmd_bootstrap_roles(args: argparse.Namespace) -> int:
+    """Set a managed database up the way local_postgres.sh sets up a local one.
+
+    On a managed service (Amazon RDS) nothing runs inside the database's
+    network but the app, so the app does this on its first start. It needs the
+    master user's credentials in ``AEM_DB_BOOTSTRAP_SECRET`` -- the password, or
+    the JSON secret RDS keeps (``{"username": ..., "password": ...}``) -- and
+    does nothing without them, so they can be withdrawn once it has run.
+
+    Repeatable: it creates the migration and runtime roles (ordinary roles,
+    with the passwords configured for them) or resets their passwords, creates
+    the database owned by the migration role, and installs the trigger guard.
+    """
+    import psycopg
+    from psycopg import sql
+
+    secret = os.environ.get("AEM_DB_BOOTSTRAP_SECRET")
+    if not secret:
+        print("bootstrap-roles: AEM_DB_BOOTSTRAP_SECRET is not set; nothing to do.")
+        return 0
+    master_user = os.environ.get("AEM_DB_BOOTSTRAP_USER") or "postgres"
+    master_password = secret
+    try:
+        parsed = json.loads(secret)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        master_password = parsed["password"]
+        master_user = parsed.get("username") or master_user
+
+    settings = get_settings()
+    runtime, owner = settings.database, _migration_settings()
+    if not runtime.password:
+        raise PersistenceError("AEM_DB_PASSWORD, the runtime role's password, is not set.",
+                               code="runtime_password_missing")
+    connect = dict(host=runtime.host, port=runtime.port, user=master_user,
+                   password=master_password, sslmode=runtime.sslmode or "prefer",
+                   connect_timeout=15, autocommit=True,
+                   application_name="apartment-expense-manager-bootstrap")
+    identifier = sql.Identifier
+
+    with psycopg.connect(dbname=os.environ.get("AEM_DB_BOOTSTRAP_DATABASE") or "postgres",
+                         **connect) as conn:
+        for role, password in ((owner.user, owner.password), (runtime.user, runtime.password)):
+            exists = conn.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)).fetchone()
+            statement = ("ALTER ROLE {} WITH LOGIN NOCREATEDB NOCREATEROLE PASSWORD {}" if exists
+                         else "CREATE ROLE {} WITH LOGIN NOCREATEDB NOCREATEROLE PASSWORD {}")
+            conn.execute(sql.SQL(statement).format(identifier(role), sql.Literal(password)))
+            print(f"bootstrap-roles: role {role} {'updated' if exists else 'created'}")
+        if not conn.execute("SELECT 1 FROM pg_database WHERE datname = %s",
+                            (runtime.name,)).fetchone():
+            # Creating a database for another owner needs membership of that role.
+            conn.execute(sql.SQL("GRANT {} TO CURRENT_USER").format(identifier(owner.user)))
+            conn.execute(sql.SQL(
+                "CREATE DATABASE {} OWNER {} TEMPLATE template0 ENCODING 'UTF8' "
+                "LC_COLLATE 'C' LC_CTYPE 'C'").format(identifier(runtime.name),
+                                                     identifier(owner.user)))
+            print(f"bootstrap-roles: database {runtime.name} created, owned by {owner.user}")
+        # The runtime role connects through PUBLIC's CONNECT; temporary tables are DDL too.
+        conn.execute(sql.SQL("REVOKE TEMPORARY ON DATABASE {} FROM PUBLIC").format(
+            identifier(runtime.name)))
+
+    guard = (ROOT / "scripts" / "sql" / "trigger_guard.sql").read_text(encoding="utf-8")
+    try:
+        with psycopg.connect(dbname=runtime.name, **connect) as conn:
+            conn.execute(guard)
+        print("bootstrap-roles: trigger guard installed")
+    except psycopg.Error as exc:
+        # Event triggers need a superuser (on RDS, rds_superuser). Without the
+        # guard the app still works; /health reports it as missing.
+        print(f"bootstrap-roles: WARNING: the trigger guard could not be installed: "
+              f"{str(exc).strip()}")
+    return 0
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -399,6 +476,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    sub.add_parser("bootstrap-roles",
+                   help="first start on a managed database: create the roles and database"
+                   ).set_defaults(func=cmd_bootstrap_roles)
     sub.add_parser("init", help="create or upgrade the schema").set_defaults(func=cmd_init)
     sub.add_parser("status", help="schema version and record counts").set_defaults(func=cmd_status)
 
