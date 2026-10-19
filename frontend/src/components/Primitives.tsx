@@ -12,6 +12,7 @@ import { type ReactNode, useEffect, useId, useRef } from 'react'
 import { X } from 'lucide-react'
 import { ApiError } from '../api/client'
 import { formatInr } from '../lib/format'
+import { CardActions, type CardActionItem } from './ui'
 
 /* ------------------------------------------------------------------ money -- */
 
@@ -300,6 +301,7 @@ export function Card({
   title,
   hint,
   actions,
+  menuActions,
   footer,
   flush,
   children,
@@ -308,14 +310,17 @@ export function Card({
   title?: ReactNode
   hint?: ReactNode
   actions?: ReactNode
+  /** Header actions per Rule U9: one is an icon button, more fold into a menu. */
+  menuActions?: CardActionItem[]
   footer?: ReactNode
   flush?: boolean
   children: ReactNode
   id?: string
 }) {
+  const hasActions = Boolean(actions) || Boolean(menuActions?.length)
   return (
     <section className="card" id={id} aria-labelledby={id ? `${id}-title` : undefined}>
-      {(title || actions) && (
+      {(title || hasActions) && (
         <header className="card-header">
           {/* The title and hint take what is left; the actions keep their size,
               so a long hint wraps beside them and never pushes them below. */}
@@ -327,7 +332,12 @@ export function Card({
             )}
             {hint && <div className="card-hint">{hint}</div>}
           </div>
-          {actions && <div className="card-header-actions">{actions}</div>}
+          {hasActions && (
+            <div className="card-header-actions">
+              {actions}
+              {menuActions && <CardActions actions={menuActions} />}
+            </div>
+          )}
         </header>
       )}
       <div className={flush ? 'card-body card-body--flush' : 'card-body'}>{children}</div>

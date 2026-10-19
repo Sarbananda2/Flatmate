@@ -5,8 +5,9 @@
  * the two layout guards every new screen needs: text that can shrink is
  * truncated, and icons and pills never shrink.
  */
-import { type ReactNode, useEffect, useState } from 'react'
-import { Check, Copy, Pencil } from 'lucide-react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Check, Copy, MoreVertical, Pencil } from 'lucide-react'
 import { clsx } from 'clsx'
 import { formatInr } from '../lib/format'
 
@@ -384,6 +385,177 @@ export function EditButton({ label, onClick }: { label: string; onClick: () => v
       <Pencil className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
       Edit
     </button>
+  )
+}
+
+/** One action in a card or panel header (Rule U9). */
+export interface CardActionItem {
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  /** What the action does; or give `to` for one that goes to another page. */
+  onClick?: () => void
+  /** A page to go to: rendered as a link, so it opens in a new tab like any other. */
+  to?: string
+  tone?: 'default' | 'danger'
+  disabled?: boolean
+}
+
+const HEADER_TRIGGER =
+  'inline-flex items-center justify-center w-8 h-8 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:bg-[var(--bg-elevated)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors cursor-pointer shrink-0 disabled:opacity-50 disabled:cursor-not-allowed'
+
+/**
+ * A card header's actions (Rule U9): one action is a 32×32 icon button with
+ * its name as tooltip and accessible name; two or more fold into a "More
+ * options" menu, anchored bottom-right, that closes on an outside click or
+ * Escape and is worked with the arrow keys, Home and End.
+ */
+export function CardActions({ actions }: { actions?: CardActionItem[] }) {
+  const [open, setOpen] = useState(false)
+  const wrapper = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const menu = useRef<HTMLDivElement>(null)
+  const menuId = useId()
+
+  const items = () =>
+    Array.from(
+      menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([aria-disabled="true"])') ?? [],
+    )
+  const close = (returnFocus: boolean) => {
+    setOpen(false)
+    if (returnFocus) trigger.current?.focus()
+  }
+
+  useEffect(() => {
+    if (!open) return
+    // Opening the menu puts the keyboard on its first action.
+    items()[0]?.focus()
+    const onMouseDown = (event: MouseEvent) => {
+      if (wrapper.current && !wrapper.current.contains(event.target as Node)) setOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        close(true)
+      }
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  if (!actions || actions.length === 0) return null
+
+  if (actions.length === 1) {
+    const [action] = actions
+    const Icon = action.icon
+    const icon = <Icon className="w-4 h-4 shrink-0" aria-hidden="true" />
+    return action.to && !action.disabled ? (
+      <Link to={action.to} className={HEADER_TRIGGER} title={action.label} aria-label={action.label}>
+        {icon}
+      </Link>
+    ) : (
+      <button
+        type="button"
+        onClick={action.onClick}
+        disabled={action.disabled}
+        title={action.label}
+        aria-label={action.label}
+        className={HEADER_TRIGGER}
+      >
+        {icon}
+      </button>
+    )
+  }
+
+  const onMenuKeyDown = (event: React.KeyboardEvent) => {
+    const list = items()
+    const at = list.indexOf(document.activeElement as HTMLElement)
+    const move = (index: number) => {
+      event.preventDefault()
+      list[(index + list.length) % list.length]?.focus()
+    }
+    if (event.key === 'ArrowDown') move(at + 1)
+    else if (event.key === 'ArrowUp') move(at - 1)
+    else if (event.key === 'Home') move(0)
+    else if (event.key === 'End') move(list.length - 1)
+    else if (event.key === 'Tab') setOpen(false)
+  }
+
+  return (
+    <div className="relative inline-block text-left shrink-0" ref={wrapper}>
+      <button
+        ref={trigger}
+        type="button"
+        onClick={() => setOpen((shown) => !shown)}
+        title="More options"
+        aria-label="More options"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        className={HEADER_TRIGGER}
+      >
+        <MoreVertical className="w-4 h-4 shrink-0" aria-hidden="true" />
+      </button>
+      {open && (
+        <div
+          ref={menu}
+          id={menuId}
+          role="menu"
+          aria-orientation="vertical"
+          aria-label="More options"
+          onKeyDown={onMenuKeyDown}
+          className="absolute right-0 top-full mt-1.5 w-48 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1.5 shadow-lg z-30 focus:outline-none"
+        >
+          {actions.map((action) => {
+            const Icon = action.icon
+            const className = clsx(
+              'w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg text-left no-underline transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--bg-elevated)]',
+              action.tone === 'danger'
+                ? 'text-[var(--danger)] hover:bg-rose-500/10'
+                : 'text-[var(--text-primary)] hover:bg-[var(--bg-elevated)]',
+              action.disabled && 'opacity-50 cursor-not-allowed',
+            )
+            const content = (
+              <>
+                <Icon className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span>{action.label}</span>
+              </>
+            )
+            return action.to && !action.disabled ? (
+              <Link
+                key={action.label}
+                to={action.to}
+                role="menuitem"
+                tabIndex={-1}
+                className={className}
+                onClick={() => close(false)}
+              >
+                {content}
+              </Link>
+            ) : (
+              <button
+                key={action.label}
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                aria-disabled={action.disabled || undefined}
+                className={className}
+                onClick={() => {
+                  if (action.disabled) return
+                  close(true)
+                  action.onClick?.()
+                }}
+              >
+                {content}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }
 

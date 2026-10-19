@@ -10,7 +10,7 @@
  */
 import { useId, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowRight, LifeBuoy, Mail, MessageCircle, Phone, QrCode } from 'lucide-react'
+import { ArrowRight, LifeBuoy, Mail, MessageCircle, Pencil, Phone, QrCode, Settings } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Card, ErrorNotice, Modal } from '../components/Primitives'
 import { DateField, SelectField, TextField } from '../components/Form'
@@ -20,7 +20,6 @@ import {
   BUTTON_QUIET,
   BUTTON_SECONDARY,
   CopyButton,
-  EditButton,
   Pill,
   type Tone,
 } from '../components/ui'
@@ -293,11 +292,7 @@ export function HousingSpaceCard({ resident, residentId }: { resident: Resident;
       id="resident-housing"
       title="Space & Housing"
       hint="Their room, what they were handed, their deposit, and how long they have lived here."
-      actions={
-        <Link to="/housing?tab=allotment" className={BUTTON_SECONDARY} aria-label="Manage room allotment">
-          Manage
-        </Link>
-      }
+      menuActions={[{ label: 'Manage room allotment', icon: Settings, to: '/housing?tab=allotment' }]}
     >
       <dl className="m-0 space-y-3">
         <DossierRow label="Room & space">
@@ -375,7 +370,7 @@ export function ContactWorkCard({ resident, onReload }: { resident: Resident; on
       id="resident-contact"
       title="Contact & Work"
       hint="How to reach and pay them, and what they do."
-      actions={<EditButton label="Edit contact and work" onClick={() => setEditing(true)} />}
+      menuActions={[{ label: 'Edit contact and work', icon: Pencil, onClick: () => setEditing(true) }]}
     >
       <dl className="m-0 space-y-3">
         <DossierRow label="Phone">
@@ -549,7 +544,9 @@ export function TenancyLogisticsCard({ resident, onReload }: { resident: Residen
       id="resident-tenancy"
       title="Tenancy & Logistics"
       hint="What they agreed to when they moved in, and their vehicle and building access."
-      actions={<EditButton label="Edit tenancy and logistics" onClick={() => setEditing(true)} />}
+      menuActions={[
+        { label: 'Edit tenancy and logistics', icon: Pencil, onClick: () => setEditing(true) },
+      ]}
     >
       <dl className="m-0 space-y-3">
         <DossierRow label="Master lease">
@@ -732,7 +729,7 @@ export function KycEmergencyCard({ resident, onReload }: { resident: Resident; o
       id="resident-kyc"
       title="KYC & Emergency"
       hint="Identity and local verification, and who to call if something goes wrong."
-      actions={<EditButton label="Edit KYC and emergency" onClick={() => setEditing(true)} />}
+      menuActions={[{ label: 'Edit KYC and emergency', icon: Pencil, onClick: () => setEditing(true) }]}
     >
       <dl className="m-0 space-y-3">
         <DossierRow label="Government ID">

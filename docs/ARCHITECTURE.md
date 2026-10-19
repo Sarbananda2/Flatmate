@@ -430,6 +430,12 @@ The frontend enforces strict UX, state-separation, and visual presentation invar
 * **Rationale:** Editorial "measure" rules (capping lines at 65–75 characters) are designed for multi-paragraph prose (essays, blog posts, and documentation) to prevent tracking fatigue. In modern application dashboards with wide cards and responsive layouts, capping subtitles causes premature, unbalanced line breaks—often stranding 3–4 trailing words on a second line while leaving 40–60% of the right-hand canvas completely empty.
 * **Implementation Standard:** Subtitles and hints must take full width (`width: 100%` or `flex: 1; min-width: 0;`), wrapping naturally only when text reaches the actual right padding of the container or collides with trailing action buttons.
 
+### Rule U9: Card Action Header Invariant (Icon-Only Single Trigger & Overflow Menu for Multi-Actions)
+* **Single Action Invariant:** When a card or panel header owns a single action (e.g., "Edit", "Manage", or "Settings"), it must render strictly as an icon-only button (e.g., `<Pencil className="w-4 h-4" />`), accompanied by an accessible `title` tooltip and `aria-label`. Bulky text buttons in card headers are strictly prohibited because they consume horizontal space and cause premature subtitle wrapping.
+* **Multiple Actions Invariant (Overflow Menu):** When a card or panel header provides more than one action (2 or more buttons), actions must never be rendered side-by-side as a row of text buttons. Instead, they must collapse into a single three vertical dots overflow button (`<MoreVertical className="w-4 h-4" />`), which opens a focused, accessible dropdown menu on click.
+* **Dropdown Menu Specifications:** The dropdown menu must be anchored to the bottom-right of the trigger, render each option with its corresponding icon and concise label, close on outside click or `Escape`, and support keyboard navigation.
+* **Header Geometry Invariant:** The header action trigger must maintain fixed dimensions (32×32px, `shrink-0`), guaranteeing card titles and subtitles have 100% available horizontal measure without triggering line wraps.
+
 ---
 
 ## Domain Modeling & Field Atomicity Standards

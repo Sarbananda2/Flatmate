@@ -307,7 +307,10 @@ describe('Tenancy & Logistics', () => {
     const card = screen.getByRole('region', { name: 'Tenancy & Logistics' })
     expect(card).toHaveTextContent('Co-tenant')
     expect(within(card).getAllByText('Not recorded')).toHaveLength(5)
-    expect(within(card).getByRole('button', { name: 'Edit tenancy and logistics' })).toHaveTextContent('Edit')
+    // The header's one action is an icon, named by its tooltip (Rule U9).
+    const edit = within(card).getByRole('button', { name: 'Edit tenancy and logistics' })
+    expect(edit).toHaveAttribute('title', 'Edit tenancy and logistics')
+    expect(edit.textContent).toBe('')
   })
 
   it('saves whole days, upper-cases the registration, and drops it without a vehicle', async () => {
