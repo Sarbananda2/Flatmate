@@ -7,6 +7,7 @@
  * shown a code to pay something that is already paid.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FlatmateSharesPanel, MonthlyStatementCard, StatementSlip } from './ResidentStatement'
@@ -102,7 +103,12 @@ function clipboard() {
   return writeText
 }
 
-const show = (ui: React.ReactElement) => render(<ToastProvider>{ui}</ToastProvider>)
+const show = (ui: React.ReactElement) =>
+  render(
+    <MemoryRouter>
+      <ToastProvider>{ui}</ToastProvider>
+    </MemoryRouter>,
+  )
 
 describe('StatementSlip', () => {
   it('itemizes the charges, the credits and the net due', () => {
@@ -262,6 +268,11 @@ describe('FlatmateSharesPanel', () => {
     expect(bobRow).toHaveTextContent('₹13,000.00')
     expect(bobRow).toHaveTextContent('₹3,450.00')
     expect(bobRow).toHaveTextContent('Owes the pool')
+    // The name leads to Bob's full statement and ledger.
+    expect(within(bobRow).getByRole('link', { name: 'Bob' })).toHaveAttribute(
+      'href',
+      '/statements/residents/bob',
+    )
     const chrisRow = within(table).getByRole('row', { name: /Chris/ })
     expect(chrisRow).toHaveTextContent('₹750.00')
     expect(chrisRow).toHaveTextContent('Owed by the pool')

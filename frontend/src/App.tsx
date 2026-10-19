@@ -16,6 +16,7 @@ import ReconciliationPage from './pages/Reconciliation'
 import RentPage from './pages/services/Rent'
 import ReportsPage from './pages/Reports'
 import ResidentDetailPage from './pages/ResidentDetail'
+import ResidentStatementPage from './pages/ResidentStatement'
 import ResidentsPage from './pages/Residents'
 import ServicesHubPage from './pages/services/ServicesHub'
 import SetupPage from './pages/Setup'
@@ -115,6 +116,7 @@ function SignedInApp() {
         <Route path="/payments" element={<PaymentsPage />} />
         <Route path="/statements" element={<StatementsPage />} />
         <Route path="/statements/:statementId" element={<StatementDetailPage />} />
+        <Route path="/statements/residents/:residentId" element={<ResidentStatementPage />} />
         <Route path="/reconciliation" element={<ReconciliationPage />} />
         <Route path="/transactions" element={<TransactionsPage />} />
         <Route path="/reports" element={<ReportsPage />} />

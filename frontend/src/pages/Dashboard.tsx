@@ -39,7 +39,6 @@ import {
   TransferDestination,
 } from '../components/ui'
 import { useMutation, useResource } from '../lib/useApi'
-import { ResidentStatementDialog } from './ResidentStatement'
 import {
   formatDate,
   formatHoursRemaining,
@@ -94,7 +93,6 @@ function MonthHub({
   )
   const [sharing, setSharing] = useState(false)
   const [settling, setSettling] = useState<TransferSuggestion | null>(null)
-  const [viewingStatement, setViewingStatement] = useState<{ id: string; name: string } | null>(null)
 
   const monthBills = (bills.data?.items ?? []).filter((bill) => bill.settlement_period === month)
   const residents = data.accounts.filter((account) => account.account_type === 'resident')
@@ -161,7 +159,6 @@ function MonthHub({
                   transfer={transfer}
                   note={upiNote(transfer, data.apartment.name, month)}
                   onSettle={() => setSettling(transfer)}
-                  onViewStatement={setViewingStatement}
                 />
               ))}
             </ul>
@@ -275,14 +272,6 @@ function MonthHub({
           statementId={data.statement?.statement_id ?? null}
           fallbackText={whatsAppSummary(data, monthBills, month)}
           onClose={() => setSharing(false)}
-        />
-      )}
-      {viewingStatement && (
-        <ResidentStatementDialog
-          residentId={viewingStatement.id}
-          residentName={viewingStatement.name}
-          month={month}
-          onClose={() => setViewingStatement(null)}
         />
       )}
       {settling && (
@@ -483,12 +472,10 @@ function TransferRow({
   transfer,
   note,
   onSettle,
-  onViewStatement,
 }: {
   transfer: TransferSuggestion
   note: string
   onSettle: () => void
-  onViewStatement: (resident: { id: string; name: string }) => void
 }) {
   // The breakdown behind a transfer is the payer's statement, or the payee's
   // when the pool is paying them out.
@@ -527,15 +514,14 @@ function TransferRow({
       <div className="flex flex-wrap items-center gap-2 shrink-0">
         <CopyButton text={note} label="Copy UPI Note" />
         {targetResident && (
-          <button
-            type="button"
+          <Link
+            to={`/statements/residents/${encodeURIComponent(targetResident.id)}`}
             className={BUTTON_SECONDARY}
-            title={`View breakdown for ${targetResident.name}`}
+            title={`View monthly statement breakdown for ${targetResident.name}`}
             aria-label={`View Statement for ${targetResident.name}`}
-            onClick={() => onViewStatement(targetResident)}
           >
             View Statement
-          </button>
+          </Link>
         )}
         <button type="button" className={BUTTON_QUIET} onClick={onSettle}>
           Mark Settle
