@@ -39,6 +39,7 @@ import {
   TransferDestination,
 } from '../components/ui'
 import { useMutation, useResource } from '../lib/useApi'
+import { ResidentStatementDialog } from './ResidentStatement'
 import {
   formatDate,
   formatHoursRemaining,
@@ -93,6 +94,7 @@ function MonthHub({
   )
   const [sharing, setSharing] = useState(false)
   const [settling, setSettling] = useState<TransferSuggestion | null>(null)
+  const [viewingStatement, setViewingStatement] = useState<{ id: string; name: string } | null>(null)
 
   const monthBills = (bills.data?.items ?? []).filter((bill) => bill.settlement_period === month)
   const residents = data.accounts.filter((account) => account.account_type === 'resident')
@@ -159,6 +161,7 @@ function MonthHub({
                   transfer={transfer}
                   note={upiNote(transfer, data.apartment.name, month)}
                   onSettle={() => setSettling(transfer)}
+                  onViewStatement={setViewingStatement}
                 />
               ))}
             </ul>
@@ -272,6 +275,14 @@ function MonthHub({
           statementId={data.statement?.statement_id ?? null}
           fallbackText={whatsAppSummary(data, monthBills, month)}
           onClose={() => setSharing(false)}
+        />
+      )}
+      {viewingStatement && (
+        <ResidentStatementDialog
+          residentId={viewingStatement.id}
+          residentName={viewingStatement.name}
+          month={month}
+          onClose={() => setViewingStatement(null)}
         />
       )}
       {settling && (
@@ -472,17 +483,22 @@ function TransferRow({
   transfer,
   note,
   onSettle,
+  onViewStatement,
 }: {
   transfer: TransferSuggestion
   note: string
   onSettle: () => void
+  onViewStatement: (resident: { id: string; name: string }) => void
 }) {
   // The breakdown behind a transfer is the payer's statement, or the payee's
   // when the pool is paying them out.
-  const debtorResidentId = transfer.from_account !== POOL_ACCOUNT_ID ? transfer.from_account : null
-  const creditorResidentId = transfer.to_account !== POOL_ACCOUNT_ID ? transfer.to_account : null
-  const statementResidentId = debtorResidentId ?? creditorResidentId
-  const statementName = debtorResidentId ? transfer.from_display_name : transfer.to_display_name
+  const debtorId = transfer.from_account !== POOL_ACCOUNT_ID ? transfer.from_account : null
+  const creditorId = transfer.to_account !== POOL_ACCOUNT_ID ? transfer.to_account : null
+  const targetResident = debtorId
+    ? { id: debtorId, name: transfer.from_display_name }
+    : creditorId
+      ? { id: creditorId, name: transfer.to_display_name }
+      : null
   const party = (id: string | null, name: string) =>
     id ? (
       <Link
@@ -500,25 +516,26 @@ function TransferRow({
         <Avatar name={transfer.from_display_name} tone="danger" />
         <div className="min-w-0">
           <div className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5 min-w-0">
-            {party(debtorResidentId, transfer.from_display_name)}
+            {party(debtorId, transfer.from_display_name)}
             <ArrowRight className="w-3.5 h-3.5 shrink-0 text-[var(--text-tertiary)]" aria-hidden="true" />
             <span className="sr-only">pays</span>
-            {party(creditorResidentId, transfer.to_display_name)}
+            {party(creditorId, transfer.to_display_name)}
           </div>
           <Rupees paise={transfer.amount_paise} tone="danger" className="block text-sm font-bold mt-0.5" />
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 shrink-0">
         <CopyButton text={note} label="Copy UPI Note" />
-        {statementResidentId && (
-          <Link
-            to={`/residents/${encodeURIComponent(statementResidentId)}`}
+        {targetResident && (
+          <button
+            type="button"
             className={BUTTON_SECONDARY}
-            title={`View monthly statement and breakdown for ${statementName}`}
-            aria-label={`View Statement for ${statementName}`}
+            title={`View breakdown for ${targetResident.name}`}
+            aria-label={`View Statement for ${targetResident.name}`}
+            onClick={() => onViewStatement(targetResident)}
           >
             View Statement
-          </Link>
+          </button>
         )}
         <button type="button" className={BUTTON_QUIET} onClick={onSettle}>
           Mark Settle

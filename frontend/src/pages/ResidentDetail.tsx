@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { LogOut } from 'lucide-react'
+import { LogOut, Pencil } from 'lucide-react'
 import { Page, useApp } from '../components/Layout'
 import { DateField } from '../components/Form'
 import {
@@ -14,7 +14,7 @@ import {
   StatementStatusBadge,
 } from '../components/Primitives'
 import { useToast } from '../components/Toast'
-import { BUTTON_PRIMARY } from '../components/ui'
+import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../components/ui'
 import { useResource } from '../lib/useApi'
 import { api } from '../api/client'
 import {
@@ -175,7 +175,60 @@ function Body({
         />
       )}
 
-      <MonthlyStatementCard residentId={residentId} initialMonth={month} />
+      {/* Where they stand in the tenancy, and the way to change their profile. */}
+      <section
+        aria-label="Tenancy status"
+        className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3"
+      >
+        <div className="stack stack--tight min-w-0">
+          <div className="row">
+            {active ? <Badge tone="ok">Living here</Badge> : <Badge tone="neutral">Moved out</Badge>}
+            <span className="subtle">
+              {data.resident.active_from ? `From ${formatDate(data.resident.active_from)}` : 'Move-in date not recorded'}
+              {data.resident.active_until ? ` until ${formatDate(data.resident.active_until)}` : ''}
+            </span>
+          </div>
+          {data.resident.notes && <p className="muted" style={{ margin: 0 }}>{data.resident.notes}</p>}
+        </div>
+        <button type="button" className={BUTTON_SECONDARY} onClick={() => setEditingProfile(true)}>
+          <Pencil className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+          Edit Profile
+        </button>
+      </section>
+
+      {/* Their place in the home, and how to reach and pay them. */}
+      <div className="grid grid--halves">
+        <div className="stack">
+          <AssignedRoomCard residentId={residentId} />
+          <ResidentDepositCard residentId={residentId} />
+        </div>
+        <div className="stack">
+          <ContactCard resident={data.resident} onEdit={() => setEditingProfile(true)} />
+          <UpiCard resident={data.resident} />
+        </div>
+      </div>
+
+      {editingProfile && (
+        <EditProfileDialog
+          resident={data.resident}
+          onClose={() => setEditingProfile(false)}
+          onSaved={() => {
+            setEditingProfile(false)
+            onReload()
+            toast.success('Profile saved')
+          }}
+        />
+      )}
+
+      {/* Where they stand with the household over the whole tenancy. */}
+      {account && (
+        <section
+          aria-label="Net balance"
+          className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-4 py-3.5 text-base font-semibold"
+        >
+          <NetBalance paise={account.net_position_paise} name={data.resident.display_name} />
+        </section>
+      )}
 
       <div className="grid grid--stats">
         <Stat
@@ -216,109 +269,68 @@ function Body({
         />
       </div>
 
-      <div className="grid grid--halves">
-        <ContactCard resident={data.resident} onEdit={() => setEditingProfile(true)} />
-        <UpiCard resident={data.resident} />
-      </div>
-
-      <AssignedRoomCard residentId={residentId} />
-
-      <ResidentDepositCard residentId={residentId} />
-
-      {editingProfile && (
-        <EditProfileDialog
-          resident={data.resident}
-          onClose={() => setEditingProfile(false)}
-          onSaved={() => {
-            setEditingProfile(false)
-            onReload()
-            toast.success('Profile saved')
-          }}
-        />
-      )}
-
-      <div className="grid grid--halves">
-        <Card title="Status">
+      <Card
+        title="Opening balance / Prior dues"
+        hint="Balances carried over from before this application was used."
+        actions={
+          isEditable && (
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              onClick={startEditOpening}
+            >
+              {openingBal ? 'Edit' : 'Set opening balance'}
+            </button>
+          )
+        }
+      >
+        {openingBal ? (
           <div className="stack stack--tight">
-            <div className="row">
-              {active ? <Badge tone="ok">Living here</Badge> : <Badge tone="neutral">Moved out</Badge>}
-              <span className="subtle">
-                {data.resident.active_from ? `From ${formatDate(data.resident.active_from)}` : 'Move-in date not recorded'}
-                {data.resident.active_until ? ` until ${formatDate(data.resident.active_until)}` : ''}
-              </span>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <span className="subtle">Initial position:</span>
+              <Money
+                paise={openingBal.amount_paise}
+                sign="always"
+                tone={openingBal.amount_paise < 0 ? 'owed-by' : 'credit'}
+              />
             </div>
-            {account && (
-              <div>
-                <NetBalance paise={account.net_position_paise} name={data.resident.display_name} />
+            <div className="subtle">
+              {openingBal.amount_paise < 0
+                ? 'Resident owed the household prior to start'
+                : 'Household owed this resident prior to start'}
+              {openingBal.as_of_date && ` (as of ${formatDate(openingBal.as_of_date)})`}
+            </div>
+            {openingBal.amount_paise < 0 && (
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <span className="subtle">Settlement progress:</span>
+                <span>
+                  <Money paise={openingBal.settled_paise} /> settled ·{' '}
+                  <Money paise={openingBal.outstanding_paise} tone="owed-by" /> remaining
+                </span>
               </div>
             )}
-            {data.resident.notes && <p className="muted" style={{ margin: 0 }}>{data.resident.notes}</p>}
+            {openingBal.note && <p className="muted" style={{ margin: 0 }}>{openingBal.note}</p>}
+            {!isEditable && (
+              <div className="subtle" style={{ fontStyle: 'italic' }}>
+                Locked because statements have been finalized. Post-close corrections use ledger adjustments.
+              </div>
+            )}
           </div>
-        </Card>
-
-        <Card
-          title="Opening balance / Prior dues"
-          hint="Balances carried over from before this application was used."
-          actions={
-            isEditable && (
-              <button
-                type="button"
-                className="btn btn--secondary btn--sm"
-                onClick={startEditOpening}
-              >
-                {openingBal ? 'Edit' : 'Set opening balance'}
-              </button>
-            )
-          }
-        >
-          {openingBal ? (
-            <div className="stack stack--tight">
-              <div className="row" style={{ justifyContent: 'space-between' }}>
-                <span className="subtle">Initial position:</span>
-                <Money
-                  paise={openingBal.amount_paise}
-                  sign="always"
-                  tone={openingBal.amount_paise < 0 ? 'owed-by' : 'credit'}
-                />
-              </div>
-              <div className="subtle">
-                {openingBal.amount_paise < 0
-                  ? 'Resident owed the household prior to start'
-                  : 'Household owed this resident prior to start'}
-                {openingBal.as_of_date && ` (as of ${formatDate(openingBal.as_of_date)})`}
-              </div>
-              {openingBal.amount_paise < 0 && (
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <span className="subtle">Settlement progress:</span>
-                  <span>
-                    <Money paise={openingBal.settled_paise} /> settled ·{' '}
-                    <Money paise={openingBal.outstanding_paise} tone="owed-by" /> remaining
-                  </span>
-                </div>
-              )}
-              {openingBal.note && <p className="muted" style={{ margin: 0 }}>{openingBal.note}</p>}
-              {!isEditable && (
-                <div className="subtle" style={{ fontStyle: 'italic' }}>
-                  Locked because statements have been finalized. Post-close corrections use ledger adjustments.
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="stack stack--tight">
-              <span className="subtle">No opening balance recorded for this resident.</span>
-              {isEditable ? (
-                <p className="muted" style={{ margin: 0, fontSize: '0.875rem' }}>
-                  If this resident owed dues or was owed credit before using this app, you can enter it here.
-                </p>
-              ) : (
-                <span className="subtle" style={{ fontStyle: 'italic' }}>
-                  Locked because a statement has already been finalized.
-                </span>
-              )}
-            </div>
-          )}
-        </Card>
-      </div>
+        ) : (
+          <div className="stack stack--tight">
+            <span className="subtle">No opening balance recorded for this resident.</span>
+            {isEditable ? (
+              <p className="muted" style={{ margin: 0, fontSize: '0.875rem' }}>
+                If this resident owed dues or was owed credit before using this app, you can enter it here.
+              </p>
+            ) : (
+              <span className="subtle" style={{ fontStyle: 'italic' }}>
+                Locked because a statement has already been finalized.
+              </span>
+            )}
+          </div>
+        )}
+      </Card>
 
       {editingOpening && (
         <div className="modal-backdrop">
@@ -408,6 +420,11 @@ function Body({
         </div>
       )}
 
+      {/* The month on its own, ready to send. */}
+      <MonthlyStatementCard residentId={residentId} initialMonth={month} />
+
+
+      {/* The tenancy ledger. */}
       <Card
         title="Charges by settlement month"
         hint="A charge is this resident's share of a household expense. Settled means a payment has been applied to it."

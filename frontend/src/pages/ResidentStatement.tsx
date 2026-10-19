@@ -413,6 +413,39 @@ export function MonthlyStatementCard({
   )
 }
 
+/** One resident's statement slip for a month, in a dialog: the Monthly
+ * Statement & Sharing breakdown, opened from wherever their name appears. */
+export function ResidentStatementDialog({
+  residentId,
+  residentName,
+  month,
+  onClose,
+}: {
+  residentId: string
+  residentName: string
+  month: string
+  onClose: () => void
+}) {
+  const resource = useResource<ResidentMonthlyStatement>(statementPath(residentId, month))
+  return (
+    <Modal
+      title={`${residentName} — ${formatMonth(month)}`}
+      description="Their personal statement for the month."
+      onClose={onClose}
+      wide
+      footer={
+        <button type="button" className={BUTTON_PRIMARY} onClick={onClose}>
+          Done
+        </button>
+      }
+    >
+      <AsyncSection resource={resource} loadingLabel="Working out the statement…">
+        {(statement) => <StatementSlip statement={statement} />}
+      </AsyncSection>
+    </Modal>
+  )
+}
+
 /** Every flatmate's share for one month, each with its message to send. */
 export function FlatmateSharesPanel({ month }: { month: string }) {
   const resource = useResource<FlatmateStatementList>(`/api/statements/${month}/flatmates`)
