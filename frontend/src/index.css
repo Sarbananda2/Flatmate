@@ -333,11 +333,10 @@ table.data thead th {
   white-space: nowrap;
   position: sticky; top: 0; z-index: 1;
 }
-/* Column headers are centred in every data table, except a numeric column's,
-   which sits right, over its figures (Rule U3). The cells beneath keep their
-   own alignment: text left, figures right. */
+/* Column headers are centred in every data table, and so are the figures
+   beneath them, so each column's header sits over its entries (Rule U3). */
 table.data thead th { text-align: center; }
-table.data thead th.num { text-align: right; }
+table.data thead th.num { text-align: center; }
 /* The passbooks: six columns and a description that wraps, so their cells are
    a little tighter and the table stays inside its card on a laptop. The outer
    columns still line up with the card's own padding; phones keep theirs. */
@@ -360,12 +359,13 @@ table.data tfoot td, table.data tfoot th {
   border-bottom: none;
 }
 .num {
-  text-align: right;
+  text-align: center;
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-th.num { text-align: right; }
+th.num { text-align: center; }
+table.data td.num, table.data th.num, table.data tfoot td.num { text-align: center; }
 .sort-button {
   background: none; border: none; padding: 0; margin: 0;
   font: inherit; color: inherit; cursor: pointer;

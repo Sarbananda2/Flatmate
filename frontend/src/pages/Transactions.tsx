@@ -374,7 +374,7 @@ export default function TransactionsPage() {
                             {row.status.replace(/_/g, ' ')}
                           </Pill>
                         </td>
-                        <td className="py-3.5 text-right font-bold text-[var(--text-primary)]">
+                        <td className="py-3.5 text-center font-bold text-[var(--text-primary)]">
                           <Rupees
                             paise={row.amount_paise}
                             signed={row.transaction_type === 'adjustment'}

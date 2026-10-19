@@ -142,10 +142,10 @@ export default function StatementsPage() {
                       <td className="py-3.5 pr-3">
                         <StatementPill status={statement.status} />
                       </td>
-                      <td className="py-3.5 pr-3 text-right tabular text-[var(--text-secondary)]">
+                      <td className="py-3.5 pr-3 text-center tabular text-[var(--text-secondary)]">
                         {statement.expense_count}
                       </td>
-                      <td className="py-3.5 pr-3 text-right font-bold text-[var(--text-primary)]">
+                      <td className="py-3.5 pr-3 text-center font-bold text-[var(--text-primary)]">
                         <Rupees paise={statement.statement_total_paise} />
                       </td>
                       <td className="py-3.5 pr-3 whitespace-nowrap text-[var(--text-secondary)]">
@@ -175,7 +175,7 @@ export default function StatementsPage() {
                           'not finalized'
                         )}
                       </td>
-                      <td className="py-3.5 text-right tabular text-[var(--text-secondary)]">
+                      <td className="py-3.5 text-center tabular text-[var(--text-secondary)]">
                         {statement.revision_count}
                       </td>
                     </tr>

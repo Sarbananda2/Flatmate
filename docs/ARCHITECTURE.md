@@ -404,8 +404,9 @@ The frontend enforces strict UX, state-separation, and visual presentation invar
   1. **Modal / Dialog Mode (Preferred for cards and lists):** Clicking "Edit" opens a focused dialog containing the form inputs, keeping the background read-only view undisturbed until save/cancel.
   2. **In-Place Toggle Mode:** Clicking "Edit" replaces the display view with the form inputs, along with explicit `Save Changes` and `Cancel` buttons. Canceling or saving restores the Read-Only display view.
 
-### Rule U3: Universal Table Header Alignment
-* **Invariant:** In every data table across all screens, column headers (`<th>`) are center-aligned (`text-center`), except numeric columns (`th.num`), whose headers are right-aligned over their figures.
+### Rule U3: Universal Table Header & Data Alignment
+* **Invariant:** In every data table across all screens, column headers (`<th>`) and numeric/status data cells (`td.num`, `th.num`) are center-aligned (`text-center`), ensuring full visual symmetry and balance between the column header and the cell entries underneath.
+* **Prohibition:** Right-aligning or left-aligning cells beneath center-aligned headers (or vice-versa) is prohibited, as it causes severe visual offset between column headers and cell entries.
 
 ### Rule U4: Mandatory Client-Side Validation
 * **Invariant:** Every form input must validate non-empty text, phone/email/PAN/IFSC syntax, non-negative amounts, and date bounds before submission.
