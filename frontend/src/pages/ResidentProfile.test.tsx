@@ -1,5 +1,5 @@
 /**
- * The resident contact card, the scan-to-pay QR code, and the profile editor.
+ * The resident dossier's four cards and their editors.
  *
  * The links are what a phone acts on, so they are pinned exactly: a tel: number
  * with nothing but digits, a wa.me number in full international form, and a
@@ -10,16 +10,11 @@ import { MemoryRouter } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {
-  BuildingLogisticsCard,
-  ContactCard,
-  EditKycDialog,
-  EditLogisticsDialog,
-  EditProfileDialog,
-  EditTenancyTermsDialog,
-  KycComplianceCard,
-  ProfessionalCard,
-  TenancyTermsCard,
-  UpiCard,
+  ContactWorkCard,
+  HousingSpaceCard,
+  KycEmergencyCard,
+  StatusNotesCard,
+  TenancyLogisticsCard,
   maskedIdNumber,
   telHref,
   upiPayUri,
@@ -97,137 +92,10 @@ describe('contact links', () => {
   })
 })
 
-describe('ContactCard', () => {
-  it('offers call, WhatsApp and mail shortcuts and shows the emergency contact', () => {
-    render(<ContactCard resident={resident} onEdit={() => {}} />)
-    const card = screen.getByRole('region', { name: 'Contact & Emergency' })
-    const call = within(card).getAllByRole('link', { name: 'Call' })[0]
-    expect(call).toHaveAttribute('href', 'tel:+919876543210')
-    expect(within(card).getByRole('link', { name: 'WhatsApp' })).toHaveAttribute(
-      'href',
-      'https://wa.me/919876543210',
-    )
-    expect(within(card).getByRole('link', { name: 'Mail' })).toHaveAttribute(
-      'href',
-      'mailto:bob@example.com',
-    )
-
-    const emergency = within(card).getByRole('region', { name: 'Emergency contact' })
-    expect(emergency).toHaveTextContent('Meera Rao · Mother')
-    expect(emergency).toHaveTextContent('91234 56780')
-    expect(
-      within(emergency).getByRole('link', { name: 'Call emergency contact Meera Rao' }),
-    ).toHaveAttribute('href', 'tel:9123456780')
-  })
-
-  it('says what is missing instead of showing dead shortcuts', () => {
-    render(
-      <ContactCard
-        resident={{
-          ...resident,
-          phone: null,
-          email: null,
-          emergency_contact_name: null,
-          emergency_contact_phone: null,
-          emergency_contact_relation: null,
-        }}
-        onEdit={() => {}}
-      />,
-    )
-    expect(screen.getAllByText('Not recorded')).toHaveLength(2)
-    expect(screen.queryByRole('link')).not.toBeInTheDocument()
-    expect(screen.getByText(/No emergency contact recorded/)).toBeInTheDocument()
-  })
-
-  it('opens the editor from Edit Profile', async () => {
-    const onEdit = vi.fn()
-    render(<ContactCard resident={resident} onEdit={onEdit} />)
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Profile' }))
-    expect(onEdit).toHaveBeenCalledOnce()
-  })
-})
-
-describe('UpiCard', () => {
-  it('shows a QR code and the full UPI ID with a copy button', () => {
-    render(<UpiCard resident={resident} />)
-    const card = screen.getByRole('region', { name: 'Scan to Pay / UPI Settlement' })
-    expect(
-      within(card).getByRole('img', { name: 'UPI payment QR code for Bob Rao' }),
-    ).toBeInTheDocument()
-    expect(within(card).getByText('bob.rao@okaxis')).toBeInTheDocument()
-    expect(within(card).getByRole('button', { name: 'Copy UPI ID' })).toBeInTheDocument()
-  })
-
-  it('is not shown for a resident with no UPI ID', () => {
-    const { container } = render(<UpiCard resident={{ ...resident, upi_id: null }} />)
-    expect(container).toBeEmptyDOMElement()
-  })
-})
-
-describe('EditProfileDialog', () => {
-  const posted = () =>
-    stub!.calls.find((call) => call.method === 'PATCH' && call.path === '/api/residents/bob')
-
-  it('saves contact details and the emergency contact, sending blanks as null', async () => {
-    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...resident } } })
-    const onSaved = vi.fn()
-    render(<EditProfileDialog resident={resident} onClose={() => {}} onSaved={onSaved} />)
-
-    const dialog = screen.getByRole('dialog', { name: "Edit Bob Rao's profile" })
-    expect(within(dialog).getByLabelText('Phone')).toHaveValue('+91 98765 43210')
-    expect(within(dialog).getByLabelText('Next-of-kin name')).toHaveValue('Meera Rao')
-
-    await userEvent.clear(within(dialog).getByLabelText('Email'))
-    await userEvent.clear(within(dialog).getByLabelText('Relationship'))
-    await userEvent.type(within(dialog).getByLabelText('Relationship'), ' Aunt ')
-    await userEvent.clear(within(dialog).getByLabelText('Emergency phone'))
-    await userEvent.type(within(dialog).getByLabelText('Emergency phone'), '+91 90000 11111')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Profile' }))
-
-    await waitFor(() => expect(posted()).toBeDefined())
-    expect(posted()!.body).toEqual({
-      phone: '+91 98765 43210',
-      email: null,
-      upi_id: 'bob.rao@okaxis',
-      emergency_contact_name: 'Meera Rao',
-      emergency_contact_relation: 'Aunt',
-      emergency_contact_phone: '+91 90000 11111',
-      blood_group: 'O+',
-      secondary_emergency_name: null,
-      secondary_emergency_relation: null,
-      secondary_emergency_phone: null,
-    })
-    await waitFor(() => expect(onSaved).toHaveBeenCalledOnce())
-  })
-
-  it('refuses a malformed email or UPI ID before saving', async () => {
-    stub = installFetchStub({ routes: {} })
-    render(<EditProfileDialog resident={resident} onClose={() => {}} onSaved={() => {}} />)
-    const save = screen.getByRole('button', { name: 'Save Profile' })
-    expect(save).toBeEnabled()
-
-    const upi = screen.getByLabelText('UPI ID')
-    await userEvent.clear(upi)
-    await userEvent.type(upi, 'bob')
-    expect(screen.getByText('A UPI ID looks like name@bank.')).toBeInTheDocument()
-    expect(save).toBeDisabled()
-    await userEvent.clear(upi)
-    expect(save).toBeEnabled()
-
-    await userEvent.clear(screen.getByLabelText('Email'))
-    await userEvent.type(screen.getByLabelText('Email'), 'bob@')
-    expect(screen.getByText('Enter a valid email address.')).toBeInTheDocument()
-    expect(save).toBeDisabled()
-    expect(posted()).toBeUndefined()
-  })
-})
-
-/* --------------------------------------------------------------- dossier -- */
-
 const patched = () =>
   stub!.calls.find((call) => call.method === 'PATCH' && call.path === '/api/residents/bob')
 
-/** A dossier card as the resident page shows it: with toasts, and a router for its links. */
+/** A card as the resident page shows it: with toasts, and a router for its links. */
 function showCard(ui: React.ReactElement) {
   return render(
     <MemoryRouter>
@@ -236,87 +104,333 @@ function showCard(ui: React.ReactElement) {
   )
 }
 
-describe('the emergency section', () => {
-  it('shows the blood group and a second contact with a way to call them', () => {
-    render(
-      <ContactCard
-        resident={{
-          ...resident,
-          secondary_emergency_name: 'Arjun Rao',
-          secondary_emergency_relation: 'Brother',
-          secondary_emergency_phone: '+91 99887 66554',
-        }}
-        onEdit={() => {}}
-      />,
-    )
-    const emergency = screen.getByRole('region', { name: 'Emergency contact' })
-    expect(emergency).toHaveTextContent('Blood: O+')
-    expect(emergency).toHaveTextContent('Second contact')
-    expect(emergency).toHaveTextContent('Arjun Rao · Brother')
-    expect(
-      within(emergency).getByRole('link', { name: 'Call second contact Arjun Rao' }),
-    ).toHaveAttribute('href', 'tel:+919988766554')
-  })
+/** Opens a card's editor from its Edit button and returns the dialog. */
+async function openEditor(card: HTMLElement, name: string) {
+  await userEvent.click(within(card).getByRole('button', { name }))
+  return screen.getByRole('dialog')
+}
 
-  it('saves a second contact and the blood group from the profile editor', async () => {
-    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...resident } } })
-    render(<EditProfileDialog resident={resident} onClose={() => {}} onSaved={() => {}} />)
-    const dialog = screen.getByRole('dialog')
-    await userEvent.selectOptions(within(dialog).getByLabelText('Blood group'), 'AB-')
-    await userEvent.type(within(dialog).getByLabelText('Second contact name'), 'Arjun Rao')
-    await userEvent.type(within(dialog).getByLabelText('Second contact phone'), '99887 66554')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Profile' }))
-    await waitFor(() => expect(patched()).toBeDefined())
-    expect(patched()!.body).toMatchObject({
-      blood_group: 'AB-',
-      secondary_emergency_name: 'Arjun Rao',
-      secondary_emergency_relation: null,
-      secondary_emergency_phone: '99887 66554',
-    })
-  })
-})
-
-describe('KYC & Verification', () => {
-  const kyc = {
-    ...resident,
-    id_document_type: 'aadhaar' as const,
-    id_document_number: '1234 5678 4821',
-    home_city: 'Kolkata',
-    home_state: 'West Bengal',
-    police_verification_status: 'verified' as const,
-    society_noc_status: 'pending' as const,
-  }
-
+describe('the masks and summaries', () => {
   it('masks an identity number to its last four digits', () => {
     expect(maskedIdNumber('aadhaar', '1234 5678 4821')).toBe('•••• •••• 4821')
     expect(maskedIdNumber('passport', 'K1234567')).toBe('•••• 4567')
     expect(maskedIdNumber('aadhaar', null)).toBeNull()
   })
 
-  it('shows the ID masked, the hometown, both checks, and the way to the vault', () => {
-    showCard(<KycComplianceCard resident={kyc} onReload={() => {}} />)
-    const card = screen.getByRole('heading', { name: 'KYC & Verification' }).closest('section')!
-    expect(card).toHaveTextContent('Aadhaar (•••• •••• 4821)')
-    expect(card).not.toHaveTextContent('1234 5678')
+  it('names a vehicle with its registration', () => {
+    expect(vehicleSummary({ vehicle_type: 'four_wheeler', vehicle_reg_no: 'DL 3C AB 1234' })).toBe(
+      '4-Wheeler · DL 3C AB 1234',
+    )
+    expect(vehicleSummary({ vehicle_type: 'two_wheeler', vehicle_reg_no: null })).toBe('2-Wheeler')
+    expect(vehicleSummary({ vehicle_type: 'none', vehicle_reg_no: 'stale' })).toBe('No vehicle')
+    expect(vehicleSummary({ vehicle_type: null, vehicle_reg_no: null })).toBeNull()
+  })
+})
+
+describe('Space & Housing', () => {
+  const room = {
+    room_id: 'room-2',
+    apartment_id: 'home',
+    room_number: '2',
+    has_attached_washroom: true,
+    has_balcony: false,
+    base_rent_paise: 950000,
+    assigned_resident_id: 'bob',
+    assigned_display_name: 'Bob Rao',
+    assigned_since: '2026-08-01',
+    status: 'occupied',
+    linked_deposit_slot: null,
+  }
+  const slot = {
+    slot_id: 'slot-1',
+    slot_number: 1,
+    slot_label: 'Room 2',
+    target_deposit_paise: 1500000,
+    assigned_resident_id: 'bob',
+    status: 'occupied_funded',
+    funded_amount_paise: 1500000,
+    outstanding_paise: 0,
+  }
+  const housing = (rooms: unknown[], slots: unknown[]) =>
+    installFetchStub({
+      routes: {
+        '/api/property/rooms': {
+          items: rooms,
+          total: rooms.length,
+          summary: { total_rooms: rooms.length, occupied_rooms: rooms.length, vacant_rooms: 0 },
+        },
+        '/api/rent/deposits': { is_lease_configured: true, slots },
+      } as never,
+    })
+
+  it('shows the room, the handover, the deposit held and the stay, with the way to manage them', async () => {
+    stub = housing([room], [slot])
+    showCard(
+      <HousingSpaceCard
+        resident={{ ...resident, keys_issued_notes: '2 keys & AC remote' }}
+        residentId="bob"
+      />,
+    )
+    const card = screen.getByRole('region', { name: 'Space & Housing' })
+    expect(await within(card).findByText(/Slot 1 \(Room 2\)/)).toBeInTheDocument()
+    expect(await within(card).findByText('Attached Washroom')).toBeInTheDocument()
+    expect(card).toHaveTextContent('Room 2 · ₹9,500.00 tier')
+    expect(card).toHaveTextContent('Attached Washroom')
+    expect(card).toHaveTextContent('2 keys & AC remote')
+    expect(card).toHaveTextContent('₹15,000.00 of ₹15,000.00 held')
+    expect(card).toHaveTextContent('Funded')
+    expect(card).toHaveTextContent('From 1 Aug 2026')
+    expect(card).toHaveTextContent('Living here')
+    expect(within(card).getByRole('link', { name: 'Manage room allotment' })).toHaveAttribute(
+      'href',
+      '/housing?tab=allotment',
+    )
+    expect(within(card).getByRole('link', { name: /Deposit details/ })).toHaveAttribute(
+      'href',
+      '/housing?tab=deposits',
+    )
+  })
+
+  it('says when there is no room or deposit slot', async () => {
+    stub = housing([], [])
+    showCard(<HousingSpaceCard resident={resident} residentId="bob" />)
+    const card = screen.getByRole('region', { name: 'Space & Housing' })
+    expect(await within(card).findByText('No room assigned')).toBeInTheDocument()
+    expect(await within(card).findByText('No deposit slot')).toBeInTheDocument()
+  })
+})
+
+describe('Contact & Work', () => {
+  const working = { ...resident, profession: 'Data analyst', employer: 'Acme', work_mode: 'hybrid' as const }
+
+  it('offers call, WhatsApp and mail shortcuts, the work, and the UPI ID with its QR on request', async () => {
+    showCard(<ContactWorkCard resident={working} onReload={() => {}} />)
+    const card = screen.getByRole('region', { name: 'Contact & Work' })
+    expect(within(card).getByRole('link', { name: 'Call' })).toHaveAttribute('href', 'tel:+919876543210')
+    expect(within(card).getByRole('link', { name: 'WhatsApp' })).toHaveAttribute(
+      'href',
+      'https://wa.me/919876543210',
+    )
+    expect(within(card).getByRole('link', { name: 'Mail' })).toHaveAttribute(
+      'href',
+      'mailto:bob@example.com',
+    )
+    expect(card).toHaveTextContent('Data analyst at Acme')
+    expect(card).toHaveTextContent('Work modeHybrid')
+    expect(within(card).getByText('bob.rao@okaxis')).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Copy UPI ID' })).toBeInTheDocument()
+
+    // The QR code is there when it is wanted, not taking up the card all the time.
+    expect(within(card).queryByRole('img', { name: /UPI payment QR code/ })).toBeNull()
+    const toggle = within(card).getByRole('button', { name: 'Show QR' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.click(toggle)
+    expect(
+      within(card).getByRole('img', { name: 'UPI payment QR code for Bob Rao' }),
+    ).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Hide QR' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('says what is missing instead of showing dead shortcuts', () => {
+    showCard(
+      <ContactWorkCard resident={{ ...resident, phone: null, email: null, upi_id: null }} onReload={() => {}} />,
+    )
+    const card = screen.getByRole('region', { name: 'Contact & Work' })
+    // Phone, email, profession, work mode and UPI ID.
+    expect(within(card).getAllByText('Not recorded')).toHaveLength(5)
+    expect(within(card).queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('edits contact and work together, and refuses a malformed email or UPI ID', async () => {
+    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...working } } })
+    const onReload = vi.fn()
+    showCard(<ContactWorkCard resident={working} onReload={onReload} />)
+    const dialog = await openEditor(
+      screen.getByRole('region', { name: 'Contact & Work' }),
+      'Edit contact and work',
+    )
+    const save = within(dialog).getByRole('button', { name: 'Save' })
+    await userEvent.clear(within(dialog).getByLabelText('UPI ID'))
+    await userEvent.type(within(dialog).getByLabelText('UPI ID'), 'bob')
+    expect(within(dialog).getByText('A UPI ID looks like name@bank.')).toBeInTheDocument()
+    expect(save).toBeDisabled()
+    await userEvent.clear(within(dialog).getByLabelText('UPI ID'))
+    await userEvent.clear(within(dialog).getByLabelText('Email'))
+    await userEvent.type(within(dialog).getByLabelText('Email'), 'bob@')
+    expect(save).toBeDisabled()
+    await userEvent.clear(within(dialog).getByLabelText('Email'))
+    await userEvent.selectOptions(within(dialog).getByLabelText('Work mode'), 'wfh')
+    await userEvent.click(save)
+
+    await waitFor(() => expect(patched()).toBeDefined())
+    expect(patched()!.body).toEqual({
+      phone: '+91 98765 43210',
+      email: null,
+      upi_id: null,
+      profession: 'Data analyst',
+      employer: 'Acme',
+      work_mode: 'wfh',
+    })
+    await waitFor(() => expect(onReload).toHaveBeenCalledOnce())
+    expect(await screen.findByText('Contact and work saved')).toBeInTheDocument()
+  })
+})
+
+describe('Tenancy & Logistics', () => {
+  it('reads the terms and the building access in words', () => {
+    showCard(
+      <TenancyLogisticsCard
+        resident={{
+          ...resident,
+          is_lease_signatory: 1,
+          notice_period_days: 30,
+          lock_in_until: '2026-12-31',
+          parking_slot: 'B-12 (Stilt)',
+          vehicle_type: 'four_wheeler',
+          vehicle_reg_no: 'DL 3C AB 1234',
+          society_rfid_tag: '#RF-8821',
+        }}
+        onReload={() => {}}
+      />,
+    )
+    const card = screen.getByRole('region', { name: 'Tenancy & Logistics' })
+    expect(card).toHaveTextContent('Primary Signatory')
+    expect(card).toHaveTextContent('30 days notice required')
+    expect(card).toHaveTextContent('Lock-in until 31 Dec 2026')
+    expect(card).toHaveTextContent('B-12 (Stilt)')
+    expect(card).toHaveTextContent('4-Wheeler · DL 3C AB 1234')
+    expect(card).toHaveTextContent('#RF-8821')
+  })
+
+  it('says co-tenant and not recorded when nothing is set', () => {
+    showCard(<TenancyLogisticsCard resident={resident} onReload={() => {}} />)
+    const card = screen.getByRole('region', { name: 'Tenancy & Logistics' })
+    expect(card).toHaveTextContent('Co-tenant')
+    expect(within(card).getAllByText('Not recorded')).toHaveLength(5)
+    expect(within(card).getByRole('button', { name: 'Edit tenancy and logistics' })).toHaveTextContent('Edit')
+  })
+
+  it('saves whole days, upper-cases the registration, and drops it without a vehicle', async () => {
+    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...resident } } })
+    showCard(<TenancyLogisticsCard resident={resident} onReload={() => {}} />)
+    const dialog = await openEditor(
+      screen.getByRole('region', { name: 'Tenancy & Logistics' }),
+      'Edit tenancy and logistics',
+    )
+    const save = within(dialog).getByRole('button', { name: 'Save' })
+    await userEvent.type(within(dialog).getByLabelText('Notice period (days)'), '30d')
+    expect(within(dialog).getByText('Enter a whole number of days, such as 30.')).toBeInTheDocument()
+    expect(save).toBeDisabled()
+    await userEvent.clear(within(dialog).getByLabelText('Notice period (days)'))
+    await userEvent.type(within(dialog).getByLabelText('Notice period (days)'), '30')
+    await userEvent.click(within(dialog).getByLabelText(/Signs the master lease/))
+    await userEvent.type(within(dialog).getByLabelText('Keys & handover'), '2 keys')
+    await userEvent.selectOptions(within(dialog).getByLabelText('Vehicle'), 'two_wheeler')
+    await userEvent.type(within(dialog).getByLabelText('Registration number'), 'ka 05 mn 4321')
+    await userEvent.type(within(dialog).getByLabelText('Parking slot'), 'B-12')
+    await userEvent.click(save)
+
+    await waitFor(() => expect(patched()).toBeDefined())
+    expect(patched()!.body).toEqual({
+      is_lease_signatory: true,
+      notice_period_days: 30,
+      lock_in_until: null,
+      keys_issued_notes: '2 keys',
+      vehicle_type: 'two_wheeler',
+      vehicle_reg_no: 'KA 05 MN 4321',
+      parking_slot: 'B-12',
+      society_rfid_tag: null,
+    })
+  })
+
+  it('clears the registration of someone with no vehicle', async () => {
+    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...resident } } })
+    const riding = { ...resident, vehicle_type: 'two_wheeler' as const, vehicle_reg_no: 'KA 05 MN 4321' }
+    showCard(<TenancyLogisticsCard resident={riding} onReload={() => {}} />)
+    const dialog = await openEditor(
+      screen.getByRole('region', { name: 'Tenancy & Logistics' }),
+      'Edit tenancy and logistics',
+    )
+    await userEvent.selectOptions(within(dialog).getByLabelText('Vehicle'), 'none')
+    expect(within(dialog).getByLabelText('Registration number')).toBeDisabled()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(patched()).toBeDefined())
+    expect(patched()!.body).toMatchObject({ vehicle_type: 'none', vehicle_reg_no: null })
+  })
+})
+
+describe('KYC & Emergency', () => {
+  const checked = {
+    ...resident,
+    id_document_type: 'aadhaar' as const,
+    // No digits in common with the sample phone numbers, so a leak would show.
+    id_document_number: '7070 3030 4821',
+    home_city: 'Kolkata',
+    home_state: 'West Bengal',
+    police_verification_status: 'verified' as const,
+    society_noc_status: 'pending' as const,
+    secondary_emergency_name: 'Arjun Rao',
+    secondary_emergency_relation: 'Brother',
+    secondary_emergency_phone: '+91 99887 66554',
+  }
+
+  it('shows the ID masked, the checks, the blood group, both contacts and the vault', () => {
+    showCard(<KycEmergencyCard resident={checked} onReload={() => {}} />)
+    const card = screen.getByRole('region', { name: 'KYC & Emergency' })
+    expect(card).toHaveTextContent('Aadhaar · •••• •••• 4821')
+    expect(card).not.toHaveTextContent('7070')
+    expect(card).not.toHaveTextContent('3030')
     expect(card).toHaveTextContent('Kolkata, West Bengal')
     expect(card).toHaveTextContent('Police verificationVerified')
     expect(card).toHaveTextContent('Society move-in NOCPending')
+    expect(card).toHaveTextContent('Blood groupO+')
+
+    const emergency = within(card).getByRole('region', { name: 'Emergency contact' })
+    expect(emergency).toHaveTextContent('Meera Rao · Mother')
+    expect(
+      within(emergency).getByRole('link', { name: 'Call emergency contact Meera Rao' }),
+    ).toHaveAttribute('href', 'tel:9123456780')
+    expect(emergency).toHaveTextContent('Arjun Rao · Brother')
+    expect(
+      within(emergency).getByRole('link', { name: 'Call second contact Arjun Rao' }),
+    ).toHaveAttribute('href', 'tel:+919988766554')
     expect(within(card).getByRole('link', { name: /View in Document Vault/ })).toHaveAttribute(
       'href',
       '/housing?tab=documents',
     )
   })
 
-  it('keeps the number on file unless a new one is typed, and never shows it', async () => {
-    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...kyc } } })
-    render(<EditKycDialog resident={kyc} onClose={() => {}} onSaved={() => {}} />)
-    const dialog = screen.getByRole('dialog')
+  it('says when no emergency contact is recorded', () => {
+    showCard(
+      <KycEmergencyCard
+        resident={{
+          ...resident,
+          emergency_contact_name: null,
+          emergency_contact_phone: null,
+          emergency_contact_relation: null,
+        }}
+        onReload={() => {}}
+      />,
+    )
+    expect(screen.getByText(/No emergency contact recorded/)).toBeInTheDocument()
+  })
+
+  it('keeps the ID number on file unless a new one is typed, and never shows it', async () => {
+    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...checked } } })
+    showCard(<KycEmergencyCard resident={checked} onReload={() => {}} />)
+    const dialog = await openEditor(
+      screen.getByRole('region', { name: 'KYC & Emergency' }),
+      'Edit KYC and emergency',
+    )
     const number = within(dialog).getByLabelText('New ID number')
     expect(number).toHaveValue('')
     expect(number).toHaveAttribute('placeholder', '•••• •••• 4821 on file')
-    expect(dialog.innerHTML).not.toContain('5678')
+    expect(dialog.innerHTML).not.toContain('7070')
+    expect(dialog.innerHTML).not.toContain('3030')
 
     await userEvent.selectOptions(within(dialog).getByLabelText('Society move-in NOC'), 'approved')
+    await userEvent.selectOptions(within(dialog).getByLabelText('Blood group'), 'AB-')
+    await userEvent.clear(within(dialog).getByLabelText('Second contact relationship'))
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(patched()).toBeDefined())
     expect(patched()!.body).toEqual({
@@ -325,13 +439,23 @@ describe('KYC & Verification', () => {
       home_state: 'West Bengal',
       police_verification_status: 'verified',
       society_noc_status: 'approved',
+      blood_group: 'AB-',
+      emergency_contact_name: 'Meera Rao',
+      emergency_contact_relation: 'Mother',
+      emergency_contact_phone: '91234 56780',
+      secondary_emergency_name: 'Arjun Rao',
+      secondary_emergency_relation: null,
+      secondary_emergency_phone: '+91 99887 66554',
     })
   })
 
   it('checks a new Aadhaar number, and can remove the one on file', async () => {
-    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...kyc } } })
-    render(<EditKycDialog resident={kyc} onClose={() => {}} onSaved={() => {}} />)
-    const dialog = screen.getByRole('dialog')
+    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...checked } } })
+    showCard(<KycEmergencyCard resident={checked} onReload={() => {}} />)
+    const dialog = await openEditor(
+      screen.getByRole('region', { name: 'KYC & Emergency' }),
+      'Edit KYC and emergency',
+    )
     const save = within(dialog).getByRole('button', { name: 'Save' })
     await userEvent.type(within(dialog).getByLabelText('New ID number'), '1234 5678')
     expect(within(dialog).getByText('An Aadhaar number is 12 digits.')).toBeInTheDocument()
@@ -346,135 +470,11 @@ describe('KYC & Verification', () => {
   })
 })
 
-describe('Tenancy Terms', () => {
-  it('reads the terms in words', () => {
-    showCard(
-      <TenancyTermsCard
-        resident={{
-          ...resident,
-          is_lease_signatory: 1,
-          notice_period_days: 30,
-          lock_in_until: '2026-12-31',
-          keys_issued_notes: '2 keys & AC remote',
-        }}
-        onReload={() => {}}
-      />,
-    )
-    const card = screen.getByRole('heading', { name: 'Tenancy Terms' }).closest('section')!
-    expect(card).toHaveTextContent('Primary Lease Signatory')
-    expect(card).toHaveTextContent('30 days notice required')
-    expect(card).toHaveTextContent('Lock-in until 31 Dec 2026')
-    expect(card).toHaveTextContent('2 keys & AC remote')
-  })
-
-  it('says co-tenant and not recorded when nothing is set', () => {
-    showCard(<TenancyTermsCard resident={resident} onReload={() => {}} />)
-    const card = screen.getByRole('heading', { name: 'Tenancy Terms' }).closest('section')!
-    expect(card).toHaveTextContent('Co-tenant')
-    expect(within(card).getAllByText('Not recorded')).toHaveLength(3)
-    expect(within(card).getByRole('button', { name: 'Edit tenancy terms' })).toHaveTextContent('Edit')
-  })
-
-  it('saves whole days and refuses anything else', async () => {
-    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...resident } } })
-    render(<EditTenancyTermsDialog resident={resident} onClose={() => {}} onSaved={() => {}} />)
-    const dialog = screen.getByRole('dialog')
-    const save = within(dialog).getByRole('button', { name: 'Save' })
-    await userEvent.type(within(dialog).getByLabelText('Notice period (days)'), '30d')
-    expect(save).toBeDisabled()
-    await userEvent.clear(within(dialog).getByLabelText('Notice period (days)'))
-    await userEvent.type(within(dialog).getByLabelText('Notice period (days)'), '30')
-    await userEvent.click(within(dialog).getByLabelText(/Signs the master lease/))
-    await userEvent.type(within(dialog).getByLabelText('Keys & handover'), '2 keys')
-    await userEvent.click(save)
-    await waitFor(() => expect(patched()).toBeDefined())
-    expect(patched()!.body).toEqual({
-      is_lease_signatory: true,
-      notice_period_days: 30,
-      lock_in_until: null,
-      keys_issued_notes: '2 keys',
-    })
-  })
-})
-
-describe('Vehicle & Building Access', () => {
-  it('names the vehicle with its registration', () => {
-    expect(vehicleSummary({ vehicle_type: 'four_wheeler', vehicle_reg_no: 'DL 3C AB 1234' })).toBe(
-      '4-Wheeler (DL 3C AB 1234)',
-    )
-    expect(vehicleSummary({ vehicle_type: 'two_wheeler', vehicle_reg_no: null })).toBe('2-Wheeler')
-    expect(vehicleSummary({ vehicle_type: 'none', vehicle_reg_no: 'stale' })).toBe('No vehicle')
-    expect(vehicleSummary({ vehicle_type: null, vehicle_reg_no: null })).toBeNull()
-
-    showCard(
-      <BuildingLogisticsCard
-        resident={{
-          ...resident,
-          vehicle_type: 'four_wheeler',
-          vehicle_reg_no: 'DL 3C AB 1234',
-          parking_slot: 'B-12 (Stilt)',
-          society_rfid_tag: '#RF-8821',
-        }}
-        onReload={() => {}}
-      />,
-    )
-    const card = screen.getByRole('heading', { name: 'Vehicle & Building Access' }).closest('section')!
-    expect(card).toHaveTextContent('4-Wheeler (DL 3C AB 1234)')
-    expect(card).toHaveTextContent('B-12 (Stilt)')
-    expect(card).toHaveTextContent('#RF-8821')
-  })
-
-  it('upper-cases the registration, and drops it for someone with no vehicle', async () => {
-    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...resident } } })
-    const { unmount } = render(
-      <EditLogisticsDialog resident={resident} onClose={() => {}} onSaved={() => {}} />,
-    )
-    let dialog = screen.getByRole('dialog')
-    await userEvent.selectOptions(within(dialog).getByLabelText('Vehicle'), 'two_wheeler')
-    await userEvent.type(within(dialog).getByLabelText('Registration number'), 'ka 05 mn 4321')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(patched()).toBeDefined())
-    expect(patched()!.body).toMatchObject({ vehicle_type: 'two_wheeler', vehicle_reg_no: 'KA 05 MN 4321' })
-    unmount()
-    stub.calls.length = 0
-
-    render(
-      <EditLogisticsDialog
-        resident={{ ...resident, vehicle_type: 'two_wheeler', vehicle_reg_no: 'KA 05 MN 4321' }}
-        onClose={() => {}}
-        onSaved={() => {}}
-      />,
-    )
-    dialog = screen.getByRole('dialog')
-    await userEvent.selectOptions(within(dialog).getByLabelText('Vehicle'), 'none')
-    expect(within(dialog).getByLabelText('Registration number')).toBeDisabled()
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(patched()).toBeDefined())
-    expect(patched()!.body).toMatchObject({ vehicle_type: 'none', vehicle_reg_no: null })
-  })
-})
-
-describe('Work & Profession', () => {
-  it('shows the work mode as a badge and saves only its own fields', async () => {
-    stub = installFetchStub({ routes: { 'PATCH /api/residents/bob': { ...resident } } })
-    const onReload = vi.fn()
-    showCard(
-      <ProfessionalCard
-        resident={{ ...resident, profession: 'Data analyst', employer: 'Acme', work_mode: 'hybrid' }}
-        onReload={onReload}
-      />,
-    )
-    const card = screen.getByRole('heading', { name: 'Work & Profession' }).closest('section')!
-    expect(card).toHaveTextContent('Data analyst')
-    expect(card).toHaveTextContent('Work modeHybrid')
-
-    await userEvent.click(within(card).getByRole('button', { name: 'Edit work and profession' }))
-    const dialog = screen.getByRole('dialog')
-    await userEvent.selectOptions(within(dialog).getByLabelText('Work mode'), 'wfh')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(patched()).toBeDefined())
-    expect(patched()!.body).toEqual({ profession: 'Data analyst', employer: 'Acme', work_mode: 'wfh' })
-    await waitFor(() => expect(onReload).toHaveBeenCalledOnce())
-    expect(await screen.findByText('Work details saved')).toBeInTheDocument()
+describe('Notes', () => {
+  it('is shown only when there is a note', () => {
+    const { container } = render(<StatusNotesCard resident={resident} />)
+    expect(container).toBeEmptyDOMElement()
+    render(<StatusNotesCard resident={{ ...resident, notes: 'Night shifts on weekdays.' }} />)
+    expect(screen.getByText('Night shifts on weekdays.')).toBeInTheDocument()
   })
 })

@@ -317,7 +317,9 @@ export function Card({
     <section className="card" id={id} aria-labelledby={id ? `${id}-title` : undefined}>
       {(title || actions) && (
         <header className="card-header">
-          <div>
+          {/* The title and hint take what is left; the actions keep their size,
+              so a long hint wraps beside them and never pushes them below. */}
+          <div className="card-header-text">
             {title && (
               <h2 className="card-title" id={id ? `${id}-title` : undefined}>
                 {title}
@@ -325,7 +327,7 @@ export function Card({
             )}
             {hint && <div className="card-hint">{hint}</div>}
           </div>
-          {actions && <div className="row">{actions}</div>}
+          {actions && <div className="card-header-actions">{actions}</div>}
         </header>
       )}
       <div className={flush ? 'card-body card-body--flush' : 'card-body'}>{children}</div>

@@ -9,17 +9,12 @@ import { useResource } from '../lib/useApi'
 import type { ResidentDetail } from '../api/types'
 import { ClearanceSlipPanel, ExitClearanceModal } from './ExitClearanceModal'
 import {
-  BuildingLogisticsCard,
-  ContactCard,
-  EditProfileDialog,
-  KycComplianceCard,
-  ProfessionalCard,
+  ContactWorkCard,
+  HousingSpaceCard,
+  KycEmergencyCard,
   StatusNotesCard,
-  TenancyTermsCard,
-  UpiCard,
+  TenancyLogisticsCard,
 } from './ResidentProfile'
-import { AssignedRoomCard } from './services/PropertyRooms'
-import { ResidentDepositCard } from './services/SecurityDeposits'
 
 /**
  * Who the resident is: their room, deposit, contact details and tenancy.
@@ -67,7 +62,6 @@ function Body({
 }) {
   const active = Boolean(data.resident.is_active)
   const toast = useToast()
-  const [editingProfile, setEditingProfile] = useState(false)
   const [clearing, setClearing] = useState(false)
 
   return (
@@ -99,36 +93,15 @@ function Body({
         />
       )}
 
-      {/* Left, where they live and on what terms; right, who they are and how
-          to reach them. */}
-      <div className="grid grid--halves">
-        <div className="stack">
-          <AssignedRoomCard residentId={residentId} />
-          <TenancyTermsCard resident={data.resident} onReload={onReload} />
-          <ResidentDepositCard residentId={residentId} />
-          <BuildingLogisticsCard resident={data.resident} onReload={onReload} />
-        </div>
-        <div className="stack">
-          <ContactCard resident={data.resident} onEdit={() => setEditingProfile(true)} />
-          <KycComplianceCard resident={data.resident} onReload={onReload} />
-          <ProfessionalCard resident={data.resident} onReload={onReload} />
-          <UpiCard resident={data.resident} />
-        </div>
+      {/* Four cards of the same weight, two by two: where they live, how to reach
+          them, the terms they moved in on, and their checks and emergency contacts. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <HousingSpaceCard resident={data.resident} residentId={residentId} />
+        <ContactWorkCard resident={data.resident} onReload={onReload} />
+        <TenancyLogisticsCard resident={data.resident} onReload={onReload} />
+        <KycEmergencyCard resident={data.resident} onReload={onReload} />
       </div>
-
-      {editingProfile && (
-        <EditProfileDialog
-          resident={data.resident}
-          onClose={() => setEditingProfile(false)}
-          onSaved={() => {
-            setEditingProfile(false)
-            onReload()
-            toast.success('Profile saved')
-          }}
-        />
-      )}
-
-      <StatusNotesCard resident={data.resident} />
+      {data.resident.notes && <StatusNotesCard resident={data.resident} />}
     </>
   )
 }

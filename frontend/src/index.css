@@ -237,9 +237,11 @@ a { color: var(--accent-text); text-underline-offset: 2px; }
 .card-header {
   padding: var(--space-4) var(--space-5);
   border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: space-between;
-  gap: var(--space-3); flex-wrap: wrap;
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--space-4);
 }
+.card-header-text { flex: 1; min-width: 0; }
+.card-header-actions { flex-shrink: 0; display: flex; align-items: center; gap: var(--space-2); }
 .card-title { font-size: 1rem; font-weight: 700; }
 .card-hint { font-size: 0.78rem; color: var(--text-muted); margin-top: 2px; }
 .card-body { padding: var(--space-5); }

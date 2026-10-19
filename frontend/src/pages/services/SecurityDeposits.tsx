@@ -57,7 +57,7 @@ const DEPOSITS = '/api/rent/deposits'
 const TABLE_HEAD =
   'border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold'
 
-const STATUS: Record<DepositSlot['status'], { tone: Tone; label: string }> = {
+export const STATUS: Record<DepositSlot['status'], { tone: Tone; label: string }> = {
   vacant: { tone: 'neutral', label: 'Vacant' },
   occupied_pending: { tone: 'warning', label: 'Pending' },
   occupied_funded: { tone: 'success', label: 'Funded' },
@@ -165,7 +165,7 @@ function useMoney(initialPaise: number | null) {
   return { raw, setRaw, paise: parsed.paise, ok: parsed.ok, empty: !raw.trim() }
 }
 
-function slotName(slot: Pick<DepositSlot, 'slot_number' | 'slot_label'>): string {
+export function slotName(slot: Pick<DepositSlot, 'slot_number' | 'slot_label'>): string {
   return `Slot ${slot.slot_number} (${slot.slot_label})`
 }
 
