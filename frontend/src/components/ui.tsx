@@ -25,6 +25,7 @@ export function Panel({
   hint,
   icon,
   actions,
+  menuActions,
   children,
   className,
   headingLevel = 2,
@@ -33,11 +34,14 @@ export function Panel({
   hint?: ReactNode
   icon?: ReactNode
   actions?: ReactNode
+  /** Header actions per Rule U9: one is an icon button, more fold into a menu. */
+  menuActions?: CardActionItem[]
   children: ReactNode
   className?: string
   headingLevel?: 1 | 2
 }) {
   const Heading = headingLevel === 1 ? 'h1' : 'h2'
+  const hasActions = Boolean(actions) || Boolean(menuActions?.length)
   return (
     <section
       className={clsx(
@@ -45,9 +49,10 @@ export function Panel({
         className,
       )}
     >
-      {(title || actions) && (
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="min-w-0">
+      {(title || hasActions) && (
+        // The actions hold the top right; the title and hint take the rest (Rule U9).
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
             {title && (
               <Heading className="font-bold text-base text-[var(--text-primary)] tracking-tight flex items-center gap-2 min-w-0">
                 {icon}
@@ -56,9 +61,10 @@ export function Panel({
             )}
             {hint && <p className="m-0 mt-0.5 text-xs text-[var(--text-secondary)]">{hint}</p>}
           </div>
-          {actions && (
-            <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-auto">
+          {hasActions && (
+            <div className="shrink-0 flex items-center gap-2">
               {actions}
+              {menuActions && <CardActions actions={menuActions} />}
             </div>
           )}
         </div>
@@ -379,11 +385,11 @@ export function DetailFact({
   )
 }
 
+/** A card's edit trigger (Rule U9): a 32×32 pencil, named by its tooltip. */
 export function EditButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <button type="button" className={BUTTON_SECONDARY} onClick={onClick} aria-label={label} title={label}>
-      <Pencil className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-      Edit
+    <button type="button" className={HEADER_TRIGGER} onClick={onClick} aria-label={label} title={label}>
+      <Pencil className="w-4 h-4 shrink-0" aria-hidden="true" />
     </button>
   )
 }

@@ -10,7 +10,7 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { BedDouble, DoorOpen, Pencil, Plus, Trash2, UserPlus } from 'lucide-react'
+import { BedDouble, DoorOpen, Pencil, Plus, Settings, Trash2, UserPlus } from 'lucide-react'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
 import { CheckboxField, DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
 import {
@@ -703,11 +703,7 @@ export function AssignedRoomCard({ residentId }: { residentId: string }) {
     <Panel
       title="Assigned Space / Room"
       icon={<BedDouble className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      actions={
-        <Link to="/housing?tab=allotment" className={BUTTON_SECONDARY}>
-          Manage Allotment
-        </Link>
-      }
+      menuActions={[{ label: 'Manage room allotment', icon: Settings, to: '/housing?tab=allotment' }]}
     >
       <AsyncSection resource={rooms} loadingLabel="Loading rooms…">
         {(data) => {

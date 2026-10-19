@@ -9,7 +9,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Pencil, Settings, Trash2, Upload } from 'lucide-react'
-import { CardActions } from './ui'
+import { CardActions, EditButton, Panel } from './ui'
 import { Card } from './Primitives'
 
 describe('CardActions', () => {
@@ -129,5 +129,33 @@ describe('Card header actions', () => {
     expect(header.querySelector('.card-header-actions')).toContainElement(
       screen.getByRole('button', { name: 'Edit demo' }),
     )
+  })
+})
+
+describe('EditButton', () => {
+  it('is a 32×32 pencil named by its tooltip, with no text beside it', async () => {
+    const onClick = vi.fn()
+    render(<EditButton label="Edit landlord" onClick={onClick} />)
+    const button = screen.getByRole('button', { name: 'Edit landlord' })
+    expect(button).toHaveAttribute('title', 'Edit landlord')
+    expect(button.textContent).toBe('')
+    expect(button).toHaveClass('w-8', 'h-8', 'shrink-0')
+    await userEvent.click(button)
+    expect(onClick).toHaveBeenCalledOnce()
+  })
+})
+
+describe('Panel header actions', () => {
+  it('keeps its menu actions at the top right, beside the title', () => {
+    render(
+      <Panel title="Rooms" hint="A long hint" menuActions={[{ label: 'Edit rooms', icon: Pencil }]}>
+        Body
+      </Panel>,
+    )
+    const heading = screen.getByRole('heading', { name: 'Rooms' })
+    const header = heading.parentElement!.parentElement!
+    expect(header).toHaveClass('flex', 'items-start', 'justify-between')
+    expect(header).not.toHaveClass('flex-col')
+    expect(within(header).getByRole('button', { name: 'Edit rooms' })).toBeInTheDocument()
   })
 })

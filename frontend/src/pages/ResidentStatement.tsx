@@ -13,7 +13,7 @@
 import { useEffect, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useParams } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Copy, Eye, Printer, QrCode, User } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Copy, Eye, Pencil, Printer, QrCode, User } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { Page, useApp } from '../components/Layout'
 import { DateField } from '../components/Form'
@@ -684,16 +684,16 @@ function StatementLedger({
       <Card
         title="Opening balance / Prior dues"
         hint="Balances carried over from before this application was used."
-        actions={
-          isEditable && (
-            <button
-              type="button"
-              className="btn btn--secondary btn--sm"
-              onClick={startEditOpening}
-            >
-              {openingBal ? 'Edit' : 'Set opening balance'}
-            </button>
-          )
+        menuActions={
+          isEditable
+            ? [
+                {
+                  label: openingBal ? 'Edit opening balance' : 'Set opening balance',
+                  icon: Pencil,
+                  onClick: startEditOpening,
+                },
+              ]
+            : undefined
         }
       >
         {openingBal ? (

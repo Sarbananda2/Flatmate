@@ -451,7 +451,7 @@ describe('AssignedRoomCard', () => {
 
   it('links to Room Allotment, where rooms are given out', async () => {
     show('alice')
-    expect(await screen.findByRole('link', { name: 'Manage Allotment' })).toHaveAttribute(
+    expect(await screen.findByRole('link', { name: 'Manage room allotment' })).toHaveAttribute(
       'href',
       '/housing?tab=allotment',
     )
