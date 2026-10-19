@@ -19,6 +19,7 @@ from ..errors import ConflictError, ValidationError
 from ..ids import now_timestamp
 from ..periods import parse_iso_date
 from ..persistence import Database, UnitOfWork
+from ..persistence.repositories.residents import DOSSIER_COLUMNS
 from . import audit
 from .common import (
     get_apartment,
@@ -28,9 +29,36 @@ from .common import (
     require_text,
 )
 
+#: The dossier: work, medical safety, tenancy terms, vehicle and building
+#: access, and identity verification. None of it is read by the ledger.
+DOSSIER_FIELDS = list(DOSSIER_COLUMNS)
+
 EDITABLE_FIELDS = ["display_name", "active_from", "active_until", "is_active",
                    "email", "phone", "notes", "upi_id", "emergency_contact_name",
-                   "emergency_contact_phone", "emergency_contact_relation"]
+                   "emergency_contact_phone", "emergency_contact_relation",
+                   *DOSSIER_FIELDS]
+
+#: Dossier fields that are one of a fixed set of values.
+_DOSSIER_CHOICES: dict[str, tuple[str, ...]] = {
+    "work_mode": ("wfh", "hybrid", "onsite"),
+    "blood_group": ("A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"),
+    "vehicle_type": ("none", "two_wheeler", "four_wheeler", "both"),
+    "id_document_type": ("aadhaar", "passport", "voter_id", "driving_license", "other"),
+    "police_verification_status": ("pending", "submitted", "verified", "exempt"),
+    "society_noc_status": ("pending", "approved", "not_applicable"),
+}
+#: Statuses that always have a value; a new resident starts at ``pending``.
+_ALWAYS_SET = {"police_verification_status", "society_noc_status"}
+#: Free-text dossier fields, with the longest value each will hold.
+_DOSSIER_TEXT = {
+    "profession": 200, "employer": 200, "secondary_emergency_name": 200,
+    "secondary_emergency_phone": 50, "secondary_emergency_relation": 100,
+    "keys_issued_notes": 500, "vehicle_reg_no": 50, "parking_slot": 100,
+    "society_rfid_tag": 100, "id_document_number": 100, "home_city": 100, "home_state": 100,
+}
+#: Never written to the audit log in full: an identity document's number.
+#: The log records that it changed, and its last four characters.
+_AUDIT_MASKED = ("id_document_number",)
 
 #: Who to call for a resident in an emergency. Optional free text, with the
 #: longest value each will hold.
@@ -46,6 +74,56 @@ def _upi_id(value: Any) -> str | None:
     if text and not _UPI_ID.match(text):
         raise ValidationError("A UPI ID looks like name@bank.", details={"field": "upi_id"})
     return text
+
+
+def _dossier_value(field: str, value: Any) -> Any:
+    """One dossier field, checked and cleaned as it is to be stored."""
+    if field in _DOSSIER_CHOICES:
+        allowed = _DOSSIER_CHOICES[field]
+        text = optional_text(value, field, max_length=50)
+        if text is None:
+            if field in _ALWAYS_SET:
+                raise ValidationError(f"{field} must be one of {', '.join(allowed)}.",
+                                      details={"field": field, "allowed": list(allowed)})
+            return None
+        if text not in allowed:
+            raise ValidationError(f"{field} must be one of {', '.join(allowed)}.",
+                                  details={"field": field, "allowed": list(allowed)})
+        return text
+    if field == "notice_period_days":
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValidationError("notice_period_days must be a whole number of days, "
+                                  "zero or more.", details={"field": field})
+        return value
+    if field == "lock_in_until":
+        text = optional_text(value, field, max_length=10)
+        if text:
+            parse_iso_date(text, field)
+        return text
+    if field == "is_lease_signatory":
+        return 1 if value else 0
+    text = optional_text(value, field, max_length=_DOSSIER_TEXT[field])
+    if field == "vehicle_reg_no" and text:
+        text = text.upper()
+    return text
+
+
+def _dossier_changes(changes: dict[str, Any]) -> dict[str, Any]:
+    unknown = sorted(set(changes) - set(DOSSIER_FIELDS))
+    if unknown:
+        raise ValidationError(f"Unsupported resident fields: {', '.join(unknown)}.",
+                              details={"unsupported_fields": unknown,
+                                       "editable_fields": EDITABLE_FIELDS})
+    return {field: _dossier_value(field, value) for field, value in changes.items()}
+
+
+def _masked(value: str | None) -> str | None:
+    """What the audit log keeps of an identity number: its last four characters."""
+    if not value:
+        return value
+    return f"•••• {value[-4:]}" if len(value) > 4 else "••••"
 
 
 def _validate_dates(active_from: str | None, active_until: str | None) -> None:
@@ -66,7 +144,9 @@ def create_resident(db: Database, *, apartment_id: str, resident_id: str, displa
                     emergency_contact_name: str | None = None,
                     emergency_contact_phone: str | None = None,
                     emergency_contact_relation: str | None = None,
-                    actor: str = "operator") -> dict[str, Any]:
+                    actor: str = "operator", **dossier: Any) -> dict[str, Any]:
+    """A new resident. Dossier fields left out, or given as None, start empty
+    (the two verification statuses start at ``pending``)."""
     resident_id = require_text(resident_id, "resident_id", max_length=64)
     display_name = require_text(display_name, "display_name", max_length=200)
     active_from = optional_text(active_from, "active_from", max_length=10)
@@ -78,6 +158,8 @@ def create_resident(db: Database, *, apartment_id: str, resident_id: str, displa
              "emergency_contact_relation": emergency_contact_relation}
     emergency = {field: optional_text(given[field], field, max_length=max_length)
                  for field, max_length in EMERGENCY_CONTACT_FIELDS}
+    dossier_values = _dossier_changes(
+        {field: value for field, value in dossier.items() if value is not None})
     timestamp = now_timestamp()
     with db.transaction() as uow:
         get_apartment(uow, apartment_id)
@@ -92,7 +174,7 @@ def create_resident(db: Database, *, apartment_id: str, resident_id: str, displa
             email=optional_text(email, "email", max_length=200),
             phone=optional_text(phone, "phone", max_length=50),
             notes=optional_text(notes, "notes"), upi_id=upi_id,
-            created_at=timestamp, updated_at=timestamp, **emergency)
+            created_at=timestamp, updated_at=timestamp, dossier=dossier_values, **emergency)
         audit.record(uow, entity_type="resident", entity_id=resident_id, action="create",
                      actor=actor, apartment_id=apartment_id,
                      new_value={"display_name": display_name, "is_active": is_active,
@@ -132,6 +214,8 @@ def update_resident_in(uow: UnitOfWork, resident_id: str, *, apartment_id: str |
         after["upi_id"] = _upi_id(changes["upi_id"])
     if "is_active" in changes:
         after["is_active"] = 1 if changes["is_active"] else 0
+    after.update(_dossier_changes(
+        {field: value for field, value in changes.items() if field in DOSSIER_FIELDS}))
     _validate_dates(after.get("active_from"), after.get("active_until"))
     after["updated_at"] = now_timestamp()
     uow.residents.update(
@@ -143,11 +227,18 @@ def update_resident_in(uow: UnitOfWork, resident_id: str, *, apartment_id: str |
         emergency_contact_name=after.get("emergency_contact_name"),
         emergency_contact_phone=after.get("emergency_contact_phone"),
         emergency_contact_relation=after.get("emergency_contact_relation"),
-        updated_at=after["updated_at"])
+        updated_at=after["updated_at"],
+        dossier={field: after.get(field) for field in DOSSIER_FIELDS})
     audit.record_field_changes(
         uow, entity_type="resident", entity_id=resident_id, before=before, after=after,
-        fields=EDITABLE_FIELDS, actor=actor,
-        apartment_id=before["apartment_id"], reason=reason)
+        fields=[field for field in EDITABLE_FIELDS if field not in _AUDIT_MASKED],
+        actor=actor, apartment_id=before["apartment_id"], reason=reason)
+    for field in _AUDIT_MASKED:
+        if before.get(field) != after.get(field):
+            audit.record(uow, entity_type="resident", entity_id=resident_id, action="update",
+                         actor=actor, apartment_id=before["apartment_id"], field_name=field,
+                         old_value=_masked(before.get(field)),
+                         new_value=_masked(after.get(field)), reason=reason)
     return get_resident(uow, resident_id)
 
 

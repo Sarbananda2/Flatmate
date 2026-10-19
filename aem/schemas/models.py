@@ -140,7 +140,35 @@ class ApartmentResponse(PassthroughModel):
     pool_upi_id: str | None
 
 
-class ResidentCreate(ApiModel):
+class ResidentDossier(ApiModel):
+    """The dossier fields a resident is created or updated with. None of it is
+    read by the ledger; see ``aem.services.residents`` for the rules."""
+    profession: str | None = Field(None, max_length=200)
+    employer: str | None = Field(None, max_length=200)
+    work_mode: str | None = Field(None, pattern=r"^(wfh|hybrid|onsite)$")
+    blood_group: str | None = Field(None, pattern=r"^(A\+|A-|B\+|B-|AB\+|AB-|O\+|O-)$")
+    secondary_emergency_name: str | None = Field(None, max_length=200)
+    secondary_emergency_phone: str | None = Field(None, max_length=50)
+    secondary_emergency_relation: str | None = Field(None, max_length=100)
+    notice_period_days: int | None = Field(None, ge=0)
+    lock_in_until: str | None = Field(None, pattern=DATE_PATTERN)
+    is_lease_signatory: bool | int | None = None
+    keys_issued_notes: str | None = Field(None, max_length=500)
+    vehicle_type: str | None = Field(None, pattern=r"^(none|two_wheeler|four_wheeler|both)$")
+    vehicle_reg_no: str | None = Field(None, max_length=50)
+    parking_slot: str | None = Field(None, max_length=100)
+    society_rfid_tag: str | None = Field(None, max_length=100)
+    id_document_type: str | None = Field(
+        None, pattern=r"^(aadhaar|passport|voter_id|driving_license|other)$")
+    id_document_number: str | None = Field(None, max_length=100)
+    home_city: str | None = Field(None, max_length=100)
+    home_state: str | None = Field(None, max_length=100)
+    police_verification_status: str | None = Field(
+        None, pattern=r"^(pending|submitted|verified|exempt)$")
+    society_noc_status: str | None = Field(None, pattern=r"^(pending|approved|not_applicable)$")
+
+
+class ResidentCreate(ResidentDossier):
     resident_id: str = Field(min_length=1, max_length=64)
     display_name: str = Field(min_length=1, max_length=200)
     active_from: str | None = Field(None, pattern=DATE_PATTERN)
@@ -155,7 +183,7 @@ class ResidentCreate(ApiModel):
     emergency_contact_relation: str | None = Field(None, max_length=100)
 
 
-class ResidentUpdate(ApiModel):
+class ResidentUpdate(ResidentDossier):
     display_name: str | None = Field(None, min_length=1, max_length=200)
     active_from: str | None = Field(None, pattern=DATE_PATTERN)
     active_until: str | None = Field(None, pattern=DATE_PATTERN)

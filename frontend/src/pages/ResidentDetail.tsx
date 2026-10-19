@@ -2,14 +2,22 @@ import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { LogOut, Receipt } from 'lucide-react'
 import { Page } from '../components/Layout'
-import { AsyncSection, Badge, Card } from '../components/Primitives'
+import { AsyncSection } from '../components/Primitives'
 import { useToast } from '../components/Toast'
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../components/ui'
 import { useResource } from '../lib/useApi'
-import { formatDate } from '../lib/format'
 import type { ResidentDetail } from '../api/types'
 import { ClearanceSlipPanel, ExitClearanceModal } from './ExitClearanceModal'
-import { ContactCard, EditProfileDialog, UpiCard } from './ResidentProfile'
+import {
+  BuildingLogisticsCard,
+  ContactCard,
+  EditProfileDialog,
+  KycComplianceCard,
+  ProfessionalCard,
+  StatusNotesCard,
+  TenancyTermsCard,
+  UpiCard,
+} from './ResidentProfile'
 import { AssignedRoomCard } from './services/PropertyRooms'
 import { ResidentDepositCard } from './services/SecurityDeposits'
 
@@ -91,14 +99,19 @@ function Body({
         />
       )}
 
-      {/* Their place in the home, and how to reach and pay them. */}
+      {/* Left, where they live and on what terms; right, who they are and how
+          to reach them. */}
       <div className="grid grid--halves">
         <div className="stack">
           <AssignedRoomCard residentId={residentId} />
+          <TenancyTermsCard resident={data.resident} onReload={onReload} />
           <ResidentDepositCard residentId={residentId} />
+          <BuildingLogisticsCard resident={data.resident} onReload={onReload} />
         </div>
         <div className="stack">
           <ContactCard resident={data.resident} onEdit={() => setEditingProfile(true)} />
+          <KycComplianceCard resident={data.resident} onReload={onReload} />
+          <ProfessionalCard resident={data.resident} onReload={onReload} />
           <UpiCard resident={data.resident} />
         </div>
       </div>
@@ -115,18 +128,7 @@ function Body({
         />
       )}
 
-      <Card title="Status & Notes">
-        <div className="stack stack--tight">
-          <div className="row">
-            {active ? <Badge tone="ok">Living here</Badge> : <Badge tone="neutral">Moved out</Badge>}
-            <span className="subtle">
-              {data.resident.active_from ? `From ${formatDate(data.resident.active_from)}` : 'Move-in date not recorded'}
-              {data.resident.active_until ? ` until ${formatDate(data.resident.active_until)}` : ''}
-            </span>
-          </div>
-          {data.resident.notes && <p className="muted" style={{ margin: 0 }}>{data.resident.notes}</p>}
-        </div>
-      </Card>
+      <StatusNotesCard resident={data.resident} />
     </>
   )
 }

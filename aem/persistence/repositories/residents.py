@@ -1,9 +1,31 @@
 """Residents."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from .base import Repository
+
+#: The resident's dossier: work, medical safety, tenancy terms, vehicle and
+#: building access, and identity verification. Each is optional or has a
+#: database default, and none of it is read by the ledger.
+DOSSIER_COLUMNS = (
+    "profession", "employer", "work_mode", "blood_group",
+    "secondary_emergency_name", "secondary_emergency_phone", "secondary_emergency_relation",
+    "notice_period_days", "lock_in_until", "is_lease_signatory", "keys_issued_notes",
+    "vehicle_type", "vehicle_reg_no", "parking_slot", "society_rfid_tag",
+    "id_document_type", "id_document_number", "home_city", "home_state",
+    "police_verification_status", "society_noc_status",
+)
+
+
+def _dossier_columns(dossier: Mapping[str, Any]) -> list[str]:
+    """The dossier columns given, in table order. Anything else is refused, so
+    no caller-supplied name ever reaches the SQL."""
+    unknown = set(dossier) - set(DOSSIER_COLUMNS)
+    if unknown:
+        raise ValueError(f"Not resident dossier columns: {sorted(unknown)}")
+    return [column for column in DOSSIER_COLUMNS if column in dossier]
 
 
 class ResidentsRepository(Repository):
@@ -36,17 +58,23 @@ class ResidentsRepository(Repository):
                upi_id: str | None, created_at: str, updated_at: str,
                emergency_contact_name: str | None = None,
                emergency_contact_phone: str | None = None,
-               emergency_contact_relation: str | None = None) -> None:
+               emergency_contact_relation: str | None = None,
+               dossier: Mapping[str, Any] | None = None) -> None:
+        """A dossier column left out of ``dossier`` takes its database default."""
+        dossier = dossier or {}
+        extra = _dossier_columns(dossier)
+        columns = ", ".join(["resident_id", "apartment_id", "display_name", "active_from",
+                             "active_until", "is_active", "email", "phone", "notes",
+                             "upi_id", "emergency_contact_name", "emergency_contact_phone",
+                             "emergency_contact_relation", "created_at", "updated_at",
+                             *extra])
+        values = (resident_id, apartment_id, display_name, active_from, active_until,
+                  is_active, email, phone, notes, upi_id, emergency_contact_name,
+                  emergency_contact_phone, emergency_contact_relation, created_at, updated_at,
+                  *(dossier[column] for column in extra))
         self._s.execute(
-            """INSERT INTO resident (resident_id, apartment_id, display_name, active_from,
-                                     active_until, is_active, email, phone, notes,
-                                     upi_id, emergency_contact_name,
-                                     emergency_contact_phone, emergency_contact_relation,
-                                     created_at, updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (resident_id, apartment_id, display_name, active_from, active_until,
-             is_active, email, phone, notes, upi_id, emergency_contact_name,
-             emergency_contact_phone, emergency_contact_relation, created_at, updated_at))
+            f"INSERT INTO resident ({columns}) VALUES ({', '.join(['%s'] * len(values))})",
+            values)
 
     def update(self, resident_id: str, *, display_name: str, active_from: str | None,
                active_until: str | None, is_active: int, email: str | None,
@@ -54,13 +82,20 @@ class ResidentsRepository(Repository):
                emergency_contact_name: str | None,
                emergency_contact_phone: str | None,
                emergency_contact_relation: str | None,
-               updated_at: str) -> None:
+               updated_at: str,
+               dossier: Mapping[str, Any] | None = None) -> None:
+        """Every column is written as given; ``dossier`` carries the dossier
+        columns to write with them."""
+        dossier = dossier or {}
+        extra = _dossier_columns(dossier)
+        sets = "".join(f", {column}=%s" for column in extra)
         self._s.execute(
-            """UPDATE resident SET display_name=%s, active_from=%s, active_until=%s,
-                   is_active=%s, email=%s, phone=%s, notes=%s, upi_id=%s,
-                   emergency_contact_name=%s, emergency_contact_phone=%s,
-                   emergency_contact_relation=%s, updated_at=%s
-               WHERE resident_id=%s""",
+            f"""UPDATE resident SET display_name=%s, active_from=%s, active_until=%s,
+                    is_active=%s, email=%s, phone=%s, notes=%s, upi_id=%s,
+                    emergency_contact_name=%s, emergency_contact_phone=%s,
+                    emergency_contact_relation=%s, updated_at=%s{sets}
+                WHERE resident_id=%s""",
             (display_name, active_from, active_until, is_active, email, phone, notes,
              upi_id, emergency_contact_name, emergency_contact_phone,
-             emergency_contact_relation, updated_at, resident_id))
+             emergency_contact_relation, updated_at,
+             *(dossier[column] for column in extra), resident_id))

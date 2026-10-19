@@ -71,9 +71,41 @@ export interface Resident {
   emergency_contact_name: string | null
   emergency_contact_phone: string | null
   emergency_contact_relation: string | null
+  // The dossier: none of it is read by the ledger.
+  profession: string | null
+  employer: string | null
+  work_mode: WorkMode | null
+  blood_group: BloodGroup | null
+  secondary_emergency_name: string | null
+  secondary_emergency_phone: string | null
+  secondary_emergency_relation: string | null
+  notice_period_days: number | null
+  lock_in_until: string | null
+  is_lease_signatory: number | boolean
+  /** Keys, fobs and remotes handed over at move-in. */
+  keys_issued_notes: string | null
+  vehicle_type: VehicleType | null
+  /** Stored upper-case. */
+  vehicle_reg_no: string | null
+  parking_slot: string | null
+  society_rfid_tag: string | null
+  id_document_type: IdDocumentType | null
+  /** Shown only by its last four characters. */
+  id_document_number: string | null
+  home_city: string | null
+  home_state: string | null
+  police_verification_status: PoliceVerificationStatus
+  society_noc_status: SocietyNocStatus
   created_at: string | null
   updated_at: string | null
 }
+
+export type WorkMode = 'wfh' | 'hybrid' | 'onsite'
+export type BloodGroup = 'A+' | 'A-' | 'B+' | 'B-' | 'AB+' | 'AB-' | 'O+' | 'O-'
+export type VehicleType = 'none' | 'two_wheeler' | 'four_wheeler' | 'both'
+export type IdDocumentType = 'aadhaar' | 'passport' | 'voter_id' | 'driving_license' | 'other'
+export type PoliceVerificationStatus = 'pending' | 'submitted' | 'verified' | 'exempt'
+export type SocietyNocStatus = 'pending' | 'approved' | 'not_applicable'
 
 export interface ExpenseDefinition {
   expense_definition_id: string
