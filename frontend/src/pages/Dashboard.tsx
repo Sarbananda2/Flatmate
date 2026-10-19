@@ -461,6 +461,9 @@ function Stage({
 
 /* -------------------------------------------------------------- transfers -- */
 
+/** The house kitty's account in the reconciliation; every other account is a resident. */
+const POOL_ACCOUNT_ID = '__pool__'
+
 function upiNote(transfer: TransferSuggestion, apartmentName: string, month: string): string {
   return `${transfer.from_display_name} to ${transfer.to_display_name}: ${formatInr(transfer.amount_paise)} — ${apartmentName}, ${formatMonth(month)} settlement`
 }
@@ -474,22 +477,49 @@ function TransferRow({
   note: string
   onSettle: () => void
 }) {
+  // The breakdown behind a transfer is the payer's statement, or the payee's
+  // when the pool is paying them out.
+  const debtorResidentId = transfer.from_account !== POOL_ACCOUNT_ID ? transfer.from_account : null
+  const creditorResidentId = transfer.to_account !== POOL_ACCOUNT_ID ? transfer.to_account : null
+  const statementResidentId = debtorResidentId ?? creditorResidentId
+  const statementName = debtorResidentId ? transfer.from_display_name : transfer.to_display_name
+  const party = (id: string | null, name: string) =>
+    id ? (
+      <Link
+        to={`/residents/${encodeURIComponent(id)}`}
+        className="truncate hover:underline text-[var(--text-primary)] focus-visible:underline"
+      >
+        {name}
+      </Link>
+    ) : (
+      <span className="truncate">{name}</span>
+    )
   return (
     <li className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 sm:p-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] hover:border-blue-500/40 transition-colors min-w-0">
       <div className="flex items-center gap-3.5 min-w-0">
         <Avatar name={transfer.from_display_name} tone="danger" />
         <div className="min-w-0">
           <div className="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5 min-w-0">
-            <span className="truncate">{transfer.from_display_name}</span>
+            {party(debtorResidentId, transfer.from_display_name)}
             <ArrowRight className="w-3.5 h-3.5 shrink-0 text-[var(--text-tertiary)]" aria-hidden="true" />
             <span className="sr-only">pays</span>
-            <span className="truncate">{transfer.to_display_name}</span>
+            {party(creditorResidentId, transfer.to_display_name)}
           </div>
           <Rupees paise={transfer.amount_paise} tone="danger" className="block text-sm font-bold mt-0.5" />
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2 shrink-0">
         <CopyButton text={note} label="Copy UPI Note" />
+        {statementResidentId && (
+          <Link
+            to={`/residents/${encodeURIComponent(statementResidentId)}`}
+            className={BUTTON_SECONDARY}
+            title={`View monthly statement and breakdown for ${statementName}`}
+            aria-label={`View Statement for ${statementName}`}
+          >
+            View Statement
+          </Link>
+        )}
         <button type="button" className={BUTTON_QUIET} onClick={onSettle}>
           Mark Settle
         </button>
