@@ -26,6 +26,7 @@ from .repositories.definitions import DefinitionsRepository
 from .repositories.deposits import DepositsRepository
 from .repositories.electricity import ElectricityRepository
 from .repositories.expenses import ExpensesRepository
+from .repositories.furniture_rental import FurnitureRentalRepository
 from .repositories.ledger_view import LedgerViewRepository
 from .repositories.opening_balances import OpeningBalancesRepository
 from .repositories.payments import PaymentsRepository
@@ -155,6 +156,11 @@ class UnitOfWork:
     @cached_property
     def rent(self) -> RentRepository:
         return RentRepository(self._session)
+
+
+    @cached_property
+    def furniture(self) -> FurnitureRentalRepository:
+        return FurnitureRentalRepository(self._session)
 
 
     @cached_property

@@ -1336,6 +1336,98 @@ export interface ExitClearance {
 }
 
 /** `GET /api/services`: the Services & Utilities hub's one summary call. */
+/* ---------------------------------------------- household services: furniture */
+
+export type FurnitureCategory = 'living_room' | 'bedroom' | 'appliance' | 'dining' | 'workstation' | 'other'
+export type FurnitureItemStatus = 'active' | 'pending_delivery' | 'returned'
+export type FurnitureDepositStatus = 'held' | 'partially_refunded' | 'refunded'
+
+/** One recurring arrangement the flat pays for; each type has its own module. */
+export interface HouseholdService {
+  service_id: string
+  service_type: 'furniture_rental' | 'broadband' | 'domestic_help' | 'water_tanker' | 'cooking_gas'
+  display_name: string
+  provider_name: string | null
+  status: 'active' | 'paused' | 'retired'
+  billing_day_of_month: number | null
+  period_rule: string
+  created_at: string
+  updated_at: string
+}
+
+export interface FurnitureConfig {
+  provider_name: string
+  customer_id: string | null
+  subscription_reference: string | null
+  deposit_paid_paise: number
+  deposit_refunded_paise: number
+  deposit_status: FurnitureDepositStatus
+  /** The expense definition each month's bill is recorded under. */
+  expense_definition_id: string | null
+  notes: string | null
+  updated_at: string
+}
+
+export interface FurnitureItem {
+  item_id: string
+  service_id: string
+  name: string
+  category: FurnitureCategory
+  monthly_rent_paise: number
+  /** common: split equally; resident: charged to assigned_resident_id alone. */
+  allocation_scope: 'common' | 'resident'
+  assigned_resident_id: string | null
+  assigned_resident_name: string | null
+  status: FurnitureItemStatus
+  delivery_date: string | null
+  return_date: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface FurnitureShare {
+  resident_id: string
+  display_name: string
+  taking_part: boolean
+  common_share_paise: number
+  private_paise: number
+  private_items: string[]
+  total_paise: number
+}
+
+/** What a month bills. Nothing prorates: an item in the flat at any point counts in full. */
+export interface FurnitureMonthBill {
+  settlement_month: string
+  billable_items: FurnitureItem[]
+  common_total_paise: number
+  private_total_paise: number
+  total_paise: number
+  participant_count: number
+  base_share_paise: number
+  remainder_paise: number
+  shares: FurnitureShare[]
+  excluded_residents: Array<{ resident_id: string; display_name: string }>
+  /** Why the month cannot be billed as it stands, if it cannot. */
+  blocked_reason: string | null
+  /** The month's bill once recorded. */
+  expense: { expense_id: string; description: string; amount_paise: number; statement_id: string | null } | null
+  statement_status: StatementStatus | null
+  can_generate: boolean
+}
+
+export interface FurnitureRentalOverview {
+  /** Null until furniture rental is set up, and after it is retired. */
+  service: HouseholdService | null
+  config: FurnitureConfig | null
+  items: FurnitureItem[]
+  month: FurnitureMonthBill | null
+  /** What the items in the flat now cost a month. */
+  monthly_total_paise: number
+  active_item_count: number
+  next_billing_date: string | null
+  deposit_held_paise: number
+}
+
 export interface ServicesOverview {
   settlement_month: string
   rent: { config: RentLeaseConfig | null; cycle: RentCycle | null }

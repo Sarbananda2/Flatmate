@@ -1073,6 +1073,60 @@ class AuthStatusResponse(BaseModel):
     user: AuthUser | None
 
 
+
+# --------------------------------------------------------------------------- #
+# Household services: furniture rental
+# --------------------------------------------------------------------------- #
+
+FurnitureCategory = Literal["living_room", "bedroom", "appliance", "dining", "workstation",
+                            "other"]
+
+
+class FurnitureSetupRequest(ApiModel):
+    """The subscription. Only the fields sent change once it exists."""
+    display_name: str | None = Field(None, min_length=1, max_length=100)
+    provider_name: str | None = Field(None, min_length=1, max_length=100,
+                                      description="Furlenco, Rentomojo, or another provider.")
+    customer_id: str | None = Field(None, max_length=100)
+    subscription_reference: str | None = Field(None, max_length=100)
+    deposit_paid_paise: int | None = _money_field("The deposit paid to the provider.",
+                                                  default=None)
+    deposit_refunded_paise: int | None = _money_field(
+        "What the provider has refunded of it; never more than was paid.", default=None)
+    billing_day_of_month: int | None = Field(None, ge=1, le=31)
+    notes: str | None = Field(None, max_length=2000)
+
+
+class FurnitureItemCreate(ApiModel):
+    name: str = Field(min_length=1, max_length=200)
+    category: FurnitureCategory
+    monthly_rent_paise: int = _money_field("The item's monthly rent.", ge=1)
+    allocation_scope: Literal["common", "resident"] = Field(
+        description="common: split equally; resident: charged to assigned_resident_id alone.")
+    assigned_resident_id: str | None = Field(None, max_length=64)
+    status: Literal["active", "pending_delivery"] = "active"
+    delivery_date: str | None = Field(None, pattern=DATE_PATTERN)
+
+
+class FurnitureItemUpdate(ApiModel):
+    """Only the fields sent change. Returning an item is status ``returned``
+    with its ``return_date``."""
+    name: str | None = Field(None, min_length=1, max_length=200)
+    category: FurnitureCategory | None = None
+    monthly_rent_paise: int | None = _money_field("The item's monthly rent.", ge=1, default=None)
+    allocation_scope: Literal["common", "resident"] | None = None
+    assigned_resident_id: str | None = Field(None, max_length=64)
+    status: Literal["active", "pending_delivery", "returned"] | None = None
+    delivery_date: str | None = Field(None, pattern=DATE_PATTERN)
+    return_date: str | None = Field(None, pattern=DATE_PATTERN)
+
+
+class FurnitureGenerateRequest(ApiModel):
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    excluded_resident_ids: list[str] = Field(
+        default_factory=list,
+        description="Active residents who do not share the common items this month.")
+
 __all__ = [
     "AdjustmentCreate", "AdjustmentReverse", "AuthStatusResponse", "AuthUser",
     "AuthUserResponse", "LoginRequest", "SignupRequest", "AllocationMethod", "OpeningBalanceCreate", "OpeningBalanceItem",
@@ -1093,6 +1147,8 @@ __all__ = [
     "ResidentMonthlyStatementItem",
     "DepositConfigUpdate", "DepositSlotFundingRequest", "DepositSlotInitRequest",
     "DepositSlotItem", "DepositSlotVacateRequest",
+    "FurnitureCategory", "FurnitureGenerateRequest", "FurnitureItemCreate",
+    "FurnitureItemUpdate", "FurnitureSetupRequest",
     "RentLeaseConfigSave", "RentLeaseRenewRequest", "RentLeaseVacateRequest",
     "RentPaymentCreate",
     "ResidentCreate", "ResidentDeactivate", "ResidentUpdate", "SetupApartmentRequest",

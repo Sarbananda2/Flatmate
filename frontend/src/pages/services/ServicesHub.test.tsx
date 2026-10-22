@@ -1,11 +1,12 @@
 /**
- * The umbrella hub only summarises: these tests check that the two live cards
- * show what the backend returned and that the planned services stay inert.
+ * The umbrella hub only summarises: these tests check that the live cards show
+ * what the backend returned, that the planned services stay inert, and that one
+ * card failing leaves the others standing.
  */
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
 import { render, screen, within } from '@testing-library/react'
-import { ServicesHub } from './ServicesHub'
+import { ServiceCardErrorBoundary, ServicesHub } from './ServicesHub'
 import { installFetchStub } from '../../test/server'
 
 const MONTH = '2026-10'
@@ -50,6 +51,16 @@ const noRooms = {
 
 const noContacts = { items: [], total: 0, roles_on_file: [] }
 const noDocuments = { items: [], total: 0, total_bytes: 0, categories_on_file: [] }
+const noFurniture = {
+  service: null,
+  config: null,
+  items: [],
+  month: null,
+  monthly_total_paise: 0,
+  active_item_count: 0,
+  next_billing_date: null,
+  deposit_held_paise: 0,
+}
 
 function renderHub(
   overview: { rent: unknown; electricity: unknown },
@@ -57,6 +68,7 @@ function renderHub(
   rooms: Record<string, unknown> = noRooms,
   contacts: Record<string, unknown> = noContacts,
   documents: Record<string, unknown> = noDocuments,
+  furniture: Record<string, unknown> = noFurniture,
 ) {
   stub = installFetchStub({
     routes: {
@@ -65,6 +77,7 @@ function renderHub(
       '/api/property/rooms': rooms,
       '/api/property/contacts': contacts,
       '/api/property/documents': documents,
+      '/api/services/furniture': furniture,
     },
   })
   render(
@@ -186,5 +199,66 @@ describe('ServicesHub', () => {
       expect(screen.queryByRole('region', { name })).toBeNull()
     }
     expect(screen.queryByRole('link', { name: /Housing/ })).toBeNull()
+  })
+
+  it('summarises a live furniture subscription and its month', async () => {
+    const furniture = {
+      ...noFurniture,
+      service: { service_id: 'svc-1', service_type: 'furniture_rental', display_name: 'Furniture rental', status: 'active' },
+      config: { provider_name: 'Furlenco', customer_id: 'FUR-2291', deposit_paid_paise: 500000, deposit_refunded_paise: 0 },
+      month: { expense: { expense_id: 'furniture-1', amount_paise: 220000 } },
+      monthly_total_paise: 220000,
+      active_item_count: 3,
+    }
+    renderHub(
+      { rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
+      noDeposits,
+      noRooms,
+      noContacts,
+      noDocuments,
+      furniture,
+    )
+    const card = screen.getByRole('region', { name: 'Furniture Rental' })
+    expect(await within(card).findByText('Active')).toBeInTheDocument()
+    expect(fact(card, 'Provider')).toHaveTextContent('Furlenco')
+    expect(fact(card, 'In the flat')).toHaveTextContent('3 items')
+    expect(fact(card, 'Monthly total')).toHaveTextContent('₹2,200.00/mo')
+    expect(within(card).getByText(/Billed/)).toHaveTextContent('Billed ₹2,200.00')
+    expect(within(card).getByRole('link', { name: 'Open Furniture Hub' })).toHaveAttribute(
+      'href',
+      '/services/furniture',
+    )
+  })
+
+  it('offers to set up furniture rental when there is none', async () => {
+    renderHub({ rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
+    const card = screen.getByRole('region', { name: 'Furniture Rental' })
+    expect(await within(card).findByText('Not set up')).toBeInTheDocument()
+    expect(within(card).getByRole('link', { name: 'Set up furniture rental' })).toHaveAttribute(
+      'href',
+      '/services/furniture',
+    )
+    expect(within(card).queryByText('Provider')).toBeNull()
+  })
+
+  it('keeps a card that fails to itself', () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    function Broken(): never {
+      throw new Error('bad payload')
+    }
+    render(
+      <>
+        <ServiceCardErrorBoundary title="Furniture Rental">
+          <Broken />
+        </ServiceCardErrorBoundary>
+        <ServiceCardErrorBoundary title="Rent">
+          <section aria-label="Rent">Rent is fine</section>
+        </ServiceCardErrorBoundary>
+      </>,
+    )
+    const failed = screen.getByRole('region', { name: 'Furniture Rental' })
+    expect(within(failed).getByRole('alert')).toHaveTextContent('This service could not be shown.')
+    expect(screen.getByRole('region', { name: 'Rent' })).toHaveTextContent('Rent is fine')
+    quiet.mockRestore()
   })
 })
