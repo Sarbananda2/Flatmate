@@ -37,6 +37,11 @@ import {
 import { Page, useApp } from '../../components/Layout'
 import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
 import { DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
+import {
+  ResidentCollectionTable,
+  type CollectionStatus,
+  type ResidentCollectionItem,
+} from '../../components/ResidentCollectionTable'
 import { useToast } from '../../components/Toast'
 import {
   Avatar,
@@ -239,7 +244,6 @@ export function FurnitureRental({ month }: { month: string }) {
                     <ResidentCollectionPanel
                       month={month}
                       bill={data.month}
-                      provider={data.config.provider_name}
                       onGenerate={(bill) => setDialog({ kind: 'generate', bill })}
                       onViewShare={(share) => setDialog({ kind: 'share_detail', share, bill: data.month! })}
                       onPayShare={(share) => setDialog({ kind: 'pay_share', share })}
@@ -595,14 +599,12 @@ function Metrics({ bill, billingDay }: { bill: FurnitureMonthBill; billingDay: n
 function ResidentCollectionPanel({
   month,
   bill,
-  provider,
   onGenerate,
   onViewShare,
   onPayShare,
 }: {
   month: string
   bill: FurnitureMonthBill
-  provider: string
   onGenerate: (bill: FurnitureMonthBill) => void
   onViewShare: (share: FurnitureShare) => void
   onPayShare: (share: FurnitureShare) => void
@@ -610,7 +612,38 @@ function ResidentCollectionPanel({
   const finalized = bill.statement_status != null && bill.statement_status !== 'draft'
   // Who has paid what means something only once the bill is recorded.
   const billed = bill.expense != null
-  const dash = <span className="text-[var(--text-tertiary)]">—</span>
+  const items: ResidentCollectionItem[] = bill.shares.map((share) => {
+    // Paying the provider directly covered their share: nothing is owed into the kitty.
+    const funded = share.status === 'funded_payout'
+    const status: CollectionStatus | null =
+      share.status === 'paid' || funded
+        ? 'paid'
+        : share.status === 'partial'
+          ? 'partial'
+          : share.status === 'unpaid'
+            ? 'unpaid'
+            : null
+    return {
+      id: share.resident_id,
+      name: share.display_name,
+      href: `/residents/${share.resident_id}`,
+      subtitle: share.taking_part ? undefined : 'Not taking part',
+      subtitleTone: share.taking_part ? undefined : 'warning',
+      sharePaise: share.total_paise,
+      shareNote:
+        share.private_paise > 0 ? (
+          <>
+            incl. <Rupees paise={share.private_paise} /> own
+          </>
+        ) : undefined,
+      paidIntoKittyPaise: billed && !funded ? share.settled_paise : null,
+      stillOwedPaise: billed && !funded ? share.outstanding_paise : null,
+      status,
+      canPay: billed && !isSettled(share),
+      onPay: () => onPayShare(share),
+      onViewStatement: () => onViewShare(share),
+    }
+  })
   return (
     <Panel
       title={`Resident Collection · ${formatMonth(month)}`}
@@ -623,94 +656,10 @@ function ResidentCollectionPanel({
         </p>
       )}
 
-      {bill.shares.length > 0 && (
-        <div className="overflow-x-auto min-w-0">
-          {/* Laid out as rent's collection table, column for column. */}
-          <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse">
-            <caption className="sr-only">Shares for {formatMonth(month)}</caption>
-            <thead>
-              <tr className={TABLE_HEAD}>
-                <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-left">Resident</th>
-                <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Share</th>
-                <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid into Kitty</th>
-                <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still owed</th>
-                <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
-                <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-              {bill.shares.map((share) => {
-                // Paying the provider covered their share: nothing is owed into the kitty.
-                const funded = share.status === 'funded_payout'
-                return (
-                  // The whole row opens the share's details; Pay Now does its own thing instead.
-                  <tr
-                    key={share.resident_id}
-                    className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
-                    tabIndex={0}
-                    title={`View ${share.display_name}'s share details`}
-                    onClick={() => onViewShare(share)}
-                    onKeyDown={(event) => {
-                      if (event.target !== event.currentTarget) return
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        onViewShare(share)
-                      }
-                    }}
-                  >
-                    <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
-                      <span className="flex items-center gap-2.5 min-w-0">
-                        <Avatar name={share.display_name} />
-                        <span className="min-w-0">
-                          <span className="block font-semibold text-[var(--text-primary)] truncate">
-                            {share.display_name}
-                          </span>
-                          {!share.taking_part && (
-                            <span className="block text-[11px] font-normal text-[var(--warning)]">Not taking part</span>
-                          )}
-                        </span>
-                      </span>
-                    </th>
-                    <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                      <Rupees paise={share.total_paise} />
-                      {share.private_paise > 0 && (
-                        <span className="block text-[10px] font-normal text-[var(--text-tertiary)]">
-                          incl. <Rupees paise={share.private_paise} /> own
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-3 pr-3 text-center">
-                      {billed && !funded ? <Rupees paise={share.settled_paise} /> : dash}
-                    </td>
-                    <td className="py-3 pr-3 text-center">
-                      {billed && !funded ? <Rupees paise={share.outstanding_paise} /> : dash}
-                    </td>
-                    <td className="py-3 pr-3 text-center whitespace-nowrap">
-                      <ShareStatus status={share.status} provider={provider} />
-                    </td>
-                    <td className="py-3 text-center whitespace-nowrap">
-                      {/* On every row, so the column reads the same down the table; off
-                          until the bill is recorded and once the share is covered. */}
-                      <button
-                        type="button"
-                        className={BUTTON_SECONDARY}
-                        disabled={!billed || isSettled(share)}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onPayShare(share)
-                        }}
-                        aria-label={`Pay now for ${share.display_name}`}
-                      >
-                        <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                        Pay Now
-                      </button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+      {bill.shares.length === 0 ? (
+        <EmptyBlock title="No residents are taking part in furniture rental." />
+      ) : (
+        <ResidentCollectionTable caption={`Shares for ${formatMonth(month)}`} items={items} />
       )}
 
       {!billed && (

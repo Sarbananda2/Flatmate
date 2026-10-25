@@ -21,6 +21,11 @@ import { Page, useApp } from '../../components/Layout'
 import { RentAgreementCard } from './RentAgreement'
 import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
 import { DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
+import {
+  ResidentCollectionTable,
+  type CollectionStatus,
+  type ResidentCollectionItem,
+} from '../../components/ResidentCollectionTable'
 import { useToast } from '../../components/Toast'
 import {
   Avatar,
@@ -350,6 +355,29 @@ function CyclePanel({
 }) {
   // Rent is due by the landlord's due date; a share still owed after it is overdue.
   const overdue = overdueNotice(cycle.due_date)
+  const items: ResidentCollectionItem[] = cycle.participants.map((participant) => {
+    // Paying the landlord directly covered their share: nothing is owed into the kitty.
+    const funded = participant.collection_status === 'funded_payout'
+    const settled = funded || participant.collection_status === 'paid'
+    const status: CollectionStatus = settled
+      ? 'paid'
+      : participant.collection_status === 'partial'
+        ? 'partial'
+        : 'unpaid'
+    return {
+      id: participant.resident_id,
+      name: participant.display_name,
+      href: `/residents/${participant.resident_id}`,
+      sharePaise: participant.share_paise,
+      paidIntoKittyPaise: participant.settled_paise,
+      stillOwedPaise: funded ? null : participant.outstanding_paise,
+      overdueNotice: !funded && participant.outstanding_paise > 0 && overdue ? overdue : undefined,
+      status,
+      canPay: !settled && participant.outstanding_paise > 0,
+      onPay: () => onPay(participant),
+      onViewStatement: () => onViewStatement(participant),
+    }
+  })
   return (
     <Panel
       title="Resident Collection"
@@ -364,109 +392,7 @@ function CyclePanel({
         </p>
       )}
 
-      <div className="overflow-x-auto min-w-0">
-        <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse">
-          <caption className="sr-only">Rent shares and collection</caption>
-          <thead>
-            <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-center">Resident</th>
-              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Share</th>
-              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid into Kitty</th>
-              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still owed</th>
-              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
-              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-            {cycle.participants.map((participant) => {
-              const status = COLLECTION[participant.collection_status]
-              const funded = participant.collection_status === 'funded_payout'
-              const settled = funded || participant.collection_status === 'paid'
-              return (
-                // The whole row opens the resident's statement for the month; the
-                // link and the button in it do their own thing instead.
-                <tr
-                  key={participant.resident_id}
-                  className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
-                  tabIndex={0}
-                  title={`View ${participant.display_name}'s rent statement`}
-                  onClick={() => onViewStatement(participant)}
-                  onKeyDown={(event) => {
-                    if (event.target !== event.currentTarget) return
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      onViewStatement(participant)
-                    }
-                  }}
-                >
-                  <th scope="row" className="py-3 pr-3 text-left font-normal">
-                    <span className="flex items-center gap-2.5 min-w-0">
-                      <Avatar name={participant.display_name} />
-                      <span className="min-w-0">
-                        <Link
-                          className="block font-semibold text-[var(--text-primary)] truncate"
-                          to={`/residents/${participant.resident_id}`}
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          {participant.display_name}
-                        </Link>
-                      </span>
-                    </span>
-                  </th>
-                  <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                    <Rupees paise={participant.share_paise} />
-                  </td>
-                  <td className="py-3 pr-3 text-center">
-                    <Rupees paise={participant.settled_paise} />
-                  </td>
-                  <td className="py-3 pr-3 text-center">
-                    {funded ? (
-                      <span className="text-[var(--text-tertiary)]">—</span>
-                    ) : (
-                      <>
-                        <Rupees paise={participant.outstanding_paise} />
-                        {participant.outstanding_paise > 0 && overdue && (
-                          <span className="block text-[10px] font-semibold text-[var(--danger)] tabular">
-                            {overdue}
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </td>
-                  <td className="py-3 pr-3 text-center whitespace-nowrap">
-                    <Pill tone={status.tone}>
-                      {participant.collection_status === 'paid' ||
-                      participant.collection_status === 'funded_payout' ? (
-                        <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-                      ) : (
-                        <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
-                      )}
-                      {status.label}
-                    </Pill>
-                  </td>
-                  <td className="py-3 text-center whitespace-nowrap">
-                    {/* On every row, so the column reads the same down the table;
-                        there is nothing to record once the share is covered. */}
-                    <button
-                      type="button"
-                      className={BUTTON_SECONDARY}
-                      disabled={settled || participant.outstanding_paise <= 0}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onPay(participant)
-                      }}
-                      aria-label={`Pay now for ${participant.display_name}`}
-                    >
-                      <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      Pay Now
-                    </button>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+      <ResidentCollectionTable caption="Rent shares and collection" items={items} />
 
       {cycle.excluded_residents.length > 0 && (
         <p className="m-0 text-[11px] text-[var(--text-secondary)]">
