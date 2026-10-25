@@ -356,7 +356,6 @@ export function FurnitureRental({ month }: { month: string }) {
               bill={dialog.bill}
               provider={data.config.provider_name}
               onClose={() => setDialog(null)}
-              onPay={() => setDialog({ kind: 'pay_share', share: dialog.share })}
             />
           )}
           {dialog?.kind === 'pay_share' && (
@@ -1654,14 +1653,12 @@ function FurnitureStatementModal({
   bill,
   provider,
   onClose,
-  onPay,
 }: {
   month: string
   share: FurnitureShare
   bill: FurnitureMonthBill
   provider: string
   onClose: () => void
-  onPay: () => void
 }) {
   const billed = bill.expense != null
   const funded = share.status === 'funded_payout'
@@ -1676,19 +1673,6 @@ function FurnitureStatementModal({
       title="Furniture Statement"
       description={`${share.display_name} · ${formatMonth(month)}`}
       onClose={onClose}
-      footer={
-        <>
-          <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
-            Close
-          </button>
-          {billed && !isSettled(share) && (
-            <button type="button" className={BUTTON_PRIMARY} onClick={onPay}>
-              <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              Pay Now
-            </button>
-          )}
-        </>
-      }
     >
       <div className="stack">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

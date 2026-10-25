@@ -622,8 +622,11 @@ describe('FurnitureRental', () => {
       'Reference / UTR',
     ])
     expect(within(history).getByRole('row', { name: /UPI-88/ })).toHaveTextContent('8 Nov 2026₹1,066.67UPIUPI-88')
-    expect(within(bob).queryByRole('button', { name: /Pay Now/ })).toBeNull()
-    await userEvent.click(within(bob).getByRole('button', { name: 'Close' }))
+    // Closed by its own ✕: there is no footer of actions, exactly matching Rent.
+    expect(within(bob).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Close dialog',
+    ])
+    await userEvent.click(within(bob).getByRole('button', { name: 'Close dialog' }))
     expect(screen.queryByRole('dialog')).toBeNull()
 
     // Alice paid Furlenco herself: her share is covered without anything into the kitty.
@@ -632,7 +635,7 @@ describe('FurnitureRental', () => {
     expect(alice).toHaveTextContent('Paid into Kitty—Still Owed—Covered by paying Furlenco')
     expect(alice).toHaveTextContent('Alice paid ₹2,200.00 to Furlenco directly this month, which covers their share.')
     expect(alice).toHaveTextContent('No payments recorded yet for this month.')
-    await userEvent.click(within(alice).getByRole('button', { name: 'Close' }))
+    await userEvent.click(within(alice).getByRole('button', { name: 'Close dialog' }))
 
     within(shares).getByRole('row', { name: /Chris/ }).focus()
     await userEvent.keyboard('{Enter}')
@@ -641,10 +644,11 @@ describe('FurnitureRental', () => {
     expect(chris).toHaveTextContent('Share₹566.66Paid into Kitty₹300.00Still Owed₹266.66')
     expect(chris).not.toHaveTextContent('Shared items split')
     expect(within(chris).getByRole('row', { name: /Cash/ })).toHaveTextContent('8 Nov 2026₹300.00Cash—')
-    const pay = within(chris).getByRole('button', { name: 'Pay Now' })
-    expect(pay).toBeEnabled()
-    await userEvent.click(pay)
-    expect(screen.getByRole('dialog', { name: 'Record Payment into House Kitty' })).toBeInTheDocument()
+    expect(within(chris).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Close dialog',
+    ])
+    await userEvent.click(within(chris).getByRole('button', { name: 'Close dialog' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
   it('records a payment into the House Kitty against the share', async () => {
