@@ -558,7 +558,7 @@ describe('FurnitureRental', () => {
       'Status',
       'Actions',
     ])
-    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('Alice₹566.67₹0.00—PaidPay Now')
+    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('Alice₹566.67₹0.00₹0.00PaidPay Now')
     expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent(
       'Bob₹1,066.67incl. ₹500.00 own₹1,066.67₹0.00PaidPay Now',
     )
@@ -632,7 +632,7 @@ describe('FurnitureRental', () => {
     // Alice paid Furlenco herself: her share is covered without anything into the kitty.
     await userEvent.click(within(shares).getByRole('row', { name: /Alice/ }))
     const alice = screen.getByRole('dialog', { name: 'Furniture Statement' })
-    expect(alice).toHaveTextContent('Paid into Kitty₹0.00Still Owed—Covered by paying Furlenco')
+    expect(alice).toHaveTextContent('Paid into Kitty₹0.00Still Owed₹0.00Covered by paying Furlenco')
     expect(alice).toHaveTextContent('Alice paid ₹2,200.00 to Furlenco directly this month, which covers their share.')
     expect(alice).toHaveTextContent('No payments recorded yet for this month.')
     await userEvent.click(within(alice).getByRole('button', { name: 'Close dialog' }))

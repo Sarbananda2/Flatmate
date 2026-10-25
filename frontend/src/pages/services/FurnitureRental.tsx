@@ -637,7 +637,7 @@ function ResidentCollectionPanel({
           </>
         ) : undefined,
       paidIntoKittyPaise: billed ? share.settled_paise : null,
-      stillOwedPaise: billed && !funded ? share.outstanding_paise : null,
+      stillOwedPaise: billed ? share.outstanding_paise : null,
       status,
       canPay: billed && !isSettled(share),
       onPay: () => onPayShare(share),
@@ -1633,7 +1633,7 @@ function FurnitureStatementModal({
           <MiniStat label="Paid into Kitty" value={billed ? <Rupees paise={share.settled_paise} /> : dash} />
           <MiniStat
             label="Still Owed"
-            value={billed && !funded ? <Rupees paise={share.outstanding_paise} /> : dash}
+            value={billed ? <Rupees paise={share.outstanding_paise} /> : dash}
             note={funded ? `Covered by paying ${provider}` : undefined}
           />
         </div>
