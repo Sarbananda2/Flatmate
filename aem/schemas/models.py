@@ -1128,6 +1128,19 @@ class FurnitureGenerateRequest(ApiModel):
         description="Active residents who do not share the common items this month.")
 
 
+class FurniturePaymentCreate(ApiModel):
+    """A resident paying their share of a month's furniture bill into the kitty."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "What the resident paid. Settles their share of the month's bill first; any "
+        "excess goes to their other charges, oldest first.", ge=1)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    payment_mode: Literal["upi", "bank_transfer", "cash", "other"] | None = None
+    reference: str | None = Field(None, max_length=200)
+    note: str | None = Field(None, max_length=2000)
+
+
 class FurniturePayoutRequest(ApiModel):
     """A resident paid the provider the month's bill from their own account."""
     settlement_month: str = Field(pattern=MONTH_PATTERN)
@@ -1173,7 +1186,8 @@ __all__ = [
     "DepositConfigUpdate", "DepositSlotFundingRequest", "DepositSlotInitRequest",
     "DepositSlotItem", "DepositSlotVacateRequest",
     "FurnitureCategory", "FurnitureGenerateRequest", "FurnitureItemCreate",
-    "FurnitureItemUpdate", "FurniturePayoutRequest", "FurnitureReimburseRequest",
+    "FurnitureItemUpdate", "FurniturePaymentCreate", "FurniturePayoutRequest",
+    "FurnitureReimburseRequest",
     "FurnitureSetupRequest",
     "RentLeaseConfigSave", "RentLeaseRenewRequest", "RentLeaseVacateRequest",
     "RentPaymentCreate",

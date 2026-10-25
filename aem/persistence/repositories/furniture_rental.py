@@ -169,6 +169,36 @@ class FurnitureRentalRepository(Repository):
                 GROUP BY a.expense_id, a.resident_id
                 ORDER BY a.resident_id""", (expense_id,))
 
+    def resident_charges_for_expense(self, expense_id: str,
+                                     resident_id: str) -> list[dict[str, Any]]:
+        """One resident's allocations on a month's bill, oldest first, with what is
+        still owed on each."""
+        return self._s.fetch_all(
+            """SELECT a.allocation_id,
+                      (a.amount_paise - COALESCE((SELECT SUM(pa.amount_paise)
+                                                    FROM payment_application pa
+                                                   WHERE pa.allocation_id = a.allocation_id), 0)
+                      )::BIGINT AS outstanding_paise
+                 FROM allocation a
+                WHERE a.expense_id = %s AND a.resident_id = %s ORDER BY a.row_seq""",
+            (expense_id, resident_id))
+
+    def payments_for_expense(self, expense_id: str) -> list[dict[str, Any]]:
+        """Each payment that settled part of a resident's charge on a month's bill,
+        oldest first, with what it put towards the charge -- not the whole
+        payment, whose excess may have gone to other charges."""
+        return self._s.fetch_all(
+            """SELECT a.resident_id, p.payment_id, p.payment_date,
+                      SUM(pa.amount_paise)::BIGINT AS amount_paise,
+                      p.payment_mode, p.reference, p.note
+                 FROM payment_application pa
+                 JOIN payment p ON p.payment_id = pa.payment_id
+                 JOIN allocation a ON a.allocation_id = pa.allocation_id
+                WHERE a.expense_id = %s AND p.status = 'active'
+                GROUP BY a.resident_id, p.payment_id, p.payment_date, p.payment_mode,
+                         p.reference, p.note, p.created_at
+                ORDER BY p.payment_date, p.created_at, p.payment_id""", (expense_id,))
+
     def vendor_advances(self, expense_id: str) -> list[dict[str, Any]]:
         """Active provider advances funding a month's bill, oldest first, with who paid."""
         return self._s.fetch_all(

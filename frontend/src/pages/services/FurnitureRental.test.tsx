@@ -85,8 +85,10 @@ function share(residentId: string, name: string, common: number, overrides: Reco
     private_items: [],
     total_paise: common,
     paid_paise: 0,
+    outstanding_paise: 0,
     status: null,
     paid_date: null,
+    payments: [],
     ...overrides,
   }
 }
@@ -96,7 +98,7 @@ const billed = (overrides: Record<string, unknown> = {}) =>
   bill({
     expense: { expense_id: 'furniture-1', description: 'Furniture rental for November 2026', amount_paise: 220000, statement_id: null },
     can_generate: false,
-    shares: bill().shares.map((row) => ({ ...row, status: 'unpaid' })),
+    shares: bill().shares.map((row) => ({ ...row, status: 'unpaid', outstanding_paise: row.total_paise })),
     ...overrides,
   })
 
@@ -127,8 +129,26 @@ const paidByAlice = (overrides: Record<string, unknown> = {}) =>
         paid_paise: 106667,
         status: 'paid',
         paid_date: '2026-11-08',
+        payments: [
+          {
+            payment_id: 'pay-bob',
+            payment_date: '2026-11-08',
+            amount_paise: 106667,
+            payment_mode: 'upi',
+            reference: 'UPI-88',
+            note: 'November furniture',
+          },
+        ],
       }),
-      share('chris', 'Chris', 56666, { paid_paise: 30000, status: 'partial', paid_date: '2026-11-08' }),
+      share('chris', 'Chris', 56666, {
+        paid_paise: 30000,
+        outstanding_paise: 26666,
+        status: 'partial',
+        paid_date: '2026-11-08',
+        payments: [
+          { payment_id: 'pay-chris', payment_date: '2026-11-08', amount_paise: 30000, payment_mode: 'cash', reference: null, note: null },
+        ],
+      }),
     ],
     vendor_payout: {
       payer_resident_id: 'alice',
@@ -375,10 +395,11 @@ describe('FurnitureRental', () => {
       'Own items',
       'Total',
       'Status',
+      'Actions',
     ])
-    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('Paid FurlencoOn 5 Nov 2026')
-    expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent('Paid into KittyOn 8 Nov 2026')
-    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Part paid₹300.00 of ₹566.66')
+    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('Paid FurlencoPay Now')
+    expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent('Paid into KittyPay Now')
+    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Part paidPay Now')
 
     const card = screen.getByRole('heading', { name: 'Reimbursement · Alice' }).closest('section')!
     expect(card).toHaveTextContent('Fronted₹2,200.00')
@@ -403,6 +424,80 @@ describe('FurnitureRental', () => {
       notes: null,
     })
     expect(await screen.findByText('Reimbursement recorded')).toBeInTheDocument()
+  })
+
+  it('keeps each share to its status, with Pay Now for whoever still owes', async () => {
+    show(overview({ month: paidByAlice() }))
+    const shares = await screen.findByRole('table', { name: 'Shares for November 2026' })
+    expect(within(shares).getByRole('columnheader', { name: 'Resident' })).toHaveClass('text-left')
+    // No dates or part-paid amounts under the chips: they are in the share's details.
+    expect(shares).not.toHaveTextContent('Nov 2026')
+    expect(shares).not.toHaveTextContent('of ₹')
+    expect(within(shares).getByRole('button', { name: 'Pay now for Alice' })).toBeDisabled()
+    expect(within(shares).getByRole('button', { name: 'Pay now for Bob' })).toBeDisabled()
+    expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeEnabled()
+  })
+
+  it("opens a share's details from its row, by click or by keyboard", async () => {
+    show(overview({ month: paidByAlice() }))
+    const shares = await screen.findByRole('table', { name: 'Shares for November 2026' })
+    await userEvent.click(within(shares).getByRole('row', { name: /Bob/ }))
+    const bob = screen.getByRole('dialog', { name: 'Bob · November 2026 Share Details' })
+    expect(bob).toHaveTextContent('StatusPaid into KittyTotal month share₹1,066.67')
+    expect(bob).toHaveTextContent('Common items share₹566.67Private items share₹500.00Queen bed')
+    expect(bob).toHaveTextContent(
+      'Paid amount₹1,066.67Payment date8 Nov 2026Payment modeUPIReference / UTRUPI-88NotesNovember furniture',
+    )
+    expect(within(bob).queryByRole('button', { name: /Pay Now/ })).toBeNull()
+    await userEvent.click(within(bob).getByRole('button', { name: 'Close' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    within(shares).getByRole('row', { name: /Chris/ }).focus()
+    await userEvent.keyboard('{Enter}')
+    const chris = screen.getByRole('dialog', { name: 'Chris · November 2026 Share Details' })
+    expect(chris).toHaveTextContent('Paid amount₹300.00Payment date8 Nov 2026Payment modeCashReference / UTR—')
+    await userEvent.click(within(chris).getByRole('button', { name: 'Pay Now' }))
+    expect(screen.getByRole('dialog', { name: 'Record Payment into House Kitty' })).toBeInTheDocument()
+  })
+
+  it('records a payment into the House Kitty against the share', async () => {
+    show(overview({ month: paidByAlice() }), {
+      'POST /api/services/furniture/record-payment': overview({ month: paidByAlice() }),
+    })
+    await userEvent.click(await screen.findByRole('button', { name: 'Pay now for Chris' }))
+    expect(screen.queryByRole('dialog', { name: /Share Details/ })).toBeNull()
+    const dialog = screen.getByRole('dialog', { name: 'Record Payment into House Kitty' })
+    expect(dialog).toHaveTextContent('Chris · November 2026 furniture rental share · ₹266.66 outstanding')
+    expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('266.66')
+    const record = within(dialog).getByRole('button', { name: 'Record Payment' })
+    expect(record).toBeDisabled()
+    await userEvent.type(within(dialog).getByLabelText(/^Reference \/ UTR/), 'UPI-301')
+    await userEvent.click(record)
+
+    await waitFor(() => expect(sent('POST', '/api/services/furniture/record-payment')).toBeDefined())
+    expect(sent('POST', '/api/services/furniture/record-payment')!.body).toEqual({
+      settlement_month: MONTH,
+      resident_id: 'chris',
+      amount_paise: 26666,
+      payment_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      payment_mode: 'upi',
+      reference: 'UPI-301',
+      note: null,
+    })
+    expect(await screen.findByText('Payment recorded')).toBeInTheDocument()
+  })
+
+  it('calls the household money the Kitty, never the pool', async () => {
+    show(overview({ month: paidByAlice() }))
+    await screen.findByRole('table', { name: 'Shares for November 2026' })
+    expect(document.body).toHaveTextContent('Paid into Kitty')
+    expect(document.body).toHaveTextContent('Kitty cash available')
+    expect(document.body).not.toHaveTextContent(/pool/i)
+    for (const open of ['Pay now for Chris', 'Reimburse ₹1,366.67 from Kitty to Alice']) {
+      await userEvent.click(screen.getByRole('button', { name: open }))
+      expect(document.body).not.toHaveTextContent(/pool/i)
+      await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    }
   })
 
   it('waits for the kitty to collect before reimbursing, and says when it is done', async () => {

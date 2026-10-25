@@ -18,12 +18,12 @@ Each month is billed once: the expense is unique for the definition and month,
 so a bill already recorded, by hand or by the recurring generator, is refused
 rather than duplicated.
 
-**Paying the bill.** Flatmates pay their shares into the kitty like any other
-charge. Often one of them pays the provider the whole bill from their own
-account instead of the kitty doing it: that is a ``provider_advance`` linked to
-the month's expense, crediting them with the bill while they still owe their
-own share. The kitty then owes them the rest, and pays it back -- out of what
-the others paid in for the bill -- as a ``refund``.
+**Paying the bill.** Flatmates pay their shares into the kitty, each payment
+settling their share of the bill first. Often one of them pays the provider the
+whole bill from their own account instead of the kitty doing it: that is a
+``provider_advance`` linked to the month's expense, crediting them with the bill
+while they still owe their own share. The kitty then owes them the rest, and
+pays it back -- out of what the others paid in for the bill -- as a ``refund``.
 """
 from __future__ import annotations
 
@@ -237,6 +237,9 @@ def _funding(uow: UnitOfWork, expense_id: str) -> dict[str, Any]:
     against the bill is theirs, less what has already been paid back to them.
     """
     charges = {row["resident_id"]: row for row in uow.furniture.charges_for_expense(expense_id)}
+    paid_in: dict[str, list[dict[str, Any]]] = {}
+    for payment in uow.furniture.payments_for_expense(expense_id):
+        paid_in.setdefault(payment.pop("resident_id"), []).append(payment)
     advances = uow.furniture.vendor_advances(expense_id)
     advanced: dict[str, int] = {}
     advanced_on: dict[str, str] = {}
@@ -244,7 +247,7 @@ def _funding(uow: UnitOfWork, expense_id: str) -> dict[str, Any]:
         payer = advance["payer_resident_id"]
         advanced[payer] = advanced.get(payer, 0) + advance["amount_paise"]
         advanced_on[payer] = advance["payment_date"]
-    result: dict[str, Any] = {"charges": charges, "advanced": advanced,
+    result: dict[str, Any] = {"charges": charges, "paid_in": paid_in, "advanced": advanced,
                               "advanced_on": advanced_on, "vendor_payout": None,
                               "reimbursement": None}
     if not advances:
@@ -294,10 +297,15 @@ def _funding(uow: UnitOfWork, expense_id: str) -> dict[str, Any]:
 def _attach_funding(uow: UnitOfWork, bill: dict[str, Any],
                     expense: Mapping[str, Any] | None) -> None:
     """Add to the month's bill who has paid their share, and the vendor payout and
-    reimbursement. Before the bill is recorded nobody owes anything yet."""
+    reimbursement. Before the bill is recorded nobody owes anything yet.
+
+    Each share's ``payments`` are the payments into the kitty that settled its
+    charge, oldest first, each with what it put towards the charge.
+    """
     if expense is None:
         for share in bill["shares"]:
-            share.update(paid_paise=0, status=None, paid_date=None)
+            share.update(paid_paise=0, outstanding_paise=0, status=None, paid_date=None,
+                         payments=[])
         bill["vendor_payout"] = bill["reimbursement"] = None
         return
     funding = _funding(uow, expense["expense_id"])
@@ -308,10 +316,12 @@ def _attach_funding(uow: UnitOfWork, bill: dict[str, Any],
         paid = charge["settled_paise"] if charge else 0
         advanced = funding["advanced"].get(rid, 0)
         status = _share_status(owed, paid, advanced)
+        covered = min(owed, paid + advanced)
         share.update(
-            paid_paise=min(owed, paid + advanced), status=status,
+            paid_paise=covered, outstanding_paise=owed - covered, status=status,
             paid_date=(funding["advanced_on"][rid] if status == "funded_payout"
-                       else charge["last_payment_date"] if paid else None))
+                       else charge["last_payment_date"] if paid else None),
+            payments=funding["paid_in"].get(rid, []))
     bill["vendor_payout"] = funding["vendor_payout"]
     bill["reimbursement"] = funding["reimbursement"]
 
@@ -673,6 +683,60 @@ def _require_recorded_bill(uow: UnitOfWork, apartment_id: str, service: Mapping[
                             code="furniture_bill_not_recorded",
                             details={"settlement_month": month})
     return expense
+
+
+def record_furniture_payment(db: Database, apartment_id: str, settlement_month: str,
+                             resident_id: str, *, amount_paise: int, payment_date: str,
+                             payment_mode: str | None = None, reference: str | None = None,
+                             note: str | None = None, actor: str = "operator") -> dict[str, Any]:
+    """Record a resident paying their share of the month's bill into the kitty.
+
+    The payment is targeted at their charge on the bill, so it settles this bill
+    first -- up to what is still owed on it -- whatever else they owe. Anything
+    paid beyond it is applied to their other charges oldest-first, and what is
+    left after that stays a credit. A share already paid, or covered by the
+    resident having paid the provider, is refused.
+    """
+    month = normalize_month(settlement_month, "settlement_month")
+    ensure_paise(amount_paise, "amount_paise", allow_zero=False)
+    payment_date = parse_iso_date(payment_date, "payment_date").isoformat()
+    timestamp = now_timestamp()
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        resident = get_resident(uow, resident_id, apartment_id)
+        name = resident["display_name"]
+        service = _require_live(uow, apartment_id)
+        expense = _require_recorded_bill(uow, apartment_id, service, month)
+        charges = uow.furniture.resident_charges_for_expense(expense["expense_id"], resident_id)
+        if not charges:
+            raise ValidationError(
+                f"{name} has no share of the {month_label(month)} furniture bill.",
+                code="not_a_furniture_participant",
+                details={"field": "resident_id", "resident_id": resident_id})
+        advanced = sum(advance["amount_paise"]
+                       for advance in uow.furniture.vendor_advances(expense["expense_id"])
+                       if advance["payer_resident_id"] == resident_id)
+        if advanced and advanced >= sum(charge["outstanding_paise"] for charge in charges):
+            raise ConflictError(
+                f"{name} paid {service['provider_name'] or service['display_name']} the "
+                f"{month_label(month)} bill, which already covers their share; the kitty owes "
+                "them the rest.", code="furniture_share_funded_by_payout",
+                details={"resident_id": resident_id})
+        target = next((charge for charge in charges if charge["outstanding_paise"] > 0), None)
+        if target is None:
+            raise ConflictError(
+                f"{name} has already paid their share of the {month_label(month)} furniture bill.",
+                code="furniture_share_already_paid", details={"resident_id": resident_id})
+        payments._record_payment(
+            uow, apartment_id=apartment_id, payment_id=new_id("payment"),
+            payer_resident_id=resident_id, amount_paise=amount_paise,
+            payment_date=payment_date, payment_kind="to_pool", payee_or_provider=None,
+            reference=reference,
+            note=(optional_text(note, "note")
+                  or f"{service['display_name']} for {month_label(month)}"),
+            timestamp=timestamp, expense_id=None, actor=actor,
+            target_allocation_id=target["allocation_id"], payment_mode=payment_mode)
+        return _overview(uow, apartment_id, month)
 
 
 def mark_paid_by_resident(db: Database, apartment_id: str, settlement_month: str,

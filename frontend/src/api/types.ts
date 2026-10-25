@@ -1401,9 +1401,20 @@ export interface FurnitureShare {
   total_paise: number
   /** Paid towards their charge, into the kitty or by paying the provider. 0 until the bill is recorded. */
   paid_paise: number
+  /** What is still owed on their charge. 0 until the bill is recorded. */
+  outstanding_paise: number
   /** Null until the bill is recorded, and for a charge of nothing. */
   status: FurnitureShareStatus | null
   paid_date: string | null
+  /** Payments into the kitty that settled their charge, oldest first, each with what it put towards it. */
+  payments: Array<{
+    payment_id: string
+    payment_date: string
+    amount_paise: number
+    payment_mode: 'upi' | 'bank_transfer' | 'cash' | 'other' | null
+    reference: string | null
+    note: string | null
+  }>
 }
 
 /** A resident paying the provider the month's bill from their own account. */

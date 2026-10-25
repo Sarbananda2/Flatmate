@@ -13,7 +13,7 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Archive, Check, Clock, HandCoins, Pencil, Plus, Receipt, Sofa, Undo2 } from 'lucide-react'
+import { Archive, Check, Clock, CreditCard, HandCoins, Pencil, Plus, Receipt, Sofa, Undo2 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Page, useApp } from '../../components/Layout'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
@@ -23,6 +23,7 @@ import {
   BUTTON_PRIMARY,
   BUTTON_QUIET,
   BUTTON_SECONDARY,
+  DetailFact,
   EmptyBlock,
   MiniStat,
   Panel,
@@ -41,7 +42,9 @@ import type {
   FurnitureMonthBill,
   FurnitureReimbursement,
   FurnitureRentalOverview,
+  FurnitureShare,
   FurnitureShareStatus,
+  FurnitureVendorPayout,
   Resident,
 } from '../../api/types'
 
@@ -80,6 +83,20 @@ const SHARE_STATUS: Record<Exclude<FurnitureShareStatus, 'funded_payout'>, { lab
   unpaid: { label: 'Unpaid', tone: 'warning' },
 }
 
+type PaymentMode = 'upi' | 'bank_transfer' | 'cash' | 'other'
+
+const PAYMENT_MODES: Array<{ value: PaymentMode; label: string }> = [
+  { value: 'upi', label: 'UPI' },
+  { value: 'bank_transfer', label: 'Bank transfer' },
+  { value: 'cash', label: 'Cash' },
+  { value: 'other', label: 'Other' },
+]
+
+/** Nothing left to pay on the share: paid into the kitty, or covered by paying the provider. */
+function isSettled(share: FurnitureShare): boolean {
+  return share.status === 'paid' || share.status === 'funded_payout' || share.outstanding_paise <= 0
+}
+
 type Dialog =
   | { kind: 'setup' }
   | { kind: 'retire' }
@@ -90,6 +107,8 @@ type Dialog =
   | { kind: 'generate'; bill: FurnitureMonthBill }
   | { kind: 'payout'; bill: FurnitureMonthBill }
   | { kind: 'reimburse'; reimbursement: FurnitureReimbursement }
+  | { kind: 'share_detail'; share: FurnitureShare; bill: FurnitureMonthBill }
+  | { kind: 'pay_share'; share: FurnitureShare }
 
 export default function FurnitureRentalPage() {
   const { month } = useApp()
@@ -146,6 +165,8 @@ export function FurnitureRental({ month }: { month: string }) {
                   provider={data.config.provider_name}
                   onGenerate={(bill) => setDialog({ kind: 'generate', bill })}
                   onMarkPaid={(bill) => setDialog({ kind: 'payout', bill })}
+                  onViewShare={(share) => setDialog({ kind: 'share_detail', share, bill: data.month! })}
+                  onPayShare={(share) => setDialog({ kind: 'pay_share', share })}
                 />
               )}
               {data.month?.reimbursement && (
@@ -217,6 +238,26 @@ export function FurnitureRental({ month }: { month: string }) {
                   'Vendor payout recorded',
                   `${payer} paid ${data.config!.provider_name} ${formatInr(dialog.bill.expense!.amount_paise)}`,
                 )
+              }
+            />
+          )}
+          {dialog?.kind === 'share_detail' && data.config && (
+            <ShareDetailModal
+              month={month}
+              share={dialog.share}
+              bill={dialog.bill}
+              provider={data.config.provider_name}
+              onClose={() => setDialog(null)}
+              onPay={() => setDialog({ kind: 'pay_share', share: dialog.share })}
+            />
+          )}
+          {dialog?.kind === 'pay_share' && (
+            <RecordFurniturePaymentDialog
+              month={month}
+              share={dialog.share}
+              onClose={() => setDialog(null)}
+              onDone={(amount) =>
+                done('Payment recorded', `${formatInr(amount)} from ${dialog.share.display_name} into the House Kitty`)
               }
             />
           )}
@@ -391,12 +432,16 @@ function BillPanel({
   provider,
   onGenerate,
   onMarkPaid,
+  onViewShare,
+  onPayShare,
 }: {
   month: string
   bill: FurnitureMonthBill
   provider: string
   onGenerate: (bill: FurnitureMonthBill) => void
   onMarkPaid: (bill: FurnitureMonthBill) => void
+  onViewShare: (share: FurnitureShare) => void
+  onPayShare: (share: FurnitureShare) => void
 }) {
   const finalized = bill.statement_status != null && bill.statement_status !== 'draft'
   // Who has paid what means something only once the bill is recorded.
@@ -457,20 +502,35 @@ function BillPanel({
 
       {bill.shares.length > 0 && (
         <div className="overflow-x-auto min-w-0">
-          <table className={clsx('w-full text-xs border-collapse', billed ? 'min-w-[680px]' : 'min-w-[560px]')}>
+          <table className={clsx('w-full text-xs border-collapse', billed ? 'min-w-[760px]' : 'min-w-[560px]')}>
             <caption className="sr-only">Shares for {formatMonth(month)}</caption>
             <thead>
               <tr className={TABLE_HEAD}>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Resident</th>
+                <th scope="col" className="pb-3 pr-3 font-bold text-left">Resident</th>
                 <th scope="col" className="pb-3 pr-3 font-bold text-center">Shared items</th>
                 <th scope="col" className="pb-3 pr-3 font-bold text-center">Own items</th>
                 <th scope="col" className={clsx('pb-3 font-bold text-center', billed && 'pr-3')}>Total</th>
-                {billed && <th scope="col" className="pb-3 font-bold text-center">Status</th>}
+                {billed && <th scope="col" className="pb-3 pr-3 font-bold text-center">Status</th>}
+                {billed && <th scope="col" className="pb-3 pr-3 font-bold text-center">Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
               {bill.shares.map((share) => (
-                <tr key={share.resident_id} className="align-middle">
+                // The whole row opens the share's details; Pay Now does its own thing instead.
+                <tr
+                  key={share.resident_id}
+                  className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
+                  tabIndex={0}
+                  title={`View ${share.display_name}'s share details`}
+                  onClick={() => onViewShare(share)}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      onViewShare(share)
+                    }
+                  }}
+                >
                   <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
                     {share.display_name}
                     {!share.taking_part && (
@@ -490,18 +550,26 @@ function BillPanel({
                     <Rupees paise={share.total_paise} />
                   </td>
                   {billed && (
-                    <td className="py-3 text-center whitespace-nowrap">
+                    <td className="py-3 pr-3 text-center whitespace-nowrap">
                       <ShareStatus status={share.status} provider={provider} />
-                      {share.status === 'partial' && (
-                        <span className="block mt-1 text-[11px] text-[var(--text-tertiary)] tabular">
-                          {formatInr(share.paid_paise)} of {formatInr(share.total_paise)}
-                        </span>
-                      )}
-                      {share.paid_date && share.status !== 'unpaid' && (
-                        <span className="block mt-1 text-[11px] text-[var(--text-tertiary)] tabular">
-                          On {formatDate(share.paid_date)}
-                        </span>
-                      )}
+                    </td>
+                  )}
+                  {billed && (
+                    <td className="py-3 pr-3 text-center whitespace-nowrap">
+                      {/* On every row, so the column reads the same down the table. */}
+                      <button
+                        type="button"
+                        className={BUTTON_SECONDARY}
+                        disabled={isSettled(share)}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onPayShare(share)
+                        }}
+                        aria-label={`Pay now for ${share.display_name}`}
+                      >
+                        <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        Pay Now
+                      </button>
                     </td>
                   )}
                 </tr>
@@ -1178,6 +1246,178 @@ function ReimburseDialog({
           />
         </div>
         <TextField label="Note" value={notes} onChange={setNotes} maxLength={500} />
+      </form>
+    </Modal>
+  )
+}
+
+/** One resident's share of the month, read-only, with everything the table leaves out (Rule U7). */
+function ShareDetailModal({
+  month,
+  share,
+  bill,
+  provider,
+  onClose,
+  onPay,
+}: {
+  month: string
+  share: FurnitureShare
+  bill: FurnitureMonthBill
+  provider: string
+  onClose: () => void
+  onPay: () => void
+}) {
+  const billed = bill.expense != null
+  const funded = share.status === 'funded_payout'
+  const payout: FurnitureVendorPayout | null = funded ? bill.vendor_payout : null
+  const distinct = (values: Array<string | null | undefined>) => [...new Set(values.filter(Boolean))].join(', ')
+  const modes = new Map(PAYMENT_MODES.map((mode) => [mode.value, mode.label]))
+  const paid = share.paid_paise > 0
+  return (
+    <Modal
+      title={`${share.display_name} · ${formatMonth(month)} Share Details`}
+      onClose={onClose}
+      wide
+      footer={
+        <>
+          <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
+            Close
+          </button>
+          {billed && !isSettled(share) && (
+            <button type="button" className={BUTTON_PRIMARY} onClick={onPay}>
+              <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              Pay Now
+            </button>
+          )}
+        </>
+      }
+    >
+      <dl aria-label="Share details" className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
+        <DetailFact label="Status">
+          {billed ? <ShareStatus status={share.status} provider={provider} /> : <Pill>Not billed yet</Pill>}
+        </DetailFact>
+        <DetailFact label="Total month share">
+          <Rupees paise={share.total_paise} />
+        </DetailFact>
+        <DetailFact label="Common items share">
+          <Rupees paise={share.common_share_paise} />
+        </DetailFact>
+        <DetailFact label="Private items share">
+          <Rupees paise={share.private_paise} />
+          {share.private_items.length > 0 && (
+            <span className="block text-[var(--text-secondary)]">{share.private_items.join(', ')}</span>
+          )}
+        </DetailFact>
+        <DetailFact label="Paid amount">{billed ? <Rupees paise={share.paid_paise} /> : '—'}</DetailFact>
+        <DetailFact label="Payment date">
+          <span className="tabular">{share.paid_date ? formatDate(share.paid_date) : '—'}</span>
+        </DetailFact>
+        {paid && (
+          <DetailFact label="Payment mode">
+            {funded
+              ? `Paid ${provider} directly`
+              : distinct(share.payments.map((payment) => payment.payment_mode && modes.get(payment.payment_mode))) || '—'}
+          </DetailFact>
+        )}
+        {paid && (
+          <DetailFact label="Reference / UTR">
+            {(funded ? payout?.reference : distinct(share.payments.map((payment) => payment.reference))) || '—'}
+          </DetailFact>
+        )}
+        <DetailFact label="Notes" className="sm:col-span-2">
+          {distinct(share.payments.map((payment) => payment.note)) || '—'}
+        </DetailFact>
+      </dl>
+    </Modal>
+  )
+}
+
+function RecordFurniturePaymentDialog({
+  month,
+  share,
+  onClose,
+  onDone,
+}: {
+  month: string
+  share: FurnitureShare
+  onClose: () => void
+  onDone: (amount: number) => void
+}) {
+  const owed = share.outstanding_paise
+  const [amount, setAmount] = useState(paiseToInput(owed))
+  const [amountPaise, setAmountPaise] = useState(owed)
+  const [amountOk, setAmountOk] = useState(true)
+  const [date, setDate] = useState(todayIso())
+  const [mode, setMode] = useState<PaymentMode>('upi')
+  const [reference, setReference] = useState('')
+  const [note, setNote] = useState('')
+
+  const save = useMutation(
+    () =>
+      api.post<FurnitureRentalOverview>(`${BASE}/record-payment`, {
+        settlement_month: month,
+        resident_id: share.resident_id,
+        amount_paise: amountPaise,
+        payment_date: date,
+        payment_mode: mode,
+        reference: reference.trim() || null,
+        note: note.trim() || null,
+      }),
+    { onSuccess: () => onDone(amountPaise) },
+  )
+  // A bank or UPI payment carries its transaction ID; cash has none.
+  const needsReference = mode !== 'cash'
+  const valid = amountOk && amountPaise > 0 && Boolean(date) && (!needsReference || Boolean(reference.trim()))
+
+  return (
+    <Modal
+      title="Record Payment into House Kitty"
+      description={`${share.display_name} · ${formatMonth(month)} furniture rental share · ${formatInr(owed)} outstanding`}
+      onClose={onClose}
+      footer={
+        <DialogFooter onClose={onClose} pending={save.pending} disabled={!valid} label="Record Payment" form="furniture-pay" />
+      }
+    >
+      <form id="furniture-pay" className="stack" noValidate onSubmit={submitWith(() => valid && void save.run(undefined))}>
+        <ErrorNotice error={save.error} />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+          <MoneyInput
+            label="Amount"
+            required
+            value={amount}
+            hint={
+              amountOk && amountPaise > owed
+                ? `${formatInr(amountPaise - owed)} more than this month's share. The extra goes to ${share.display_name}'s other charges, oldest first.`
+                : amountOk && amountPaise > 0 && amountPaise < owed
+                  ? `Part payment: ${formatInr(owed - amountPaise)} of this month's share will still be owed.`
+                  : `Pre-filled with the outstanding share. It is applied to the ${formatMonth(month)} furniture bill first.`
+            }
+            onChange={(raw, parsed) => {
+              setAmount(raw)
+              setAmountPaise(parsed.paise)
+              setAmountOk(parsed.ok)
+            }}
+          />
+          <DateField label="Payment date" required value={date} onChange={setDate} />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+          <SelectField<PaymentMode> label="Payment mode" value={mode} options={PAYMENT_MODES} onChange={setMode} />
+          <TextField
+            label="Reference / UTR"
+            required={needsReference}
+            value={reference}
+            onChange={setReference}
+            maxLength={200}
+            placeholder="e.g. UPI ref or bank UTR"
+          />
+        </div>
+        <TextField
+          label="Note"
+          value={note}
+          onChange={setNote}
+          maxLength={500}
+          placeholder="Optional remark (e.g. GPay transfer)"
+        />
       </form>
     </Modal>
   )

@@ -15,6 +15,7 @@ from aem.config import get_settings
 from aem.errors import ConflictError, ValidationError
 from aem.services import (
     definitions,
+    expenses,
     furniture_rental as furniture,
     payments,
     reconciliation,
@@ -290,6 +291,46 @@ def _statuses(month):
             for row in month["shares"]}
 
 
+def test_a_payment_into_the_kitty_settles_the_residents_share_first(billed):
+    # Chris also owes for October's milk, which oldest-first alone would pay off first.
+    expenses.create_expense(billed, apartment_id=APARTMENT, expense_id="milk-2026-10",
+                            description="Milk", amount_paise=30_000, expense_date="2026-10-01",
+                            allocations_paise={"alice": 0, "bob": 0, "chris": 30_000})
+    month = furniture.record_furniture_payment(
+        billed, APARTMENT, MONTH, "chris", amount_paise=56_666, payment_date="2026-11-08",
+        payment_mode="upi", reference="UPI-301", note="GPay")["month"]
+    payment = _rows(billed, "SELECT * FROM payment")[0]
+    assert (payment["payment_kind"], payment["payer_resident_id"], payment["amount_paise"],
+            payment["payment_mode"], payment["reference"], payment["note"]) == (
+        "to_pool", "chris", 56_666, "upi", "UPI-301", "GPay")
+    chris = next(row for row in month["shares"] if row["resident_id"] == "chris")
+    assert (chris["status"], chris["paid_paise"], chris["outstanding_paise"],
+            chris["paid_date"]) == ("paid", 56_666, 0, "2026-11-08")
+    assert chris["payments"] == [{"payment_id": payment["payment_id"],
+                                  "payment_date": "2026-11-08", "amount_paise": 56_666,
+                                  "payment_mode": "upi", "reference": "UPI-301", "note": "GPay"}]
+    assert _rows(billed, """SELECT pa.amount_paise FROM payment_application pa
+                              JOIN allocation a ON a.allocation_id = pa.allocation_id
+                             WHERE a.expense_id = 'milk-2026-10'""") == [], "the milk is still owed"
+
+    with pytest.raises(ConflictError) as again:
+        furniture.record_furniture_payment(billed, APARTMENT, MONTH, "chris", amount_paise=100,
+                                           payment_date="2026-11-09")
+    assert again.value.code == "furniture_share_already_paid"
+
+
+def test_a_share_covered_by_paying_the_provider_or_not_on_the_bill_takes_no_payment(rented):
+    furniture.generate_month(rented, APARTMENT, MONTH, ["chris"])
+    furniture.mark_paid_by_resident(rented, APARTMENT, MONTH, "alice", payment_date="2026-11-05")
+    for resident, code in (("alice", "furniture_share_funded_by_payout"),
+                           ("chris", "not_a_furniture_participant")):
+        with pytest.raises((ConflictError, ValidationError)) as refused:
+            furniture.record_furniture_payment(rented, APARTMENT, MONTH, resident,
+                                               amount_paise=10_000, payment_date="2026-11-08")
+        assert refused.value.code == code
+    assert _rows(rented, "SELECT 1 FROM payment WHERE payment_kind = 'to_pool'") == []
+
+
 def test_a_resident_who_paid_the_provider_is_credited_with_the_bill(billed):
     month = furniture.mark_paid_by_resident(billed, APARTMENT, MONTH, "alice",
                                             payment_date="2026-11-05",
@@ -496,8 +537,14 @@ def test_paying_the_bill_over_http(api):
               "payment_date": "2026-11-09"}
     assert api.post(f"{base}/reimburse-from-kitty", json=refund).status_code == 422, \
         "nothing has been paid into the kitty for it yet"
-    api.post("/api/payments", json={"payer_resident_id": "alice", "amount_paise": 30_000,
-                                    "payment_date": "2026-11-08"})
+    share = {"settlement_month": MONTH, "resident_id": "alice", "amount_paise": 30_000,
+             "payment_date": "2026-11-08", "payment_mode": "upi", "reference": "UPI-7"}
+    assert api.post(f"{base}/record-payment",
+                    json={**share, "payment_mode": "cheque"}).status_code == 422
+    paid_in = api.post(f"{base}/record-payment", json=share)
+    assert paid_in.status_code == 201, paid_in.text
+    assert {row["resident_id"]: row["status"] for row in paid_in.json()["month"]["shares"]}[
+        "alice"] == "paid"
     reimbursed = api.post(f"{base}/reimburse-from-kitty", json=refund)
     assert reimbursed.status_code == 201, reimbursed.text
     assert reimbursed.json()["month"]["reimbursement"]["pending_reimbursement_paise"] == 30_000

@@ -11,6 +11,7 @@ from ...schemas import (
     FurnitureGenerateRequest,
     FurnitureItemCreate,
     FurnitureItemUpdate,
+    FurniturePaymentCreate,
     FurniturePayoutRequest,
     FurnitureReimburseRequest,
     FurnitureSetupRequest,
@@ -91,6 +92,22 @@ def generate_cycle(payload: FurnitureGenerateRequest, db: Db, apartment_id: Apar
     try:
         return furniture_rental.generate_month(
             db, apartment_id, payload.settlement_month, payload.excluded_resident_ids,
+            actor=settings.operator_name)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.post("/record-payment", status_code=201,
+             summary="Record a resident paying their share of a month's bill into the kitty")
+def record_payment(payload: FurniturePaymentCreate, db: Db, apartment_id: ApartmentId,
+                   settings: AppSettings) -> dict[str, Any]:
+    """Settles their share of the month's bill first; anything over goes to their
+    other charges, oldest first. The bill must be recorded first."""
+    try:
+        return furniture_rental.record_furniture_payment(
+            db, apartment_id, payload.settlement_month, payload.resident_id,
+            amount_paise=payload.amount_paise, payment_date=payload.payment_date,
+            payment_mode=payload.payment_mode, reference=payload.reference, note=payload.note,
             actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
