@@ -12,8 +12,13 @@
  * bill, in one payout or several, from the kitty or by a resident from their own
  * account. A resident who paid the provider is paid back by the kitty out of
  * what the others paid in.
+ *
+ * Three tabs, as Housing has them: the month's settlement, the items, and the
+ * subscription with its deposit. The open tab is kept in the address
+ * (`?tab=items`), so a link or a reload lands on it.
  */
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Archive,
   Check,
@@ -22,6 +27,8 @@ import {
   HandCoins,
   Pencil,
   Plus,
+  Receipt,
+  ShieldCheck,
   Sofa,
   Store,
   Undo2,
@@ -91,6 +98,15 @@ const DEPOSIT_STATUS: Record<FurnitureDepositStatus, string> = {
 
 const PROVIDERS = ['Furlenco', 'Rentomojo']
 
+/** The page's tabs, as Housing has them: the open one is kept in the address (`?tab=items`). */
+export const FURNITURE_TABS = [
+  { value: 'settlement', label: 'Monthly Settlement', icon: Receipt },
+  { value: 'items', label: 'Rented Items', icon: Sofa },
+  { value: 'subscription', label: 'Subscription & Deposit', icon: ShieldCheck },
+] as const
+
+export type FurnitureTab = (typeof FURNITURE_TABS)[number]['value']
+
 // `funded_payout` reads "Paid Furlenco", with the provider's name.
 const SHARE_STATUS: Record<Exclude<FurnitureShareStatus, 'funded_payout'>, { label: string; tone: Tone }> = {
   paid: { label: 'Paid into Kitty', tone: 'success' },
@@ -156,6 +172,11 @@ export default function FurnitureRentalPage() {
 export function FurnitureRental({ month }: { month: string }) {
   const overview = useResource<FurnitureRentalOverview>(BASE, { month })
   const [dialog, setDialog] = useState<Dialog | null>(null)
+  const [params, setParams] = useSearchParams()
+  const requested = params.get('tab')
+  const tab: FurnitureTab = FURNITURE_TABS.some((entry) => entry.value === requested)
+    ? (requested as FurnitureTab)
+    : 'settlement'
   const toast = useToast()
   const done = (message: string, detail?: string) => {
     setDialog(null)
@@ -189,41 +210,73 @@ export function FurnitureRental({ month }: { month: string }) {
             </Panel>
           ) : (
             <>
-              <SubscriptionPanel data={data} onEdit={() => setDialog({ kind: 'setup' })} onRetire={() => setDialog({ kind: 'retire' })} />
-              <ItemsPanel
-                items={data.items}
-                onAdd={() => setDialog({ kind: 'add' })}
-                onEdit={(item) => setDialog({ kind: 'edit', item })}
-                onReturn={(item) => setDialog({ kind: 'return', item })}
-              />
-              {data.month && (
-                <>
-                  <Metrics bill={data.month} billingDay={data.service.billing_day_of_month} />
-                  {/* The month's two steps, in order: collect from residents, then pay the provider. */}
-                  <ResidentCollectionPanel
-                    month={month}
-                    bill={data.month}
-                    provider={data.config.provider_name}
-                    onGenerate={(bill) => setDialog({ kind: 'generate', bill })}
-                    onViewShare={(share) => setDialog({ kind: 'share_detail', share, bill: data.month! })}
-                    onPayShare={(share) => setDialog({ kind: 'pay_share', share })}
+              <div className="tabs" role="tablist" aria-label="Furniture Rental">
+                {FURNITURE_TABS.map(({ value, label, icon: Icon }) => (
+                  <button
+                    key={value}
+                    id={`furniture-tab-${value}`}
+                    type="button"
+                    role="tab"
+                    className="tab"
+                    aria-selected={tab === value}
+                    aria-controls={`furniture-panel-${value}`}
+                    onClick={() => setParams(value === 'settlement' ? {} : { tab: value }, { replace: true })}
+                  >
+                    <Icon className="w-3.5 h-3.5 shrink-0 inline-block mr-1.5 align-[-2px]" aria-hidden="true" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div
+                role="tabpanel"
+                id={`furniture-panel-${tab}`}
+                aria-labelledby={`furniture-tab-${tab}`}
+                className="space-y-4"
+              >
+                {tab === 'settlement' && data.month && (
+                  <>
+                    <Metrics bill={data.month} billingDay={data.service.billing_day_of_month} />
+                    {/* The month's two steps, in order: collect from residents, then pay the provider. */}
+                    <ResidentCollectionPanel
+                      month={month}
+                      bill={data.month}
+                      provider={data.config.provider_name}
+                      onGenerate={(bill) => setDialog({ kind: 'generate', bill })}
+                      onViewShare={(share) => setDialog({ kind: 'share_detail', share, bill: data.month! })}
+                      onPayShare={(share) => setDialog({ kind: 'pay_share', share })}
+                    />
+                    <ProviderPayoutPanel
+                      bill={data.month}
+                      config={data.config}
+                      onPayout={() => setDialog({ kind: 'provider_payout', bill: data.month! })}
+                      onViewStatement={() => setDialog({ kind: 'payout_statement', bill: data.month! })}
+                    />
+                    {data.month.reimbursement && (
+                      <ReimbursementPanel
+                        month={month}
+                        reimbursement={data.month.reimbursement}
+                        provider={data.config.provider_name}
+                        onReimburse={(reimbursement) => setDialog({ kind: 'reimburse', reimbursement })}
+                      />
+                    )}
+                  </>
+                )}
+                {tab === 'items' && (
+                  <ItemsPanel
+                    items={data.items}
+                    onAdd={() => setDialog({ kind: 'add' })}
+                    onEdit={(item) => setDialog({ kind: 'edit', item })}
+                    onReturn={(item) => setDialog({ kind: 'return', item })}
                   />
-                  <ProviderPayoutPanel
-                    bill={data.month}
-                    config={data.config}
-                    onPayout={() => setDialog({ kind: 'provider_payout', bill: data.month! })}
-                    onViewStatement={() => setDialog({ kind: 'payout_statement', bill: data.month! })}
+                )}
+                {tab === 'subscription' && (
+                  <SubscriptionPanel
+                    data={data}
+                    onEdit={() => setDialog({ kind: 'setup' })}
+                    onRetire={() => setDialog({ kind: 'retire' })}
                   />
-                </>
-              )}
-              {data.month?.reimbursement && (
-                <ReimbursementPanel
-                  month={month}
-                  reimbursement={data.month.reimbursement}
-                  provider={data.config.provider_name}
-                  onReimburse={(reimbursement) => setDialog({ kind: 'reimburse', reimbursement })}
-                />
-              )}
+                )}
+              </div>
             </>
           )}
 

@@ -4,7 +4,7 @@
  * These tests pin both: the figures as returned, and every body it posts.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { FurnitureRental } from './FurnitureRental'
@@ -226,7 +226,13 @@ const notSetUp = {
   deposit_held_paise: 0,
 }
 
-function show(payload: Record<string, unknown>, routes: Record<string, unknown> = {}) {
+function Where() {
+  const location = useLocation()
+  return <output aria-label="location">{location.pathname + location.search}</output>
+}
+
+/** The page at `path` -- `/?tab=items` opens on that tab -- with the address shown below it. */
+function show(payload: Record<string, unknown>, routes: Record<string, unknown> = {}, path = '/') {
   stub = installFetchStub({
     routes: {
       '/api/services/furniture': payload,
@@ -239,9 +245,10 @@ function show(payload: Record<string, unknown>, routes: Record<string, unknown> 
     } as never,
   })
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <ToastProvider>
         <FurnitureRental month={MONTH} />
+        <Where />
       </ToastProvider>
     </MemoryRouter>,
   )
@@ -251,6 +258,49 @@ const sent = (method: string, path: string) =>
   stub!.calls.find((call) => call.method === method && call.path === path)
 
 describe('FurnitureRental', () => {
+  it('opens on the monthly settlement and moves between tabs through the address', async () => {
+    show(overview())
+    expect(await screen.findByRole('tablist', { name: 'Furniture Rental' })).toBeInTheDocument()
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'Monthly Settlement',
+      'Rented Items',
+      'Subscription & Deposit',
+    ])
+    expect(screen.getByRole('tab', { name: /Monthly Settlement/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: 'Resident Collection · November 2026' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Provider Payout · Furlenco' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Rented Items' })).toBeNull()
+
+    const expectations: Array<[RegExp, string, string]> = [
+      [/Rented Items/, '/?tab=items', 'Rented Items'],
+      [/Subscription & Deposit/, '/?tab=subscription', 'Furniture rental'],
+    ]
+    for (const [name, address, heading] of expectations) {
+      await userEvent.click(screen.getByRole('tab', { name }))
+      expect(screen.getByRole('tab', { name })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByLabelText('location')).toHaveTextContent(address)
+      expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: /Resident Collection/ })).toBeNull()
+    }
+    await userEvent.click(screen.getByRole('tab', { name: /Monthly Settlement/ }))
+    expect(screen.getByLabelText('location')).toHaveTextContent(/^\/$/)
+  })
+
+  it.each([
+    ['items', /Rented Items/],
+    ['subscription', /Subscription & Deposit/],
+    ['nonsense', /Monthly Settlement/],
+  ])('opens on the tab named in the address: %s', async (tab, name) => {
+    show(overview(), {}, `/?tab=${tab}`)
+    expect(await screen.findByRole('tab', { name })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('has no tabs before furniture rental is set up', async () => {
+    show(notSetUp)
+    expect(await screen.findByRole('button', { name: 'Set up furniture rental' })).toBeInTheDocument()
+    expect(screen.queryByRole('tablist')).toBeNull()
+  })
+
   it('offers to set up the subscription, and sends its details', async () => {
     show(notSetUp)
     await userEvent.click(await screen.findByRole('button', { name: 'Set up furniture rental' }))
@@ -279,7 +329,7 @@ describe('FurnitureRental', () => {
   })
 
   it('shows the subscription at a glance, with its actions in one menu', async () => {
-    show(overview())
+    show(overview(), {}, '/?tab=subscription')
     const subscription = (await screen.findByRole('heading', { name: 'Furniture rental' })).closest('section')!
     expect(subscription).toHaveTextContent('ProviderFurlenco')
     expect(subscription).toHaveTextContent('Customer FUR-2291')
@@ -295,7 +345,7 @@ describe('FurnitureRental', () => {
   })
 
   it('lists each item with who pays for it and where it is', async () => {
-    show(overview())
+    show(overview(), {}, '/?tab=items')
     const table = await screen.findByRole('table', { name: 'Rented items' })
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Item',
@@ -349,7 +399,7 @@ describe('FurnitureRental', () => {
   })
 
   it('adds an item charged to one resident', async () => {
-    show(overview())
+    show(overview(), {}, '/?tab=items')
     const panel = (await screen.findByRole('heading', { name: 'Rented Items' })).closest('section')!
     await userEvent.click(within(panel).getByRole('button', { name: 'Add item' }))
     const dialog = screen.getByRole('dialog', { name: 'Add a rented item' })
@@ -654,7 +704,7 @@ describe('FurnitureRental', () => {
   })
 
   it('records the day an item went back', async () => {
-    show(overview())
+    show(overview(), {}, '/?tab=items')
     await userEvent.click(await screen.findByRole('button', { name: 'Return Sofa' }))
     const dialog = screen.getByRole('dialog', { name: 'Return Sofa' })
     expect(dialog).toHaveTextContent('Nothing is prorated')
