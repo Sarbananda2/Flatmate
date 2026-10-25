@@ -35,7 +35,7 @@ import {
   Users,
 } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
-import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
+import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
 import { DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
 import { useToast } from '../../components/Toast'
 import {
@@ -43,7 +43,6 @@ import {
   BUTTON_PRIMARY,
   BUTTON_QUIET,
   BUTTON_SECONDARY,
-  DetailFact,
   EmptyBlock,
   MiniStat,
   Panel,
@@ -351,7 +350,7 @@ export function FurnitureRental({ month }: { month: string }) {
             />
           )}
           {dialog?.kind === 'share_detail' && data.config && (
-            <ShareDetailModal
+            <FurnitureStatementModal
               month={month}
               share={dialog.share}
               bill={dialog.bill}
@@ -1648,8 +1647,8 @@ function ReimburseDialog({
   )
 }
 
-/** One resident's share of the month, read-only, with everything the table leaves out (Rule U7). */
-function ShareDetailModal({
+/** One resident's share of the month: what they owe, and every payment towards it (Rule U7). */
+function FurnitureStatementModal({
   month,
   share,
   bill,
@@ -1666,16 +1665,17 @@ function ShareDetailModal({
 }) {
   const billed = bill.expense != null
   const funded = share.status === 'funded_payout'
-  // What they paid the provider themselves, tranche by tranche.
-  const advances = bill.disbursements.filter((tranche) => tranche.funding_resident_id === share.resident_id)
-  const distinct = (values: Array<string | null | undefined>) => [...new Set(values.filter(Boolean))].join(', ')
+  // What they paid the provider themselves, over every tranche.
+  const advanced = bill.disbursements
+    .filter((tranche) => tranche.funding_resident_id === share.resident_id)
+    .reduce((total, tranche) => total + tranche.amount_paise, 0)
   const modes = new Map(PAYMENT_MODES.map((mode) => [mode.value, mode.label]))
-  const paid = share.paid_paise > 0
+  const dash = <span className="text-[var(--text-tertiary)]">—</span>
   return (
     <Modal
-      title={`${share.display_name} · ${formatMonth(month)} Share Details`}
+      title="Furniture Statement"
+      description={`${share.display_name} · ${formatMonth(month)}`}
       onClose={onClose}
-      wide
       footer={
         <>
           <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
@@ -1690,46 +1690,69 @@ function ShareDetailModal({
         </>
       }
     >
-      <dl aria-label="Share details" className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
-        <DetailFact label="Status">
-          {billed ? <ShareStatus status={share.status} provider={provider} /> : <Pill>Not billed yet</Pill>}
-        </DetailFact>
-        <DetailFact label="Total month share">
-          <Rupees paise={share.total_paise} />
-        </DetailFact>
-        <DetailFact label="Common items share">
-          <Rupees paise={share.common_share_paise} />
-        </DetailFact>
-        <DetailFact label="Private items share">
-          <Rupees paise={share.private_paise} />
-          {share.private_items.length > 0 && (
-            <span className="block text-[var(--text-secondary)]">{share.private_items.join(', ')}</span>
+      <div className="stack">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <MiniStat
+            label="Share"
+            value={<Rupees paise={share.total_paise} />}
+            note={share.private_paise > 0 ? `incl. ${formatInr(share.private_paise)} own items` : 'Shared items split'}
+          />
+          <MiniStat label="Paid into Kitty" value={billed && !funded ? <Rupees paise={share.settled_paise} /> : dash} />
+          <MiniStat
+            label="Still Owed"
+            value={billed && !funded ? <Rupees paise={share.outstanding_paise} /> : dash}
+            note={funded ? `Covered by paying ${provider}` : undefined}
+          />
+        </div>
+
+        {advanced > 0 && (
+          <Callout>
+            {share.display_name} paid {formatInr(advanced)} to {provider} directly this month
+            {funded ? ', which covers their share' : ''}. It is credited to them as an advance, not as a
+            payment into the kitty, so it is not listed below.
+          </Callout>
+        )}
+
+        <section aria-label="Payment history" className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="m-0 text-sm font-bold text-[var(--text-primary)]">Payment History</h3>
+            {share.status && <ShareStatus status={share.status} provider={provider} />}
+          </div>
+          {share.payments.length === 0 ? (
+            <EmptyBlock title="No payments recorded yet for this month." />
+          ) : (
+            <div className="overflow-x-auto min-w-0">
+              <table className="w-full text-left text-xs min-w-[480px] border-collapse">
+                <caption className="sr-only">Payments towards {share.display_name}'s furniture share</caption>
+                <thead>
+                  <tr className={TABLE_HEAD}>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Mode</th>
+                    <th scope="col" className="pb-3 font-bold text-center">Reference / UTR</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+                  {share.payments.map((payment) => (
+                    <tr key={payment.payment_id} className="align-middle">
+                      <td className="py-2.5 pr-3 text-center tabular">{formatDate(payment.payment_date)}</td>
+                      <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
+                        <Rupees paise={payment.amount_paise} />
+                      </td>
+                      <td className="py-2.5 pr-3 text-center">
+                        {payment.payment_mode ? modes.get(payment.payment_mode) : dash}
+                      </td>
+                      <td className="py-2.5 text-center tabular break-all text-[var(--text-primary)]">
+                        {payment.reference || dash}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
-        </DetailFact>
-        <DetailFact label="Paid amount">{billed ? <Rupees paise={share.paid_paise} /> : '—'}</DetailFact>
-        <DetailFact label="Payment date">
-          <span className="tabular">{share.paid_date ? formatDate(share.paid_date) : '—'}</span>
-        </DetailFact>
-        {paid && (
-          <DetailFact label="Payment mode">
-            {funded
-              ? `Paid ${provider} directly`
-              : distinct(share.payments.map((payment) => payment.payment_mode && modes.get(payment.payment_mode))) || '—'}
-          </DetailFact>
-        )}
-        {paid && (
-          <DetailFact label="Reference / UTR">
-            {distinct(
-              funded
-                ? advances.map((tranche) => tranche.disbursement_reference)
-                : share.payments.map((payment) => payment.reference),
-            ) || '—'}
-          </DetailFact>
-        )}
-        <DetailFact label="Notes" className="sm:col-span-2">
-          {distinct(share.payments.map((payment) => payment.note)) || '—'}
-        </DetailFact>
-      </dl>
+        </section>
+      </div>
     </Modal>
   )
 }

@@ -603,25 +603,46 @@ describe('FurnitureRental', () => {
     expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeEnabled()
   })
 
-  it("opens a share's details from its row, by click or by keyboard", async () => {
+  it("opens a resident's furniture statement from their row, by click or by keyboard", async () => {
     show(overview({ month: paidByAlice() }))
     const shares = await screen.findByRole('table', { name: 'Shares for November 2026' })
     await userEvent.click(within(shares).getByRole('row', { name: /Bob/ }))
-    const bob = screen.getByRole('dialog', { name: 'Bob · November 2026 Share Details' })
-    expect(bob).toHaveTextContent('StatusPaidTotal month share₹1,066.67')
-    expect(bob).toHaveTextContent('Common items share₹566.67Private items share₹500.00Queen bed')
+    const bob = screen.getByRole('dialog', { name: 'Furniture Statement' })
+    expect(bob).toHaveTextContent('Bob · November 2026')
     expect(bob).toHaveTextContent(
-      'Paid amount₹1,066.67Payment date8 Nov 2026Payment modeUPIReference / UTRUPI-88NotesNovember furniture',
+      'Share₹1,066.67incl. ₹500.00 own itemsPaid into Kitty₹1,066.67Still Owed₹0.00',
     )
+    expect(within(bob).getByRole('heading', { name: 'Payment History' })).toBeInTheDocument()
+    expect(within(bob).getByText('Paid')).toBeInTheDocument()
+    const history = within(bob).getByRole('table', { name: "Payments towards Bob's furniture share" })
+    expect(within(history).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Date',
+      'Amount',
+      'Mode',
+      'Reference / UTR',
+    ])
+    expect(within(history).getByRole('row', { name: /UPI-88/ })).toHaveTextContent('8 Nov 2026₹1,066.67UPIUPI-88')
     expect(within(bob).queryByRole('button', { name: /Pay Now/ })).toBeNull()
     await userEvent.click(within(bob).getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).toBeNull()
 
+    // Alice paid Furlenco herself: her share is covered without anything into the kitty.
+    await userEvent.click(within(shares).getByRole('row', { name: /Alice/ }))
+    const alice = screen.getByRole('dialog', { name: 'Furniture Statement' })
+    expect(alice).toHaveTextContent('Paid into Kitty—Still Owed—Covered by paying Furlenco')
+    expect(alice).toHaveTextContent('Alice paid ₹2,200.00 to Furlenco directly this month, which covers their share.')
+    expect(alice).toHaveTextContent('No payments recorded yet for this month.')
+    await userEvent.click(within(alice).getByRole('button', { name: 'Close' }))
+
     within(shares).getByRole('row', { name: /Chris/ }).focus()
     await userEvent.keyboard('{Enter}')
-    const chris = screen.getByRole('dialog', { name: 'Chris · November 2026 Share Details' })
-    expect(chris).toHaveTextContent('Paid amount₹300.00Payment date8 Nov 2026Payment modeCashReference / UTR—')
-    await userEvent.click(within(chris).getByRole('button', { name: 'Pay Now' }))
+    const chris = screen.getByRole('dialog', { name: 'Furniture Statement' })
+    expect(chris).toHaveTextContent('Chris · November 2026')
+    expect(chris).toHaveTextContent('Paid into Kitty₹300.00Still Owed₹266.66')
+    expect(within(chris).getByRole('row', { name: /Cash/ })).toHaveTextContent('8 Nov 2026₹300.00Cash—')
+    const pay = within(chris).getByRole('button', { name: 'Pay Now' })
+    expect(pay).toBeEnabled()
+    await userEvent.click(pay)
     expect(screen.getByRole('dialog', { name: 'Record Payment into House Kitty' })).toBeInTheDocument()
   })
 
@@ -630,7 +651,7 @@ describe('FurnitureRental', () => {
       'POST /api/services/furniture/record-payment': overview({ month: paidByAlice() }),
     })
     await userEvent.click(await screen.findByRole('button', { name: 'Pay now for Chris' }))
-    expect(screen.queryByRole('dialog', { name: /Share Details/ })).toBeNull()
+    expect(screen.queryByRole('dialog', { name: 'Furniture Statement' })).toBeNull()
     const dialog = screen.getByRole('dialog', { name: 'Record Payment into House Kitty' })
     expect(dialog).toHaveTextContent('Chris · November 2026 furniture rental share · ₹266.66 outstanding')
     expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('266.66')
