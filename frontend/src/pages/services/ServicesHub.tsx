@@ -347,7 +347,13 @@ function FurnitureRentalCard({ month }: CardProps) {
         {(overview) =>
           overview.service && overview.config ? (
             <dl className="m-0 space-y-2">
-              <Fact label="Provider">{overview.config.provider_name}</Fact>
+              {overview.services && overview.services.length > 1 ? (
+                <Fact label="Providers">
+                  {overview.services.map((entry) => entry.config.provider_name).join(', ')}
+                </Fact>
+              ) : (
+                <Fact label="Provider">{overview.config.provider_name}</Fact>
+              )}
               <Fact label="In the flat">
                 {overview.active_item_count} item{overview.active_item_count === 1 ? '' : 's'}
               </Fact>

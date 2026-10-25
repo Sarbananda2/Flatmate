@@ -201,6 +201,31 @@ describe('ServicesHub', () => {
     expect(screen.queryByRole('link', { name: /Housing/ })).toBeNull()
   })
 
+  it('names every furniture rental provider', async () => {
+    const service = { service_id: 'svc-1', service_type: 'furniture_rental', display_name: 'Furniture rental', status: 'active' }
+    const config = { provider_name: 'Furlenco', customer_id: null, deposit_paid_paise: 0, deposit_refunded_paise: 0 }
+    renderHub(
+      { rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
+      noDeposits,
+      noRooms,
+      noContacts,
+      noDocuments,
+      {
+        ...noFurniture,
+        service,
+        config,
+        services: [
+          { service, config },
+          { service: { ...service, service_id: 'svc-2' }, config: { ...config, provider_name: 'Rentomojo' } },
+        ],
+        month: { expense: null },
+      },
+    )
+    const card = screen.getByRole('region', { name: 'Furniture Rental' })
+    expect(await within(card).findByText('Active')).toBeInTheDocument()
+    expect(fact(card, 'Providers')).toHaveTextContent('Furlenco, Rentomojo')
+  })
+
   it('summarises a live furniture subscription and its month', async () => {
     const furniture = {
       ...noFurniture,

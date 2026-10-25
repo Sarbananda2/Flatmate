@@ -1083,7 +1083,11 @@ FurnitureCategory = Literal["living_room", "bedroom", "appliance", "dining", "wo
 
 
 class FurnitureSetupRequest(ApiModel):
-    """The subscription. Only the fields sent change once it exists."""
+    """A provider's subscription. Only the fields sent change once it exists."""
+    service_id: str | None = Field(
+        None, max_length=64, description="The subscription to update; omit for the first.")
+    create_new: bool = Field(
+        False, description="Add another provider's subscription instead of updating one.")
     display_name: str | None = Field(None, min_length=1, max_length=100)
     provider_name: str | None = Field(None, min_length=1, max_length=100,
                                       description="Furlenco, Rentomojo, or another provider.")
@@ -1098,6 +1102,9 @@ class FurnitureSetupRequest(ApiModel):
 
 
 class FurnitureItemCreate(ApiModel):
+    service_id: str | None = Field(
+        None, max_length=64,
+        description="The provider's subscription it is rented on; needed with several.")
     name: str = Field(min_length=1, max_length=200)
     category: FurnitureCategory
     monthly_rent_paise: int = _money_field("The item's monthly rent.", ge=1)
@@ -1111,6 +1118,8 @@ class FurnitureItemCreate(ApiModel):
 class FurnitureItemUpdate(ApiModel):
     """Only the fields sent change. Returning an item is status ``returned``
     with its ``return_date``."""
+    service_id: str | None = Field(
+        None, max_length=64, description="Move it to another provider's subscription.")
     name: str | None = Field(None, min_length=1, max_length=200)
     category: FurnitureCategory | None = None
     monthly_rent_paise: int | None = _money_field("The item's monthly rent.", ge=1, default=None)
@@ -1149,6 +1158,9 @@ class FurnitureDisburseRequest(ApiModel):
                     "from their own account.")
     funding_resident_id: str | None = Field(
         None, max_length=64, description="For a resident advance: who paid the provider.")
+    service_id: str | None = Field(
+        None, max_length=64,
+        description="The provider being paid; needed when several bill this month.")
     reference: str = Field(min_length=1, max_length=200,
                            description="Bank UTR or UPI transaction ID.")
     disbursed_date: str = Field(pattern=DATE_PATTERN)
@@ -1161,6 +1173,9 @@ class FurniturePayoutRequest(ApiModel):
     """A resident paid the provider from their own account: a resident-advance payout."""
     settlement_month: str = Field(pattern=MONTH_PATTERN)
     payer_resident_id: str = Field(min_length=1, max_length=64)
+    service_id: str | None = Field(
+        None, max_length=64,
+        description="The provider being paid; needed when several bill this month.")
     amount_paise: int | None = _money_field(
         "This payment; omit for everything still owed to the provider.", ge=1, default=None)
     payment_date: str = Field(pattern=DATE_PATTERN)

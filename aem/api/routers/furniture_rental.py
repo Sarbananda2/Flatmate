@@ -127,8 +127,8 @@ def disburse_payout(payload: FurnitureDisburseRequest, db: Db, apartment_id: Apa
             db, apartment_id, payload.settlement_month,
             disbursement_mode=payload.disbursement_mode, reference=payload.reference,
             disbursed_date=payload.disbursed_date, amount_paise=payload.amount_paise,
-            funding_resident_id=payload.funding_resident_id, notes=payload.notes,
-            actor=settings.operator_name)
+            funding_resident_id=payload.funding_resident_id, service_id=payload.service_id,
+            notes=payload.notes, actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
 
@@ -142,7 +142,8 @@ def mark_paid_by_resident(payload: FurniturePayoutRequest, db: Db, apartment_id:
         return furniture_rental.mark_paid_by_resident(
             db, apartment_id, payload.settlement_month, payload.payer_resident_id,
             payment_date=payload.payment_date, amount_paise=payload.amount_paise,
-            reference=payload.reference, notes=payload.notes, actor=settings.operator_name)
+            reference=payload.reference, service_id=payload.service_id, notes=payload.notes,
+            actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
 
@@ -163,12 +164,16 @@ def reimburse_from_kitty(payload: FurnitureReimburseRequest, db: Db, apartment_i
         raise to_http(exc) from exc
 
 
-@router.post("/retire", summary="End the furniture rental subscription")
+@router.post("/retire", summary="End a furniture rental subscription")
 def retire_furniture(db: Db, apartment_id: ApartmentId, settings: AppSettings,
-                     month: OptionalMonth = None) -> dict[str, Any]:
-    """Every item must have been returned first."""
+                     month: OptionalMonth = None,
+                     service_id: Annotated[str | None, Query(
+                         max_length=64, description="The subscription to end; the first if "
+                                                    "left out")] = None) -> dict[str, Any]:
+    """Every item on it must have been returned first."""
     try:
-        return furniture_rental.retire_furniture_rental(db, apartment_id, settlement_month=month,
+        return furniture_rental.retire_furniture_rental(db, apartment_id, service_id=service_id,
+                                                        settlement_month=month,
                                                         actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc

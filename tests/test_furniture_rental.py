@@ -637,6 +637,136 @@ def test_an_unbilled_month_has_no_payments_to_show(rented):
             month["reimbursement"]) == (0, "pending", [], None)
 
 
+# ------------------------------------------------------ several providers --
+
+def _payouts(month):
+    return {row["provider_name"]: (row["total_paise"], row["remaining_disbursement_paise"],
+                                   row["payout_status"]) for row in month["provider_payouts"]}
+
+
+def test_multiple_providers_link_items_and_settle_payouts_independently(apartment):
+    furlenco = _setup(apartment, provider_name="Furlenco", billing_day_of_month=5)
+    furlenco_id = furlenco["service"]["service_id"]
+    both = furniture.setup_furniture_rental(
+        apartment, APARTMENT, {"provider_name": "Rentomojo", "billing_day_of_month": 10,
+                               "create_new": True}, settlement_month=MONTH)
+    assert [entry["config"]["provider_name"] for entry in both["services"]] == [
+        "Furlenco", "Rentomojo"]
+    rentomojo_id = both["services"][1]["service"]["service_id"]
+    # Both providers' items are billed together, under one definition.
+    assert len({entry["config"]["expense_definition_id"] for entry in both["services"]}) == 1
+    assert both["service"]["service_id"] == furlenco_id, "the first stays the default"
+
+    with pytest.raises(ValidationError) as unsure:
+        _item(apartment, "Lamp", 10_000)
+    assert unsure.value.code == "furniture_service_required"
+    sofa = _item(apartment, "Sofa", 120_000, service_id=furlenco_id, delivery_date="2026-09-01")
+    bed = _item(apartment, "Queen bed", 100_000, scope="resident", resident="alice",
+                category="bedroom", service_id=rentomojo_id, delivery_date="2026-09-01")
+    assert (sofa["provider_name"], bed["provider_name"]) == ("Furlenco", "Rentomojo")
+    overview = furniture.get_overview(apartment, APARTMENT, MONTH)
+    assert (overview["monthly_total_paise"], overview["active_item_count"]) == (220_000, 2)
+    assert [(e["config"]["provider_name"], e["monthly_total_paise"])
+            for e in overview["services"]] == [("Furlenco", 120_000), ("Rentomojo", 100_000)]
+
+    month = furniture.generate_month(apartment, APARTMENT, MONTH)["month"]
+    expense = _rows(apartment, "SELECT * FROM expense_instance")[0]
+    assert (expense["amount_paise"], expense["provider_name"], expense["due_date"]) == (
+        220_000, "Furlenco, Rentomojo", "2026-11-05")
+    assert _payouts(month) == {"Furlenco": (120_000, 120_000, "pending"),
+                               "Rentomojo": (100_000, 100_000, "pending")}
+
+    # Which provider is being paid has to be said.
+    with pytest.raises(ValidationError) as which:
+        _payout(apartment)
+    assert which.value.code == "furniture_service_required"
+    month = _payout(apartment, service_id=furlenco_id)
+    assert _payouts(month) == {"Furlenco": (120_000, 0, "disbursed"),
+                               "Rentomojo": (100_000, 100_000, "pending")}
+    assert month["payout_status"] == "partially_disbursed"
+    with pytest.raises(ConflictError) as again:
+        _payout(apartment, service_id=furlenco_id, amount_paise=1)
+    assert again.value.code == "furniture_already_disbursed"
+    with pytest.raises(ValidationError) as too_much:
+        _payout(apartment, service_id=rentomojo_id, amount_paise=100_001)
+    assert too_much.value.code == "tranche_exceeds_remaining"
+
+    month = _payout(apartment, service_id=rentomojo_id, reference="UTR-R1")
+    assert _payouts(month) == {"Furlenco": (120_000, 0, "disbursed"),
+                               "Rentomojo": (100_000, 0, "disbursed")}
+    assert month["payout_status"] == "disbursed"
+    assert [(t["provider_name"], t["amount_paise"]) for t in month["disbursements"]] == [
+        ("Furlenco", 120_000), ("Rentomojo", 100_000)]
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+    # Ending one provider leaves the other; the month it was paid keeps its payout.
+    with pytest.raises(ConflictError) as outstanding:
+        furniture.retire_furniture_rental(apartment, APARTMENT, service_id=furlenco_id)
+    assert outstanding.value.code == "furniture_items_outstanding"
+    furniture.update_item(apartment, APARTMENT, sofa["item_id"],
+                          {"status": "returned", "return_date": "2026-11-30"})
+    after = furniture.retire_furniture_rental(apartment, APARTMENT, service_id=furlenco_id,
+                                              settlement_month=MONTH)
+    assert [entry["config"]["provider_name"] for entry in after["services"]] == ["Rentomojo"]
+    assert [item["name"] for item in after["items"]] == ["Queen bed"]
+    assert _payouts(after["month"]) == {"Rentomojo": (100_000, 0, "disbursed"),
+                                        "Furlenco": (120_000, 0, "disbursed")}
+
+
+def test_a_resident_paying_two_providers_is_owed_the_extra_on_both(apartment):
+    furlenco_id = _setup(apartment, provider_name="Furlenco")["service"]["service_id"]
+    rentomojo_id = furniture.setup_furniture_rental(
+        apartment, APARTMENT, {"provider_name": "Rentomojo", "create_new": True},
+        settlement_month=MONTH)["services"][1]["service"]["service_id"]
+    _item(apartment, "Sofa", 120_000, service_id=furlenco_id)
+    _item(apartment, "Fridge", 90_000, service_id=rentomojo_id, category="appliance")
+    furniture.generate_month(apartment, APARTMENT, MONTH)
+    # Alice pays both. Her ₹700 share goes through the kitty from the first; the rest is extra.
+    _advance(apartment, service_id=furlenco_id)
+    month = _advance(apartment, service_id=rentomojo_id, reference="UTR-R2")
+    assert [entry["recipient_resident_id"] for entry in month["reimbursements"]] == ["alice"]
+    owed = month["reimbursement"]
+    assert (owed["total_fronted_paise"], owed["payer_share_paise"],
+            owed["net_reimbursement_owed_paise"]) == (210_000, 70_000, 140_000)
+    # Bob pays his share in: the kitty can pass it to Alice.
+    _into_kitty(apartment, "bob", 70_000, "pay-bob")
+    with pytest.raises(ValidationError) as other:
+        furniture.reimburse_from_kitty(apartment, APARTMENT, MONTH, "bob", amount_paise=1_000,
+                                       payment_date="2026-11-09")
+    assert other.value.code == "not_the_payout_resident"
+    owed = furniture.reimburse_from_kitty(apartment, APARTMENT, MONTH, "alice",
+                                          amount_paise=70_000,
+                                          payment_date="2026-11-09")["month"]["reimbursement"]
+    assert (owed["reimbursed_so_far_paise"], owed["pending_reimbursement_paise"]) == (
+        70_000, 70_000)
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+def test_several_providers_over_http(api):
+    base = "/api/services/furniture"
+    first = api.post(f"{base}/setup", params={"month": MONTH}, json={"provider_name": "Furlenco"})
+    assert first.status_code == 200, first.text
+    second = api.post(f"{base}/setup", params={"month": MONTH},
+                      json={"provider_name": "Rentomojo", "create_new": True})
+    assert [e["config"]["provider_name"] for e in second.json()["services"]] == [
+        "Furlenco", "Rentomojo"]
+    rentomojo = second.json()["services"][1]["service"]["service_id"]
+    lamp = {"name": "Lamp", "category": "other", "monthly_rent_paise": 10_000,
+            "allocation_scope": "common"}
+    assert api.post(f"{base}/items", json=lamp).status_code == 422
+    added = api.post(f"{base}/items", json={**lamp, "service_id": rentomojo})
+    assert (added.status_code, added.json()["provider_name"]) == (201, "Rentomojo")
+    renamed = api.post(f"{base}/setup", params={"month": MONTH},
+                       json={"service_id": rentomojo, "customer_id": "RM-9"})
+    assert renamed.json()["services"][1]["config"]["customer_id"] == "RM-9"
+    assert api.post(f"{base}/setup", json={"service_id": "svc-nope"}).status_code == 404
+    api.patch(f"{base}/items/{added.json()['item_id']}",
+              json={"status": "returned", "return_date": "2026-11-30"})
+    ended = api.post(f"{base}/retire", params={"month": MONTH, "service_id": rentomojo})
+    assert ended.status_code == 200, ended.text
+    assert [e["config"]["provider_name"] for e in ended.json()["services"]] == ["Furlenco"]
+
+
 # ----------------------------------------------------------- retirement --
 
 def test_the_subscription_ends_only_once_everything_has_gone_back(rented):

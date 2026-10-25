@@ -7,8 +7,18 @@ from .base import Repository
 
 #: Item columns a caller may change. Anything else is refused, so no
 #: caller-supplied name ever reaches the SQL.
-ITEM_COLUMNS = ("name", "category", "monthly_rent_paise", "allocation_scope",
+ITEM_COLUMNS = ("service_id", "name", "category", "monthly_rent_paise", "allocation_scope",
                 "assigned_resident_id", "status", "delivery_date", "return_date")
+
+#: An item with the resident it is for and the provider it is rented from.
+ITEM_SELECT = """SELECT i.*, r.display_name AS assigned_resident_name,
+                        COALESCE(c.provider_name, s.provider_name, s.display_name)
+                            AS provider_name,
+                        s.display_name AS service_display_name
+                   FROM furniture_rental_item i
+                   JOIN household_service s ON s.service_id = i.service_id
+                   LEFT JOIN furniture_rental_config c ON c.service_id = i.service_id
+                   LEFT JOIN resident r ON r.resident_id = i.assigned_resident_id"""
 
 #: Subscription columns a caller may change.
 CONFIG_COLUMNS = ("provider_name", "customer_id", "subscription_reference",
@@ -20,11 +30,26 @@ class FurnitureRentalRepository(Repository):
     # ----------------------------------------------------------- the service --
 
     def live_service(self, apartment_id: str, service_type: str) -> dict[str, Any] | None:
-        """The flat's service of this type that has not been retired, if any."""
+        """The flat's first service of this type that has not been retired, if any."""
         return self._s.fetch_one(
             """SELECT * FROM household_service
-                WHERE apartment_id=%s AND service_type=%s AND status <> 'retired'""",
+                WHERE apartment_id=%s AND service_type=%s AND status <> 'retired'
+                ORDER BY row_seq LIMIT 1""",
             (apartment_id, service_type))
+
+    def live_services(self, apartment_id: str, service_type: str) -> list[dict[str, Any]]:
+        """Every service of this type the flat has not retired, oldest first. A flat
+        may rent furniture from several providers at once."""
+        return self._s.fetch_all(
+            """SELECT * FROM household_service
+                WHERE apartment_id=%s AND service_type=%s AND status <> 'retired'
+                ORDER BY row_seq""",
+            (apartment_id, service_type))
+
+    def service_in_apartment(self, service_id: str, apartment_id: str) -> dict[str, Any] | None:
+        return self._s.fetch_one(
+            "SELECT * FROM household_service WHERE service_id=%s AND apartment_id=%s",
+            (service_id, apartment_id))
 
     def insert_service(self, *, service_id: str, apartment_id: str, service_type: str,
                        display_name: str, provider_name: str | None,
@@ -53,6 +78,11 @@ class FurnitureRentalRepository(Repository):
     def config(self, service_id: str) -> dict[str, Any] | None:
         return self._s.fetch_one(
             "SELECT * FROM furniture_rental_config WHERE service_id=%s", (service_id,))
+
+    def configs_for_apartment(self, apartment_id: str) -> list[dict[str, Any]]:
+        return self._s.fetch_all(
+            "SELECT * FROM furniture_rental_config WHERE apartment_id=%s ORDER BY service_id",
+            (apartment_id,))
 
     def insert_config(self, *, service_id: str, apartment_id: str, updated_at: str,
                       **values: Any) -> None:
@@ -93,17 +123,21 @@ class FurnitureRentalRepository(Repository):
     def items(self, service_id: str) -> list[dict[str, Any]]:
         """Every item on the subscription, with the resident it is assigned to."""
         return self._s.fetch_all(
-            """SELECT i.*, r.display_name AS assigned_resident_name
-                 FROM furniture_rental_item i
-                 LEFT JOIN resident r ON r.resident_id = i.assigned_resident_id
-                WHERE i.service_id=%s ORDER BY i.row_seq""", (service_id,))
+            f"{ITEM_SELECT} WHERE i.service_id=%s ORDER BY i.row_seq", (service_id,))
+
+    def items_for_apartment(self, apartment_id: str, *,
+                            include_retired: bool = False) -> list[dict[str, Any]]:
+        """Every item on the flat's live furniture subscriptions, from whichever
+        provider, in the order they were added. With ``include_retired``, the
+        items of subscriptions since ended too, for the months they were billed."""
+        live_only = "" if include_retired else "AND s.status <> 'retired'"
+        return self._s.fetch_all(
+            f"""{ITEM_SELECT}
+                WHERE i.apartment_id=%s AND s.service_type='furniture_rental' {live_only}
+                ORDER BY i.row_seq""", (apartment_id,))
 
     def item(self, item_id: str) -> dict[str, Any] | None:
-        return self._s.fetch_one(
-            """SELECT i.*, r.display_name AS assigned_resident_name
-                 FROM furniture_rental_item i
-                 LEFT JOIN resident r ON r.resident_id = i.assigned_resident_id
-                WHERE i.item_id=%s""", (item_id,))
+        return self._s.fetch_one(f"{ITEM_SELECT} WHERE i.item_id=%s", (item_id,))
 
     def insert_item(self, *, item_id: str, service_id: str, apartment_id: str, name: str,
                     category: str, monthly_rent_paise: int, allocation_scope: str,
@@ -213,8 +247,12 @@ class FurnitureRentalRepository(Repository):
         """The payouts to the provider towards a bill, oldest first, with who
         funded each one that a resident paid."""
         return self._s.fetch_all(
-            """SELECT d.*, r.display_name AS funding_resident_name
+            """SELECT d.*, r.display_name AS funding_resident_name,
+                      COALESCE(c.provider_name, s.provider_name, s.display_name)
+                          AS provider_name
                  FROM service_disbursement d
+                 JOIN household_service s ON s.service_id = d.service_id
+                 LEFT JOIN furniture_rental_config c ON c.service_id = d.service_id
                  LEFT JOIN resident r ON r.resident_id = d.funding_resident_id
                 WHERE d.expense_id = %s
                 ORDER BY d.disbursed_at, d.row_seq""", (expense_id,))

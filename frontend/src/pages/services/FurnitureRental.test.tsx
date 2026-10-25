@@ -22,6 +22,8 @@ afterEach(() => {
 const item = (overrides: Record<string, unknown> = {}) => ({
   item_id: 'furn-sofa',
   service_id: 'svc-1',
+  provider_name: 'Furlenco',
+  service_display_name: 'Furniture rental',
   name: 'Sofa',
   category: 'living_room',
   monthly_rent_paise: 100000,
@@ -378,6 +380,7 @@ describe('FurnitureRental', () => {
     const table = await screen.findByRole('table', { name: 'Rented items' })
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Item',
+      'Provider',
       'Category',
       'Paid by',
       'Monthly rent',
@@ -385,7 +388,7 @@ describe('FurnitureRental', () => {
       'Actions',
     ])
     expect(within(table).getByRole('row', { name: /Sofa/ })).toHaveTextContent('Shared₹1,000.00In the flatSince 1 Sep 2026')
-    expect(within(table).getByRole('row', { name: /Queen bed/ })).toHaveTextContent('BedroomBob₹500.00')
+    expect(within(table).getByRole('row', { name: /Queen bed/ })).toHaveTextContent('Queen bedFurlencoBedroomBob₹500.00')
     expect(within(table).getByRole('row', { name: /Desk/ })).toHaveTextContent('Awaiting deliveryDue 2 Dec 2026')
   })
 
@@ -445,6 +448,7 @@ describe('FurnitureRental', () => {
 
     await waitFor(() => expect(sent('POST', '/api/services/furniture/items')).toBeDefined())
     expect(sent('POST', '/api/services/furniture/items')!.body).toEqual({
+      service_id: 'svc-1',
       name: 'Study chair',
       category: 'workstation',
       monthly_rent_paise: 19900,
@@ -488,7 +492,7 @@ describe('FurnitureRental', () => {
     // Over the provider's avatar and name, as Resident is over each resident's.
     expect(within(panel).getByRole('columnheader', { name: 'Provider / Subscription' })).toHaveClass('text-left')
     expect(within(panel).getByRole('row', { name: /Furlenco/ })).toHaveTextContent(
-      'FurlencoCustomer FUR-2291₹2,200.00₹0.00₹2,200.00UnpaidPay Now',
+      'FurlencoCustomer FUR-2291 · 3 items₹2,200.00₹0.00₹2,200.00UnpaidPay Now',
     )
 
     await userEvent.click(within(panel).getByRole('button', { name: 'Pay now to Furlenco' }))
@@ -505,6 +509,7 @@ describe('FurnitureRental', () => {
     await waitFor(() => expect(sent('POST', '/api/services/furniture/disburse-payout')).toBeDefined())
     expect(sent('POST', '/api/services/furniture/disburse-payout')!.body).toEqual({
       settlement_month: MONTH,
+      service_id: 'svc-1',
       disbursement_mode: 'pool',
       funding_resident_id: null,
       reference: 'UTR-9',
@@ -768,6 +773,151 @@ describe('FurnitureRental', () => {
     const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
     expect(card).toHaveTextContent('Alice has been paid back in full.')
     expect(within(card).queryByRole('button', { name: /Reimburse/ })).toBeNull()
+  })
+
+  describe('with several rental providers', () => {
+    const furlenco = overview()
+    const rentomojo = {
+      service: {
+        ...furlenco.service,
+        service_id: 'svc-2',
+        provider_name: 'Rentomojo',
+        billing_day_of_month: 10,
+      },
+      config: { ...furlenco.config, provider_name: 'Rentomojo', customer_id: 'RM-1', deposit_paid_paise: 200000 },
+      monthly_total_paise: 50000,
+      active_item_count: 1,
+      next_billing_date: '2026-12-10',
+      deposit_held_paise: 200000,
+    }
+    const services = [
+      {
+        service: furlenco.service,
+        config: furlenco.config,
+        monthly_total_paise: 170000,
+        active_item_count: 2,
+        next_billing_date: '2026-12-05',
+        deposit_held_paise: 500000,
+      },
+      rentomojo,
+    ]
+    const bed = item({
+      item_id: 'furn-bed',
+      name: 'Queen bed',
+      category: 'bedroom',
+      monthly_rent_paise: 50000,
+      allocation_scope: 'resident',
+      assigned_resident_id: 'bob',
+      assigned_resident_name: 'Bob',
+      service_id: 'svc-2',
+      provider_name: 'Rentomojo',
+    })
+    const payout = (overrides: Record<string, unknown>) => ({
+      service_id: 'svc-1',
+      display_name: 'Furniture rental',
+      provider_name: 'Furlenco',
+      customer_id: 'FUR-2291',
+      subscription_reference: null,
+      billing_day_of_month: 5,
+      item_count: 2,
+      total_paise: 170000,
+      disbursed_paise: 170000,
+      remaining_disbursement_paise: 0,
+      payout_status: 'disbursed',
+      disbursements: [],
+      ...overrides,
+    })
+    // Furlenco has been paid; Rentomojo has not.
+    const month = billed({
+      payout_status: 'partially_disbursed',
+      disbursed_paise: 170000,
+      remaining_disbursement_paise: 50000,
+      provider_payouts: [
+        payout({}),
+        payout({
+          service_id: 'svc-2',
+          provider_name: 'Rentomojo',
+          customer_id: 'RM-1',
+          item_count: 1,
+          total_paise: 50000,
+          disbursed_paise: 0,
+          remaining_disbursement_paise: 50000,
+          payout_status: 'pending',
+        }),
+      ],
+    })
+    const both = overview({ services, items: [item(), item({ item_id: 'furn-fridge', name: 'Fridge' }), bed], month })
+
+    it('pays each provider its own part of the bill', async () => {
+      show(both, { 'POST /api/services/furniture/disburse-payout': both })
+      const panel = (await screen.findByRole('heading', { name: 'Provider Payout' })).closest('section')!
+      expect(within(panel).getByRole('row', { name: /Furlenco/ })).toHaveTextContent(
+        'FurlencoCustomer FUR-2291 · 2 items₹1,700.00₹1,700.00₹0.00PaidPay Now',
+      )
+      expect(within(panel).getByRole('row', { name: /Rentomojo/ })).toHaveTextContent(
+        'RentomojoCustomer RM-1 · 1 item₹500.00₹0.00₹500.00UnpaidPay Now',
+      )
+      expect(within(panel).getByRole('button', { name: 'Pay now to Furlenco' })).toBeDisabled()
+
+      await userEvent.click(within(panel).getByRole('button', { name: 'Pay now to Rentomojo' }))
+      const dialog = screen.getByRole('dialog', { name: 'Record Provider Payout' })
+      expect(dialog).toHaveTextContent('November 2026 · ₹500.00 still owed to Rentomojo')
+      expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('500.00')
+      await userEvent.type(within(dialog).getByLabelText(/^Reference \/ UTR/), 'UTR-R1')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Record Payout' }))
+      await waitFor(() => expect(sent('POST', '/api/services/furniture/disburse-payout')).toBeDefined())
+      expect(sent('POST', '/api/services/furniture/disburse-payout')!.body).toMatchObject({
+        service_id: 'svc-2',
+        disbursement_mode: 'pool',
+        amount_paise: 50000,
+      })
+
+      await userEvent.click(within(panel).getByRole('row', { name: /Furlenco/ }))
+      expect(screen.getByRole('dialog', { name: 'Provider Payout Statement' })).toHaveTextContent(
+        'Furlenco · November 2026Total Bill₹1,700.00Paid to Provider₹1,700.00Still Owed₹0.00',
+      )
+    })
+
+    it("shows each item's provider, and asks which provider a new item is from", async () => {
+      show(both, { 'POST /api/services/furniture/items': bed }, '/?tab=items')
+      const table = await screen.findByRole('table', { name: 'Rented items' })
+      expect(within(table).getByRole('row', { name: /Sofa/ })).toHaveTextContent('SofaFurlenco')
+      expect(within(table).getByRole('row', { name: /Queen bed/ })).toHaveTextContent('Queen bedRentomojo')
+
+      const panel = screen.getByRole('heading', { name: 'Rented Items' }).closest('section')!
+      await userEvent.click(within(panel).getByRole('button', { name: 'Add item' }))
+      const dialog = screen.getByRole('dialog', { name: 'Add a rented item' })
+      const provider = within(dialog).getByLabelText(/^Rental provider/)
+      expect(within(provider).getAllByRole('option').map((option) => option.textContent)).toEqual([
+        'Furlenco',
+        'Rentomojo',
+      ])
+      await userEvent.selectOptions(provider, 'svc-2')
+      await userEvent.type(within(dialog).getByLabelText(/^Item/), 'Desk')
+      await userEvent.type(within(dialog).getByLabelText(/Monthly rent/), '300')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add item' }))
+      await waitFor(() => expect(sent('POST', '/api/services/furniture/items')).toBeDefined())
+      expect(sent('POST', '/api/services/furniture/items')!.body).toMatchObject({ service_id: 'svc-2', name: 'Desk' })
+    })
+
+    it('keeps a subscription for each provider, and adds another', async () => {
+      show(both, {}, '/?tab=subscription')
+      const furlencoCard = (await screen.findByRole('heading', { name: 'Furniture rental · Furlenco' })).closest('section')!
+      expect(furlencoCard).toHaveTextContent('Deposit held₹5,000.00')
+      const rentomojoCard = screen.getByRole('heading', { name: 'Furniture rental · Rentomojo' }).closest('section')!
+      expect(rentomojoCard).toHaveTextContent('Monthly total₹500.00')
+      expect(rentomojoCard).toHaveTextContent('Deposit held₹2,000.00')
+
+      await userEvent.click(screen.getByRole('button', { name: 'Add rental provider' }))
+      const dialog = screen.getByRole('dialog', { name: 'Add rental provider' })
+      await userEvent.selectOptions(within(dialog).getByLabelText('Provider'), 'Rentomojo')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(sent('POST', '/api/services/furniture/setup')).toBeDefined())
+      expect(sent('POST', '/api/services/furniture/setup')!.body).toMatchObject({
+        provider_name: 'Rentomojo',
+        create_new: true,
+      })
+    })
   })
 
   it('records the day an item went back', async () => {

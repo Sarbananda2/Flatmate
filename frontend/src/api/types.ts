@@ -1370,7 +1370,10 @@ export interface FurnitureConfig {
 
 export interface FurnitureItem {
   item_id: string
+  /** The provider's subscription it is rented on. */
   service_id: string
+  provider_name?: string
+  service_display_name?: string
   name: string
   category: FurnitureCategory
   monthly_rent_paise: number
@@ -1422,6 +1425,9 @@ export interface FurnitureShare {
 /** One payment to a household service's provider towards a month's bill: from the kitty, or by a resident. */
 export interface FurnitureDisbursement {
   disbursement_id: string
+  /** The provider it paid. */
+  service_id?: string
+  provider_name?: string
   amount_paise: number
   disbursed_at: string
   disbursement_reference: string
@@ -1435,6 +1441,32 @@ export interface FurnitureDisbursement {
 }
 
 export type FurniturePayoutStatus = 'pending' | 'partially_disbursed' | 'disbursed'
+
+/** One provider's part of the month's bill, and what has been paid to them. */
+export interface FurnitureProviderPayout {
+  service_id: string
+  display_name: string
+  provider_name: string
+  customer_id: string | null
+  subscription_reference: string | null
+  billing_day_of_month: number | null
+  item_count: number
+  total_paise: number
+  disbursed_paise: number
+  remaining_disbursement_paise: number
+  payout_status: FurniturePayoutStatus
+  disbursements: FurnitureDisbursement[]
+}
+
+/** One provider's subscription, with its own totals and deposit. */
+export interface FurnitureServiceEntry {
+  service: HouseholdService
+  config: FurnitureConfig
+  monthly_total_paise: number
+  active_item_count: number
+  next_billing_date: string | null
+  deposit_held_paise: number
+}
 
 /** What the kitty owes the resident who paid the provider, and has paid back. */
 export interface FurnitureReimbursement {
@@ -1482,14 +1514,20 @@ export interface FurnitureMonthBill {
   disbursed_paise: number
   remaining_disbursement_paise: number
   disbursements: FurnitureDisbursement[]
-  /** Null unless one resident paid the provider tranches of their own. */
+  /** Null unless a resident paid a provider more than their share; the first of `reimbursements`. */
   reimbursement: FurnitureReimbursement | null
+  /** What the kitty owes each resident who paid a provider more than their share. */
+  reimbursements?: FurnitureReimbursement[]
+  /** Each provider's part of the bill, and what has been paid to them. */
+  provider_payouts?: FurnitureProviderPayout[]
 }
 
 export interface FurnitureRentalOverview {
-  /** Null until furniture rental is set up, and after it is retired. */
+  /** Null until furniture rental is set up, and after it is retired. The first provider's. */
   service: HouseholdService | null
   config: FurnitureConfig | null
+  /** Every live provider's subscription; the totals below are across all of them. */
+  services?: FurnitureServiceEntry[]
   items: FurnitureItem[]
   month: FurnitureMonthBill | null
   /** What the items in the flat now cost a month. */

@@ -66,10 +66,13 @@ import type {
   FurnitureItemStatus,
   FurnitureMonthBill,
   FurniturePayoutStatus,
+  FurnitureProviderPayout,
   FurnitureReimbursement,
   FurnitureRentalOverview,
   FurnitureShare,
+  FurnitureServiceEntry,
   FurnitureShareStatus,
+  HouseholdService,
   Resident,
 } from '../../api/types'
 
@@ -154,16 +157,56 @@ function billingDate(month: string, day: number): string {
   return `${month}-${String(Math.min(day, last)).padStart(2, '0')}`
 }
 
+/** Every live provider: from the backend, or, for an older response, the one there was. */
+function servicesOf(data: FurnitureRentalOverview): FurnitureServiceEntry[] {
+  if (data.services) return data.services
+  return data.service && data.config
+    ? [
+        {
+          service: data.service,
+          config: data.config,
+          monthly_total_paise: data.monthly_total_paise,
+          active_item_count: data.active_item_count,
+          next_billing_date: data.next_billing_date,
+          deposit_held_paise: data.deposit_held_paise,
+        },
+      ]
+    : []
+}
+
+/** Each provider's part of the month's bill, or, for an older response, the one provider's. */
+function payoutsOf(bill: FurnitureMonthBill, service: HouseholdService, config: FurnitureConfig): FurnitureProviderPayout[] {
+  return (
+    bill.provider_payouts ?? [
+      {
+        service_id: service.service_id,
+        display_name: service.display_name,
+        provider_name: config.provider_name,
+        customer_id: config.customer_id,
+        subscription_reference: config.subscription_reference,
+        billing_day_of_month: service.billing_day_of_month,
+        item_count: bill.billable_items.length,
+        total_paise: bill.expense?.amount_paise ?? bill.total_paise,
+        disbursed_paise: bill.disbursed_paise,
+        remaining_disbursement_paise: bill.remaining_disbursement_paise,
+        payout_status: bill.payout_status,
+        disbursements: bill.disbursements,
+      },
+    ]
+  )
+}
+
 type Dialog =
-  | { kind: 'setup' }
-  | { kind: 'retire' }
+  // `entry` is the provider to edit: none to set one up, or to add another.
+  | { kind: 'setup'; entry: FurnitureServiceEntry | null; adding?: boolean }
+  | { kind: 'retire'; entry: FurnitureServiceEntry }
   | { kind: 'add' }
   | { kind: 'edit'; item: FurnitureItem }
   | { kind: 'return'; item: FurnitureItem }
   | { kind: 'remove'; item: FurnitureItem }
   | { kind: 'generate'; bill: FurnitureMonthBill }
-  | { kind: 'provider_payout'; bill: FurnitureMonthBill }
-  | { kind: 'payout_statement'; bill: FurnitureMonthBill }
+  | { kind: 'provider_payout'; bill: FurnitureMonthBill; payout: FurnitureProviderPayout }
+  | { kind: 'payout_statement'; payout: FurnitureProviderPayout }
   | { kind: 'reimburse'; reimbursement: FurnitureReimbursement }
   | { kind: 'share_detail'; share: FurnitureShare; bill: FurnitureMonthBill }
   | { kind: 'pay_share'; share: FurnitureShare }
@@ -205,7 +248,7 @@ export function FurnitureRental({ month }: { month: string }) {
                 title="No furniture rental yet"
                 body="Add the Furlenco or Rentomojo subscription, then the items it covers. Each month's bill is split from them: shared items equally, a person's own items to them."
                 action={
-                  <button type="button" className={BUTTON_PRIMARY} onClick={() => setDialog({ kind: 'setup' })}>
+                  <button type="button" className={BUTTON_PRIMARY} onClick={() => setDialog({ kind: 'setup', entry: null })}>
                     <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                     Set up furniture rental
                   </button>
@@ -250,17 +293,22 @@ export function FurnitureRental({ month }: { month: string }) {
                     />
                     <ProviderPayoutPanel
                       bill={data.month}
-                      config={data.config}
-                      onPayout={() => setDialog({ kind: 'provider_payout', bill: data.month! })}
-                      onViewStatement={() => setDialog({ kind: 'payout_statement', bill: data.month! })}
+                      payouts={payoutsOf(data.month, data.service, data.config)}
+                      onPayout={(payout) => setDialog({ kind: 'provider_payout', bill: data.month!, payout })}
+                      onViewStatement={(payout) => setDialog({ kind: 'payout_statement', payout })}
                     />
-                    {data.month.reimbursement && (
-                      <ReimbursementPanel
-                        month={month}
-                        reimbursement={data.month.reimbursement}
-                        provider={data.config.provider_name}
-                        onReimburse={(reimbursement) => setDialog({ kind: 'reimburse', reimbursement })}
-                      />
+                    {(data.month.reimbursements ?? (data.month.reimbursement ? [data.month.reimbursement] : [])).map(
+                      (reimbursement) => (
+                        <ReimbursementPanel
+                          key={reimbursement.recipient_resident_id}
+                          month={month}
+                          reimbursement={reimbursement}
+                          provider={servicesOf(data)
+                            .map((entry) => entry.config.provider_name)
+                            .join(', ')}
+                          onReimburse={(owed) => setDialog({ kind: 'reimburse', reimbursement: owed })}
+                        />
+                      ),
                     )}
                   </>
                 )}
@@ -273,11 +321,27 @@ export function FurnitureRental({ month }: { month: string }) {
                   />
                 )}
                 {tab === 'subscription' && (
-                  <SubscriptionPanel
-                    data={data}
-                    onEdit={() => setDialog({ kind: 'setup' })}
-                    onRetire={() => setDialog({ kind: 'retire' })}
-                  />
+                  <>
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        className={BUTTON_SECONDARY}
+                        onClick={() => setDialog({ kind: 'setup', entry: null, adding: true })}
+                      >
+                        <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        Add rental provider
+                      </button>
+                    </div>
+                    {servicesOf(data).map((entry, _, all) => (
+                      <SubscriptionPanel
+                        key={entry.service.service_id}
+                        entry={entry}
+                        several={all.length > 1}
+                        onEdit={() => setDialog({ kind: 'setup', entry })}
+                        onRetire={() => setDialog({ kind: 'retire', entry })}
+                      />
+                    ))}
+                  </>
                 )}
               </div>
             </>
@@ -285,22 +349,29 @@ export function FurnitureRental({ month }: { month: string }) {
 
           {dialog?.kind === 'setup' && (
             <SetupDialog
-              data={data}
+              entry={dialog.entry}
+              adding={Boolean(dialog.adding)}
               month={month}
               onClose={() => setDialog(null)}
-              onSaved={() => done(data.service ? 'Subscription saved' : 'Furniture rental set up')}
+              onSaved={() =>
+                done(
+                  dialog.entry ? 'Subscription saved' : dialog.adding ? 'Rental provider added' : 'Furniture rental set up',
+                )
+              }
             />
           )}
           {dialog?.kind === 'retire' && (
             <RetireDialog
               month={month}
+              entry={dialog.entry}
               onClose={() => setDialog(null)}
-              onDone={() => done('Furniture rental ended')}
+              onDone={() => done(`${dialog.entry.config.provider_name} subscription ended`)}
             />
           )}
           {(dialog?.kind === 'add' || dialog?.kind === 'edit') && (
             <ItemDialog
               item={dialog.kind === 'edit' ? dialog.item : null}
+              services={servicesOf(data)}
               onClose={() => setDialog(null)}
               onRemove={(item) => setDialog({ kind: 'remove', item })}
               onSaved={(saved) => done(dialog.kind === 'edit' ? 'Item saved' : 'Item added', saved.name)}
@@ -330,29 +401,26 @@ export function FurnitureRental({ month }: { month: string }) {
               }
             />
           )}
-          {dialog?.kind === 'provider_payout' && data.config && (
+          {dialog?.kind === 'provider_payout' && (
             <ProviderPayoutModal
               month={month}
               bill={dialog.bill}
-              provider={data.config.provider_name}
+              payout={dialog.payout}
               onClose={() => setDialog(null)}
-              onDone={(updated) =>
+              onDone={(updated) => {
+                const payout = dialog.payout
+                const now = updated.provider_payouts?.find((row) => row.service_id === payout.service_id)
+                const left = now ? now.remaining_disbursement_paise : updated.remaining_disbursement_paise
+                const part = now ? now.payout_status === 'partially_disbursed' : updated.payout_status === 'partially_disbursed'
                 done(
                   'Provider payout recorded',
-                  updated.payout_status === 'partially_disbursed'
-                    ? `${formatInr(updated.remaining_disbursement_paise)} is still owed to ${data.config!.provider_name}.`
-                    : undefined,
+                  part ? `${formatInr(left)} is still owed to ${payout.provider_name}.` : undefined,
                 )
-              }
+              }}
             />
           )}
-          {dialog?.kind === 'payout_statement' && data.config && (
-            <ProviderPayoutStatementModal
-              month={month}
-              bill={dialog.bill}
-              provider={data.config.provider_name}
-              onClose={() => setDialog(null)}
-            />
+          {dialog?.kind === 'payout_statement' && (
+            <ProviderPayoutStatementModal month={month} payout={dialog.payout} onClose={() => setDialog(null)} />
           )}
           {dialog?.kind === 'share_detail' && data.config && (
             <FurnitureStatementModal
@@ -392,22 +460,23 @@ export function FurnitureRental({ month }: { month: string }) {
 /* ----------------------------------------------------- 1. the subscription -- */
 
 function SubscriptionPanel({
-  data,
+  entry,
+  several,
   onEdit,
   onRetire,
 }: {
-  data: FurnitureRentalOverview
+  entry: FurnitureServiceEntry
+  several: boolean
   onEdit: () => void
   onRetire: () => void
 }) {
-  const service = data.service!
-  const config = data.config!
+  const { service, config } = entry
   const reference = [config.customer_id && `Customer ${config.customer_id}`, config.subscription_reference]
     .filter(Boolean)
     .join(' · ')
   return (
     <Panel
-      title={service.display_name}
+      title={several ? `${service.display_name} · ${config.provider_name}` : service.display_name}
       icon={<Sofa className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint="The subscription, what it costs a month, and the deposit the provider holds."
       menuActions={[
@@ -419,17 +488,17 @@ function SubscriptionPanel({
         <MiniStat label="Provider" value={config.provider_name} note={reference || 'No customer ID on file'} />
         <MiniStat
           label="Monthly total"
-          value={<Rupees paise={data.monthly_total_paise} />}
-          note={`${data.active_item_count} item${data.active_item_count === 1 ? '' : 's'} in the flat`}
+          value={<Rupees paise={entry.monthly_total_paise} />}
+          note={`${entry.active_item_count} item${entry.active_item_count === 1 ? '' : 's'} in the flat`}
         />
         <MiniStat
           label="Next billing"
-          value={<span className="tabular">{data.next_billing_date ? formatDate(data.next_billing_date) : '—'}</span>}
+          value={<span className="tabular">{entry.next_billing_date ? formatDate(entry.next_billing_date) : '—'}</span>}
           note={service.billing_day_of_month ? `Day ${service.billing_day_of_month} each month` : 'No billing day set'}
         />
         <MiniStat
           label="Deposit held"
-          value={<Rupees paise={data.deposit_held_paise} />}
+          value={<Rupees paise={entry.deposit_held_paise} />}
           note={`${DEPOSIT_STATUS[config.deposit_status]} · ${formatInr(config.deposit_paid_paise)} paid`}
         />
       </div>
@@ -460,11 +529,12 @@ function ItemsPanel({
         <EmptyBlock title="No items yet" body="Add each item on the subscription, with what it costs a month." />
       ) : (
         <div className="overflow-x-auto min-w-0">
-          <table className="w-full text-xs min-w-[720px] border-collapse">
+          <table className="w-full text-xs min-w-[800px] border-collapse">
             <caption className="sr-only">Rented items</caption>
             <thead>
               <tr className={TABLE_HEAD}>
                 <th scope="col" className="pb-3 pr-3 font-bold text-center">Item</th>
+                <th scope="col" className="pb-3 pr-3 font-bold text-center">Provider</th>
                 <th scope="col" className="pb-3 pr-3 font-bold text-center">Category</th>
                 <th scope="col" className="pb-3 pr-3 font-bold text-center">Paid by</th>
                 <th scope="col" className="pb-3 pr-3 font-bold text-center">Monthly rent</th>
@@ -480,6 +550,7 @@ function ItemsPanel({
                     <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
                       {item.name}
                     </th>
+                    <td className="py-3 pr-3 text-center">{item.provider_name ?? '—'}</td>
                     <td className="py-3 pr-3 text-center">{CATEGORY_LABELS[item.category]}</td>
                     <td className="py-3 pr-3 text-center">
                       {item.allocation_scope === 'common' ? (
@@ -691,35 +762,34 @@ function ResidentCollectionPanel({
 
 function ProviderPayoutPanel({
   bill,
-  config,
+  payouts,
   onPayout,
   onViewStatement,
 }: {
   bill: FurnitureMonthBill
-  config: FurnitureConfig
-  onPayout: () => void
-  onViewStatement: () => void
+  payouts: FurnitureProviderPayout[]
+  onPayout: (payout: FurnitureProviderPayout) => void
+  onViewStatement: (payout: FurnitureProviderPayout) => void
 }) {
-  const provider = config.provider_name
   const billed = bill.expense != null
   const dash = <span className="text-[var(--text-tertiary)]">—</span>
-  const status = PAYOUT[bill.payout_status]
-  // Open until the provider has been paid in full: the bill can go in tranches.
-  const owing = billed && bill.payout_status !== 'disbursed'
-  const subscription =
-    [config.customer_id && `Customer ${config.customer_id}`, config.subscription_reference]
-      .filter(Boolean)
-      .join(' · ') || 'No customer ID on file'
+  const single = payouts.length === 1 ? payouts[0].provider_name : null
   return (
     <Panel
-      title={`Provider Payout · ${provider}`}
+      title={single ? `Provider Payout · ${single}` : 'Provider Payout'}
       icon={<Store className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint={`What is owed to ${provider}, and payouts made to them. Select the row for disbursement history.`}
+      hint={
+        single
+          ? `What is owed to ${single}, and payouts made to them. Select the row for disbursement history.`
+          : 'What each provider is owed for the month, and payouts made to them. Select a row for its disbursement history.'
+      }
     >
       {/* Laid out as the collection table above: what was due, what has been paid, what is still owed. */}
       <div className="overflow-x-auto min-w-0">
         <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse">
-          <caption className="sr-only">The furniture bill owed to {provider}</caption>
+          <caption className="sr-only">
+            {single ? `The furniture bill owed to ${single}` : 'The furniture bill owed to each provider'}
+          </caption>
           <thead>
             <tr className={TABLE_HEAD}>
               <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-left">Provider / Subscription</th>
@@ -731,75 +801,93 @@ function ProviderPayoutPanel({
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-            {/* Once the bill is recorded, the row opens the payout statement; the
-                button in it does its own thing instead. */}
-            <tr
-              className={
-                billed ? 'align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors' : 'align-middle'
-              }
-              {...(billed && {
-                tabIndex: 0,
-                title: `View the ${provider} payout statement`,
-                onClick: onViewStatement,
-                onKeyDown: (event: React.KeyboardEvent<HTMLTableRowElement>) => {
-                  if (event.target !== event.currentTarget) return
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    onViewStatement()
+            {payouts.map((payout) => {
+              const provider = payout.provider_name
+              const status = PAYOUT[payout.payout_status]
+              // Open until the provider has been paid in full: the bill can go in tranches.
+              const owing = billed && payout.payout_status !== 'disbursed' && payout.total_paise > 0
+              const subscription = [
+                payout.customer_id && `Customer ${payout.customer_id}`,
+                payout.subscription_reference,
+                `${payout.item_count} item${payout.item_count === 1 ? '' : 's'}`,
+              ]
+                .filter(Boolean)
+                .join(' · ')
+              return (
+                // Once the bill is recorded, the row opens the provider's payout
+                // statement; the button in it does its own thing instead.
+                <tr
+                  key={payout.service_id}
+                  className={
+                    billed
+                      ? 'align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors'
+                      : 'align-middle'
                   }
-                },
-              })}
-            >
-              <th scope="row" className="py-3 pr-3 text-left font-normal">
-                <span className="flex items-center gap-2.5 min-w-0">
-                  <Avatar name={provider} />
-                  <span className="min-w-0">
-                    <span className="block font-semibold text-[var(--text-primary)] truncate">{provider}</span>
-                    <span className="block text-[11px] text-[var(--text-tertiary)] tabular truncate" title={subscription}>
-                      {subscription}
-                    </span>
-                  </span>
-                </span>
-              </th>
-              <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                <Rupees paise={billed ? bill.expense!.amount_paise : bill.total_paise} />
-              </td>
-              <td className="py-3 pr-3 text-center">{billed ? <Rupees paise={bill.disbursed_paise} /> : dash}</td>
-              <td className="py-3 pr-3 text-center">
-                {billed ? <Rupees paise={bill.remaining_disbursement_paise} /> : dash}
-              </td>
-              <td className="py-3 pr-3 text-center whitespace-nowrap">
-                {billed ? (
-                  <Pill tone={status.tone}>
-                    {bill.payout_status === 'disbursed' ? (
-                      <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-                    ) : (
-                      <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
-                    )}
-                    {status.label}
-                  </Pill>
-                ) : (
-                  <Pill>Not billed</Pill>
-                )}
-              </td>
-              <td className="py-3 text-center whitespace-nowrap">
-                {/* Always there, as on each resident's row; off until the bill is
-                    recorded and once the provider is paid in full. */}
-                <button
-                  type="button"
-                  className={BUTTON_SECONDARY}
-                  disabled={!owing}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onPayout()
-                  }}
-                  aria-label={`Pay now to ${provider}`}
+                  {...(billed && {
+                    tabIndex: 0,
+                    title: `View the ${provider} payout statement`,
+                    onClick: () => onViewStatement(payout),
+                    onKeyDown: (event: React.KeyboardEvent<HTMLTableRowElement>) => {
+                      if (event.target !== event.currentTarget) return
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onViewStatement(payout)
+                      }
+                    },
+                  })}
                 >
-                  <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  Pay Now
-                </button>
-              </td>
-            </tr>
+                  <th scope="row" className="py-3 pr-3 text-left font-normal">
+                    <span className="flex items-center gap-2.5 min-w-0">
+                      <Avatar name={provider} />
+                      <span className="min-w-0">
+                        <span className="block font-semibold text-[var(--text-primary)] truncate">{provider}</span>
+                        <span className="block text-[11px] text-[var(--text-tertiary)] tabular truncate" title={subscription}>
+                          {subscription}
+                        </span>
+                      </span>
+                    </span>
+                  </th>
+                  <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
+                    <Rupees paise={payout.total_paise} />
+                  </td>
+                  <td className="py-3 pr-3 text-center">{billed ? <Rupees paise={payout.disbursed_paise} /> : dash}</td>
+                  <td className="py-3 pr-3 text-center">
+                    {billed ? <Rupees paise={payout.remaining_disbursement_paise} /> : dash}
+                  </td>
+                  <td className="py-3 pr-3 text-center whitespace-nowrap">
+                    {billed ? (
+                      <Pill tone={status.tone}>
+                        {payout.payout_status === 'disbursed' ? (
+                          <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
+                        ) : (
+                          <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
+                        )}
+                        {status.label}
+                      </Pill>
+                    ) : (
+                      <Pill>Not billed</Pill>
+                    )}
+                  </td>
+                  <td className="py-3 text-center whitespace-nowrap">
+                    {/* Always there, as on each resident's row; off until the bill is
+                        recorded and once the provider is paid in full. */}
+                    <button
+                      type="button"
+                      className={BUTTON_SECONDARY}
+                      disabled={!owing}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onPayout(payout)
+                      }}
+                      aria-label={`Pay now to ${provider}`}
+                    >
+                      <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      Pay Now
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -946,24 +1034,26 @@ function submitWith(run: () => void) {
 }
 
 function SetupDialog({
-  data,
+  entry,
+  adding,
   month,
   onClose,
   onSaved,
 }: {
-  data: FurnitureRentalOverview
+  entry: FurnitureServiceEntry | null
+  adding: boolean
   month: string
   onClose: () => void
   onSaved: () => void
 }) {
-  const config = data.config
+  const config = entry?.config ?? null
   const known = config && PROVIDERS.includes(config.provider_name)
   const [provider, setProvider] = useState(config ? (known ? config.provider_name : 'Other') : 'Furlenco')
   const [otherProvider, setOtherProvider] = useState(config && !known ? config.provider_name : '')
   const [customerId, setCustomerId] = useState(config?.customer_id ?? '')
   const [reference, setReference] = useState(config?.subscription_reference ?? '')
   const [billingDay, setBillingDay] = useState(
-    data.service?.billing_day_of_month != null ? String(data.service.billing_day_of_month) : '',
+    entry?.service.billing_day_of_month != null ? String(entry.service.billing_day_of_month) : '',
   )
   const [paid, setPaid] = useState(paiseToInput(config?.deposit_paid_paise ?? 0))
   const [paidPaise, setPaidPaise] = useState(config?.deposit_paid_paise ?? 0)
@@ -993,6 +1083,8 @@ function SetupDialog({
           deposit_paid_paise: paidPaise,
           deposit_refunded_paise: refundedPaise,
           notes: notes.trim() || null,
+          // Which provider: the one being edited, or another one being added.
+          ...(entry ? { service_id: entry.service.service_id } : adding ? { create_new: true } : {}),
         },
         { month },
       ),
@@ -1000,7 +1092,7 @@ function SetupDialog({
   )
   return (
     <Modal
-      title={data.service ? 'Edit subscription' : 'Set up furniture rental'}
+      title={entry ? 'Edit subscription' : adding ? 'Add rental provider' : 'Set up furniture rental'}
       description="The provider, the subscription's references, its billing day, and the deposit."
       onClose={onClose}
       wide
@@ -1077,11 +1169,24 @@ function SetupDialog({
   )
 }
 
-function RetireDialog({ month, onClose, onDone }: { month: string; onClose: () => void; onDone: () => void }) {
-  const retire = useMutation(() => api.post(`${BASE}/retire`, undefined, { month }), { onSuccess: onDone })
+function RetireDialog({
+  month,
+  entry,
+  onClose,
+  onDone,
+}: {
+  month: string
+  entry: FurnitureServiceEntry
+  onClose: () => void
+  onDone: () => void
+}) {
+  const retire = useMutation(
+    () => api.post(`${BASE}/retire`, undefined, { month, service_id: entry.service.service_id }),
+    { onSuccess: onDone },
+  )
   return (
     <Modal
-      title="End furniture rental?"
+      title={`End the ${entry.config.provider_name} subscription?`}
       description="Every item must have been returned first. The subscription, its items and every bill already recorded stay for the record."
       onClose={onClose}
       footer={
@@ -1100,16 +1205,20 @@ function RetireDialog({ month, onClose, onDone }: { month: string; onClose: () =
 
 function ItemDialog({
   item,
+  services,
   onClose,
   onRemove,
   onSaved,
 }: {
   item: FurnitureItem | null
+  services: FurnitureServiceEntry[]
   onClose: () => void
   onRemove: (item: FurnitureItem) => void
   onSaved: (saved: FurnitureItem) => void
 }) {
   const residents = useResource<{ items: Resident[] }>('/api/residents')
+  // The provider it is rented from.
+  const [serviceId, setServiceId] = useState(item?.service_id ?? services[0]?.service.service_id ?? '')
   const [name, setName] = useState(item?.name ?? '')
   const [category, setCategory] = useState<FurnitureCategory>(item?.category ?? 'living_room')
   const [rent, setRent] = useState(item ? paiseToInput(item.monthly_rent_paise) : '')
@@ -1125,8 +1234,9 @@ function ItemDialog({
   const people = (residents.data?.items ?? []).filter(
     (resident) => resident.is_active || resident.resident_id === item?.assigned_resident_id,
   )
-  const valid = name.trim().length > 0 && rentOk && rentPaise > 0
+  const valid = Boolean(serviceId) && name.trim().length > 0 && rentOk && rentPaise > 0
   const body = {
+    service_id: serviceId || null,
     name: name.trim(),
     category,
     monthly_rent_paise: rentPaise,
@@ -1162,6 +1272,14 @@ function ItemDialog({
     >
       <form id="furniture-item" className="stack" noValidate onSubmit={submitWith(() => valid && void save.run(undefined))}>
         <ErrorNotice error={save.error} />
+        <SelectField
+          label="Rental provider"
+          required
+          value={serviceId}
+          options={services.map((entry) => ({ value: entry.service.service_id, label: entry.config.provider_name }))}
+          onChange={setServiceId}
+          hint="The subscription it is rented on."
+        />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <TextField label="Item" required value={name} onChange={setName} maxLength={200} placeholder="e.g. 3-seater sofa" />
           <SelectField<FurnitureCategory>
@@ -1324,22 +1442,26 @@ type PayoutSource = 'pool' | 'resident_advance'
 function ProviderPayoutModal({
   month,
   bill,
-  provider,
+  payout,
   onClose,
   onDone,
 }: {
   month: string
   bill: FurnitureMonthBill
-  provider: string
+  payout: FurnitureProviderPayout
   onClose: () => void
   onDone: (bill: FurnitureMonthBill) => void
 }) {
   const residents = useResource<{ items: Resident[] }>('/api/residents')
+  const provider = payout.provider_name
   const total = bill.expense!.amount_paise
-  const remaining = bill.remaining_disbursement_paise
+  const remaining = payout.remaining_disbursement_paise
   // The provider bills on a fixed day and flatmates pay when they can, so a
-  // first payout offers what the kitty has collected so far; after that, the rest.
-  const fromCollection = bill.disbursements.length === 0 && bill.collected_paise > 0 && bill.collected_paise < total
+  // first payout offers what the kitty has collected so far; after that, the
+  // rest. With several providers, what was collected is not any one's.
+  const single = (bill.provider_payouts?.length ?? 1) <= 1
+  const fromCollection =
+    single && bill.disbursements.length === 0 && bill.collected_paise > 0 && bill.collected_paise < total
   const suggested = fromCollection ? bill.collected_paise : remaining
   const [amount, setAmount] = useState(paiseToInput(suggested))
   const [amountPaise, setAmountPaise] = useState(suggested)
@@ -1369,6 +1491,7 @@ function ProviderPayoutModal({
     () =>
       api.post<FurnitureRentalOverview>(`${BASE}/disburse-payout`, {
         settlement_month: month,
+        service_id: payout.service_id,
         disbursement_mode: source,
         funding_resident_id: source === 'resident_advance' ? funder : null,
         reference: reference.trim(),
@@ -1466,31 +1589,30 @@ function ProviderPayoutModal({
 /** The provider's side of the month: what is due to them, and every payment made (Rule U7). */
 function ProviderPayoutStatementModal({
   month,
-  bill,
-  provider,
+  payout,
   onClose,
 }: {
   month: string
-  bill: FurnitureMonthBill
-  provider: string
+  payout: FurnitureProviderPayout
   onClose: () => void
 }) {
-  const status = PAYOUT[bill.payout_status]
+  const provider = payout.provider_name
+  const status = PAYOUT[payout.payout_status]
   const dash = <span className="text-[var(--text-tertiary)]">—</span>
   return (
     <Modal title="Provider Payout Statement" description={`${provider} · ${formatMonth(month)}`} onClose={onClose}>
       <div className="stack">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <MiniStat label="Total Bill" value={<Rupees paise={bill.expense?.amount_paise ?? bill.total_paise} />} />
-          <MiniStat label="Paid to Provider" value={<Rupees paise={bill.disbursed_paise} />} />
-          <MiniStat label="Still Owed" value={<Rupees paise={bill.remaining_disbursement_paise} />} />
+          <MiniStat label="Total Bill" value={<Rupees paise={payout.total_paise} />} />
+          <MiniStat label="Paid to Provider" value={<Rupees paise={payout.disbursed_paise} />} />
+          <MiniStat label="Still Owed" value={<Rupees paise={payout.remaining_disbursement_paise} />} />
         </div>
 
         <section aria-label="Disbursement history" className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="m-0 text-sm font-bold text-[var(--text-primary)]">Disbursement History</h3>
             <Pill tone={status.tone}>
-              {bill.payout_status === 'disbursed' ? (
+              {payout.payout_status === 'disbursed' ? (
                 <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
               ) : (
                 <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
@@ -1498,7 +1620,7 @@ function ProviderPayoutStatementModal({
               {status.label}
             </Pill>
           </div>
-          {bill.disbursements.length === 0 ? (
+          {payout.disbursements.length === 0 ? (
             <EmptyBlock title="No payouts recorded yet for this month." />
           ) : (
             <div className="overflow-x-auto min-w-0">
@@ -1514,7 +1636,7 @@ function ProviderPayoutStatementModal({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-                  {bill.disbursements.map((tranche) => (
+                  {payout.disbursements.map((tranche) => (
                     <tr key={tranche.disbursement_id} className="align-middle">
                       <td className="py-2.5 pr-3 text-center tabular">{formatDate(tranche.disbursed_at)}</td>
                       <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">

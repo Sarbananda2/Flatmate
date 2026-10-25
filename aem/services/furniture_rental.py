@@ -98,7 +98,13 @@ def is_billable(item: Mapping[str, Any], month: str) -> bool:
 
 
 def _live(uow: UnitOfWork, apartment_id: str) -> dict[str, Any] | None:
+    """The flat's first live furniture subscription, if it has one."""
     return uow.furniture.live_service(apartment_id, SERVICE_TYPE)
+
+
+def _live_services(uow: UnitOfWork, apartment_id: str) -> list[dict[str, Any]]:
+    """Every live furniture subscription: a flat may rent from several providers."""
+    return uow.furniture.live_services(apartment_id, SERVICE_TYPE)
 
 
 def _require_live(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
@@ -106,6 +112,43 @@ def _require_live(uow: UnitOfWork, apartment_id: str) -> dict[str, Any]:
     if service is None:
         raise ConflictError("Set up furniture rental first.", code="furniture_not_configured")
     return service
+
+
+def _service_in(uow: UnitOfWork, apartment_id: str, service_id: str, *,
+                live: bool = True) -> dict[str, Any]:
+    """One of the flat's furniture subscriptions, by its ID; a live one unless told otherwise."""
+    service = uow.furniture.service_in_apartment(service_id, apartment_id)
+    if (service is None or service["service_type"] != SERVICE_TYPE
+            or (live and service["status"] == "retired")):
+        raise NotFoundError("No such furniture rental service.",
+                            code="furniture_service_not_found",
+                            details={"service_id": service_id})
+    return service
+
+
+def _provider_name(service: Mapping[str, Any], config: Mapping[str, Any] | None) -> str:
+    return (config or {}).get("provider_name") or service["provider_name"] \
+        or service["display_name"]
+
+
+def _public_service(service: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: service[key] for key in (
+        "service_id", "service_type", "display_name", "provider_name", "status",
+        "billing_day_of_month", "period_rule", "created_at", "updated_at")}
+
+
+def _public_config(config: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    return {key: config[key] for key in (
+        "provider_name", "customer_id", "subscription_reference", "deposit_paid_paise",
+        "deposit_refunded_paise", "deposit_status", "expense_definition_id", "notes",
+        "updated_at")} if config else None
+
+
+def _definition_id(uow: UnitOfWork, apartment_id: str) -> str | None:
+    """The definition every provider's share of a month's bill is recorded under."""
+    return next((config["expense_definition_id"]
+                 for config in uow.furniture.configs_for_apartment(apartment_id)
+                 if config["expense_definition_id"]), None)
 
 
 def _item_in(uow: UnitOfWork, apartment_id: str, item_id: str) -> dict[str, Any]:
@@ -118,9 +161,10 @@ def _item_in(uow: UnitOfWork, apartment_id: str, item_id: str) -> dict[str, Any]
 
 def _public_item(item: Mapping[str, Any]) -> dict[str, Any]:
     return {key: item.get(key) for key in (
-        "item_id", "service_id", "name", "category", "monthly_rent_paise", "allocation_scope",
-        "assigned_resident_id", "assigned_resident_name", "status", "delivery_date",
-        "return_date", "created_at", "updated_at")}
+        "item_id", "service_id", "provider_name", "service_display_name", "name", "category",
+        "monthly_rent_paise", "allocation_scope", "assigned_resident_id",
+        "assigned_resident_name", "status", "delivery_date", "return_date", "created_at",
+        "updated_at")}
 
 
 # -------------------------------------------------------- the month's bill --
@@ -242,9 +286,9 @@ def _share_status(owed: int, paid: int, advanced: int) -> str | None:
 
 def _public_tranche(tranche: Mapping[str, Any]) -> dict[str, Any]:
     return {key: tranche.get(key) for key in (
-        "disbursement_id", "amount_paise", "disbursed_at", "disbursement_reference",
-        "disbursed_by", "funding_resident_id", "funding_resident_name", "funding_payment_id",
-        "note", "created_at")}
+        "disbursement_id", "service_id", "provider_name", "amount_paise", "disbursed_at",
+        "disbursement_reference", "disbursed_by", "funding_resident_id",
+        "funding_resident_name", "funding_payment_id", "note", "created_at")}
 
 
 def _funding(uow: UnitOfWork, expense: Mapping[str, Any]) -> dict[str, Any]:
@@ -259,12 +303,13 @@ def _funding(uow: UnitOfWork, expense: Mapping[str, Any]) -> dict[str, Any]:
     ``payout_status`` is 'pending' until the first, 'partially_disbursed' while
     some is still owed, and 'disbursed' once all of it has been paid.
 
-    ``reimbursement`` is what is owed back to the one resident who paid the
-    provider more than their own share, if one did. Their share went through
-    the kitty, so their advance is the extra alone; ``total_fronted_paise`` is
-    everything they paid the provider, their share included. They are owed the
-    advance, out of what the kitty collected for the bill less what it has paid
-    the provider itself and what it has already paid back to them.
+    ``reimbursements`` is what is owed back to each resident who paid a provider
+    more than their own share -- one for each, however many providers they paid
+    -- and ``reimbursement`` the first of them. Their share went through the
+    kitty, so their advance is the extra alone; ``total_fronted_paise`` is
+    everything they paid, their share included. They are owed the advance, out
+    of what the kitty collected for the bill less what it has paid the
+    providers itself and what it has already paid back.
     """
     expense_id, total = expense["expense_id"], expense["amount_paise"]
     charges = {row["resident_id"]: row for row in uow.furniture.charges_for_expense(expense_id)}
@@ -293,61 +338,129 @@ def _funding(uow: UnitOfWork, expense: Mapping[str, Any]) -> dict[str, Any]:
         "disbursed_paise": disbursed,
         "remaining_disbursement_paise": max(0, total - disbursed),
         "disbursements": [_public_tranche(tranche) for tranche in tranches],
+        "tranches": tranches,
         "reimbursement": None,
+        "reimbursements": [],
     }
-    # Only a single resident advancing is paid back here; several are left to
-    # the ledger's settlement, as they are for any other expense.
     advancers = list(dict.fromkeys(tranche["funding_resident_id"] for tranche in tranches
                                    if tranche["disbursed_by"] == "resident_advance"))
-    if len(advancers) != 1:
+    if not advancers:
         return result
 
-    payer = advancers[0]
-    own = charges.get(payer)
-    share = own["share_paise"] if own else 0
-    fronted = advanced[payer]
-    owed_back = max(0, fronted - max(0, share - (own["settled_paise"] if own else 0)))
-    # Their own share, paid to the provider through the kitty.
-    via_kitty_ids = {_share_payout_id(payment["payment_id"]) for payment in paid_in.get(payer, [])}
-    via_kitty = sum(tranche["amount_paise"] for tranche in tranches
-                    if tranche["disbursed_by"] == "pool"
-                    and tranche["disbursement_id"] in via_kitty_ids)
-    refunds = [row for row in uow.furniture.reimbursements(f"{_reimbursement_id_base(expense_id)}_")
-               if row["payer_resident_id"] == payer]
-    reimbursed = sum(row["amount_paise"] for row in refunds)
+    # What the kitty holds for the bill is shared by everyone it owes.
+    refunds_all = uow.furniture.reimbursements(f"{_reimbursement_id_base(expense_id)}_")
     from_kitty = sum(tranche["amount_paise"] for tranche in tranches
                      if tranche["disbursed_by"] == "pool")
     kitty = max(0, sum(row["settled_paise"] for row in charges.values()) - from_kitty
-                - reimbursed)
-    pending = max(0, owed_back - reimbursed)
-    reimbursable = min(kitty, pending)
-    result["reimbursement"] = {
-        "recipient_resident_id": payer,
-        "recipient_name": next(tranche["funding_resident_name"] for tranche in tranches
-                               if tranche["funding_resident_id"] == payer),
-        "total_fronted_paise": fronted + via_kitty,
-        "payer_share_paise": share,
-        "net_reimbursement_owed_paise": owed_back,
-        "reimbursed_so_far_paise": reimbursed,
-        "pending_reimbursement_paise": pending,
-        "kitty_cash_available_paise": kitty,
-        "reimbursable_paise": reimbursable,
-        "can_reimburse": reimbursable > 0,
-        "reimbursements": [{key: row[key] for key in (
-            "payment_id", "amount_paise", "payment_date", "reference")} for row in refunds],
-    }
+                - sum(row["amount_paise"] for row in refunds_all))
+    for payer in advancers:
+        own = charges.get(payer)
+        share = own["share_paise"] if own else 0
+        fronted = advanced[payer]
+        owed_back = max(0, fronted - max(0, share - (own["settled_paise"] if own else 0)))
+        if owed_back <= 0:
+            continue
+        # Their own share, paid to a provider through the kitty.
+        via_kitty_ids = {_share_payout_id(payment["payment_id"])
+                         for payment in paid_in.get(payer, [])}
+        via_kitty = sum(tranche["amount_paise"] for tranche in tranches
+                        if tranche["disbursed_by"] == "pool"
+                        and tranche["disbursement_id"] in via_kitty_ids)
+        refunds = [row for row in refunds_all if row["payer_resident_id"] == payer]
+        reimbursed = sum(row["amount_paise"] for row in refunds)
+        pending = max(0, owed_back - reimbursed)
+        reimbursable = min(kitty, pending)
+        result["reimbursements"].append({
+            "recipient_resident_id": payer,
+            "recipient_name": next(tranche["funding_resident_name"] for tranche in tranches
+                                   if tranche["funding_resident_id"] == payer),
+            "total_fronted_paise": fronted + via_kitty,
+            "payer_share_paise": share,
+            "net_reimbursement_owed_paise": owed_back,
+            "reimbursed_so_far_paise": reimbursed,
+            "pending_reimbursement_paise": pending,
+            "kitty_cash_available_paise": kitty,
+            "reimbursable_paise": reimbursable,
+            "can_reimburse": reimbursable > 0,
+            "reimbursements": [{key: row[key] for key in (
+                "payment_id", "amount_paise", "payment_date", "reference")} for row in refunds],
+        })
+    result["reimbursement"] = result["reimbursements"][0] if result["reimbursements"] else None
     return result
+
+
+def _provider_totals(billable_items: Sequence[Mapping[str, Any]],
+                     expense: Mapping[str, Any] | None,
+                     service_ids: Sequence[str]) -> dict[str, int]:
+    """What each provider bills for the month: its items in the flat. With one
+    provider billing, it is owed the whole recorded bill."""
+    totals: dict[str, int] = {}
+    for item in billable_items:
+        totals[item["service_id"]] = totals.get(item["service_id"], 0) + item["monthly_rent_paise"]
+    if expense is not None and len(totals) <= 1:
+        billing = next(iter(totals), None) or next(iter(service_ids), None)
+        if billing:
+            totals = {billing: expense["amount_paise"]}
+    return totals
+
+
+def _provider_payouts(uow: UnitOfWork, apartment_id: str, bill: Mapping[str, Any],
+                      expense: Mapping[str, Any] | None,
+                      services: Sequence[Mapping[str, Any]],
+                      tranches: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """What each provider is owed for the month, and what has been paid them.
+
+    One row for each live subscription, and for a retired one with items
+    billed this month or paid towards this bill. A provider is 'pending' until paid anything, 'partially_disbursed'
+    while some is still owed, and 'disbursed' once paid in full.
+    """
+    providers = [(service, uow.furniture.config(service["service_id"])) for service in services]
+    known = {service["service_id"] for service in services}
+    for service_id in [*(item["service_id"] for item in bill["billable_items"]),
+                       *(tranche["service_id"] for tranche in tranches)]:
+        if service_id not in known:
+            retired = uow.furniture.service_in_apartment(service_id, apartment_id)
+            if retired is not None:
+                providers.append((retired, uow.furniture.config(service_id)))
+                known.add(service_id)
+    totals = _provider_totals(bill["billable_items"], expense,
+                              [service["service_id"] for service, _ in providers])
+    rows = []
+    for service, config in providers:
+        service_id = service["service_id"]
+        own = [tranche for tranche in tranches if tranche["service_id"] == service_id]
+        total = totals.get(service_id, 0)
+        disbursed = sum(tranche["amount_paise"] for tranche in own)
+        rows.append({
+            "service_id": service_id,
+            "display_name": service["display_name"],
+            "provider_name": _provider_name(service, config),
+            "customer_id": config["customer_id"] if config else None,
+            "subscription_reference": config["subscription_reference"] if config else None,
+            "billing_day_of_month": service["billing_day_of_month"],
+            "item_count": sum(1 for item in bill["billable_items"]
+                              if item["service_id"] == service_id),
+            "total_paise": total,
+            "disbursed_paise": disbursed,
+            "remaining_disbursement_paise": max(0, total - disbursed),
+            "payout_status": ("disbursed" if total > 0 and disbursed >= total
+                              else "partially_disbursed" if disbursed else "pending"),
+            "disbursements": [_public_tranche(tranche) for tranche in own],
+        })
+    return rows
 
 
 #: What the month's bill reports of its two steps, from :func:`_funding`.
 FUNDING_FIELDS = ("collected_paise", "collected_count", "payout_status", "disbursed_paise",
-                  "remaining_disbursement_paise", "disbursements", "reimbursement")
+                  "remaining_disbursement_paise", "disbursements", "reimbursement",
+                  "reimbursements")
 
 
-def _attach_funding(uow: UnitOfWork, bill: dict[str, Any],
-                    expense: Mapping[str, Any] | None) -> None:
-    """Add to the month's bill who has paid their share, the payouts to the
-    provider, and the reimbursement. Before the bill is recorded nobody owes
+def _attach_funding(uow: UnitOfWork, apartment_id: str, bill: dict[str, Any],
+                    expense: Mapping[str, Any] | None,
+                    services: Sequence[Mapping[str, Any]]) -> None:
+    """Add to the month's bill who has paid their share, the payouts to each
+    provider, and the reimbursements. Before the bill is recorded nobody owes
     anything yet.
 
     Each share's ``settled_paise`` is what they paid into the kitty against it,
@@ -361,7 +474,9 @@ def _attach_funding(uow: UnitOfWork, bill: dict[str, Any],
                          paid_date=None, payments=[])
         bill.update(collected_paise=0, collected_count=0, payout_status="pending",
                     disbursed_paise=0, remaining_disbursement_paise=0, disbursements=[],
-                    reimbursement=None)
+                    reimbursement=None, reimbursements=[],
+                    provider_payouts=_provider_payouts(uow, apartment_id, bill, None,
+                                                       services, []))
         return
     funding = _funding(uow, expense)
     for share in bill["shares"]:
@@ -379,6 +494,8 @@ def _attach_funding(uow: UnitOfWork, bill: dict[str, Any],
                        else charge["last_payment_date"] if paid else None),
             payments=funding["paid_in"].get(rid, []))
     bill.update({key: funding[key] for key in FUNDING_FIELDS})
+    bill["provider_payouts"] = _provider_payouts(uow, apartment_id, bill, expense, services,
+                                                 funding["tranches"])
 
 
 # ----------------------------------------------------------------- overview --
@@ -406,37 +523,55 @@ def _recorded_bill(uow: UnitOfWork, apartment_id: str, config: Mapping[str, Any]
 
 
 def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
-    service = _live(uow, apartment_id)
-    if service is None:
-        return {"service": None, "config": None, "items": [], "month": None,
+    """Every live provider's subscription, all their items, and the month's bill.
+
+    ``services`` lists each provider with its own totals and deposit; the
+    top-level ``service`` and ``config`` are the first of them, and the totals
+    are across all of them. The month is billed as one expense, and each
+    provider is paid its own part of it (``month.provider_payouts``).
+    """
+    services = _live_services(uow, apartment_id)
+    if not services:
+        return {"service": None, "config": None, "services": [], "items": [], "month": None,
                 "monthly_total_paise": 0, "active_item_count": 0, "next_billing_date": None,
                 "deposit_held_paise": 0}
-    config = uow.furniture.config(service["service_id"])
-    items = uow.furniture.items(service["service_id"])
-    bill = _month_bill(uow, apartment_id, items, month)
+    items = uow.furniture.items_for_apartment(apartment_id)
+    # A subscription ended this month still bills what was in the flat in it.
+    billed_items = uow.furniture.items_for_apartment(apartment_id, include_retired=True)
+    entries = []
+    for service in services:
+        config = uow.furniture.config(service["service_id"])
+        active = [item for item in items
+                  if item["service_id"] == service["service_id"] and item["status"] == "active"]
+        entries.append({
+            "service": _public_service(service),
+            "config": _public_config(config),
+            "monthly_total_paise": sum(item["monthly_rent_paise"] for item in active),
+            "active_item_count": len(active),
+            "next_billing_date": next_billing_date(service["billing_day_of_month"], _today()),
+            "deposit_held_paise": (config["deposit_paid_paise"] - config["deposit_refunded_paise"])
+            if config else 0,
+        })
+    bill = _month_bill(uow, apartment_id, billed_items, month)
     statement = uow.furniture.statement_for_month(apartment_id, month)
-    expense = _recorded_bill(uow, apartment_id, config, month)
+    definition_id = _definition_id(uow, apartment_id)
+    expense = _recorded_bill(uow, apartment_id, {"expense_definition_id": definition_id}, month)
     bill["expense"] = expense
     bill["statement_status"] = statement["status"] if statement else None
     bill["can_generate"] = (expense is None and bill["blocked_reason"] is None
                             and (statement is None or statement["status"] == "draft"))
-    _attach_funding(uow, bill, expense)
-    active = [item for item in items if item["status"] == "active"]
+    _attach_funding(uow, apartment_id, bill, expense, services)
+    billing_dates = [entry["next_billing_date"] for entry in entries if entry["next_billing_date"]]
     return {
-        "service": {key: service[key] for key in (
-            "service_id", "service_type", "display_name", "provider_name", "status",
-            "billing_day_of_month", "period_rule", "created_at", "updated_at")},
-        "config": {key: config[key] for key in (
-            "provider_name", "customer_id", "subscription_reference", "deposit_paid_paise",
-            "deposit_refunded_paise", "deposit_status", "expense_definition_id", "notes",
-            "updated_at")} if config else None,
+        "service": entries[0]["service"],
+        "config": entries[0]["config"],
+        "services": entries,
         "items": [_public_item(item) for item in items],
         "month": bill,
-        "monthly_total_paise": sum(item["monthly_rent_paise"] for item in active),
-        "active_item_count": len(active),
-        "next_billing_date": next_billing_date(service["billing_day_of_month"], _today()),
-        "deposit_held_paise": (config["deposit_paid_paise"] - config["deposit_refunded_paise"])
-        if config else 0,
+        "monthly_total_paise": sum(entry["monthly_total_paise"] for entry in entries),
+        "active_item_count": sum(entry["active_item_count"] for entry in entries),
+        "next_billing_date": min(billing_dates) if billing_dates else None,
+        "deposit_held_paise": sum(entry["deposit_held_paise"] for entry in entries),
     }
 
 
@@ -472,23 +607,36 @@ def _clean_setup(payload: Mapping[str, Any], before: Mapping[str, Any] | None) -
 def setup_furniture_rental(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
                            settlement_month: str | None = None,
                            actor: str = "operator") -> dict[str, Any]:
-    """Set up the furniture rental subscription, or update the one the flat has.
+    """Set up a furniture rental subscription, or update one the flat has.
 
-    Only the fields sent are changed. Each month's bill is recorded under the
-    household's "Furniture rental" definition when it has one; otherwise a
+    A flat may rent from several providers at once. ``service_id`` names the
+    subscription to update; ``create_new`` adds another provider; with neither,
+    the flat's first subscription is updated, or one is set up if it has none.
+    Only the fields sent are changed.
+
+    Every provider's items are billed together, each month as one expense under
+    the household's "Furniture rental" definition when it has one; otherwise a
     non-recurring one is created, since the bill is generated from this module
     rather than by the recurring generator.
     """
+    payload = dict(payload)
+    service_id = optional_text(payload.pop("service_id", None), "service_id", max_length=64)
+    create_new = bool(payload.pop("create_new", False))
     month = normalize_month(settlement_month or _today()[:7], "month")
     timestamp = now_timestamp()
     with db.read() as uow:
         get_apartment(uow, apartment_id)
-        service = _live(uow, apartment_id)
+        if service_id:
+            service = _service_in(uow, apartment_id, service_id)
+        elif create_new:
+            service = None
+        else:
+            service = _live(uow, apartment_id)
         config = uow.furniture.config(service["service_id"]) if service else None
         before = {**(config or {}), **(service or {})}
         cleaned = _clean_setup(payload, before if service else None)
         definition_id = (config or {}).get("expense_definition_id") \
-            or uow.furniture.find_definition_id(apartment_id)
+            or _definition_id(uow, apartment_id) or uow.furniture.find_definition_id(apartment_id)
         id_taken = definition_id is None and uow.furniture.definition_id_taken("furniture-rental")
 
     if definition_id is None:
@@ -507,7 +655,7 @@ def setup_furniture_rental(db: Database, apartment_id: str, payload: Mapping[str
                      ("provider_name", "customer_id", "subscription_reference",
                       "deposit_paid_paise", "deposit_refunded_paise", "deposit_status", "notes")}
     with db.transaction() as uow:
-        service = _live(uow, apartment_id)
+        service = _service_in(uow, apartment_id, service["service_id"]) if service else None
         if service is None:
             service_id = new_id("svc")
             uow.furniture.insert_service(service_id=service_id, apartment_id=apartment_id,
@@ -535,15 +683,17 @@ def setup_furniture_rental(db: Database, apartment_id: str, payload: Mapping[str
         return _overview(uow, apartment_id, month)
 
 
-def retire_furniture_rental(db: Database, apartment_id: str, *,
+def retire_furniture_rental(db: Database, apartment_id: str, *, service_id: str | None = None,
                             settlement_month: str | None = None,
                             actor: str = "operator") -> dict[str, Any]:
-    """End the subscription. Every item must have been returned first; the
-    service, its items and every bill already recorded stay for the record."""
+    """End a subscription: ``service_id``'s, or the flat's first. Every item on it
+    must have been returned first; the service, its items and every bill already
+    recorded stay for the record."""
     month = normalize_month(settlement_month or _today()[:7], "month")
     timestamp = now_timestamp()
     with db.transaction() as uow:
-        service = _require_live(uow, apartment_id)
+        service = (_service_in(uow, apartment_id, service_id) if service_id
+                   else _require_live(uow, apartment_id))
         still_here = [item["name"] for item in uow.furniture.items(service["service_id"])
                       if item["status"] in OPEN_STATUSES]
         if still_here:
@@ -563,7 +713,32 @@ def retire_furniture_rental(db: Database, apartment_id: str, *,
 
 def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
                 before: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """An item's fields, checked together as they will be stored."""
+    """An item's fields, checked together as they will be stored.
+
+    An item is rented from one provider: ``service_id`` names its subscription.
+    Left out, it stays with the provider it has, or goes to the flat's only
+    provider; with several, it must be chosen.
+    """
+    service_id = optional_text(values.get("service_id"), "service_id", max_length=64)
+    if service_id:
+        service = uow.furniture.service_in_apartment(service_id, apartment_id)
+        if (service is None or service["service_type"] != SERVICE_TYPE
+                or service["status"] == "retired"):
+            raise ValidationError("Choose an active rental service provider for this apartment.",
+                                  code="invalid_furniture_service",
+                                  details={"field": "service_id"})
+    elif before is not None and before.get("service_id"):
+        service_id = before["service_id"]
+    else:
+        live = _live_services(uow, apartment_id)
+        if not live:
+            raise ConflictError("Set up furniture rental first.",
+                                code="furniture_not_configured")
+        if len(live) > 1:
+            raise ValidationError("Choose the rental service provider for this item.",
+                                  code="furniture_service_required",
+                                  details={"field": "service_id"})
+        service_id = live[0]["service_id"]
     name = require_text(values.get("name"), "name", max_length=200)
     category = values.get("category")
     if category not in CATEGORIES:
@@ -609,7 +784,8 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
     if delivery and returned and returned < delivery:
         raise ValidationError("The return date cannot be before the delivery date.",
                               details={"field": "return_date"})
-    return {"name": name, "category": category, "monthly_rent_paise": rent,
+    return {"service_id": service_id, "name": name, "category": category,
+            "monthly_rent_paise": rent,
             "allocation_scope": scope, "assigned_resident_id": resident_id if scope == "resident"
             else None, "status": status, "delivery_date": delivery, "return_date": returned}
 
@@ -618,11 +794,10 @@ def add_item(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
              actor: str = "operator") -> dict[str, Any]:
     timestamp = now_timestamp()
     with db.transaction() as uow:
-        service = _require_live(uow, apartment_id)
         values = _clean_item(uow, apartment_id, payload)
         item_id = new_id("furn")
-        uow.furniture.insert_item(item_id=item_id, service_id=service["service_id"],
-                                  apartment_id=apartment_id, created_at=timestamp, **values)
+        uow.furniture.insert_item(item_id=item_id, apartment_id=apartment_id,
+                                  created_at=timestamp, **values)
         audit.record(uow, entity_type="furniture_rental_item", entity_id=item_id,
                      action="create", actor=actor, apartment_id=apartment_id, new_value=values)
         return _public_item(uow.furniture.item(item_id))
@@ -679,8 +854,8 @@ def generate_month(db: Database, apartment_id: str, settlement_month: str,
     with db.transaction() as uow:
         get_apartment(uow, apartment_id)
         service = _require_live(uow, apartment_id)
-        config = uow.furniture.config(service["service_id"])
-        definition_id = config["expense_definition_id"] if config else None
+        services = _live_services(uow, apartment_id)
+        definition_id = _definition_id(uow, apartment_id)
         if not definition_id:
             raise ConflictError("Set up furniture rental again before generating a bill.",
                                 code="furniture_not_configured")
@@ -695,8 +870,16 @@ def generate_month(db: Database, apartment_id: str, settlement_month: str,
             raise ConflictError(
                 f"Furniture rental for {month_label(month)} is already recorded as an expense.",
                 code="furniture_bill_exists", details={"expense_id": recorded[0]["expense_id"]})
-        bill = _month_bill(uow, apartment_id, uow.furniture.items(service["service_id"]), month,
-                           excluded_resident_ids)
+        bill = _month_bill(uow, apartment_id,
+                           uow.furniture.items_for_apartment(apartment_id, include_retired=True),
+                           month, excluded_resident_ids)
+        # Every provider with something in the flat this month, and the soonest
+        # any of them bills.
+        billing = [svc for svc in services
+                   if any(item["service_id"] == svc["service_id"]
+                          for item in bill["billable_items"])] or [service]
+        due_dates = sorted(_billing_date(month, svc["billing_day_of_month"])
+                           for svc in billing if svc["billing_day_of_month"])
         if bill["blocked_reason"]:
             raise ValidationError(bill["blocked_reason"], code="furniture_bill_blocked",
                                   details={"settlement_month": month})
@@ -712,11 +895,13 @@ def generate_month(db: Database, apartment_id: str, settlement_month: str,
             allocation_basis={"method": "custom", "source": SERVICE_TYPE,
                               "common_total_paise": bill["common_total_paise"],
                               "private_total_paise": bill["private_total_paise"]},
-            provider_name=service["provider_name"], expense_definition_id=definition_id,
+            provider_name=", ".join(dict.fromkeys(
+                _provider_name(svc, uow.furniture.config(svc["service_id"]))
+                for svc in billing)),
+            expense_definition_id=definition_id,
             statement_id=statement["statement_id"] if statement else None,
             period_rule="current_month", service_period=month, settlement_period=month,
-            due_date=(_billing_date(month, service["billing_day_of_month"])
-                      if service["billing_day_of_month"] else None),
+            due_date=due_dates[0] if due_dates else None,
             notes=_bill_notes(bill), created_at=timestamp, actor=actor)
         audit.record(uow, entity_type="household_service", entity_id=service["service_id"],
                      action="generate", actor=actor, apartment_id=apartment_id,
@@ -803,15 +988,21 @@ PAYOUT_MODES = ("pool", "resident_advance")
 def record_provider_payout(db: Database, apartment_id: str, settlement_month: str, *,
                            disbursement_mode: str, reference: str, disbursed_date: str,
                            amount_paise: int | None = None,
-                           funding_resident_id: str | None = None, notes: str | None = None,
+                           funding_resident_id: str | None = None,
+                           service_id: str | None = None, notes: str | None = None,
                            actor: str = "operator") -> dict[str, Any]:
-    """Record a payment to the provider towards the month's recorded bill.
+    """Record a payment to a provider towards the month's recorded bill.
 
-    The provider can be paid in tranches -- what the kitty has collected by the
+    ``service_id`` names the provider being paid; left out, it is the one
+    provider with items billed this month, and with several it must be given.
+    Each provider is owed its own items' part of the bill -- with one provider,
+    all of it.
+
+    A provider can be paid in tranches -- what the kitty has collected by the
     billing day, and the rest when it comes in. ``amount_paise`` is this
-    tranche; left out, it is everything still owed. Each tranche is kept, for
-    good, with its own date and bank reference, and they can never add up to
-    more than the bill.
+    tranche; left out, it is everything still owed to that provider. Each
+    tranche is kept, for good, with its own date and bank reference, and they
+    can never add up to more than the provider is owed, nor the bill.
 
     ``pool``
         The tranche left the kitty. Nothing is added to the ledger: the bill was
@@ -850,17 +1041,36 @@ def record_provider_payout(db: Database, apartment_id: str, settlement_month: st
     timestamp = now_timestamp()
     with db.transaction() as uow:
         get_apartment(uow, apartment_id)
-        service = _require_live(uow, apartment_id)
-        expense = _require_recorded_bill(uow, apartment_id, service, month)
-        provider = service["provider_name"] or service["display_name"]
+        expense = _require_recorded_bill(uow, apartment_id, _require_live(uow, apartment_id),
+                                         month)
+        services = _live_services(uow, apartment_id)
+        billable = [item for item in uow.furniture.items_for_apartment(
+                        apartment_id, include_retired=True) if is_billable(item, month)]
+        totals = _provider_totals(billable, expense, [svc["service_id"] for svc in services])
+        if service_id:
+            service = _service_in(uow, apartment_id, service_id, live=False)
+        else:
+            billing = [svc for svc in services if totals.get(svc["service_id"], 0) > 0]
+            candidates = billing or services
+            if len(candidates) > 1:
+                raise ValidationError("Choose which provider is being paid.",
+                                      code="furniture_service_required",
+                                      details={"field": "service_id"})
+            service = candidates[0]
+        provider = _provider_name(service, uow.furniture.config(service["service_id"]))
         total = expense["amount_paise"]
         tranches = uow.furniture.service_disbursements(expense["expense_id"])
-        remaining = total - sum(tranche["amount_paise"] for tranche in tranches)
+        owed = totals.get(service["service_id"], 0)
+        remaining = owed - sum(tranche["amount_paise"] for tranche in tranches
+                               if tranche["service_id"] == service["service_id"])
         if remaining <= 0:
             raise ConflictError(
                 f"{provider} has already been paid the {month_label(month)} bill in full.",
                 code="furniture_already_disbursed",
-                details={"expense_id": expense["expense_id"]})
+                details={"expense_id": expense["expense_id"],
+                         "service_id": service["service_id"]})
+        # Never more than the bill, whatever the providers' parts add up to.
+        remaining = min(remaining, total - sum(tranche["amount_paise"] for tranche in tranches))
         amount = remaining if amount_paise is None else amount_paise
         if amount > remaining:
             raise ValidationError(
@@ -948,20 +1158,22 @@ def record_provider_payout(db: Database, apartment_id: str, settlement_month: st
 def mark_paid_by_resident(db: Database, apartment_id: str, settlement_month: str,
                           payer_resident_id: str, *, payment_date: str,
                           amount_paise: int | None = None, reference: str | None = None,
-                          notes: str | None = None, actor: str = "operator") -> dict[str, Any]:
-    """A resident paying the provider from their own account: a ``resident_advance``
+                          service_id: str | None = None, notes: str | None = None,
+                          actor: str = "operator") -> dict[str, Any]:
+    """A resident paying a provider from their own account: a ``resident_advance``
     payout (see :func:`record_provider_payout`), kept for its original endpoint."""
     return record_provider_payout(
         db, apartment_id, settlement_month, disbursement_mode="resident_advance",
         reference=reference or "", disbursed_date=payment_date, amount_paise=amount_paise,
-        funding_resident_id=payer_resident_id, notes=notes, actor=actor)
+        funding_resident_id=payer_resident_id, service_id=service_id, notes=notes,
+        actor=actor)
 
 
 def reimburse_from_kitty(db: Database, apartment_id: str, settlement_month: str,
                          recipient_resident_id: str, *, amount_paise: int, payment_date: str,
                          reference: str | None = None, notes: str | None = None,
                          actor: str = "operator") -> dict[str, Any]:
-    """Pay back, from the kitty, the resident who paid the provider the month's bill.
+    """Pay back, from the kitty, a resident who paid a provider more than their share.
 
     It is a ``refund`` to them out of what the kitty collected for the bill. It
     can be no more than the kitty has collected for it and not yet paid back,
@@ -976,20 +1188,24 @@ def reimburse_from_kitty(db: Database, apartment_id: str, settlement_month: str,
         get_apartment(uow, apartment_id)
         service = _require_live(uow, apartment_id)
         expense = _require_recorded_bill(uow, apartment_id, service, month)
-        provider = service["provider_name"] or service["display_name"]
-        owed = _funding(uow, expense)["reimbursement"]
-        if owed is None:
+        provider = "the provider"
+        owing = _funding(uow, expense)["reimbursements"]
+        if not owing:
             raise ConflictError(
-                f"No one resident is recorded as having paid {provider} for "
+                f"Nobody is recorded as having paid a provider more than their share for "
                 f"{month_label(month)}, so the kitty has nobody to pay back.",
                 code="furniture_no_payout", details={"settlement_month": month})
-        name = owed["recipient_name"]
-        if recipient_resident_id != owed["recipient_resident_id"]:
+        owed = next((entry for entry in owing
+                     if entry["recipient_resident_id"] == recipient_resident_id), None)
+        if owed is None:
+            names = ", ".join(entry["recipient_name"] for entry in owing)
             raise ValidationError(
-                f"{name} paid {provider} for {month_label(month)}, so the kitty pays them back.",
+                f"The kitty owes {names} for {month_label(month)}, not this resident.",
                 code="not_the_payout_resident",
                 details={"field": "recipient_resident_id",
-                         "payer_resident_id": owed["recipient_resident_id"]})
+                         "payer_resident_ids": [entry["recipient_resident_id"]
+                                                for entry in owing]})
+        name = owed["recipient_name"]
         if amount > owed["pending_reimbursement_paise"]:
             raise ValidationError(
                 f"That is more than the {format_inr(owed['pending_reimbursement_paise'])} "
