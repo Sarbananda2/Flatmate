@@ -105,11 +105,12 @@ export const FURNITURE_TABS = [
 
 export type FurnitureTab = (typeof FURNITURE_TABS)[number]['value']
 
-// `funded_payout` reads "Paid Furlenco", with the provider's name.
-const SHARE_STATUS: Record<Exclude<FurnitureShareStatus, 'funded_payout'>, { label: string; tone: Tone }> = {
+// A share covered by paying the provider directly reads Paid, as rent's does.
+const SHARE_STATUS: Record<FurnitureShareStatus, { label: string; tone: Tone }> = {
   paid: { label: 'Paid', tone: 'success' },
   partial: { label: 'Part paid', tone: 'warning' },
   unpaid: { label: 'Unpaid', tone: 'warning' },
+  funded_payout: { label: 'Paid', tone: 'success' },
 }
 
 type PaymentMode = 'upi' | 'bank_transfer' | 'cash' | 'other'
@@ -858,10 +859,9 @@ function ProviderPayoutPanel({
   )
 }
 
-function ShareStatus({ status, provider }: { status: FurnitureShareStatus | null; provider: string }) {
+function ShareStatus({ status }: { status: FurnitureShareStatus | null; provider?: string }) {
   if (!status) return <span className="text-[var(--text-tertiary)]">—</span>
-  const { label, tone } =
-    status === 'funded_payout' ? { label: `Paid ${provider}`, tone: 'accent' as Tone } : SHARE_STATUS[status]
+  const { label, tone } = SHARE_STATUS[status]
   return (
     <Pill tone={tone}>
       {status === 'paid' || status === 'funded_payout' ? (

@@ -334,7 +334,7 @@ const COLLECTION: Record<RentCollectionStatus, { tone: Tone; label: string }> = 
   paid: { tone: 'success', label: 'Paid' },
   partial: { tone: 'warning', label: 'Part paid' },
   unpaid: { tone: 'warning', label: 'Unpaid' },
-  funded_payout: { tone: 'accent', label: 'Paid the landlord' },
+  funded_payout: { tone: 'success', label: 'Paid' },
 }
 
 function CyclePanel({
