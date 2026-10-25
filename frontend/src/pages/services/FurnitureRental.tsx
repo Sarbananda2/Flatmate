@@ -34,7 +34,6 @@ import {
   Undo2,
   Users,
 } from 'lucide-react'
-import { clsx } from 'clsx'
 import { Page, useApp } from '../../components/Layout'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
 import { DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
@@ -109,7 +108,7 @@ export type FurnitureTab = (typeof FURNITURE_TABS)[number]['value']
 
 // `funded_payout` reads "Paid Furlenco", with the provider's name.
 const SHARE_STATUS: Record<Exclude<FurnitureShareStatus, 'funded_payout'>, { label: string; tone: Tone }> = {
-  paid: { label: 'Paid into Kitty', tone: 'success' },
+  paid: { label: 'Paid', tone: 'success' },
   partial: { label: 'Part paid', tone: 'warning' },
   unpaid: { label: 'Unpaid', tone: 'warning' },
 }
@@ -627,91 +626,89 @@ function ResidentCollectionPanel({
 
       {bill.shares.length > 0 && (
         <div className="overflow-x-auto min-w-0">
-          <table className={clsx('w-full text-xs border-collapse', billed ? 'min-w-[920px]' : 'min-w-[560px]')}>
+          {/* Laid out as rent's collection table, column for column. */}
+          <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse">
             <caption className="sr-only">Shares for {formatMonth(month)}</caption>
             <thead>
               <tr className={TABLE_HEAD}>
-                <th scope="col" className="pb-3 pr-3 font-bold text-left">Resident</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Shared items</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Own items</th>
-                <th scope="col" className={clsx('pb-3 font-bold text-center', billed && 'pr-3')}>Total</th>
-                {billed && (
-                  <>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Paid into Kitty</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Still owed</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Status</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Actions</th>
-                  </>
-                )}
+                <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-left">Resident</th>
+                <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Share</th>
+                <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid into Kitty</th>
+                <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still owed</th>
+                <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
+                <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-              {bill.shares.map((share) => (
-                // The whole row opens the share's details; Pay Now does its own thing instead.
-                <tr
-                  key={share.resident_id}
-                  className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
-                  tabIndex={0}
-                  title={`View ${share.display_name}'s share details`}
-                  onClick={() => onViewShare(share)}
-                  onKeyDown={(event) => {
-                    if (event.target !== event.currentTarget) return
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault()
-                      onViewShare(share)
-                    }
-                  }}
-                >
-                  <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
-                    {share.display_name}
-                    {!share.taking_part && (
-                      <span className="block text-[11px] font-normal text-[var(--warning)]">Not taking part</span>
-                    )}
-                  </th>
-                  <td className="py-3 pr-3 text-center">
-                    <Rupees paise={share.common_share_paise} />
-                  </td>
-                  <td className="py-3 pr-3 text-center">
-                    <Rupees paise={share.private_paise} />
-                    {share.private_items.length > 0 && (
-                      <span className="block text-[11px] text-[var(--text-tertiary)]">{share.private_items.join(', ')}</span>
-                    )}
-                  </td>
-                  <td className={clsx('py-3 text-center font-bold text-[var(--text-primary)]', billed && 'pr-3')}>
-                    <Rupees paise={share.total_paise} />
-                  </td>
-                  {billed && (
-                    <>
-                      <td className="py-3 pr-3 text-center">
-                        <Rupees paise={share.settled_paise} />
-                      </td>
-                      <td className="py-3 pr-3 text-center">
-                        {/* Paying the provider covered it: nothing is owed into the kitty. */}
-                        {share.status === 'funded_payout' ? dash : <Rupees paise={share.outstanding_paise} />}
-                      </td>
-                      <td className="py-3 pr-3 text-center whitespace-nowrap">
-                        <ShareStatus status={share.status} provider={provider} />
-                      </td>
-                      <td className="py-3 pr-3 text-center whitespace-nowrap">
-                        {/* On every row, so the column reads the same down the table. */}
-                        <button
-                          type="button"
-                          className={BUTTON_SECONDARY}
-                          disabled={isSettled(share)}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            onPayShare(share)
-                          }}
-                          aria-label={`Pay now for ${share.display_name}`}
-                        >
-                          <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                          Pay Now
-                        </button>
-                      </td>
-                    </>
-                  )}
-                </tr>
-              ))}
+              {bill.shares.map((share) => {
+                // Paying the provider covered their share: nothing is owed into the kitty.
+                const funded = share.status === 'funded_payout'
+                return (
+                  // The whole row opens the share's details; Pay Now does its own thing instead.
+                  <tr
+                    key={share.resident_id}
+                    className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
+                    tabIndex={0}
+                    title={`View ${share.display_name}'s share details`}
+                    onClick={() => onViewShare(share)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onViewShare(share)
+                      }
+                    }}
+                  >
+                    <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
+                      <span className="flex items-center gap-2.5 min-w-0">
+                        <Avatar name={share.display_name} />
+                        <span className="min-w-0">
+                          <span className="block font-semibold text-[var(--text-primary)] truncate">
+                            {share.display_name}
+                          </span>
+                          {!share.taking_part && (
+                            <span className="block text-[11px] font-normal text-[var(--warning)]">Not taking part</span>
+                          )}
+                        </span>
+                      </span>
+                    </th>
+                    <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
+                      <Rupees paise={share.total_paise} />
+                      {share.private_paise > 0 && (
+                        <span className="block text-[10px] font-normal text-[var(--text-tertiary)]">
+                          incl. <Rupees paise={share.private_paise} /> own
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 pr-3 text-center">
+                      {billed && !funded ? <Rupees paise={share.settled_paise} /> : dash}
+                    </td>
+                    <td className="py-3 pr-3 text-center">
+                      {billed && !funded ? <Rupees paise={share.outstanding_paise} /> : dash}
+                    </td>
+                    <td className="py-3 pr-3 text-center whitespace-nowrap">
+                      <ShareStatus status={share.status} provider={provider} />
+                    </td>
+                    <td className="py-3 text-center whitespace-nowrap">
+                      {/* On every row, so the column reads the same down the table; off
+                          until the bill is recorded and once the share is covered. */}
+                      <button
+                        type="button"
+                        className={BUTTON_SECONDARY}
+                        disabled={!billed || isSettled(share)}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          onPayShare(share)
+                        }}
+                        aria-label={`Pay now for ${share.display_name}`}
+                      >
+                        <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                        Pay Now
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -775,16 +772,16 @@ function ProviderPayoutPanel({
     >
       {/* Laid out as the collection table above: what was due, what has been paid, what is still owed. */}
       <div className="overflow-x-auto min-w-0">
-        <table className="w-full table-fixed text-left text-xs min-w-[720px] border-collapse">
+        <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse">
           <caption className="sr-only">The furniture bill owed to {provider}</caption>
           <thead>
             <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[26%] pb-3 pr-3 font-bold text-center">Provider / Subscription</th>
-              <th scope="col" className="w-[13%] pb-3 pr-3 font-bold text-center">Total Bill</th>
+              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-center">Provider / Subscription</th>
+              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Total Bill</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid to Provider</th>
-              <th scope="col" className="w-[13%] pb-3 pr-3 font-bold text-center">Still Owed</th>
-              <th scope="col" className="w-[13%] pb-3 pr-3 font-bold text-center">Status</th>
-              <th scope="col" className="w-[21%] pb-3 font-bold text-center">Actions</th>
+              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still Owed</th>
+              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
+              <th scope="col" className="w-[15%] pb-3 font-bold text-center">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border-subtle)] font-medium">

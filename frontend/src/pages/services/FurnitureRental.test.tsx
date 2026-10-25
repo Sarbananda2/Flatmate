@@ -363,8 +363,10 @@ describe('FurnitureRental', () => {
   it("splits the month's bill and records it", async () => {
     show(overview())
     const shares = await screen.findByRole('table', { name: 'Shares for November 2026' })
-    expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent('₹566.67₹500.00Queen bed₹1,066.67')
-    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('₹566.66₹0.00₹566.66')
+    // Before the bill is recorded there is nothing to pay in yet.
+    expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent('Bob₹1,066.67incl. ₹500.00 own———')
+    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Chris₹566.66———')
+    expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeDisabled()
     expect(screen.getByText('3 taking part · 2 paise over')).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Record November 2026 bill' }))
@@ -546,21 +548,22 @@ describe('FurnitureRental', () => {
     expect(screen.getByRole('heading', { name: 'Resident Collection · November 2026' })).toBeInTheDocument()
 
     const shares = screen.getByRole('table', { name: 'Shares for November 2026' })
+    // Rent's six columns: who, their share, paid in, still owed, status, actions.
     expect(within(shares).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Resident',
-      'Shared items',
-      'Own items',
-      'Total',
+      'Share',
       'Paid into Kitty',
       'Still owed',
       'Status',
       'Actions',
     ])
-    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('₹566.67₹0.00—Paid FurlencoPay Now')
+    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('Alice₹566.67——Paid FurlencoPay Now')
     expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent(
-      '₹1,066.67₹1,066.67₹0.00Paid into KittyPay Now',
+      'Bob₹1,066.67incl. ₹500.00 own₹1,066.67₹0.00PaidPay Now',
     )
-    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('₹566.66₹300.00₹266.66Part paidPay Now')
+    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent(
+      'Chris₹566.66₹300.00₹266.66Part paidPay Now',
+    )
 
     const card = screen.getByRole('heading', { name: 'Reimbursement · Alice' }).closest('section')!
     expect(card).toHaveTextContent('Fronted₹2,200.00')
@@ -604,7 +607,7 @@ describe('FurnitureRental', () => {
     const shares = await screen.findByRole('table', { name: 'Shares for November 2026' })
     await userEvent.click(within(shares).getByRole('row', { name: /Bob/ }))
     const bob = screen.getByRole('dialog', { name: 'Bob · November 2026 Share Details' })
-    expect(bob).toHaveTextContent('StatusPaid into KittyTotal month share₹1,066.67')
+    expect(bob).toHaveTextContent('StatusPaidTotal month share₹1,066.67')
     expect(bob).toHaveTextContent('Common items share₹566.67Private items share₹500.00Queen bed')
     expect(bob).toHaveTextContent(
       'Paid amount₹1,066.67Payment date8 Nov 2026Payment modeUPIReference / UTRUPI-88NotesNovember furniture',
