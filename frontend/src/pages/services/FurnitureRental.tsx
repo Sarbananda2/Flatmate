@@ -12,7 +12,6 @@
  * of what the others paid in.
  */
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
 import { Archive, Check, Clock, CreditCard, HandCoins, Pencil, Plus, Receipt, Sofa, Undo2 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Page, useApp } from '../../components/Layout'
@@ -474,31 +473,20 @@ function BillPanel({
         </p>
       )}
 
-      {billed &&
-        (payout ? (
-          <div>
-            <Pill tone="success" className="!whitespace-normal">
-              <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-              <span>
-                Paid directly to {provider} by {payout.payer_name} on {formatDate(payout.payment_date)}
-                {payout.reference && ` (Ref: ${payout.reference})`}
-              </span>
-            </Pill>
-          </div>
-        ) : (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
-            <span className="min-w-0 text-xs text-[var(--text-secondary)]" role="status">
-              <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--warning)]">
-                <Clock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                Pending vendor payout
-              </span>{' '}
-              · Nobody is recorded as having paid {provider} the {formatMonth(month)} bill yet.
-            </span>
-            <button type="button" className={BUTTON_SECONDARY} onClick={() => onMarkPaid(bill)}>
-              Mark Paid by Resident
-            </button>
-          </div>
-        ))}
+      {billed && !payout && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
+          <span className="min-w-0 text-xs text-[var(--text-secondary)]" role="status">
+            <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--warning)]">
+              <Clock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              Pending vendor payout
+            </span>{' '}
+            · Nobody is recorded as having paid {provider} the {formatMonth(month)} bill yet.
+          </span>
+          <button type="button" className={BUTTON_SECONDARY} onClick={() => onMarkPaid(bill)}>
+            Mark Paid by Resident
+          </button>
+        </div>
+      )}
 
       {bill.shares.length > 0 && (
         <div className="overflow-x-auto min-w-0">
@@ -579,35 +567,28 @@ function BillPanel({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {bill.expense ? (
-          <>
+      {!billed && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {finalized ? (
             <span className="text-xs text-[var(--text-secondary)]">
-              <Pill tone="success">Billed</Pill>{' '}
-              {formatInr(bill.expense.amount_paise)} recorded as an expense for {formatMonth(month)}.
+              The {formatMonth(month)} statement has been finalized, so this month can no longer be billed.
             </span>
-            <Link to="/expenses" className={BUTTON_SECONDARY}>
-              View in Expenses
-            </Link>
-          </>
-        ) : finalized ? (
-          <span className="text-xs text-[var(--text-secondary)]">
-            The {formatMonth(month)} statement has been finalized, so this month can no longer be billed.
-          </span>
-        ) : (
-          <>
-            <span className="text-xs text-[var(--text-secondary)]">Not billed yet.</span>
-            <button
-              type="button"
-              className={BUTTON_PRIMARY}
-              disabled={!bill.can_generate}
-              onClick={() => onGenerate(bill)}
-            >
-              Record {formatMonth(month)} bill
-            </button>
-          </>
-        )}
-      </div>
+          ) : (
+            <>
+              <span className="text-xs text-[var(--text-secondary)]">Not billed yet.</span>
+              <button
+                type="button"
+                className={BUTTON_PRIMARY}
+                disabled={!bill.can_generate}
+                onClick={() => onGenerate(bill)}
+                aria-label={`Record ${formatMonth(month)} bill`}
+              >
+                Record {formatMonth(month)} bill
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </Panel>
   )
 }

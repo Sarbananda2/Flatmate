@@ -312,8 +312,11 @@ describe('FurnitureRental', () => {
         }),
       }),
     )
-    expect(await screen.findByText('Billed')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'View in Expenses' })).toHaveAttribute('href', '/expenses')
+    // The recorded bill shows each share's status instead of a footer saying it is billed.
+    const shares = await screen.findByRole('table', { name: 'Shares for November 2026' })
+    expect(within(shares).getByRole('columnheader', { name: 'Status' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'View in Expenses' })).toBeNull()
+    expect(screen.queryByText('Billed')).toBeNull()
     expect(screen.queryByRole('button', { name: /Record November 2026 bill/ })).toBeNull()
     unmount()
     stub?.restore()
@@ -383,9 +386,8 @@ describe('FurnitureRental', () => {
     show(overview({ month: paidByAlice() }), {
       'POST /api/services/furniture/reimburse-from-kitty': overview({ month: paidByAlice() }),
     })
-    expect(
-      await screen.findByText('Paid directly to Furlenco by Alice on 5 Nov 2026 (Ref: UTR-4471)'),
-    ).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).toBeInTheDocument()
+    expect(screen.queryByText(/Paid directly to Furlenco/)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Mark Paid by Resident' })).toBeNull()
 
     const shares = screen.getByRole('table', { name: 'Shares for November 2026' })
