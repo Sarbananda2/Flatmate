@@ -1401,6 +1401,8 @@ export interface FurnitureShare {
   total_paise: number
   /** Paid towards their charge, into the kitty or by paying the provider. 0 until the bill is recorded. */
   paid_paise: number
+  /** Paid into the kitty against their charge. */
+  settled_paise: number
   /** What is still owed on their charge. 0 until the bill is recorded. */
   outstanding_paise: number
   /** Null until the bill is recorded, and for a charge of nothing. */
@@ -1417,15 +1419,22 @@ export interface FurnitureShare {
   }>
 }
 
-/** A resident paying the provider the month's bill from their own account. */
-export interface FurnitureVendorPayout {
-  /** Null when more than one resident paid part of it (recorded outside this screen). */
-  payer_resident_id: string | null
-  payer_name: string
+/** One payment to a household service's provider towards a month's bill: from the kitty, or by a resident. */
+export interface FurnitureDisbursement {
+  disbursement_id: string
   amount_paise: number
-  payment_date: string
-  reference: string | null
+  disbursed_at: string
+  disbursement_reference: string
+  /** pool: paid from the House Kitty; resident_advance: a resident paid it from their own account. */
+  disbursed_by: 'pool' | 'resident_advance'
+  funding_resident_id: string | null
+  funding_resident_name: string | null
+  funding_payment_id: string | null
+  note: string | null
+  created_at: string
 }
+
+export type FurniturePayoutStatus = 'pending' | 'partially_disbursed' | 'disbursed'
 
 /** What the kitty owes the resident who paid the provider, and has paid back. */
 export interface FurnitureReimbursement {
@@ -1464,9 +1473,16 @@ export interface FurnitureMonthBill {
   expense: { expense_id: string; description: string; amount_paise: number; statement_id: string | null } | null
   statement_status: StatementStatus | null
   can_generate: boolean
-  /** Null until a resident is recorded as having paid the provider the recorded bill. */
-  vendor_payout: FurnitureVendorPayout | null
-  /** Null unless one resident paid the provider. */
+  /** Paid into the kitty against the bill, plus what paying the provider covered of a resident's own share. */
+  collected_paise: number
+  /** Residents whose share is covered in full. */
+  collected_count: number
+  /** 'pending' until the provider is paid anything; the bill can be paid in tranches. */
+  payout_status: FurniturePayoutStatus
+  disbursed_paise: number
+  remaining_disbursement_paise: number
+  disbursements: FurnitureDisbursement[]
+  /** Null unless one resident paid the provider tranches of their own. */
   reimbursement: FurnitureReimbursement | null
 }
 

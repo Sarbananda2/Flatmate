@@ -70,7 +70,12 @@ const bill = (overrides: Record<string, unknown> = {}) => ({
   expense: null,
   statement_status: 'draft',
   can_generate: true,
-  vendor_payout: null,
+  collected_paise: 0,
+  collected_count: 0,
+  payout_status: 'pending',
+  disbursed_paise: 0,
+  remaining_disbursement_paise: 0,
+  disbursements: [],
   reimbursement: null,
   ...overrides,
 })
@@ -85,6 +90,7 @@ function share(residentId: string, name: string, common: number, overrides: Reco
     private_items: [],
     total_paise: common,
     paid_paise: 0,
+    settled_paise: 0,
     outstanding_paise: 0,
     status: null,
     paid_date: null,
@@ -99,8 +105,23 @@ const billed = (overrides: Record<string, unknown> = {}) =>
     expense: { expense_id: 'furniture-1', description: 'Furniture rental for November 2026', amount_paise: 220000, statement_id: null },
     can_generate: false,
     shares: bill().shares.map((row) => ({ ...row, status: 'unpaid', outstanding_paise: row.total_paise })),
+    remaining_disbursement_paise: 220000,
     ...overrides,
   })
+
+/** Alice paying Furlenco the whole bill from her own account. */
+const ALICE_ADVANCE = {
+  disbursement_id: 'svcdisb-1',
+  amount_paise: 220000,
+  disbursed_at: '2026-11-05',
+  disbursement_reference: 'UTR-4471',
+  disbursed_by: 'resident_advance',
+  funding_resident_id: 'alice',
+  funding_resident_name: 'Alice',
+  funding_payment_id: 'furniture-payout-1',
+  note: null,
+  created_at: '2026-11-05T10:00:00+05:30',
+}
 
 /** What the kitty owes Alice for paying Furlenco, with Bob's and part of Chris's share paid in. */
 const OWED_TO_ALICE = {
@@ -127,6 +148,7 @@ const paidByAlice = (overrides: Record<string, unknown> = {}) =>
         private_items: ['Queen bed'],
         total_paise: 106667,
         paid_paise: 106667,
+        settled_paise: 106667,
         status: 'paid',
         paid_date: '2026-11-08',
         payments: [
@@ -142,6 +164,7 @@ const paidByAlice = (overrides: Record<string, unknown> = {}) =>
       }),
       share('chris', 'Chris', 56666, {
         paid_paise: 30000,
+        settled_paise: 30000,
         outstanding_paise: 26666,
         status: 'partial',
         paid_date: '2026-11-08',
@@ -150,13 +173,12 @@ const paidByAlice = (overrides: Record<string, unknown> = {}) =>
         ],
       }),
     ],
-    vendor_payout: {
-      payer_resident_id: 'alice',
-      payer_name: 'Alice',
-      amount_paise: 220000,
-      payment_date: '2026-11-05',
-      reference: 'UTR-4471',
-    },
+    collected_paise: 193334,
+    collected_count: 2,
+    payout_status: 'disbursed',
+    disbursed_paise: 220000,
+    remaining_disbursement_paise: 0,
+    disbursements: [ALICE_ADVANCE],
     reimbursement: OWED_TO_ALICE,
     ...overrides,
   })
@@ -352,34 +374,118 @@ describe('FurnitureRental', () => {
     })
   })
 
-  it('says when nobody has paid the provider, and records who did', async () => {
-    show(overview({ month: billed() }), {
-      'POST /api/services/furniture/mark-paid-by-resident': overview({ month: paidByAlice() }),
-    })
-    expect(await screen.findByText('Pending vendor payout')).toBeInTheDocument()
-    const shares = screen.getByRole('table', { name: 'Shares for November 2026' })
-    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Unpaid')
+  it('sums up the collection and the payout to the provider at the top', async () => {
+    const { unmount } = show(overview({ month: billed() }))
+    expect(await screen.findByText('Internal Collection')).toBeInTheDocument()
+    expect(document.body).toHaveTextContent('0 of 3 covered · 0.0%')
+    expect(document.body).toHaveTextContent('Provider PayoutUnpaidDue 5 Nov 2026')
+    unmount()
+    stub?.restore()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Mark Paid by Resident' }))
-    const dialog = screen.getByRole('dialog', { name: 'Mark Paid by Resident' })
-    expect(dialog).toHaveTextContent('Who paid Furlenco the November 2026 bill of ₹2,200.00')
-    const record = within(dialog).getByRole('button', { name: 'Record payout' })
+    show(overview({ month: paidByAlice() }))
+    expect(await screen.findByText('Internal Collection')).toBeInTheDocument()
+    expect(document.body).toHaveTextContent('Internal Collection₹1,933.342 of 3 covered · 87.9%')
+    expect(document.body).toHaveTextContent('Provider PayoutPaidPaid 5 Nov 2026')
+  })
+
+  it('pays the provider from the House Kitty, what it has collected so far', async () => {
+    const collecting = billed({ collected_paise: 106667, collected_count: 1 })
+    show(overview({ month: collecting }), {
+      'POST /api/services/furniture/disburse-payout': overview({
+        month: billed({ payout_status: 'partially_disbursed', disbursed_paise: 106667, remaining_disbursement_paise: 113333 }),
+      }),
+    })
+    const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
+    expect(within(panel).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Provider / Subscription',
+      'Total Bill',
+      'Paid to Provider',
+      'Still Owed',
+      'Status',
+      'Actions',
+    ])
+    expect(within(panel).getByRole('row', { name: /Furlenco/ })).toHaveTextContent(
+      'FurlencoCustomer FUR-2291₹2,200.00₹0.00₹2,200.00UnpaidRecord Provider Payout',
+    )
+
+    await userEvent.click(within(panel).getByRole('button', { name: 'Record Provider Payout' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record Provider Payout' })
+    expect(dialog).toHaveTextContent('November 2026 · ₹2,200.00 still owed to Furlenco')
+    expect(within(dialog).getByRole('radio', { name: /House Kitty/ })).toBeChecked()
+    expect(within(dialog).queryByLabelText(/^Paid by/)).toBeNull()
+    expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('1066.67')
+    const record = within(dialog).getByRole('button', { name: 'Record Payout' })
+    expect(record).toBeDisabled()
+    await userEvent.type(within(dialog).getByLabelText(/^Reference \/ UTR/), 'UTR-9')
+    await userEvent.click(record)
+
+    await waitFor(() => expect(sent('POST', '/api/services/furniture/disburse-payout')).toBeDefined())
+    expect(sent('POST', '/api/services/furniture/disburse-payout')!.body).toEqual({
+      settlement_month: MONTH,
+      disbursement_mode: 'pool',
+      funding_resident_id: null,
+      reference: 'UTR-9',
+      disbursed_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      amount_paise: 106667,
+      notes: null,
+    })
+    expect(await screen.findByText('Provider payout recorded')).toBeInTheDocument()
+    expect(screen.getByText('₹1,133.33 is still owed to Furlenco.')).toBeInTheDocument()
+  })
+
+  it("records a resident's advance to the provider", async () => {
+    show(overview({ month: billed() }), {
+      'POST /api/services/furniture/disburse-payout': overview({ month: paidByAlice() }),
+    })
+    await userEvent.click(await screen.findByRole('button', { name: 'Record Provider Payout' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record Provider Payout' })
+    expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('2200.00')
+    await userEvent.click(within(dialog).getByRole('radio', { name: /Resident advance/ }))
+    await userEvent.type(within(dialog).getByLabelText(/^Reference \/ UTR/), 'UTR-4471')
+    const record = within(dialog).getByRole('button', { name: 'Record Payout' })
     expect(record).toBeDisabled()
     await waitFor(() => expect(within(dialog).getByRole('option', { name: 'Alice' })).toBeInTheDocument())
     await userEvent.selectOptions(within(dialog).getByLabelText(/^Paid by/), 'alice')
-    await userEvent.type(within(dialog).getByLabelText('Reference / UTR'), 'UTR-4471')
     await userEvent.click(record)
 
-    await waitFor(() => expect(sent('POST', '/api/services/furniture/mark-paid-by-resident')).toBeDefined())
-    expect(sent('POST', '/api/services/furniture/mark-paid-by-resident')!.body).toEqual({
-      settlement_month: MONTH,
-      payer_resident_id: 'alice',
-      amount_paise: 220000,
-      payment_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+    await waitFor(() => expect(sent('POST', '/api/services/furniture/disburse-payout')).toBeDefined())
+    expect(sent('POST', '/api/services/furniture/disburse-payout')!.body).toMatchObject({
+      disbursement_mode: 'resident_advance',
+      funding_resident_id: 'alice',
       reference: 'UTR-4471',
-      notes: null,
+      amount_paise: 220000,
     })
-    expect(await screen.findByText('Vendor payout recorded')).toBeInTheDocument()
+  })
+
+  it('opens the payout statement from the provider row', async () => {
+    show(overview({ month: paidByAlice() }))
+    const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
+    expect(within(panel).getByRole('button', { name: 'Record Provider Payout' })).toBeDisabled()
+    expect(panel).toHaveTextContent('A resident who paid Furlenco directly is credited what they paid')
+    await userEvent.click(within(panel).getByRole('row', { name: /Furlenco/ }))
+    const statement = screen.getByRole('dialog', { name: 'Provider Payout Statement' })
+    expect(statement).toHaveTextContent('Furlenco · November 2026')
+    expect(statement).toHaveTextContent('Total Bill₹2,200.00Paid to Provider₹2,200.00Still Owed₹0.00')
+    expect(within(statement).getByRole('row', { name: /UTR-4471/ })).toHaveTextContent(
+      '5 Nov 2026₹2,200.00Alice (advance)UTR-4471',
+    )
+  })
+
+  it('leaves out the reimbursement card when the House Kitty paid the provider', async () => {
+    show(
+      overview({
+        month: billed({
+          payout_status: 'disbursed',
+          disbursed_paise: 220000,
+          remaining_disbursement_paise: 0,
+          disbursements: [
+            { ...ALICE_ADVANCE, disbursed_by: 'pool', funding_resident_id: null, funding_resident_name: null, funding_payment_id: null },
+          ],
+        }),
+      }),
+    )
+    await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })
+    expect(screen.queryByRole('heading', { name: /Reimbursement/ })).toBeNull()
   })
 
   it('shows who paid the provider, what each flatmate has paid in, and reimburses from the kitty', async () => {
@@ -387,8 +493,7 @@ describe('FurnitureRental', () => {
       'POST /api/services/furniture/reimburse-from-kitty': overview({ month: paidByAlice() }),
     })
     expect(await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).toBeInTheDocument()
-    expect(screen.queryByText(/Paid directly to Furlenco/)).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Mark Paid by Resident' })).toBeNull()
+    expect(screen.getByRole('heading', { name: 'Resident Collection · November 2026' })).toBeInTheDocument()
 
     const shares = screen.getByRole('table', { name: 'Shares for November 2026' })
     expect(within(shares).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
@@ -396,12 +501,16 @@ describe('FurnitureRental', () => {
       'Shared items',
       'Own items',
       'Total',
+      'Paid into Kitty',
+      'Still owed',
       'Status',
       'Actions',
     ])
-    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('Paid FurlencoPay Now')
-    expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent('Paid into KittyPay Now')
-    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Part paidPay Now')
+    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('₹566.67₹0.00—Paid FurlencoPay Now')
+    expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent(
+      '₹1,066.67₹1,066.67₹0.00Paid into KittyPay Now',
+    )
+    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('₹566.66₹300.00₹266.66Part paidPay Now')
 
     const card = screen.getByRole('heading', { name: 'Reimbursement · Alice' }).closest('section')!
     expect(card).toHaveTextContent('Fronted₹2,200.00')
@@ -500,6 +609,17 @@ describe('FurnitureRental', () => {
       expect(document.body).not.toHaveTextContent(/pool/i)
       await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     }
+    const provider = screen.getByRole('heading', { name: 'Provider Payout · Furlenco' }).closest('section')!
+    await userEvent.click(within(provider).getByRole('row', { name: /Furlenco/ }))
+    expect(screen.getByRole('dialog', { name: 'Provider Payout Statement' })).not.toHaveTextContent(/pool/i)
+  })
+
+  it('offers the House Kitty, never the pool, as where a payout came from', async () => {
+    show(overview({ month: billed() }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Record Provider Payout' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record Provider Payout' })
+    expect(dialog).toHaveTextContent('House Kitty')
+    expect(document.body).not.toHaveTextContent(/pool/i)
   })
 
   it('waits for the kitty to collect before reimbursing, and says when it is done', async () => {

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Path, Query, Response
 from ...errors import AemError
 from ...schemas import (
     MONTH_PATTERN,
+    FurnitureDisburseRequest,
     FurnitureGenerateRequest,
     FurnitureItemCreate,
     FurnitureItemUpdate,
@@ -113,13 +114,30 @@ def record_payment(payload: FurniturePaymentCreate, db: Db, apartment_id: Apartm
         raise to_http(exc) from exc
 
 
+@router.post("/disburse-payout", status_code=201,
+             summary="Record a payment to the provider towards a month's bill")
+def disburse_payout(payload: FurnitureDisburseRequest, db: Db, apartment_id: ApartmentId,
+                    settings: AppSettings) -> dict[str, Any]:
+    """From the House Kitty, or a resident advance: a provider advance linked to
+    the month's bill, crediting the resident while they still owe their own
+    share. The bill must be recorded first; it can be paid in tranches, which
+    never add up to more than the bill."""
+    try:
+        return furniture_rental.record_provider_payout(
+            db, apartment_id, payload.settlement_month,
+            disbursement_mode=payload.disbursement_mode, reference=payload.reference,
+            disbursed_date=payload.disbursed_date, amount_paise=payload.amount_paise,
+            funding_resident_id=payload.funding_resident_id, notes=payload.notes,
+            actor=settings.operator_name)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
 @router.post("/mark-paid-by-resident", status_code=201,
-             summary="Record a resident paying the provider a month's bill")
+             summary="Record a resident paying the provider towards a month's bill")
 def mark_paid_by_resident(payload: FurniturePayoutRequest, db: Db, apartment_id: ApartmentId,
                           settings: AppSettings) -> dict[str, Any]:
-    """A provider advance linked to the month's bill: the resident is credited
-    the whole bill and still owes their own share, so the kitty owes them the
-    rest. The bill must be recorded first, and is paid once, in full."""
+    """A resident-advance payout, as ``/disburse-payout`` records one."""
     try:
         return furniture_rental.mark_paid_by_resident(
             db, apartment_id, payload.settlement_month, payload.payer_resident_id,

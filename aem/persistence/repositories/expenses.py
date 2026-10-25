@@ -205,6 +205,12 @@ class ExpensesRepository(Repository):
             "SELECT cycle_id, settlement_month, disbursement_status FROM rent_cycle "
             "WHERE expense_id=%s", (expense_id,))
 
+    def service_payout_month(self, expense_id: str) -> str | None:
+        """The month of the bill, if any payout to a service's provider was made towards it."""
+        return self._s.scalar(
+            "SELECT settlement_month FROM service_disbursement WHERE expense_id=%s LIMIT 1",
+            (expense_id,))
+
     # -- deleting -------------------------------------------------------------
 
     def delete_rent_cycle(self, cycle_id: str) -> int:

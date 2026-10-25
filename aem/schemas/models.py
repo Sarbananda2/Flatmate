@@ -1141,15 +1141,31 @@ class FurniturePaymentCreate(ApiModel):
     note: str | None = Field(None, max_length=2000)
 
 
+class FurnitureDisburseRequest(ApiModel):
+    """A payment to the provider towards a month's bill: from the kitty, or by a resident."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    disbursement_mode: Literal["pool", "resident_advance"] = Field(
+        description="pool: paid from the House Kitty; resident_advance: a resident paid it "
+                    "from their own account.")
+    funding_resident_id: str | None = Field(
+        None, max_length=64, description="For a resident advance: who paid the provider.")
+    reference: str = Field(min_length=1, max_length=200,
+                           description="Bank UTR or UPI transaction ID.")
+    disbursed_date: str = Field(pattern=DATE_PATTERN)
+    amount_paise: int | None = _money_field(
+        "This payment; omit for everything still owed to the provider.", ge=1, default=None)
+    notes: str | None = Field(None, max_length=500)
+
+
 class FurniturePayoutRequest(ApiModel):
-    """A resident paid the provider the month's bill from their own account."""
+    """A resident paid the provider from their own account: a resident-advance payout."""
     settlement_month: str = Field(pattern=MONTH_PATTERN)
     payer_resident_id: str = Field(min_length=1, max_length=64)
     amount_paise: int | None = _money_field(
-        "The whole month's bill; omit to use it.", ge=1, default=None)
+        "This payment; omit for everything still owed to the provider.", ge=1, default=None)
     payment_date: str = Field(pattern=DATE_PATTERN)
-    reference: str | None = Field(None, max_length=200,
-                                  description="Bank UTR or UPI transaction ID.")
+    reference: str = Field(min_length=1, max_length=200,
+                           description="Bank UTR or UPI transaction ID.")
     notes: str | None = Field(None, max_length=500)
 
 
@@ -1185,7 +1201,8 @@ __all__ = [
     "ResidentMonthlyStatementItem",
     "DepositConfigUpdate", "DepositSlotFundingRequest", "DepositSlotInitRequest",
     "DepositSlotItem", "DepositSlotVacateRequest",
-    "FurnitureCategory", "FurnitureGenerateRequest", "FurnitureItemCreate",
+    "FurnitureCategory", "FurnitureDisburseRequest", "FurnitureGenerateRequest",
+    "FurnitureItemCreate",
     "FurnitureItemUpdate", "FurniturePaymentCreate", "FurniturePayoutRequest",
     "FurnitureReimburseRequest",
     "FurnitureSetupRequest",

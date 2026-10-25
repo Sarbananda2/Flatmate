@@ -14,6 +14,7 @@ import pytest
 from aem.config import get_settings
 from aem.errors import ConflictError, ValidationError
 from aem.services import (
+    apartments,
     definitions,
     expenses,
     furniture_rental as furniture,
@@ -25,8 +26,8 @@ from aem.services import (
     validation,
 )
 
-from .conftest import APARTMENT
-from .support import connect, sign_in
+from .conftest import APARTMENT, RESIDENTS
+from .support import DatabaseRefusal, connect, sign_in
 
 MONTH = "2026-11"
 
@@ -291,6 +292,18 @@ def _statuses(month):
             for row in month["shares"]}
 
 
+def _payout(db, mode="pool", **details):
+    """A payout to Furlenco towards November's bill: from the kitty unless told otherwise."""
+    details = {"reference": "UTR-4471", "disbursed_date": "2026-11-05", **details}
+    return furniture.record_provider_payout(db, APARTMENT, MONTH, disbursement_mode=mode,
+                                            **details)["month"]
+
+
+def _advance(db, resident="alice", **details):
+    """A resident paying Furlenco from their own account."""
+    return _payout(db, "resident_advance", funding_resident_id=resident, **details)
+
+
 def test_a_payment_into_the_kitty_settles_the_residents_share_first(billed):
     # Chris also owes for October's milk, which oldest-first alone would pay off first.
     expenses.create_expense(billed, apartment_id=APARTMENT, expense_id="milk-2026-10",
@@ -321,7 +334,7 @@ def test_a_payment_into_the_kitty_settles_the_residents_share_first(billed):
 
 def test_a_share_covered_by_paying_the_provider_or_not_on_the_bill_takes_no_payment(rented):
     furniture.generate_month(rented, APARTMENT, MONTH, ["chris"])
-    furniture.mark_paid_by_resident(rented, APARTMENT, MONTH, "alice", payment_date="2026-11-05")
+    _advance(rented)
     for resident, code in (("alice", "furniture_share_funded_by_payout"),
                            ("chris", "not_a_furniture_participant")):
         with pytest.raises((ConflictError, ValidationError)) as refused:
@@ -329,6 +342,48 @@ def test_a_share_covered_by_paying_the_provider_or_not_on_the_bill_takes_no_paym
                                                amount_paise=10_000, payment_date="2026-11-08")
         assert refused.value.code == code
     assert _rows(rented, "SELECT 1 FROM payment WHERE payment_kind = 'to_pool'") == []
+
+
+def test_disburse_payout_from_pool_marks_provider_paid_with_no_reimbursement(billed):
+    _into_kitty(billed, "bob", 106_667, "pay-bob")
+    month = _payout(billed, notes="Paid on the billing day")
+    tranche = _rows(billed, "SELECT * FROM service_disbursement")[0]
+    assert (tranche["disbursed_by"], tranche["amount_paise"], tranche["disbursement_reference"],
+            tranche["funding_resident_id"], tranche["funding_payment_id"],
+            tranche["settlement_month"]) == ("pool", 220_000, "UTR-4471", None, None, MONTH)
+    assert (month["payout_status"], month["disbursed_paise"],
+            month["remaining_disbursement_paise"]) == ("disbursed", 220_000, 0)
+    assert [(t["disbursed_by"], t["disbursed_at"], t["note"]) for t in month["disbursements"]] == [
+        ("pool", "2026-11-05", "Paid on the billing day")]
+    # The kitty paid, so nobody is owed anything back and no share is covered by it.
+    assert month["reimbursement"] is None
+    assert _statuses(month)["alice"] == ("unpaid", 0, None)
+    # Nothing reaches the ledger: the bill was already the kitty's cost.
+    assert _rows(billed, "SELECT payment_kind FROM payment") == [{"payment_kind": "to_pool"}]
+    assert validation.validate(billed, APARTMENT)["issues"] == []
+
+    with pytest.raises(ConflictError) as again:
+        _payout(billed, amount_paise=1)
+    assert again.value.code == "furniture_already_disbursed"
+
+
+def test_internal_collection_tracks_flatmate_payments_towards_furniture_bill(billed):
+    month = _month(billed)
+    assert (month["collected_paise"], month["collected_count"], month["payout_status"],
+            month["remaining_disbursement_paise"]) == (0, 0, "pending", 220_000)
+    furniture.record_furniture_payment(billed, APARTMENT, MONTH, "bob", amount_paise=106_667,
+                                       payment_date="2026-11-08", reference="UPI-1")
+    month = furniture.record_furniture_payment(
+        billed, APARTMENT, MONTH, "chris", amount_paise=30_000, payment_date="2026-11-08",
+        reference="UPI-2")["month"]
+    assert (month["collected_paise"], month["collected_count"]) == (136_667, 1)
+    assert {row["resident_id"]: (row["settled_paise"], row["outstanding_paise"])
+            for row in month["shares"]} == {"alice": (0, 56_667), "bob": (106_667, 0),
+                                            "chris": (30_000, 26_666)}
+    # Paying the provider herself covers Alice's share too.
+    month = _advance(billed, amount_paise=100_000)
+    assert (month["collected_paise"], month["collected_count"]) == (193_334, 2)
+    assert month["payout_status"] == "partially_disbursed"
 
 
 def test_a_resident_who_paid_the_provider_is_credited_with_the_bill(billed):
@@ -340,9 +395,10 @@ def test_a_resident_who_paid_the_provider_is_credited_with_the_bill(billed):
             advance["expense_id"], advance["payee_or_provider"], advance["reference"]) == (
         "provider_advance", "alice", 220_000, month["expense"]["expense_id"], "Furlenco",
         "UTR-4471")
-    assert month["vendor_payout"] == {"payer_resident_id": "alice", "payer_name": "Alice",
-                                      "amount_paise": 220_000, "payment_date": "2026-11-05",
-                                      "reference": "UTR-4471"}
+    assert [(t["disbursed_by"], t["funding_resident_id"], t["funding_resident_name"],
+             t["funding_payment_id"], t["amount_paise"]) for t in month["disbursements"]] == [
+        ("resident_advance", "alice", "Alice", advance["payment_id"], 220_000)]
+    assert month["payout_status"] == "disbursed"
     # Paying the provider covers her own share; nobody has paid into the kitty yet.
     assert _statuses(month) == {"alice": ("funded_payout", 56_667, "2026-11-05"),
                                 "bob": ("unpaid", 0, None), "chris": ("unpaid", 0, None)}
@@ -355,26 +411,132 @@ def test_a_resident_who_paid_the_provider_is_credited_with_the_bill(billed):
     assert validation.validate(billed, APARTMENT)["issues"] == []
 
     with pytest.raises(ConflictError) as again:
-        furniture.mark_paid_by_resident(billed, APARTMENT, MONTH, "bob",
-                                        payment_date="2026-11-05")
-    assert again.value.code == "furniture_payout_exists"
+        _advance(billed, "bob")
+    assert again.value.code == "furniture_already_disbursed"
 
 
-def test_a_payout_needs_the_recorded_bill_and_pays_it_in_full(rented):
-    with pytest.raises(ConflictError) as unbilled:
-        furniture.mark_paid_by_resident(rented, APARTMENT, MONTH, "alice",
-                                        payment_date="2026-11-05")
-    assert unbilled.value.code == "furniture_bill_not_recorded"
-    furniture.generate_month(rented, APARTMENT, MONTH)
-    with pytest.raises(ValidationError) as short:
-        furniture.mark_paid_by_resident(rented, APARTMENT, MONTH, "alice",
-                                        payment_date="2026-11-05", amount_paise=200_000)
-    assert short.value.code == "payout_amount_mismatch"
-    assert _rows(rented, "SELECT 1 FROM payment") == []
+@pytest.mark.parametrize("mode, details, code", [
+    ("pool", {"amount_paise": 220_001}, "tranche_exceeds_remaining"),
+    ("pool", {"reference": "  "}, None),
+    ("pool", {"funding_resident_id": "alice"}, None),
+    ("resident_advance", {}, None),
+    ("cheque", {}, None),
+])
+def test_a_payout_needs_a_reference_and_is_never_more_than_is_owed(billed, mode, details, code):
+    with pytest.raises(ValidationError) as refused:
+        _payout(billed, mode, **details)
+    if code:
+        assert refused.value.code == code
+    assert _rows(billed, "SELECT 1 FROM service_disbursement") == []
+    assert _rows(billed, "SELECT 1 FROM payment") == []
+
+
+def test_a_payout_needs_the_recorded_bill(rented):
+    for pay in (lambda: _payout(rented),
+                lambda: furniture.mark_paid_by_resident(rented, APARTMENT, MONTH, "alice",
+                                                        payment_date="2026-11-05",
+                                                        reference="UTR-1")):
+        with pytest.raises(ConflictError) as unbilled:
+            pay()
+        assert unbilled.value.code == "furniture_bill_not_recorded"
+
+
+def test_the_provider_is_paid_in_tranches_from_the_kitty_and_by_a_resident(billed):
+    _into_kitty(billed, "bob", 106_667, "pay-bob")
+    month = _payout(billed, amount_paise=100_000)
+    assert (month["payout_status"], month["remaining_disbursement_paise"]) == (
+        "partially_disbursed", 120_000)
+    month = _advance(billed, reference="UTR-4472", disbursed_date="2026-11-07")
+    assert [(t["disbursed_by"], t["amount_paise"]) for t in month["disbursements"]] == [
+        ("pool", 100_000), ("resident_advance", 120_000)]
+    assert month["payout_status"] == "disbursed"
+    # The kitty spent ₹1,000 of Bob's ₹1,066.67 on its own tranche: ₹66.67 is left
+    # for Alice, who is owed her ₹1,200 less her own share.
+    owed = month["reimbursement"]
+    assert (owed["total_fronted_paise"], owed["net_reimbursement_owed_paise"],
+            owed["kitty_cash_available_paise"], owed["reimbursable_paise"]) == (
+        120_000, 63_333, 6_667, 6_667)
+
+
+def test_a_payout_is_kept_for_good(billed):
+    month = _advance(billed, amount_paise=100_000)
+    with pytest.raises(ConflictError) as reversal:
+        payments.reverse_payment(billed, month["disbursements"][0]["funding_payment_id"],
+                                 reason="Wrong resident")
+    assert reversal.value.code == "service_funding_payment"
+    with connect(billed, as_owner=True) as conn:
+        with pytest.raises(DatabaseRefusal):
+            conn.execute("UPDATE service_disbursement SET amount_paise = 1")
+        with pytest.raises(DatabaseRefusal):
+            conn.execute("DELETE FROM service_disbursement")
+    # Even written directly, tranches cannot add up to more than the bill.
+    service_id = furniture.get_overview(billed, APARTMENT, MONTH)["service"]["service_id"]
+    with connect(billed) as conn, pytest.raises(DatabaseRefusal) as overpaid:
+        conn.execute(
+            """INSERT INTO service_disbursement (disbursement_id, service_id, expense_id,
+                   apartment_id, settlement_month, amount_paise, disbursed_at,
+                   disbursement_reference, disbursed_by, created_at)
+               VALUES ('x', %s, %s, %s, %s, 120001, '2026-11-06', 'UTR-X', 'pool', 'now')""",
+            (service_id, month["expense"]["expense_id"], APARTMENT, MONTH))
+    assert "overpaid_service" in str(overpaid.value)
+
+
+def test_a_bill_paid_out_from_the_kitty_cannot_be_deleted(billed):
+    month = _payout(billed, amount_paise=50_000)
+    with pytest.raises(ConflictError) as deleted:
+        expenses.delete_expense(billed, month["expense"]["expense_id"], apartment_id=APARTMENT)
+    assert deleted.value.code == "service_bill_disbursed"
+
+
+def test_a_bill_already_paid_outside_this_screen_takes_no_payout(billed):
+    expense_id = _month(billed)["expense"]["expense_id"]
+    payments.record_payment(billed, apartment_id=APARTMENT, payment_id="adv-1",
+                            payer_resident_id="bob", amount_paise=50_000,
+                            payment_date="2026-11-05", payment_kind="provider_advance",
+                            expense_id=expense_id)
+    for mode, details in (("pool", {}), ("resident_advance", {"funding_resident_id": "alice"})):
+        with pytest.raises(ConflictError) as refused:
+            _payout(billed, mode, amount_paise=10_000, **details)
+        assert refused.value.code == "furniture_already_funded"
+    assert _rows(billed, "SELECT 1 FROM service_disbursement") == []
+
+
+def test_migration_0023_turns_each_furniture_advance_into_a_tranche(database_factory):
+    db = database_factory(migrated=False)
+    db.migrate(target_version=22)
+    apartments.create_apartment(db, apartment_id=APARTMENT, name="Flat 402")
+    for resident_id, name in RESIDENTS:
+        residents.create_resident(db, apartment_id=APARTMENT, resident_id=resident_id,
+                                  display_name=name, active_from="2026-08-01")
+    definition = _setup(db)["config"]["expense_definition_id"]
+    expenses.create_expense(db, apartment_id=APARTMENT, expense_id="furniture-nov",
+                            description="Furniture rental for November 2026",
+                            amount_paise=150_000, expense_date="2026-11-01",
+                            allocations_paise={"alice": 50_000, "bob": 50_000, "chris": 50_000},
+                            expense_definition_id=definition, settlement_period=MONTH)
+    for payment_id, resident, paise, reference in (("adv-alice", "alice", 100_000, "UTR-1"),
+                                                   ("adv-bob", "bob", 50_000, None)):
+        payments.record_payment(db, apartment_id=APARTMENT, payment_id=payment_id,
+                                payer_resident_id=resident, amount_paise=paise,
+                                payment_date="2026-11-05", payment_kind="provider_advance",
+                                expense_id="furniture-nov", reference=reference)
+    db.migrate()
+    rows = _rows(db, """SELECT funding_payment_id, funding_resident_id, amount_paise,
+                               disbursed_at, disbursement_reference, disbursed_by,
+                               settlement_month
+                          FROM service_disbursement ORDER BY row_seq""")
+    assert rows == [
+        {"funding_payment_id": "adv-alice", "funding_resident_id": "alice",
+         "amount_paise": 100_000, "disbursed_at": "2026-11-05",
+         "disbursement_reference": "UTR-1", "disbursed_by": "resident_advance",
+         "settlement_month": MONTH},
+        {"funding_payment_id": "adv-bob", "funding_resident_id": "bob", "amount_paise": 50_000,
+         "disbursed_at": "2026-11-05", "disbursement_reference": "Not recorded",
+         "disbursed_by": "resident_advance", "settlement_month": MONTH}]
 
 
 def test_flatmates_payments_into_the_kitty_show_against_their_share(billed):
-    furniture.mark_paid_by_resident(billed, APARTMENT, MONTH, "alice", payment_date="2026-11-05")
+    _advance(billed)
     _into_kitty(billed, "bob", 106_667, "pay-bob")
     _into_kitty(billed, "chris", 30_000, "pay-chris")
     month = _month(billed)
@@ -388,7 +550,7 @@ def test_flatmates_payments_into_the_kitty_show_against_their_share(billed):
 
 
 def test_the_kitty_pays_back_the_resident_who_paid_the_provider(billed):
-    furniture.mark_paid_by_resident(billed, APARTMENT, MONTH, "alice", payment_date="2026-11-05")
+    _advance(billed)
     _into_kitty(billed, "bob", 106_667, "pay-bob")
     for recipient, paise, code in (("alice", 106_668, "exceeds_kitty_cash"),
                                    ("bob", 1_000, "not_the_payout_resident")):
@@ -430,7 +592,7 @@ def test_the_kitty_pays_back_the_resident_who_paid_the_provider(billed):
 
 
 def test_a_payer_who_also_paid_their_share_into_the_kitty_is_owed_the_whole_bill(billed):
-    furniture.mark_paid_by_resident(billed, APARTMENT, MONTH, "alice", payment_date="2026-11-05")
+    _advance(billed)
     # Her advance never settles her own charge, so her payment into the kitty does.
     _into_kitty(billed, "alice", 56_667, "pay-alice")
     month = _month(billed)
@@ -444,7 +606,8 @@ def test_a_payer_who_also_paid_their_share_into_the_kitty_is_owed_the_whole_bill
 def test_an_unbilled_month_has_no_payments_to_show(rented):
     month = _month(rented)
     assert {row["status"] for row in month["shares"]} == {None}
-    assert (month["vendor_payout"], month["reimbursement"]) == (None, None)
+    assert (month["collected_paise"], month["payout_status"], month["disbursements"],
+            month["reimbursement"]) == (0, "pending", [], None)
 
 
 # ----------------------------------------------------------- retirement --
@@ -520,18 +683,30 @@ def test_paying_the_bill_over_http(api):
     api.post(f"{base}/setup", params={"month": MONTH}, json={"provider_name": "Furlenco"})
     api.post(f"{base}/items", json={"name": "Sofa", "category": "living_room",
                                     "monthly_rent_paise": 90_000, "allocation_scope": "common"})
-    payout = {"settlement_month": MONTH, "payer_resident_id": "bob",
-              "payment_date": "2026-11-05", "reference": "UTR-1"}
-    assert api.post(f"{base}/mark-paid-by-resident", json=payout).status_code == 409, \
+    payout = {"settlement_month": MONTH, "disbursement_mode": "pool", "reference": "UTR-1",
+              "disbursed_date": "2026-11-05", "amount_paise": 30_000}
+    assert api.post(f"{base}/disburse-payout", json=payout).status_code == 409, \
         "the bill is recorded first"
     api.post(f"{base}/generate-cycle", json={"settlement_month": MONTH})
-    assert api.post(f"{base}/mark-paid-by-resident",
-                    json={**payout, "payment_date": "5 Nov"}).status_code == 422
+    for wrong in ({"reference": ""}, {"disbursement_mode": "cash"}, {"amount_paise": 90_001}):
+        assert api.post(f"{base}/disburse-payout",
+                        json={**payout, **wrong}).status_code == 422, wrong
+    first = api.post(f"{base}/disburse-payout", json=payout)
+    assert first.status_code == 201, first.text
+    assert (first.json()["month"]["payout_status"],
+            first.json()["month"]["remaining_disbursement_paise"]) == ("partially_disbursed",
+                                                                       60_000)
 
-    paid = api.post(f"{base}/mark-paid-by-resident", json=payout)
-    assert paid.status_code == 201, paid.text
-    assert paid.json()["month"]["vendor_payout"]["payer_name"] == "Bob"
-    assert api.post(f"{base}/mark-paid-by-resident", json=payout).status_code == 409
+    # The original endpoint records a resident's payout, for the rest by default.
+    advance = {"settlement_month": MONTH, "payer_resident_id": "bob",
+               "payment_date": "2026-11-06", "reference": "UTR-2"}
+    assert api.post(f"{base}/mark-paid-by-resident",
+                    json={**advance, "reference": None}).status_code == 422
+    rest = api.post(f"{base}/mark-paid-by-resident", json=advance)
+    assert rest.status_code == 201, rest.text
+    assert [t["disbursed_by"] for t in rest.json()["month"]["disbursements"]] == [
+        "pool", "resident_advance"]
+    assert api.post(f"{base}/mark-paid-by-resident", json=advance).status_code == 409
 
     refund = {"settlement_month": MONTH, "recipient_resident_id": "bob", "amount_paise": 30_000,
               "payment_date": "2026-11-09"}
@@ -541,10 +716,12 @@ def test_paying_the_bill_over_http(api):
              "payment_date": "2026-11-08", "payment_mode": "upi", "reference": "UPI-7"}
     assert api.post(f"{base}/record-payment",
                     json={**share, "payment_mode": "cheque"}).status_code == 422
-    paid_in = api.post(f"{base}/record-payment", json=share)
-    assert paid_in.status_code == 201, paid_in.text
-    assert {row["resident_id"]: row["status"] for row in paid_in.json()["month"]["shares"]}[
-        "alice"] == "paid"
+    for resident in ("alice", "chris"):
+        paid_in = api.post(f"{base}/record-payment", json={**share, "resident_id": resident})
+        assert paid_in.status_code == 201, paid_in.text
+    assert {row["resident_id"]: row["status"] for row in paid_in.json()["month"]["shares"]} == {
+        "alice": "paid", "bob": "funded_payout", "chris": "paid"}
+    # Of the ₹600 paid in, the kitty sent ₹300 to Furlenco: the other ₹300 is Bob's.
     reimbursed = api.post(f"{base}/reimburse-from-kitty", json=refund)
     assert reimbursed.status_code == 201, reimbursed.text
-    assert reimbursed.json()["month"]["reimbursement"]["pending_reimbursement_paise"] == 30_000
+    assert reimbursed.json()["month"]["reimbursement"]["pending_reimbursement_paise"] == 0

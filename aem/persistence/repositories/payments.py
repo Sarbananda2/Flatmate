@@ -217,6 +217,12 @@ class PaymentsRepository(Repository):
             "SELECT cycle_id, settlement_month FROM rent_disbursement WHERE funding_payment_id=%s",
             (payment_id,))
 
+    def service_payout_funded_by(self, payment_id: str) -> dict[str, Any] | None:
+        """The household service payout this payment is, if any."""
+        return self._s.fetch_one(
+            "SELECT disbursement_id, settlement_month FROM service_disbursement "
+            "WHERE funding_payment_id=%s", (payment_id,))
+
     def payer_display_name(self, resident_id: str) -> str | None:
         return self._s.scalar(
             "SELECT display_name FROM resident WHERE resident_id=%s", (resident_id,))

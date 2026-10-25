@@ -84,7 +84,7 @@ def current_version(conn: psycopg.Connection) -> int:
 # role is turned away before a trigger is even consulted.
 APPEND_ONLY_TABLES = ("audit_log", "statement_revision", "ledger_adjustment", "rent_receipt",
                       "household_deposit_transaction", "resident_exit_clearance",
-                      "rent_disbursement")
+                      "rent_disbursement", "service_disbursement")
 
 
 def grant_runtime_access(conn: psycopg.Connection, role: str) -> list[str]:

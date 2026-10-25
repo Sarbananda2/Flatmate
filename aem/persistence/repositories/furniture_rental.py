@@ -137,7 +137,7 @@ class FurnitureRentalRepository(Repository):
                            settlement_month: str) -> list[dict[str, Any]]:
         """Expenses recorded under the definition for a settlement month."""
         return self._s.fetch_all(
-            """SELECT expense_id, description, amount_paise, statement_id
+            """SELECT expense_id, description, amount_paise, statement_id, payer_resident_id
                  FROM expense_instance
                 WHERE apartment_id=%s AND expense_definition_id=%s AND settlement_period=%s
                 ORDER BY row_seq""", (apartment_id, definition_id, settlement_month))
@@ -199,15 +199,42 @@ class FurnitureRentalRepository(Repository):
                          p.reference, p.note, p.created_at
                 ORDER BY p.payment_date, p.created_at, p.payment_id""", (expense_id,))
 
-    def vendor_advances(self, expense_id: str) -> list[dict[str, Any]]:
-        """Active provider advances funding a month's bill, oldest first, with who paid."""
+    def linked_advance_total_paise(self, expense_id: str) -> int:
+        """Active provider advances linked to a month's bill, however recorded."""
+        return int(self._s.scalar(
+            """SELECT COALESCE(SUM(amount_paise), 0)::BIGINT FROM payment
+                WHERE expense_id=%s AND payment_kind='provider_advance'
+                  AND status='active'""", (expense_id,), 0))
+
+    # ------------------------------------------------- paying the provider --
+    # Payouts to a provider are kept per service, for any service module.
+
+    def service_disbursements(self, expense_id: str) -> list[dict[str, Any]]:
+        """The payouts to the provider towards a bill, oldest first, with who
+        funded each one that a resident paid."""
         return self._s.fetch_all(
-            """SELECT p.payment_id, p.payer_resident_id, r.display_name AS payer_name,
-                      p.amount_paise, p.payment_date, p.reference
-                 FROM payment p JOIN resident r ON r.resident_id = p.payer_resident_id
-                WHERE p.expense_id = %s AND p.payment_kind = 'provider_advance'
-                  AND p.status = 'active'
-                ORDER BY p.payment_date, p.row_seq""", (expense_id,))
+            """SELECT d.*, r.display_name AS funding_resident_name
+                 FROM service_disbursement d
+                 LEFT JOIN resident r ON r.resident_id = d.funding_resident_id
+                WHERE d.expense_id = %s
+                ORDER BY d.disbursed_at, d.row_seq""", (expense_id,))
+
+    def insert_service_disbursement(self, *, disbursement_id: str, service_id: str,
+                                    expense_id: str, apartment_id: str, settlement_month: str,
+                                    amount_paise: int, disbursed_at: str,
+                                    disbursement_reference: str, disbursed_by: str,
+                                    funding_resident_id: str | None,
+                                    funding_payment_id: str | None, note: str | None,
+                                    created_at: str) -> None:
+        self._s.execute(
+            """INSERT INTO service_disbursement (disbursement_id, service_id, expense_id,
+                   apartment_id, settlement_month, amount_paise, disbursed_at,
+                   disbursement_reference, disbursed_by, funding_resident_id,
+                   funding_payment_id, note, created_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (disbursement_id, service_id, expense_id, apartment_id, settlement_month,
+             amount_paise, disbursed_at, disbursement_reference, disbursed_by,
+             funding_resident_id, funding_payment_id, note, created_at))
 
     def reimbursements(self, payment_id_prefix: str) -> list[dict[str, Any]]:
         """Active refunds from the pool whose payment ID starts with the prefix,

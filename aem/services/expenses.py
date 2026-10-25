@@ -571,6 +571,12 @@ def delete_expense(db: Database, expense_id: str, *, apartment_id: str | None = 
                          reason=reason,
                          old_value={"settlement_month": rent_cycle["settlement_month"],
                                     "expense_id": expense_id})
+        payout_month = uow.expenses.service_payout_month(expense_id)
+        if payout_month is not None:
+            raise ConflictError(
+                f"This is a household service's bill for {payout_month}, and a payout to the "
+                "provider for it has been recorded. It cannot be removed.",
+                code="service_bill_disbursed", details={"expense_id": expense_id})
         uow.expenses.delete_allocations(expense_id)
         uow.expenses.delete_readings(expense_id)
         uow.expenses.delete_electricity_bill(expense_id)

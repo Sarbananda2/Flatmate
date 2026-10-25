@@ -445,6 +445,16 @@ def reverse_payment(db: Database, payment_id: str, *, reason: str, actor: str = 
                 "with a pair of signed ledger adjustments.",
                 code="rent_funding_payment",
                 details={"payment_id": payment_id, "cycle_id": rent_cycle["cycle_id"]})
+        service_payout = uow.payments.service_payout_funded_by(payment_id)
+        if service_payout is not None:
+            # The same for a household service's provider: the payout is kept for good.
+            raise ConflictError(
+                f"This advance is a recorded payout to a household service's provider for "
+                f"{service_payout['settlement_month']} and cannot be reversed. If the wrong "
+                "resident was credited, correct it with a pair of signed ledger adjustments.",
+                code="service_funding_payment",
+                details={"payment_id": payment_id,
+                         "disbursement_id": service_payout["disbursement_id"]})
         if original["status"] != "active":
             raise ConflictError(
                 f"This payment is already {original['status']} and cannot be reversed again.",
