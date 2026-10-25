@@ -130,9 +130,10 @@ def validate_apartment(uow: UnitOfWork, apartment_id: str) -> list[dict[str, Any
                          "linked_advance_paise": row["linked_paise"]},
                 suggested_action="Reverse the surplus advance, or correct the expense amount."))
         elif (row["linked_paise"] < row["amount_paise"]
-              # A month's rent paid to the landlord in tranches: the tranches
-              # record what the pool paid, so there is nothing to warn about.
-              and row["rent_tranche_paise"] != row["linked_paise"]):
+              # A month's rent paid to the landlord, or a service's bill paid to
+              # its provider, in tranches: the tranches record what the pool
+              # paid, so there is nothing to warn about.
+              and row["tranche_paise"] != row["linked_paise"]):
             remaining = row["amount_paise"] - row["linked_paise"]
             issues.append(_issue(
                 "expense_partially_funded", SEVERITY_WARNING,

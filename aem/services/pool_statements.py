@@ -82,6 +82,7 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
         payments = uow.payments.statement_payments(apartment_id)
         tranches = uow.rent.disbursements_for_apartment(apartment_id)
         expenses = uow.expenses.kitty_paid_expenses(apartment_id)
+        service_tranches = uow.furniture.pool_disbursements_for_apartment(apartment_id)
         deposit = deposits.summary_in(uow, apartment_id)
 
     pool_name = apartment.get("pool_name") or DEFAULT_KITTY_NAME
@@ -147,6 +148,20 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
             counterparty_name=expense.get("provider_name") or "House Expense",
             amount_paise=expense["amount_paise"], reference=expense.get("reference"),
             note=expense.get("notes")))
+
+    # A household service's bill, paid out of the kitty payout by payout. A
+    # resident's own share they paid the provider directly is among them: it came
+    # into the kitty above, so the two net to nothing.
+    for tranche in service_tranches:
+        pool.append(_entry(
+            entry_id=f"service:{tranche['disbursement_id']}", account="pool", direction="out",
+            date=tranche["disbursed_at"], source_type="expense", order=tranche["seq"],
+            category="House Expense",
+            description=f"{tranche['display_name']} payout · "
+                        f"{month_label(tranche['settlement_month'])}",
+            counterparty_name=tranche["provider_name"] or tranche["display_name"],
+            amount_paise=tranche["amount_paise"], reference=tranche["disbursement_reference"],
+            note=tranche["note"]))
 
     # Anything else a resident paid the landlord directly.
     for payment in payments:

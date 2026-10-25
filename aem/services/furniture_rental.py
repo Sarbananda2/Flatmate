@@ -22,9 +22,10 @@ rather than duplicated.
 shares into the kitty, each payment settling their share of the bill first.
 The provider is then paid the bill, in one payout or several, each kept for
 good as a ``service_disbursement`` tranche: from the kitty, or by a resident
-from their own account. A resident's payout is a ``provider_advance`` linked
-to the month's expense, crediting them with it while they still owe their own
-share; the kitty then owes them the rest, and pays it back -- out of what the
+from their own account. What a resident paid towards their own share goes
+through the kitty like everyone else's: a payment into it and a kitty payout.
+Only what they paid beyond their share is a ``provider_advance`` linked to the
+month's expense; the kitty owes them that, and pays it back -- out of what the
 others paid in for the bill -- as a ``refund``.
 """
 from __future__ import annotations
@@ -217,6 +218,16 @@ def _reimbursement_id_base(expense_id: str) -> str:
     return f"{expense_id}-reimbursement"
 
 
+def _share_payout_id(payment_id: str) -> str:
+    """The kitty's payout of a share a resident paid the provider directly.
+
+    It is kept with the payment into the kitty that settled the share, so a
+    payout towards the bill can be told apart from the kitty paying out what
+    others paid in. Migration 0023 links its tranches to their payments alike.
+    """
+    return f"svcdisb_{payment_id}"
+
+
 def _share_status(owed: int, paid: int, advanced: int) -> str | None:
     """Where a resident's charge on the bill stands. ``funded_payout``: they paid
     the provider, which covers their share without anything into the kitty."""
@@ -249,10 +260,11 @@ def _funding(uow: UnitOfWork, expense: Mapping[str, Any]) -> dict[str, Any]:
     some is still owed, and 'disbursed' once all of it has been paid.
 
     ``reimbursement`` is what is owed back to the one resident who paid the
-    provider tranches of their own, if one did. Their advance covers whatever of
-    their own share they have not paid into the kitty, so they are owed the
-    rest of it, out of what the kitty collected for the bill less what it has
-    paid the provider itself and what it has already paid back to them.
+    provider more than their own share, if one did. Their share went through
+    the kitty, so their advance is the extra alone; ``total_fronted_paise`` is
+    everything they paid the provider, their share included. They are owed the
+    advance, out of what the kitty collected for the bill less what it has paid
+    the provider itself and what it has already paid back to them.
     """
     expense_id, total = expense["expense_id"], expense["amount_paise"]
     charges = {row["resident_id"]: row for row in uow.furniture.charges_for_expense(expense_id)}
@@ -295,6 +307,11 @@ def _funding(uow: UnitOfWork, expense: Mapping[str, Any]) -> dict[str, Any]:
     share = own["share_paise"] if own else 0
     fronted = advanced[payer]
     owed_back = max(0, fronted - max(0, share - (own["settled_paise"] if own else 0)))
+    # Their own share, paid to the provider through the kitty.
+    via_kitty_ids = {_share_payout_id(payment["payment_id"]) for payment in paid_in.get(payer, [])}
+    via_kitty = sum(tranche["amount_paise"] for tranche in tranches
+                    if tranche["disbursed_by"] == "pool"
+                    and tranche["disbursement_id"] in via_kitty_ids)
     refunds = [row for row in uow.furniture.reimbursements(f"{_reimbursement_id_base(expense_id)}_")
                if row["payer_resident_id"] == payer]
     reimbursed = sum(row["amount_paise"] for row in refunds)
@@ -308,7 +325,7 @@ def _funding(uow: UnitOfWork, expense: Mapping[str, Any]) -> dict[str, Any]:
         "recipient_resident_id": payer,
         "recipient_name": next(tranche["funding_resident_name"] for tranche in tranches
                                if tranche["funding_resident_id"] == payer),
-        "total_fronted_paise": fronted,
+        "total_fronted_paise": fronted + via_kitty,
         "payer_share_paise": share,
         "net_reimbursement_owed_paise": owed_back,
         "reimbursed_so_far_paise": reimbursed,
@@ -751,6 +768,13 @@ def record_furniture_payment(db: Database, apartment_id: str, settlement_month: 
                 f"{name} has no share of the {month_label(month)} furniture bill.",
                 code="not_a_furniture_participant",
                 details={"field": "resident_id", "resident_id": resident_id})
+        target = next((charge for charge in charges if charge["outstanding_paise"] > 0), None)
+        if target is None:
+            raise ConflictError(
+                f"{name} has already paid their share of the {month_label(month)} furniture bill.",
+                code="furniture_share_already_paid", details={"resident_id": resident_id})
+        # A payout recorded before a resident's own share went through the kitty
+        # left the share open but covered by their advance.
         advanced = sum(tranche["amount_paise"]
                        for tranche in uow.furniture.service_disbursements(expense["expense_id"])
                        if tranche["funding_resident_id"] == resident_id)
@@ -760,11 +784,6 @@ def record_furniture_payment(db: Database, apartment_id: str, settlement_month: 
                 f"{month_label(month)} bill, which already covers their share; the kitty owes "
                 "them the rest.", code="furniture_share_funded_by_payout",
                 details={"resident_id": resident_id})
-        target = next((charge for charge in charges if charge["outstanding_paise"] > 0), None)
-        if target is None:
-            raise ConflictError(
-                f"{name} has already paid their share of the {month_label(month)} furniture bill.",
-                code="furniture_share_already_paid", details={"resident_id": resident_id})
         payments._record_payment(
             uow, apartment_id=apartment_id, payment_id=new_id("payment"),
             payer_resident_id=resident_id, amount_paise=amount_paise,
@@ -800,9 +819,12 @@ def record_provider_payout(db: Database, apartment_id: str, settlement_month: st
         what cover it.
 
     ``resident_advance``
-        A resident paid it from their own account. A ``provider_advance`` for
-        the tranche is linked to the month's expense, crediting them with it
-        while they keep their own share, and the kitty owes them the rest
+        A resident paid it from their own account. Whatever of it covers their
+        own open share of the bill goes through the kitty, as everyone else's
+        share does: a payment into the kitty settling their share, and a
+        ``pool`` tranche paying it out. Only what they paid beyond their share is
+        an advance: a ``provider_advance`` linked to the month's expense and a
+        ``resident_advance`` tranche, which the kitty pays back to them
         (``reimbursement`` in the overview).
 
     A bill the ledger already shows a resident paying -- an advance linked to it
@@ -858,35 +880,68 @@ def record_provider_payout(db: Database, apartment_id: str, settlement_month: st
                          "payer_resident_id": expense["payer_resident_id"],
                          "linked_advance_paise": external})
 
-        funding_payment_id = None
-        if disbursement_mode == "resident_advance":
+        written: list[dict[str, Any]] = []
+        if disbursement_mode == "pool":
+            written.append(dict(disbursement_id=new_id("svcdisb"), amount_paise=amount,
+                                disbursed_by="pool", funding_resident_id=None,
+                                funding_payment_id=None, note=note))
+        else:
             payer = get_resident(uow, funding_resident_id, apartment_id)
-            funding_payment_id = new_id("furniture-payout")
-            payments._record_payment(
-                uow, apartment_id=apartment_id, payment_id=funding_payment_id,
-                payer_resident_id=funding_resident_id, amount_paise=amount,
-                payment_date=disbursed_date, payment_kind="provider_advance",
-                payee_or_provider=provider, reference=reference,
-                note=(f"{service['display_name']} for {month_label(month)} paid to {provider} "
-                      f"by {payer['display_name']}" + ("" if amount == total
-                                                       else " (part payment)")),
-                timestamp=timestamp, expense_id=expense["expense_id"], actor=actor)
-        disbursement_id = new_id("svcdisb")
-        uow.furniture.insert_service_disbursement(
-            disbursement_id=disbursement_id, service_id=service["service_id"],
-            expense_id=expense["expense_id"], apartment_id=apartment_id, settlement_month=month,
-            amount_paise=amount, disbursed_at=disbursed_date, disbursement_reference=reference,
-            disbursed_by=disbursement_mode, funding_resident_id=funding_resident_id,
-            funding_payment_id=funding_payment_id, note=note, created_at=timestamp)
+            name = payer["display_name"]
+            open_charge = next((charge for charge in uow.furniture.resident_charges_for_expense(
+                expense["expense_id"], funding_resident_id) if charge["outstanding_paise"] > 0),
+                None)
+            share_paise = min(amount, open_charge["outstanding_paise"]) if open_charge else 0
+            extra_paise = amount - share_paise
+            if share_paise:
+                # Their own share goes through the kitty, as everyone else's does:
+                # a payment into it, and the kitty's payout of it to the provider.
+                share_payment_id = new_id("payment")
+                payments._record_payment(
+                    uow, apartment_id=apartment_id, payment_id=share_payment_id,
+                    payer_resident_id=funding_resident_id, amount_paise=share_paise,
+                    payment_date=disbursed_date, payment_kind="to_pool", payee_or_provider=None,
+                    reference=reference, note=f"{service['display_name']} for {month_label(month)}",
+                    timestamp=timestamp, expense_id=None, actor=actor,
+                    target_allocation_id=open_charge["allocation_id"])
+                written.append(dict(disbursement_id=_share_payout_id(share_payment_id),
+                                    amount_paise=share_paise, disbursed_by="pool",
+                                    funding_resident_id=None, funding_payment_id=None,
+                                    note=f"{name}'s allotted share via House Kitty"))
+            if extra_paise:
+                # Only what they paid beyond their share is an advance, which the
+                # kitty pays back out of what the others pay in.
+                funding_payment_id = new_id("furniture-payout")
+                payments._record_payment(
+                    uow, apartment_id=apartment_id, payment_id=funding_payment_id,
+                    payer_resident_id=funding_resident_id, amount_paise=extra_paise,
+                    payment_date=disbursed_date, payment_kind="provider_advance",
+                    payee_or_provider=provider, reference=reference,
+                    note=(f"Extra paid for {service['display_name']} ({month_label(month)}) "
+                          "to be reimbursed via House Kitty"),
+                    timestamp=timestamp, expense_id=expense["expense_id"], actor=actor)
+                written.append(dict(disbursement_id=new_id("svcdisb"), amount_paise=extra_paise,
+                                    disbursed_by="resident_advance",
+                                    funding_resident_id=funding_resident_id,
+                                    funding_payment_id=funding_payment_id,
+                                    note=note or (f"Extra above {name}'s share "
+                                                  "(reimbursable via House Kitty)")))
+        for tranche in written:
+            uow.furniture.insert_service_disbursement(
+                service_id=service["service_id"], expense_id=expense["expense_id"],
+                apartment_id=apartment_id, settlement_month=month, disbursed_at=disbursed_date,
+                disbursement_reference=reference, created_at=timestamp, **tranche)
         audit.record(uow, entity_type="household_service", entity_id=service["service_id"],
                      action="disburse", actor=actor, apartment_id=apartment_id,
                      new_value={"settlement_month": month, "expense_id": expense["expense_id"],
-                                "disbursement_id": disbursement_id, "amount_paise": amount,
-                                "total_paise": total, "remaining_paise": remaining - amount,
+                                "amount_paise": amount, "total_paise": total,
+                                "remaining_paise": remaining - amount,
                                 "disbursed_by": disbursement_mode, "disbursed_at": disbursed_date,
                                 "disbursement_reference": reference,
-                                "funding_resident_id": funding_resident_id,
-                                "funding_payment_id": funding_payment_id, "note": note})
+                                "funding_resident_id": funding_resident_id, "note": note,
+                                "tranches": [{key: tranche[key] for key in (
+                                    "disbursement_id", "amount_paise", "disbursed_by",
+                                    "funding_payment_id")} for tranche in written]})
         return _overview(uow, apartment_id, month)
 
 

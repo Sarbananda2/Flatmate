@@ -219,6 +219,16 @@ class FurnitureRentalRepository(Repository):
                 WHERE d.expense_id = %s
                 ORDER BY d.disbursed_at, d.row_seq""", (expense_id,))
 
+    def pool_disbursements_for_apartment(self, apartment_id: str) -> list[dict[str, Any]]:
+        """Every payout the kitty made to a service's provider, oldest first, with
+        the service it was for and the order it was recorded in."""
+        return self._s.fetch_all(
+            """SELECT d.*, d.row_seq AS seq, s.display_name, s.provider_name
+                 FROM service_disbursement d
+                 JOIN household_service s ON s.service_id = d.service_id
+                WHERE d.apartment_id = %s AND d.disbursed_by = 'pool'
+                ORDER BY d.disbursed_at, d.row_seq""", (apartment_id,))
+
     def insert_service_disbursement(self, *, disbursement_id: str, service_id: str,
                                     expense_id: str, apartment_id: str, settlement_month: str,
                                     amount_paise: int, disbursed_at: str,

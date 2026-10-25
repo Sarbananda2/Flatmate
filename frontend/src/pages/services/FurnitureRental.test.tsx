@@ -109,10 +109,24 @@ const billed = (overrides: Record<string, unknown> = {}) =>
     ...overrides,
   })
 
-/** Alice paying Furlenco the whole bill from her own account. */
+/** Alice paying Furlenco the whole bill from her own account: her own share through the kitty... */
+const ALICE_SHARE_VIA_KITTY = {
+  disbursement_id: 'svcdisb_payment-alice',
+  amount_paise: 56667,
+  disbursed_at: '2026-11-05',
+  disbursement_reference: 'UTR-4471',
+  disbursed_by: 'pool',
+  funding_resident_id: null,
+  funding_resident_name: null,
+  funding_payment_id: null,
+  note: "Alice's allotted share via House Kitty",
+  created_at: '2026-11-05T10:00:00+05:30',
+}
+
+/** ...and the extra beyond it, which the kitty pays back to her. */
 const ALICE_ADVANCE = {
   disbursement_id: 'svcdisb-1',
-  amount_paise: 220000,
+  amount_paise: 163333,
   disbursed_at: '2026-11-05',
   disbursement_reference: 'UTR-4471',
   disbursed_by: 'resident_advance',
@@ -142,7 +156,22 @@ const OWED_TO_ALICE = {
 const paidByAlice = (overrides: Record<string, unknown> = {}) =>
   billed({
     shares: [
-      share('alice', 'Alice', 56667, { paid_paise: 56667, status: 'funded_payout', paid_date: '2026-11-05' }),
+      share('alice', 'Alice', 56667, {
+        paid_paise: 56667,
+        settled_paise: 56667,
+        status: 'paid',
+        paid_date: '2026-11-05',
+        payments: [
+          {
+            payment_id: 'payment-alice',
+            payment_date: '2026-11-05',
+            amount_paise: 56667,
+            payment_mode: null,
+            reference: 'UTR-4471',
+            note: 'Furniture rental for November 2026',
+          },
+        ],
+      }),
       share('bob', 'Bob', 56667, {
         private_paise: 50000,
         private_items: ['Queen bed'],
@@ -178,7 +207,7 @@ const paidByAlice = (overrides: Record<string, unknown> = {}) =>
     payout_status: 'disbursed',
     disbursed_paise: 220000,
     remaining_disbursement_paise: 0,
-    disbursements: [ALICE_ADVANCE],
+    disbursements: [ALICE_SHARE_VIA_KITTY, ALICE_ADVANCE],
     reimbursement: OWED_TO_ALICE,
     ...overrides,
   })
@@ -465,8 +494,8 @@ describe('FurnitureRental', () => {
     await userEvent.click(within(panel).getByRole('button', { name: 'Pay now to Furlenco' }))
     const dialog = screen.getByRole('dialog', { name: 'Record Provider Payout' })
     expect(dialog).toHaveTextContent('November 2026 · ₹2,200.00 still owed to Furlenco')
-    expect(within(dialog).getByRole('radio', { name: /House Kitty/ })).toBeChecked()
-    expect(within(dialog).queryByLabelText(/^Paid by/)).toBeNull()
+    expect(within(dialog).getByRole('radio', { name: /^House Kitty/ })).toBeChecked()
+    expect(within(dialog).queryByRole('combobox', { name: /^Paid by/ })).toBeNull()
     expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('1066.67')
     const record = within(dialog).getByRole('button', { name: 'Record Payout' })
     expect(record).toBeDisabled()
@@ -494,12 +523,12 @@ describe('FurnitureRental', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Pay now to Furlenco' }))
     const dialog = screen.getByRole('dialog', { name: 'Record Provider Payout' })
     expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('2200.00')
-    await userEvent.click(within(dialog).getByRole('radio', { name: /Resident advance/ }))
+    await userEvent.click(within(dialog).getByRole('radio', { name: /Paid by a resident/ }))
     await userEvent.type(within(dialog).getByLabelText(/^Reference \/ UTR/), 'UTR-4471')
     const record = within(dialog).getByRole('button', { name: 'Record Payout' })
     expect(record).toBeDisabled()
     await waitFor(() => expect(within(dialog).getByRole('option', { name: 'Alice' })).toBeInTheDocument())
-    await userEvent.selectOptions(within(dialog).getByLabelText(/^Paid by/), 'alice')
+    await userEvent.selectOptions(within(dialog).getByRole('combobox', { name: /^Paid by/ }), 'alice')
     await userEvent.click(record)
 
     await waitFor(() => expect(sent('POST', '/api/services/furniture/disburse-payout')).toBeDefined())
@@ -519,8 +548,12 @@ describe('FurnitureRental', () => {
     const statement = screen.getByRole('dialog', { name: 'Provider Payout Statement' })
     expect(statement).toHaveTextContent('Furlenco · November 2026')
     expect(statement).toHaveTextContent('Total Bill₹2,200.00Paid to Provider₹2,200.00Still Owed₹0.00')
-    expect(within(statement).getByRole('row', { name: /UTR-4471/ })).toHaveTextContent(
-      '5 Nov 2026₹2,200.00Alice (advance)UTR-4471',
+    // Her own share went out of the kitty; only the extra is her advance.
+    expect(within(statement).getByRole('row', { name: /House Kitty/ })).toHaveTextContent(
+      "5 Nov 2026₹566.67House KittyUTR-4471Alice's allotted share via House Kitty",
+    )
+    expect(within(statement).getByRole('row', { name: /Alice \(advance\)/ })).toHaveTextContent(
+      '5 Nov 2026₹1,633.33Alice (advance)UTR-4471',
     )
   })
 
@@ -567,10 +600,10 @@ describe('FurnitureRental', () => {
     )
 
     const card = screen.getByRole('heading', { name: 'Reimbursement · Alice' }).closest('section')!
-    expect(card).toHaveTextContent('Fronted₹2,200.00')
-    expect(card).toHaveTextContent('Owed back₹1,633.33Less their own share of ₹566.67')
-    expect(card).toHaveTextContent('Paid back₹0.00₹1,633.33 still owed')
-    expect(card).toHaveTextContent('Kitty cash available₹1,366.67')
+    expect(card).toHaveTextContent('Total paid₹2,200.00Includes ₹566.67 allotted share')
+    expect(card).toHaveTextContent('Extra (reimbursable)₹1,633.33To be reimbursed via House Kitty')
+    expect(card).toHaveTextContent('Reimbursed so far₹0.00₹1,633.33 still owed')
+    expect(card).toHaveTextContent('Kitty cash available₹1,366.67Collected from other flatmates')
 
     await userEvent.click(within(card).getByRole('button', { name: 'Reimburse ₹1,366.67 from Kitty to Alice' }))
     const dialog = screen.getByRole('dialog', { name: 'Reimburse Alice' })
@@ -629,17 +662,16 @@ describe('FurnitureRental', () => {
     await userEvent.click(within(bob).getByRole('button', { name: 'Close dialog' }))
     expect(screen.queryByRole('dialog')).toBeNull()
 
-    // Alice paid Furlenco herself: her share is covered without anything into the kitty.
+    // Alice paid Furlenco herself: her own share went through the kitty, the rest is extra.
     await userEvent.click(within(shares).getByRole('row', { name: /Alice/ }))
     const alice = screen.getByRole('dialog', { name: 'Furniture Statement' })
-    expect(alice).toHaveTextContent('Paid into Kitty₹566.67Still Owed₹0.00Covered by paying Furlenco')
-    expect(alice).toHaveTextContent('Alice paid ₹2,200.00 to Furlenco directly this month, which covers their share.')
-    // The part of what she paid Furlenco that covered her share is listed as a payment.
-    const aliceHistory = within(alice).getByRole('table', { name: "Payments towards Alice's furniture share" })
-    expect(within(aliceHistory).getByRole('row', { name: /UTR-4471/ })).toHaveTextContent(
-      '5 Nov 2026₹566.67Direct to FurlencoUTR-4471',
+    expect(alice).toHaveTextContent('Paid into Kitty₹566.67Still Owed₹0.00')
+    expect(alice).toHaveTextContent(
+      'Alice paid an extra ₹1,633.33 beyond their allotted share of ₹566.67, which will be reimbursed via the House Kitty.',
     )
-    expect(alice).not.toHaveTextContent('No payments recorded yet for this month.')
+    const aliceHistory = within(alice).getByRole('table', { name: "Payments towards Alice's furniture share" })
+    expect(within(aliceHistory).getByRole('row', { name: /UTR-4471/ })).toHaveTextContent('5 Nov 2026₹566.67—UTR-4471')
+    expect(alice).not.toHaveTextContent(/Direct to/)
     await userEvent.click(within(alice).getByRole('button', { name: 'Close dialog' }))
 
     within(shares).getByRole('row', { name: /Chris/ }).focus()

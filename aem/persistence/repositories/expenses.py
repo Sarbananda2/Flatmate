@@ -185,7 +185,8 @@ class ExpensesRepository(Repository):
     def kitty_paid_expenses(self, apartment_id: str) -> list[dict[str, Any]]:
         """Expenses the house kitty paid for itself, oldest first, with the order
         recorded: no resident is their payer, no active advance funds them, and
-        they are not a month's rent, which is paid out by its own rent cycle."""
+        they are not a month's rent, which is paid out by its own rent cycle, nor
+        a household service's bill, whose payouts the kitty made are its own."""
         return self._s.fetch_all(
             """SELECT e.*, e.row_seq AS recorded_order
                  FROM expense_instance e
@@ -197,6 +198,8 @@ class ExpensesRepository(Repository):
                                      AND p.status = 'active')
                   AND NOT EXISTS (SELECT 1 FROM rent_cycle rc
                                    WHERE rc.expense_id = e.expense_id)
+                  AND NOT EXISTS (SELECT 1 FROM service_disbursement sd
+                                   WHERE sd.expense_id = e.expense_id)
                 ORDER BY e.expense_date, e.row_seq""",
             (apartment_id,))
 
