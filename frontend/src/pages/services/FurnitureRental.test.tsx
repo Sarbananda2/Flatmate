@@ -558,7 +558,7 @@ describe('FurnitureRental', () => {
       'Status',
       'Actions',
     ])
-    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('Alice₹566.67——Not paid into KittyPay Now')
+    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('Alice₹566.67——Paid FurlencoPay Now')
     expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent(
       'Bob₹1,066.67incl. ₹500.00 own₹1,066.67₹0.00PaidPay Now',
     )
