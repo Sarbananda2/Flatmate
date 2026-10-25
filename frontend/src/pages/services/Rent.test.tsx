@@ -392,10 +392,16 @@ describe('RentMonth', () => {
       expect(dialog).toHaveTextContent(
         'Alice paid ₹45,000.00 to the landlord directly this month, which covers their share.',
       )
+      expect(within(dialog).getByText('Paid into Kitty').parentElement).toHaveTextContent('₹15,000.00')
       expect(within(dialog).getByText('Still Owed').parentElement).toHaveTextContent(
-        'Covered by paying the landlord',
+        '₹0.00Covered by paying the landlord',
       )
-      expect(dialog).toHaveTextContent('No payments recorded yet for this month.')
+      // The part of what she paid the landlord that covered her share is listed as a payment.
+      const history = within(dialog).getByRole('table', { name: "Payments towards Alice's rent" })
+      expect(within(history).getByRole('row', { name: /Direct to Landlord/ })).toHaveTextContent(
+        '₹15,000.00Direct to Landlord',
+      )
+      expect(dialog).not.toHaveTextContent('No payments recorded yet for this month.')
     })
   })
 

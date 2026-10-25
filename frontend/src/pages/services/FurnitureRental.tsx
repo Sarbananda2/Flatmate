@@ -613,7 +613,7 @@ function ResidentCollectionPanel({
   // Who has paid what means something only once the bill is recorded.
   const billed = bill.expense != null
   const items: ResidentCollectionItem[] = bill.shares.map((share) => {
-    // Paying the provider directly covered their share: nothing is owed into the kitty.
+    // Paying the provider directly counts towards their share, as paying into the kitty does.
     const funded = share.status === 'funded_payout'
     const status: CollectionStatus | null =
       share.status === 'paid' || funded
@@ -636,7 +636,7 @@ function ResidentCollectionPanel({
             incl. <Rupees paise={share.private_paise} /> own
           </>
         ) : undefined,
-      paidIntoKittyPaise: billed ? share.settled_paise : null,
+      paidIntoKittyPaise: billed ? share.paid_paise : null,
       stillOwedPaise: billed ? share.outstanding_paise : null,
       status,
       canPay: billed && !isSettled(share),
@@ -1595,6 +1595,15 @@ function ReimburseDialog({
   )
 }
 
+/** One payment towards a share: into the kitty, or the part of a direct payment to the provider that covered it. */
+interface StatementEntry {
+  id: string
+  date: string
+  amount_paise: number
+  modeLabel: string | null
+  reference: string | null
+}
+
 /** One resident's share of the month: what they owe, and every payment towards it (Rule U7). */
 function FurnitureStatementModal({
   month,
@@ -1617,6 +1626,30 @@ function FurnitureStatementModal({
     .reduce((total, tranche) => total + tranche.amount_paise, 0)
   const modes = new Map(PAYMENT_MODES.map((mode) => [mode.value, mode.label]))
   const dash = <span className="text-[var(--text-tertiary)]">—</span>
+  const history: StatementEntry[] = share.payments.map((payment) => ({
+    id: payment.payment_id,
+    date: payment.payment_date,
+    amount_paise: payment.amount_paise,
+    modeLabel: payment.payment_mode ? (modes.get(payment.payment_mode) ?? null) : null,
+    reference: payment.reference,
+  }))
+  // What paying the provider directly covered of the share, tranche by tranche.
+  let advanceCover = Math.max(0, share.paid_paise - share.settled_paise)
+  for (const tranche of bill.disbursements) {
+    if (advanceCover <= 0) break
+    if (tranche.disbursed_by === 'resident_advance' && tranche.funding_resident_id === share.resident_id) {
+      const amount = Math.min(tranche.amount_paise, advanceCover)
+      advanceCover -= amount
+      history.push({
+        id: tranche.disbursement_id,
+        date: tranche.disbursed_at,
+        amount_paise: amount,
+        modeLabel: `Direct to ${provider}`,
+        reference: tranche.disbursement_reference,
+      })
+    }
+  }
+  history.sort((a, b) => a.date.localeCompare(b.date))
   return (
     <Modal
       title="Furniture Statement"
@@ -1630,7 +1663,7 @@ function FurnitureStatementModal({
             value={<Rupees paise={share.total_paise} />}
             note={share.private_paise > 0 ? `incl. ${formatInr(share.private_paise)} own items` : undefined}
           />
-          <MiniStat label="Paid into Kitty" value={billed ? <Rupees paise={share.settled_paise} /> : dash} />
+          <MiniStat label="Paid into Kitty" value={billed ? <Rupees paise={share.paid_paise} /> : dash} />
           <MiniStat
             label="Still Owed"
             value={billed ? <Rupees paise={share.outstanding_paise} /> : dash}
@@ -1641,8 +1674,7 @@ function FurnitureStatementModal({
         {advanced > 0 && (
           <Callout>
             {share.display_name} paid {formatInr(advanced)} to {provider} directly this month
-            {funded ? ', which covers their share' : ''}. It is credited to them as an advance, not as a
-            payment into the kitty, so it is not listed below.
+            {funded ? ', which covers their share' : ''}.
           </Callout>
         )}
 
@@ -1651,7 +1683,7 @@ function FurnitureStatementModal({
             <h3 className="m-0 text-sm font-bold text-[var(--text-primary)]">Payment History</h3>
             {share.status && <ShareStatus status={share.status} provider={provider} />}
           </div>
-          {share.payments.length === 0 ? (
+          {history.length === 0 ? (
             <EmptyBlock title="No payments recorded yet for this month." />
           ) : (
             <div className="overflow-x-auto min-w-0">
@@ -1666,17 +1698,15 @@ function FurnitureStatementModal({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-                  {share.payments.map((payment) => (
-                    <tr key={payment.payment_id} className="align-middle">
-                      <td className="py-2.5 pr-3 text-center tabular">{formatDate(payment.payment_date)}</td>
+                  {history.map((entry) => (
+                    <tr key={entry.id} className="align-middle">
+                      <td className="py-2.5 pr-3 text-center tabular">{formatDate(entry.date)}</td>
                       <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
-                        <Rupees paise={payment.amount_paise} />
+                        <Rupees paise={entry.amount_paise} />
                       </td>
-                      <td className="py-2.5 pr-3 text-center">
-                        {payment.payment_mode ? modes.get(payment.payment_mode) : dash}
-                      </td>
+                      <td className="py-2.5 pr-3 text-center">{entry.modeLabel ?? dash}</td>
                       <td className="py-2.5 text-center tabular break-all text-[var(--text-primary)]">
-                        {payment.reference || dash}
+                        {entry.reference || dash}
                       </td>
                     </tr>
                   ))}

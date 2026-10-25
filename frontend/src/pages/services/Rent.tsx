@@ -47,6 +47,7 @@ import type {
   Apartment,
   RentCollectionStatus,
   RentCycle,
+  RentDisbursement,
   RentDisbursementMode,
   RentDisbursementStatus,
   RentLeaseConfig,
@@ -237,6 +238,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                     (row) => row.resident_id === viewingStatement.resident_id,
                   ) ?? viewingStatement
                 }
+                disbursements={cycle.disbursements}
                 onClose={() => setViewingStatement(null)}
               />
             )}
@@ -356,9 +358,11 @@ function CyclePanel({
   // Rent is due by the landlord's due date; a share still owed after it is overdue.
   const overdue = overdueNotice(cycle.due_date)
   const items: ResidentCollectionItem[] = cycle.participants.map((participant) => {
-    // Paying the landlord directly covered their share: nothing is owed into the kitty.
     const funded = participant.collection_status === 'funded_payout'
     const settled = funded || participant.collection_status === 'paid'
+    // Paying the landlord directly counts towards their share, as paying into the kitty does.
+    const coveredPaise = Math.min(participant.share_paise, participant.settled_paise + participant.advanced_paise)
+    const stillOwedPaise = Math.max(0, participant.share_paise - coveredPaise)
     const status: CollectionStatus = settled
       ? 'paid'
       : participant.collection_status === 'partial'
@@ -369,9 +373,9 @@ function CyclePanel({
       name: participant.display_name,
       href: `/residents/${participant.resident_id}`,
       sharePaise: participant.share_paise,
-      paidIntoKittyPaise: participant.settled_paise,
-      stillOwedPaise: funded ? null : participant.outstanding_paise,
-      overdueNotice: !funded && participant.outstanding_paise > 0 && overdue ? overdue : undefined,
+      paidIntoKittyPaise: coveredPaise,
+      stillOwedPaise,
+      overdueNotice: stillOwedPaise > 0 && overdue ? overdue : undefined,
       status,
       canPay: !settled && participant.outstanding_paise > 0,
       onPay: () => onPay(participant),
@@ -698,23 +702,71 @@ function LandlordPanel({
 
 /* --------------------------------------------------- rent statement modal -- */
 
+/** One payment towards a share: into the kitty, or the part of a direct payment to the landlord that covered it. */
+interface StatementEntry {
+  id: string
+  date: string
+  amount_paise: number
+  modeLabel: string | null
+  reference: string | null
+}
+
 /** One resident's rent for the month: what they owe, and every payment towards it. */
 function RentStatementModal({
   month,
   dueDate,
   participant,
+  disbursements,
   onClose,
 }: {
   month: string
   dueDate: string | null
   participant: RentParticipant
+  disbursements: RentDisbursement[]
   onClose: () => void
 }) {
   const status = COLLECTION[participant.collection_status]
   const funded = participant.collection_status === 'funded_payout'
-  const overdue = !funded && participant.outstanding_paise > 0 ? overdueNotice(dueDate) : null
+  // Paying the landlord directly counts towards their share, as paying into the kitty does.
+  const coveredPaise = Math.min(participant.share_paise, participant.settled_paise + participant.advanced_paise)
+  const stillOwedPaise = Math.max(0, participant.share_paise - coveredPaise)
+  const overdue = stillOwedPaise > 0 ? overdueNotice(dueDate) : null
   const modes = new Map(PAYMENT_MODES.map((mode) => [mode.value, mode.label]))
   const dash = <span className="text-[var(--text-tertiary)]">—</span>
+  const history: StatementEntry[] = participant.payments.map((payment) => ({
+    id: payment.payment_id,
+    date: payment.payment_date,
+    amount_paise: payment.amount_paise,
+    modeLabel: payment.payment_mode ? (modes.get(payment.payment_mode) ?? null) : null,
+    reference: payment.reference,
+  }))
+  // What paying the landlord directly covered of the share, tranche by tranche.
+  let advanceCover = Math.max(0, coveredPaise - participant.settled_paise)
+  for (const tranche of disbursements) {
+    if (advanceCover <= 0) break
+    if (tranche.disbursed_by === 'resident_advance' && tranche.funding_resident_id === participant.resident_id) {
+      const amount = Math.min(tranche.amount_paise, advanceCover)
+      advanceCover -= amount
+      history.push({
+        id: tranche.disbursement_id,
+        date: tranche.disbursed_at,
+        amount_paise: amount,
+        modeLabel: 'Direct to Landlord',
+        reference: tranche.disbursement_reference,
+      })
+    }
+  }
+  if (advanceCover > 0) {
+    // An advance recorded before the month's payouts were kept as tranches.
+    history.push({
+      id: 'advance-cover',
+      date: participant.last_payment_date ?? `${month}-01`,
+      amount_paise: advanceCover,
+      modeLabel: 'Direct to Landlord',
+      reference: null,
+    })
+  }
+  history.sort((a, b) => a.date.localeCompare(b.date))
   return (
     <Modal
       title="Rent Statement"
@@ -724,10 +776,10 @@ function RentStatementModal({
       <div className="stack">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <MiniStat label="Share" value={<Rupees paise={participant.share_paise} />} />
-          <MiniStat label="Paid into Kitty" value={<Rupees paise={participant.settled_paise} />} />
+          <MiniStat label="Paid into Kitty" value={<Rupees paise={coveredPaise} />} />
           <MiniStat
             label="Still Owed"
-            value={funded ? dash : <Rupees paise={participant.outstanding_paise} />}
+            value={<Rupees paise={stillOwedPaise} />}
             note={
               funded ? (
                 'Covered by paying the landlord'
@@ -742,8 +794,7 @@ function RentStatementModal({
           <Callout>
             {participant.display_name} paid {formatInr(participant.advanced_paise)} to the
             landlord directly this month
-            {funded ? ', which covers their share' : ''}. It is credited to them as an
-            advance, not as a payment into the kitty, so it is not listed below.
+            {funded ? ', which covers their share' : ''}.
           </Callout>
         )}
 
@@ -759,7 +810,7 @@ function RentStatementModal({
               {status.label}
             </Pill>
           </div>
-          {participant.payments.length === 0 ? (
+          {history.length === 0 ? (
             <EmptyBlock title="No payments recorded yet for this month." />
           ) : (
             <div className="overflow-x-auto min-w-0">
@@ -776,19 +827,15 @@ function RentStatementModal({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-                  {participant.payments.map((payment) => (
-                    <tr key={payment.payment_id} className="align-middle">
-                      <td className="py-2.5 pr-3 text-center tabular">
-                        {formatDate(payment.payment_date)}
-                      </td>
+                  {history.map((entry) => (
+                    <tr key={entry.id} className="align-middle">
+                      <td className="py-2.5 pr-3 text-center tabular">{formatDate(entry.date)}</td>
                       <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
-                        <Rupees paise={payment.amount_paise} />
+                        <Rupees paise={entry.amount_paise} />
                       </td>
-                      <td className="py-2.5 pr-3 text-center">
-                        {payment.payment_mode ? modes.get(payment.payment_mode) : dash}
-                      </td>
+                      <td className="py-2.5 pr-3 text-center">{entry.modeLabel ?? dash}</td>
                       <td className="py-2.5 text-center tabular break-all text-[var(--text-primary)]">
-                        {payment.reference || dash}
+                        {entry.reference || dash}
                       </td>
                     </tr>
                   ))}
