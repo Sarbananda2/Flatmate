@@ -245,6 +245,13 @@ describe('RentMonth', () => {
     expect(screen.queryByRole('table', { name: 'Payments to the landlord' })).not.toBeInTheDocument()
   })
 
+  it('calls what residents have paid in the Kitty', async () => {
+    renderRent(overview())
+    const table = await screen.findByRole('table', { name: 'Rent shares and collection' })
+    expect(within(table).getByRole('columnheader', { name: 'Paid into Kitty' })).toBeInTheDocument()
+    expect(within(table).queryByRole('columnheader', { name: /pool/i })).toBeNull()
+  })
+
   it('offers no HRA slip to residents who have paid', async () => {
     renderRent(overview())
     const table = await screen.findByRole('table', { name: 'Rent shares and collection' })
@@ -309,7 +316,7 @@ describe('RentMonth', () => {
       const dialog = await screen.findByRole('dialog', { name: 'Rent Statement' })
       expect(dialog).toHaveTextContent('Chris · October 2026')
       expect(within(dialog).getByText('Share').parentElement).toHaveTextContent('₹15,000.00')
-      expect(within(dialog).getByText('Paid to Pool').parentElement).toHaveTextContent('₹9,000.00')
+      expect(within(dialog).getByText('Paid into Kitty').parentElement).toHaveTextContent('₹9,000.00')
       expect(within(dialog).getByText('Still Owed').parentElement).toHaveTextContent('₹6,000.00')
 
       const history = within(dialog).getByRole('region', { name: 'Payment history' })
@@ -455,7 +462,7 @@ describe('RentMonth', () => {
     }
   })
 
-  it('shows where to pay the household pool, or where to add its details', async () => {
+  it('shows where to pay the House Kitty, or where to add its details', async () => {
     const apartment: Apartment = {
       apartment_id: 'home',
       name: 'Flat 402',
@@ -595,6 +602,7 @@ describe('RentMonth', () => {
     const confirm = within(dialog).getByRole('button', { name: 'Record Payout' })
     expect(confirm).toBeDisabled()
     await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), '329188401928')
+    expect(within(dialog).getByRole('option', { name: 'House Kitty (direct transfer)' })).toBeInTheDocument()
     await userEvent.selectOptions(
       within(dialog).getByLabelText(/Who funded this payout/),
       'resident_advance',

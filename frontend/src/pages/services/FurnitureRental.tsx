@@ -1695,7 +1695,7 @@ function FurnitureStatementModal({
           <MiniStat
             label="Share"
             value={<Rupees paise={share.total_paise} />}
-            note={share.private_paise > 0 ? `incl. ${formatInr(share.private_paise)} own items` : 'Shared items split'}
+            note={share.private_paise > 0 ? `incl. ${formatInr(share.private_paise)} own items` : undefined}
           />
           <MiniStat label="Paid into Kitty" value={billed && !funded ? <Rupees paise={share.settled_paise} /> : dash} />
           <MiniStat

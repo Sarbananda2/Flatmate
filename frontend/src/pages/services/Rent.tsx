@@ -354,7 +354,7 @@ function CyclePanel({
     <Panel
       title="Resident Collection"
       icon={<Users className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="What each resident owes for this month's rent, and how much of it has reached the pool."
+      hint="What each resident owes for this month's rent, and how much of it has been collected into the House Kitty."
     >
 
       {!cycle.matches_lease_rent && (
@@ -371,7 +371,7 @@ function CyclePanel({
             <tr className={TABLE_HEAD}>
               <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-center">Resident</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Share</th>
-              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid to pool</th>
+              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid into Kitty</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still owed</th>
               <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
               <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Actions</th>
@@ -798,7 +798,7 @@ function RentStatementModal({
       <div className="stack">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <MiniStat label="Share" value={<Rupees paise={participant.share_paise} />} />
-          <MiniStat label="Paid to Pool" value={<Rupees paise={participant.settled_paise} />} />
+          <MiniStat label="Paid into Kitty" value={<Rupees paise={participant.settled_paise} />} />
           <MiniStat
             label="Still Owed"
             value={funded ? dash : <Rupees paise={participant.outstanding_paise} />}
@@ -817,7 +817,7 @@ function RentStatementModal({
             {participant.display_name} paid {formatInr(participant.advanced_paise)} to the
             landlord directly this month
             {funded ? ', which covers their share' : ''}. It is credited to them as an
-            advance, not as a payment to the pool, so it is not listed below.
+            advance, not as a payment into the kitty, so it is not listed below.
           </Callout>
         )}
 
@@ -1014,7 +1014,7 @@ function RentPaymentModal({
       }),
     { onSuccess: onRecorded },
   )
-  // Every payment into the pool carries the bank's or UPI app's transaction ID.
+  // Every payment into the kitty carries the bank's or UPI app's transaction ID.
   const valid = amountOk && amountPaise > 0 && Boolean(date) && Boolean(reference.trim())
 
   return (
@@ -1040,7 +1040,7 @@ function RentPaymentModal({
     >
       <div className="stack">
         {record.error && <ErrorNotice error={record.error} />}
-        {/* Residents pay their share into the household pool. */}
+        {/* Residents pay their share into the House Kitty. */}
         <TransferDestination
           name={apartment?.pool_name || 'House Kitty'}
           amountPaise={amountOk ? amountPaise : null}
@@ -1049,7 +1049,7 @@ function RentPaymentModal({
           upiId={apartment?.pool_upi_id}
           missing={
             <>
-              No bank account or UPI ID is recorded for the household pool.{' '}
+              No bank account or UPI ID is recorded for the House Kitty.{' '}
               <Link to="/payments" className="font-semibold">
                 Add them on Payment Pools
               </Link>
@@ -1223,7 +1223,7 @@ function PayoutModal({
             label="Who funded this payout?"
             value={mode}
             options={[
-              { value: 'pool', label: 'Apartment pool (direct transfer)' },
+              { value: 'pool', label: 'House Kitty (direct transfer)' },
               { value: 'resident_advance', label: 'A resident paid on the household’s behalf' },
             ]}
             onChange={setMode}
