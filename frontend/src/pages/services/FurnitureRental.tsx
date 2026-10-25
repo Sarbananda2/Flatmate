@@ -776,12 +776,12 @@ function ProviderPayoutPanel({
           <caption className="sr-only">The furniture bill owed to {provider}</caption>
           <thead>
             <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-center">Provider / Subscription</th>
+              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-left">Provider / Subscription</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Total Bill</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid to Provider</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still Owed</th>
               <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
-              <th scope="col" className="w-[15%] pb-3 font-bold text-center">Actions</th>
+              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -837,7 +837,8 @@ function ProviderPayoutPanel({
                 )}
               </td>
               <td className="py-3 text-center whitespace-nowrap">
-                {/* Always there; off until the bill is recorded and once the provider is paid in full. */}
+                {/* Always there, as on each resident's row; off until the bill is
+                    recorded and once the provider is paid in full. */}
                 <button
                   type="button"
                   className={BUTTON_SECONDARY}
@@ -846,9 +847,10 @@ function ProviderPayoutPanel({
                     event.stopPropagation()
                     onPayout()
                   }}
+                  aria-label={`Pay now to ${provider}`}
                 >
                   <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  Record Provider Payout
+                  Pay Now
                 </button>
               </td>
             </tr>

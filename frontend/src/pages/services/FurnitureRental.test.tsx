@@ -456,11 +456,13 @@ describe('FurnitureRental', () => {
       'Status',
       'Actions',
     ])
+    // Over the provider's avatar and name, as Resident is over each resident's.
+    expect(within(panel).getByRole('columnheader', { name: 'Provider / Subscription' })).toHaveClass('text-left')
     expect(within(panel).getByRole('row', { name: /Furlenco/ })).toHaveTextContent(
-      'FurlencoCustomer FUR-2291₹2,200.00₹0.00₹2,200.00UnpaidRecord Provider Payout',
+      'FurlencoCustomer FUR-2291₹2,200.00₹0.00₹2,200.00UnpaidPay Now',
     )
 
-    await userEvent.click(within(panel).getByRole('button', { name: 'Record Provider Payout' }))
+    await userEvent.click(within(panel).getByRole('button', { name: 'Pay now to Furlenco' }))
     const dialog = screen.getByRole('dialog', { name: 'Record Provider Payout' })
     expect(dialog).toHaveTextContent('November 2026 · ₹2,200.00 still owed to Furlenco')
     expect(within(dialog).getByRole('radio', { name: /House Kitty/ })).toBeChecked()
@@ -489,7 +491,7 @@ describe('FurnitureRental', () => {
     show(overview({ month: billed() }), {
       'POST /api/services/furniture/disburse-payout': overview({ month: paidByAlice() }),
     })
-    await userEvent.click(await screen.findByRole('button', { name: 'Record Provider Payout' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Pay now to Furlenco' }))
     const dialog = screen.getByRole('dialog', { name: 'Record Provider Payout' })
     expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('2200.00')
     await userEvent.click(within(dialog).getByRole('radio', { name: /Resident advance/ }))
@@ -512,7 +514,7 @@ describe('FurnitureRental', () => {
   it('opens the payout statement from the provider row', async () => {
     show(overview({ month: paidByAlice() }))
     const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
-    expect(within(panel).getByRole('button', { name: 'Record Provider Payout' })).toBeDisabled()
+    expect(within(panel).getByRole('button', { name: 'Pay now to Furlenco' })).toBeDisabled()
     expect(panel).toHaveTextContent('A resident who paid Furlenco directly is credited what they paid')
     await userEvent.click(within(panel).getByRole('row', { name: /Furlenco/ }))
     const statement = screen.getByRole('dialog', { name: 'Provider Payout Statement' })
@@ -669,7 +671,7 @@ describe('FurnitureRental', () => {
 
   it('offers the House Kitty, never the pool, as where a payout came from', async () => {
     show(overview({ month: billed() }))
-    await userEvent.click(await screen.findByRole('button', { name: 'Record Provider Payout' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Pay now to Furlenco' }))
     const dialog = screen.getByRole('dialog', { name: 'Record Provider Payout' })
     expect(dialog).toHaveTextContent('House Kitty')
     expect(document.body).not.toHaveTextContent(/pool/i)
