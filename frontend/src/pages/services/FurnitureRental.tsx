@@ -636,7 +636,7 @@ function ResidentCollectionPanel({
             incl. <Rupees paise={share.private_paise} /> own
           </>
         ) : undefined,
-      paidIntoKittyPaise: billed && !funded ? share.settled_paise : null,
+      paidIntoKittyPaise: billed ? share.settled_paise : null,
       stillOwedPaise: billed && !funded ? share.outstanding_paise : null,
       status,
       canPay: billed && !isSettled(share),
@@ -1630,7 +1630,7 @@ function FurnitureStatementModal({
             value={<Rupees paise={share.total_paise} />}
             note={share.private_paise > 0 ? `incl. ${formatInr(share.private_paise)} own items` : undefined}
           />
-          <MiniStat label="Paid into Kitty" value={billed && !funded ? <Rupees paise={share.settled_paise} /> : dash} />
+          <MiniStat label="Paid into Kitty" value={billed ? <Rupees paise={share.settled_paise} /> : dash} />
           <MiniStat
             label="Still Owed"
             value={billed && !funded ? <Rupees paise={share.outstanding_paise} /> : dash}
