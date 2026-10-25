@@ -392,44 +392,43 @@ describe('FurnitureRental', () => {
     expect(within(table).getByRole('row', { name: /Desk/ })).toHaveTextContent('Awaiting deliveryDue 2 Dec 2026')
   })
 
-  it("splits the month's bill and records it", async () => {
-    show(overview())
+  it("shows the month's split before it begins, with no bill to record by hand", async () => {
+    show(overview({ month: bill({ bill_state: 'upcoming', can_generate: false }) }))
     const shares = await screen.findByRole('table', { name: 'Shares for November 2026' })
-    // Before the bill is recorded there is nothing to pay in yet.
+    // Before the month bills there is nothing to pay in yet.
     expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent('Bob₹1,066.67incl. ₹500.00 own———')
     expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Chris₹566.66———')
     expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeDisabled()
     expect(screen.getByText('3 taking part · 2 paise over')).toBeInTheDocument()
-
-    await userEvent.click(screen.getByRole('button', { name: 'Record November 2026 bill' }))
-    const dialog = screen.getByRole('dialog', { name: 'Record the November 2026 bill' })
-    expect(dialog).toHaveTextContent('₹2,200.00 as one expense')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Record bill' }))
-    await waitFor(() => expect(sent('POST', '/api/services/furniture/generate-cycle')).toBeDefined())
-    expect(sent('POST', '/api/services/furniture/generate-cycle')!.body).toEqual({ settlement_month: MONTH })
+    // An open month bills by itself, and follows its items: there is nothing to record.
+    expect(screen.queryByRole('button', { name: /Record November 2026 bill/ })).toBeNull()
+    expect(screen.queryByText('Not billed yet.')).toBeNull()
+    expect(sent('POST', '/api/services/furniture/generate-cycle')).toBeUndefined()
   })
 
-  it('says when the month is already billed, or cannot be', async () => {
-    const { unmount } = show(
-      overview({
-        month: bill({
-          expense: { expense_id: 'furniture-1', description: 'Furniture rental for November 2026', amount_paise: 220000, statement_id: null },
-          can_generate: false,
-        }),
-      }),
-    )
+  it('shows a live bill with its statuses, or says why the month cannot be billed', async () => {
+    const { unmount } = show(overview({ month: billed({ bill_state: 'live' }) }))
     // The recorded bill shows each share's status instead of a footer saying it is billed.
     const shares = await screen.findByRole('table', { name: 'Shares for November 2026' })
     expect(within(shares).getByRole('columnheader', { name: 'Status' })).toBeInTheDocument()
+    expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeEnabled()
     expect(screen.queryByRole('link', { name: 'View in Expenses' })).toBeNull()
     expect(screen.queryByText('Billed')).toBeNull()
     expect(screen.queryByRole('button', { name: /Record November 2026 bill/ })).toBeNull()
     unmount()
     stub?.restore()
 
-    show(overview({ month: bill({ blocked_reason: 'Bob has a rented item of their own but is not taking part this month.', can_generate: false }) }))
+    show(
+      overview({
+        month: bill({
+          blocked_reason: 'Bob has a rented item of their own but is not taking part this month.',
+          can_generate: false,
+          bill_state: 'not_billed',
+        }),
+      }),
+    )
     expect(await screen.findByText(/Bob has a rented item of their own/)).toHaveAttribute('role', 'status')
-    expect(screen.getByRole('button', { name: 'Record November 2026 bill' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /Record November 2026 bill/ })).toBeNull()
   })
 
   it('adds an item charged to one resident', async () => {

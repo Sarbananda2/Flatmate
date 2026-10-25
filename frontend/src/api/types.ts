@@ -1505,6 +1505,12 @@ export interface FurnitureMonthBill {
   expense: { expense_id: string; description: string; amount_paise: number; statement_id: string | null } | null
   statement_status: StatementStatus | null
   can_generate: boolean
+  /**
+   * 'live': recorded, and following its items while the month is open;
+   * 'frozen': the month is over or its statement finalized, so the bill is its snapshot;
+   * 'upcoming': the month has not begun; 'not_billed': nothing to bill.
+   */
+  bill_state?: 'live' | 'frozen' | 'upcoming' | 'not_billed'
   /** Paid into the kitty against the bill, plus what paying the provider covered of a resident's own share. */
   collected_paise: number
   /** Residents whose share is covered in full. */

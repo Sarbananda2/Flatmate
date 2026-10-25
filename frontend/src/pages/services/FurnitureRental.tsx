@@ -204,7 +204,6 @@ type Dialog =
   | { kind: 'edit'; item: FurnitureItem }
   | { kind: 'return'; item: FurnitureItem }
   | { kind: 'remove'; item: FurnitureItem }
-  | { kind: 'generate'; bill: FurnitureMonthBill }
   | { kind: 'provider_payout'; bill: FurnitureMonthBill; payout: FurnitureProviderPayout }
   | { kind: 'payout_statement'; payout: FurnitureProviderPayout }
   | { kind: 'reimburse'; reimbursement: FurnitureReimbursement }
@@ -287,7 +286,6 @@ export function FurnitureRental({ month }: { month: string }) {
                     <ResidentCollectionPanel
                       month={month}
                       bill={data.month}
-                      onGenerate={(bill) => setDialog({ kind: 'generate', bill })}
                       onViewShare={(share) => setDialog({ kind: 'share_detail', share, bill: data.month! })}
                       onPayShare={(share) => setDialog({ kind: 'pay_share', share })}
                     />
@@ -389,16 +387,6 @@ export function FurnitureRental({ month }: { month: string }) {
               item={dialog.item}
               onClose={() => setDialog(null)}
               onRemoved={() => done('Item removed', dialog.item.name)}
-            />
-          )}
-          {dialog?.kind === 'generate' && (
-            <GenerateDialog
-              month={month}
-              bill={dialog.bill}
-              onClose={() => setDialog(null)}
-              onDone={() =>
-                done(`${formatMonth(month)} furniture bill recorded`, formatInr(dialog.bill.total_paise))
-              }
             />
           )}
           {dialog?.kind === 'provider_payout' && (
@@ -670,18 +658,16 @@ function Metrics({ bill, billingDay }: { bill: FurnitureMonthBill; billingDay: n
 function ResidentCollectionPanel({
   month,
   bill,
-  onGenerate,
   onViewShare,
   onPayShare,
 }: {
   month: string
   bill: FurnitureMonthBill
-  onGenerate: (bill: FurnitureMonthBill) => void
   onViewShare: (share: FurnitureShare) => void
   onPayShare: (share: FurnitureShare) => void
 }) {
-  const finalized = bill.statement_status != null && bill.statement_status !== 'draft'
-  // Who has paid what means something only once the bill is recorded.
+  // Who has paid what means something only once the bill is recorded, which an
+  // open month is by itself as soon as it has anything to bill.
   const billed = bill.expense != null
   const items: ResidentCollectionItem[] = bill.shares.map((share) => {
     const funded = share.status === 'funded_payout'
@@ -730,29 +716,6 @@ function ResidentCollectionPanel({
         <EmptyBlock title="No residents are taking part in furniture rental." />
       ) : (
         <ResidentCollectionTable caption={`Shares for ${formatMonth(month)}`} items={items} />
-      )}
-
-      {!billed && (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {finalized ? (
-            <span className="text-xs text-[var(--text-secondary)]">
-              The {formatMonth(month)} statement has been finalized, so this month can no longer be billed.
-            </span>
-          ) : (
-            <>
-              <span className="text-xs text-[var(--text-secondary)]">Not billed yet.</span>
-              <button
-                type="button"
-                className={BUTTON_PRIMARY}
-                disabled={!bill.can_generate}
-                onClick={() => onGenerate(bill)}
-                aria-label={`Record ${formatMonth(month)} bill`}
-              >
-                Record {formatMonth(month)} bill
-              </button>
-            </>
-          )}
-        </div>
       )}
     </Panel>
   )
@@ -1392,46 +1355,8 @@ function RemoveDialog({ item, onClose, onRemoved }: { item: FurnitureItem; onClo
       <form id="furniture-remove" className="stack" onSubmit={submitWith(() => void remove.run(undefined))}>
         <ErrorNotice error={remove.error} />
         <p className="m-0 text-sm text-[var(--text-secondary)]">
-          Bills already recorded keep the items behind them in their notes.
+          This month's bill drops it. Months already closed keep the items behind them in their notes.
         </p>
-      </form>
-    </Modal>
-  )
-}
-
-function GenerateDialog({
-  month,
-  bill,
-  onClose,
-  onDone,
-}: {
-  month: string
-  bill: FurnitureMonthBill
-  onClose: () => void
-  onDone: () => void
-}) {
-  const generate = useMutation(() => api.post(`${BASE}/generate-cycle`, { settlement_month: month }), {
-    onSuccess: onDone,
-  })
-  return (
-    <Modal
-      title={`Record the ${formatMonth(month)} bill`}
-      description={`${formatInr(bill.total_paise)} as one expense for ${formatMonth(month)}, charged as shown. A month is billed once.`}
-      onClose={onClose}
-      footer={
-        <DialogFooter onClose={onClose} pending={generate.pending} label="Record bill" form="furniture-generate" />
-      }
-    >
-      <form id="furniture-generate" className="stack" onSubmit={submitWith(() => void generate.run(undefined))}>
-        <ErrorNotice error={generate.error} />
-        <ul className="m-0 p-0 list-none space-y-1.5 text-sm">
-          {bill.shares.map((share) => (
-            <li key={share.resident_id} className="flex justify-between gap-3">
-              <span>{share.display_name}</span>
-              <Rupees paise={share.total_paise} />
-            </li>
-          ))}
-        </ul>
       </form>
     </Modal>
   )

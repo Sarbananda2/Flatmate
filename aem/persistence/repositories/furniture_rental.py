@@ -171,10 +171,48 @@ class FurnitureRentalRepository(Repository):
                            settlement_month: str) -> list[dict[str, Any]]:
         """Expenses recorded under the definition for a settlement month."""
         return self._s.fetch_all(
-            """SELECT expense_id, description, amount_paise, statement_id, payer_resident_id
+            """SELECT expense_id, description, amount_paise, statement_id, payer_resident_id,
+                      notes, provider_name, settlement_period
                  FROM expense_instance
                 WHERE apartment_id=%s AND expense_definition_id=%s AND settlement_period=%s
                 ORDER BY row_seq""", (apartment_id, definition_id, settlement_month))
+
+    def bill_months(self, apartment_id: str, definition_id: str) -> list[str]:
+        """Every month a furniture bill is recorded for, oldest first."""
+        return [row["settlement_period"] for row in self._s.fetch_all(
+            """SELECT DISTINCT settlement_period FROM expense_instance
+                WHERE apartment_id=%s AND expense_definition_id=%s
+                  AND settlement_period IS NOT NULL
+                ORDER BY settlement_period""", (apartment_id, definition_id))]
+
+    def allocations_for_expense(self, expense_id: str) -> list[dict[str, Any]]:
+        """Each resident's charge row on a bill, with what has been paid against it."""
+        return self._s.fetch_all(
+            """SELECT a.allocation_id, a.component_id, a.resident_id, a.amount_paise,
+                      a.allocation_basis_json,
+                      COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
+                                 WHERE pa.allocation_id = a.allocation_id), 0)::BIGINT
+                          AS settled_paise
+                 FROM allocation a WHERE a.expense_id = %s ORDER BY a.row_seq""",
+            (expense_id,))
+
+    def update_allocation(self, allocation_id: str, *, amount_paise: int,
+                          allocation_basis_json: str) -> int:
+        """Change a charge in place, so the payments applied to it stay with it."""
+        return self._s.execute(
+            "UPDATE allocation SET amount_paise=%s, allocation_basis_json=%s "
+            "WHERE allocation_id=%s", (amount_paise, allocation_basis_json, allocation_id))
+
+    def delete_allocation(self, allocation_id: str) -> int:
+        return self._s.execute("DELETE FROM allocation WHERE allocation_id=%s", (allocation_id,))
+
+    def update_bill(self, expense_id: str, *, amount_paise: int, notes: str,
+                    provider_name: str, updated_at: str) -> int:
+        """A live bill following its items: the total, the items behind it, the providers."""
+        return self._s.execute(
+            """UPDATE expense_instance SET amount_paise=%s, notes=%s, provider_name=%s,
+                   updated_at=%s WHERE expense_id=%s""",
+            (amount_paise, notes, provider_name, updated_at, expense_id))
 
     def statement_for_month(self, apartment_id: str,
                             settlement_month: str) -> dict[str, Any] | None:

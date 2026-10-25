@@ -31,10 +31,11 @@ others paid in for the bill -- as a ``refund``.
 from __future__ import annotations
 
 import calendar
+import json
 from datetime import date
 from typing import Any, Mapping, Sequence
 
-from ..errors import ConflictError, NotFoundError, ValidationError
+from ..errors import AemError, ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, format_inr
 from ..periods import month_end, normalize_month, parse_iso_date
@@ -170,17 +171,24 @@ def _public_item(item: Mapping[str, Any]) -> dict[str, Any]:
 # -------------------------------------------------------- the month's bill --
 
 def _month_bill(uow: UnitOfWork, apartment_id: str, items: list[dict[str, Any]], month: str,
-                excluded_resident_ids: Sequence[str] | None = None) -> dict[str, Any]:
-    """What `month` would bill, and to whom. Nothing is written."""
+                excluded_resident_ids: Sequence[str] | None = None, *,
+                include_resident_ids: Sequence[str] | None = None) -> dict[str, Any]:
+    """What `month` would bill, and to whom. Nothing is written.
+
+    The active residents take part, less those excluded. ``include_resident_ids``
+    keeps residents already on the month's bill taking part after they move out:
+    nothing prorates, so a month they were in is theirs in full.
+    """
     residents = list_residents(uow, apartment_id)
     names = {row["resident_id"]: row["display_name"] for row in residents}
     active = sorted(row["resident_id"] for row in residents if row["is_active"])
+    included = sorted({str(rid) for rid in (include_resident_ids or [])} & set(names))
     excluded = sorted({str(rid) for rid in (excluded_resident_ids or [])})
     unknown = sorted(set(excluded) - set(names))
     if unknown:
         raise ValidationError("excluded_resident_ids must all be residents of this apartment.",
                               details={"field": "excluded_resident_ids", "unknown": unknown})
-    participants = [rid for rid in active if rid not in excluded]
+    participants = [rid for rid in sorted(set(active) | set(included)) if rid not in excluded]
 
     billable = [item for item in items if is_billable(item, month)]
     common = [item for item in billable if item["allocation_scope"] == "common"]
@@ -227,6 +235,7 @@ def _month_bill(uow: UnitOfWork, apartment_id: str, items: list[dict[str, Any]],
         "private_total_paise": private_total,
         "total_paise": common_total + private_total,
         "participant_count": count,
+        "participants": participants,
         "base_share_paise": base,
         "remainder_paise": remainder,
         "shares": shares,
@@ -488,6 +497,8 @@ def _attach_funding(uow: UnitOfWork, apartment_id: str, bill: dict[str, Any],
         status = _share_status(owed, paid, advanced)
         covered = min(owed, paid + advanced)
         share.update(
+            # What they are charged, as recorded: share = paid + still owed, always.
+            total_paise=owed,
             paid_paise=covered, settled_paise=paid, outstanding_paise=owed - covered,
             status=status,
             paid_date=(funding["advanced_on"][rid] if status == "funded_payout"
@@ -498,17 +509,266 @@ def _attach_funding(uow: UnitOfWork, apartment_id: str, bill: dict[str, Any],
                                                  funding["tranches"])
 
 
+# ------------------------------------------------------------ the live bill --
+#
+# A month's bill is recorded as soon as the month has anything in the flat to
+# bill, and follows its items -- added, changed, returned or removed, from any
+# provider -- for as long as the month is open. It freezes for good when the
+# month is over, or sooner if the month's statement is finalized: that is the
+# month's snapshot. A future month is only a preview until it begins, and a
+# month before furniture rental was set up is not billed by itself.
+
+def _current_month() -> str:
+    return _today()[:7]
+
+
+def _bill_is_live(month: str, statement: Mapping[str, Any] | None) -> bool:
+    """Whether a recorded bill still follows its items."""
+    return month >= _current_month() and (statement is None or statement["status"] == "draft")
+
+
+def _bill_basis(bill: Mapping[str, Any], excluded: Sequence[str]) -> dict[str, Any]:
+    """Kept with each charge: what the bill is made of, and who is on it."""
+    return {"method": "custom", "source": SERVICE_TYPE,
+            "common_total_paise": bill["common_total_paise"],
+            "private_total_paise": bill["private_total_paise"],
+            "participants": list(bill["participants"]),
+            "excluded_resident_ids": sorted(excluded)}
+
+
+def _stored_basis(allocations: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    for row in allocations:
+        if row.get("allocation_basis_json"):
+            try:
+                return json.loads(row["allocation_basis_json"])
+            except ValueError:
+                return {}
+    return {}
+
+
+def _billing_providers(services: Sequence[Mapping[str, Any]],
+                       bill: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Every provider with something in the flat this month, or the first one."""
+    return [svc for svc in services
+            if any(item["service_id"] == svc["service_id"] for item in bill["billable_items"])] \
+        or list(services[:1])
+
+
+def _record_bill(uow: UnitOfWork, apartment_id: str, month: str, bill: Mapping[str, Any],
+                 excluded: Sequence[str], services: Sequence[Mapping[str, Any]],
+                 definition_id: str, statement: Mapping[str, Any] | None, timestamp: str,
+                 actor: str) -> str:
+    """Write the month's bill as one expense; returns its ID."""
+    billing = _billing_providers(services, bill)
+    due_dates = sorted(_billing_date(month, svc["billing_day_of_month"])
+                       for svc in billing if svc["billing_day_of_month"])
+    allocations = {row["resident_id"]: 0 for row in list_residents(uow, apartment_id)}
+    allocations.update({row["resident_id"]: row["total_paise"] for row in bill["shares"]})
+    expense_id = new_id("furniture")
+    expenses._create_expense(
+        uow, apartment_id=apartment_id, expense_id=expense_id,
+        description=f"{services[0]['display_name']} for {month_label(month)}",
+        amount_paise=bill["total_paise"], expense_date=f"{month}-01",
+        allocation_method="custom", allocations_paise=allocations,
+        allocation_basis=_bill_basis(bill, excluded),
+        provider_name=", ".join(dict.fromkeys(
+            _provider_name(svc, uow.furniture.config(svc["service_id"])) for svc in billing)),
+        expense_definition_id=definition_id,
+        statement_id=statement["statement_id"] if statement else None,
+        period_rule="current_month", service_period=month, settlement_period=month,
+        due_date=due_dates[0] if due_dates else None,
+        notes=_bill_notes(bill), created_at=timestamp, actor=actor)
+    audit.record(uow, entity_type="household_service", entity_id=services[0]["service_id"],
+                 action="generate", actor=actor, apartment_id=apartment_id,
+                 new_value={"settlement_month": month, "expense_id": expense_id,
+                            "total_paise": bill["total_paise"],
+                            "common_total_paise": bill["common_total_paise"],
+                            "private_total_paise": bill["private_total_paise"]})
+    return expense_id
+
+
+def _sync_problem(uow: UnitOfWork, expense: Mapping[str, Any], bill: Mapping[str, Any],
+                  allocations: Sequence[Mapping[str, Any]]) -> AemError | None:
+    """Why the recorded bill cannot follow its items as they now stand, if it cannot:
+    nobody is paid back, and no provider handed back, by a bill going down."""
+    month = bill["settlement_month"]
+    paid = sum(row["settled_paise"] for row in allocations)
+    tranches = uow.furniture.service_disbursements(expense["expense_id"])
+    advances = uow.furniture.linked_advance_total_paise(expense["expense_id"])
+    if not bill["billable_items"]:
+        if paid or tranches or advances:
+            return ConflictError(
+                "Payments or provider payouts have already been recorded for this month's "
+                "furniture bill, so its last billable item cannot be removed.",
+                code="furniture_bill_has_payments",
+                details={"settlement_month": month, "expense_id": expense["expense_id"]})
+        return None
+    if bill["blocked_reason"]:
+        return ValidationError(bill["blocked_reason"], code="furniture_bill_blocked",
+                               details={"settlement_month": month})
+    shares = {row["resident_id"]: row["total_paise"] for row in bill["shares"]}
+    settled: dict[str, int] = {}
+    for row in allocations:
+        settled[row["resident_id"]] = settled.get(row["resident_id"], 0) + row["settled_paise"]
+    names = {row["resident_id"]: row["display_name"] for row in bill["shares"]}
+    for rid, amount in sorted(settled.items()):
+        if amount > shares.get(rid, 0):
+            name = names.get(rid, rid)
+            return ConflictError(
+                f"{name} has already paid {format_inr(amount)} towards the "
+                f"{month_label(month)} furniture bill, more than this would leave their share "
+                f"at ({format_inr(shares.get(rid, 0))}).", code="furniture_share_below_paid",
+                details={"resident_id": rid, "settled_paise": amount,
+                         "share_paise": shares.get(rid, 0)})
+    totals: dict[str, int] = {}
+    for item in bill["billable_items"]:
+        totals[item["service_id"]] = totals.get(item["service_id"], 0) + item["monthly_rent_paise"]
+    paid_out: dict[str, int] = {}
+    for tranche in tranches:
+        paid_out[tranche["service_id"]] = (paid_out.get(tranche["service_id"], 0)
+                                           + tranche["amount_paise"])
+    for service_id, amount in sorted(paid_out.items()):
+        if amount > totals.get(service_id, 0):
+            provider = next((t["provider_name"] for t in tranches
+                             if t["service_id"] == service_id), "The provider")
+            return ConflictError(
+                f"{provider} has already been paid {format_inr(amount)} for "
+                f"{month_label(month)}, more than this would leave it owed "
+                f"({format_inr(totals.get(service_id, 0))}).",
+                code="furniture_provider_below_disbursed",
+                details={"service_id": service_id, "disbursed_paise": amount,
+                         "total_paise": totals.get(service_id, 0)})
+    if advances > bill["total_paise"]:
+        return ConflictError(
+            f"Residents have already paid the providers {format_inr(advances)} for "
+            f"{month_label(month)}, more than this would leave the bill at "
+            f"({format_inr(bill['total_paise'])}).", code="furniture_provider_below_disbursed",
+            details={"advanced_paise": advances, "total_paise": bill["total_paise"]})
+    return None
+
+
+def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
+                          excluded_resident_ids: Sequence[str] | None = None,
+                          check_reduction_guards: bool = True, timestamp: str | None = None,
+                          actor: str = "operator") -> dict[str, Any] | None:
+    """Record `month`'s bill if it is due, or bring the recorded one up to date
+    with the items; returns the bill as it then stands, if there is one.
+
+    A frozen bill (see :func:`_bill_is_live`) is returned as it is. A bill that
+    would go below what has been paid -- a resident's share below what they paid
+    into the kitty, a provider's part below what was paid them -- is refused
+    with ``check_reduction_guards``, and otherwise left as it was. A bill left
+    with nothing to bill, and nothing paid towards it, is removed.
+
+    Charges are changed in place, so the payments applied to them stay with them.
+    """
+    timestamp = timestamp or now_timestamp()
+    services = _live_services(uow, apartment_id)
+    definition_id = _definition_id(uow, apartment_id)
+    statement = uow.furniture.statement_for_month(apartment_id, month)
+    expense = _recorded_bill(uow, apartment_id, {"expense_definition_id": definition_id}, month)
+    if expense is not None and not _bill_is_live(month, statement):
+        return expense
+    if expense is None:
+        if (not services or not definition_id or month > _current_month()
+                or (statement is not None and statement["status"] != "draft")
+                or month < min(service["created_at"][:7] for service in services)):
+            return None
+    allocations = uow.furniture.allocations_for_expense(expense["expense_id"]) if expense else []
+    basis = _stored_basis(allocations)
+    excluded = (list(excluded_resident_ids) if excluded_resident_ids is not None
+                else basis.get("excluded_resident_ids", []))
+    bill = _month_bill(uow, apartment_id,
+                       uow.furniture.items_for_apartment(apartment_id, include_retired=True),
+                       month, excluded, include_resident_ids=basis.get("participants", []))
+    if expense is None:
+        if bill["blocked_reason"] or not bill["billable_items"]:
+            return None
+        _record_bill(uow, apartment_id, month, bill, excluded, services, definition_id,
+                     statement, timestamp, actor)
+        return _recorded_bill(uow, apartment_id, {"expense_definition_id": definition_id},
+                              month)
+
+    problem = _sync_problem(uow, expense, bill, allocations)
+    if problem is not None:
+        if check_reduction_guards:
+            raise problem
+        return expense
+    if not bill["billable_items"]:
+        # Nothing in the flat this month any more, and nothing paid: no bill.
+        uow.expenses.delete_allocations(expense["expense_id"])
+        uow.expenses.delete_components(expense["expense_id"])
+        uow.expenses.delete_expense(expense["expense_id"])
+        audit.record(uow, entity_type="expense", entity_id=expense["expense_id"],
+                     action="delete", actor=actor, apartment_id=apartment_id,
+                     reason="Nothing rented was in the flat this month any more.",
+                     old_value={"settlement_month": month, "amount_paise": expense["amount_paise"]})
+        return None
+
+    shares = {row["resident_id"]: row["total_paise"] for row in bill["shares"]
+              if row["total_paise"] > 0}
+    new_basis = _bill_basis(bill, excluded)
+    basis_json = json.dumps(new_basis, sort_keys=True, default=str)
+    providers = ", ".join(dict.fromkeys(
+        _provider_name(svc, uow.furniture.config(svc["service_id"]))
+        for svc in _billing_providers(services, bill)))
+    notes = _bill_notes(bill)
+    current = {row["resident_id"]: row for row in allocations}
+    if (expense["amount_paise"] == bill["total_paise"] and expense.get("notes") == notes
+            and expense.get("provider_name") == providers and basis == new_basis
+            and {rid: row["amount_paise"] for rid, row in current.items()} == shares):
+        return expense
+    uow.furniture.update_bill(expense["expense_id"], amount_paise=bill["total_paise"],
+                              notes=notes, provider_name=providers, updated_at=timestamp)
+    component_id = uow.expenses.component_ids(expense["expense_id"])[0]
+    uow.expenses.update_component(component_id, amount_paise=bill["total_paise"],
+                                  allocation_method="custom")
+    for rid in sorted(set(current) | set(shares)):
+        amount, row = shares.get(rid, 0), current.get(rid)
+        if row is not None and amount:
+            uow.furniture.update_allocation(row["allocation_id"], amount_paise=amount,
+                                            allocation_basis_json=basis_json)
+        elif row is not None:
+            uow.furniture.delete_allocation(row["allocation_id"])
+        else:
+            uow.expenses.insert_allocation(
+                allocation_id=new_id("allocation"), expense_id=expense["expense_id"],
+                component_id=component_id, resident_id=rid, amount_paise=amount,
+                allocation_basis_json=basis_json)
+    audit.record(uow, entity_type="expense", entity_id=expense["expense_id"], action="sync",
+                 actor=actor, apartment_id=apartment_id,
+                 old_value={"amount_paise": expense["amount_paise"],
+                            "shares": {rid: row["amount_paise"] for rid, row in current.items()}},
+                 new_value={"amount_paise": bill["total_paise"], "shares": shares})
+    return _recorded_bill(uow, apartment_id, {"expense_definition_id": definition_id}, month)
+
+
+def _sync_open_months(uow: UnitOfWork, apartment_id: str, *, timestamp: str,
+                      actor: str = "operator") -> None:
+    """After an item changes, bring every live month's bill up to date with it --
+    refusing the change if it would leave a bill below what has been paid."""
+    definition_id = _definition_id(uow, apartment_id)
+    months = {_current_month()}
+    if definition_id:
+        months |= {month for month in uow.furniture.bill_months(apartment_id, definition_id)
+                   if month >= _current_month()}
+    for month in sorted(months):
+        _sync_live_month_bill(uow, apartment_id, month, timestamp=timestamp, actor=actor)
+
+
 # ----------------------------------------------------------------- overview --
 
 def get_overview(db: Database, apartment_id: str, settlement_month: str) -> dict[str, Any]:
-    """The subscription, its items, and what `settlement_month` bills.
+    """The subscriptions, their items, and what `settlement_month` bills.
 
-    ``service`` is null until furniture rental is set up, and after it is
-    retired until it is set up again.
+    The month's bill is recorded, or brought up to date, as it is looked at, so
+    an open month is always billed as its items stand. ``service`` is null until
+    furniture rental is set up, and after it is retired until it is set up again.
     """
     month = normalize_month(settlement_month, "month")
-    with db.read() as uow:
+    with db.transaction() as uow:
         get_apartment(uow, apartment_id)
+        _sync_live_month_bill(uow, apartment_id, month, check_reduction_guards=False)
         return _overview(uow, apartment_id, month)
 
 
@@ -552,14 +812,30 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
             "deposit_held_paise": (config["deposit_paid_paise"] - config["deposit_refunded_paise"])
             if config else 0,
         })
-    bill = _month_bill(uow, apartment_id, billed_items, month)
     statement = uow.furniture.statement_for_month(apartment_id, month)
     definition_id = _definition_id(uow, apartment_id)
     expense = _recorded_bill(uow, apartment_id, {"expense_definition_id": definition_id}, month)
+    # A recorded bill is shown with the residents it was recorded for, and its totals
+    # as recorded: a frozen month keeps its snapshot whatever the items say since.
+    basis = (_stored_basis(uow.furniture.allocations_for_expense(expense["expense_id"]))
+             if expense else {})
+    bill = _month_bill(uow, apartment_id, billed_items, month,
+                       basis.get("excluded_resident_ids"),
+                       include_resident_ids=basis.get("participants"))
+    if expense is not None:
+        bill.update(total_paise=expense["amount_paise"],
+                    common_total_paise=basis.get("common_total_paise",
+                                                 bill["common_total_paise"]),
+                    private_total_paise=basis.get("private_total_paise",
+                                                  bill["private_total_paise"]))
     bill["expense"] = expense
     bill["statement_status"] = statement["status"] if statement else None
     bill["can_generate"] = (expense is None and bill["blocked_reason"] is None
                             and (statement is None or statement["status"] == "draft"))
+    # 'live': billed and following its items; 'frozen': the month's snapshot;
+    # 'upcoming': not begun; 'not_billed': nothing to bill, or before the rental.
+    bill["bill_state"] = (("live" if _bill_is_live(month, statement) else "frozen") if expense
+                          else "upcoming" if month > _current_month() else "not_billed")
     _attach_funding(uow, apartment_id, bill, expense, services)
     billing_dates = [entry["next_billing_date"] for entry in entries if entry["next_billing_date"]]
     return {
@@ -800,6 +1076,7 @@ def add_item(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
                                   created_at=timestamp, **values)
         audit.record(uow, entity_type="furniture_rental_item", entity_id=item_id,
                      action="create", actor=actor, apartment_id=apartment_id, new_value=values)
+        _sync_open_months(uow, apartment_id, timestamp=timestamp, actor=actor)
         return _public_item(uow.furniture.item(item_id))
 
 
@@ -823,19 +1100,22 @@ def update_item(db: Database, apartment_id: str, item_id: str, changes: Mapping[
             audit.record(uow, entity_type="furniture_rental_item", entity_id=item_id,
                          action="update", actor=actor, apartment_id=apartment_id,
                          old_value={key: before.get(key) for key in changed}, new_value=changed)
+            _sync_open_months(uow, apartment_id, timestamp=timestamp, actor=actor)
         return _public_item(uow.furniture.item(item_id))
 
 
 def delete_item(db: Database, apartment_id: str, item_id: str, *,
                 actor: str = "operator") -> None:
-    """Remove an item entered by mistake. A bill already recorded keeps the
-    items behind it in its notes; to stop paying for an item, return it."""
+    """Remove an item entered by mistake. An open month's bill drops it; a
+    frozen one keeps the items behind it in its notes. To stop paying for an
+    item, return it."""
     with db.transaction() as uow:
         before = _item_in(uow, apartment_id, item_id)
         uow.furniture.delete_item(item_id)
         audit.record(uow, entity_type="furniture_rental_item", entity_id=item_id,
                      action="delete", actor=actor, apartment_id=apartment_id,
                      old_value=_public_item(before))
+        _sync_open_months(uow, apartment_id, timestamp=now_timestamp(), actor=actor)
 
 
 # ------------------------------------------------------------ generating -- #
@@ -845,9 +1125,12 @@ def generate_month(db: Database, apartment_id: str, settlement_month: str,
                    actor: str = "operator") -> dict[str, Any]:
     """Record `settlement_month`'s furniture bill as one expense, in one transaction.
 
-    The expense is due on the billing day, if one is set, and is attached to the
-    month's statement, which must still be a draft. A month already recorded is
-    refused, as is a month whose bill cannot be shared (see ``blocked_reason``).
+    An open month's bill is recorded by itself (see the live bill above); this
+    records one by hand -- a month before the rental was set up, or one with
+    some residents left out. The expense is due on the earliest billing day of
+    the providers billing, and is attached to the month's statement, which must
+    still be a draft. A month already recorded is refused, as is a month whose
+    bill cannot be shared (see ``blocked_reason``).
     """
     month = normalize_month(settlement_month, "settlement_month")
     timestamp = now_timestamp()
@@ -870,45 +1153,15 @@ def generate_month(db: Database, apartment_id: str, settlement_month: str,
             raise ConflictError(
                 f"Furniture rental for {month_label(month)} is already recorded as an expense.",
                 code="furniture_bill_exists", details={"expense_id": recorded[0]["expense_id"]})
+        excluded = sorted({str(rid) for rid in (excluded_resident_ids or [])})
         bill = _month_bill(uow, apartment_id,
                            uow.furniture.items_for_apartment(apartment_id, include_retired=True),
-                           month, excluded_resident_ids)
-        # Every provider with something in the flat this month, and the soonest
-        # any of them bills.
-        billing = [svc for svc in services
-                   if any(item["service_id"] == svc["service_id"]
-                          for item in bill["billable_items"])] or [service]
-        due_dates = sorted(_billing_date(month, svc["billing_day_of_month"])
-                           for svc in billing if svc["billing_day_of_month"])
+                           month, excluded)
         if bill["blocked_reason"]:
             raise ValidationError(bill["blocked_reason"], code="furniture_bill_blocked",
                                   details={"settlement_month": month})
-
-        allocations = {row["resident_id"]: 0 for row in list_residents(uow, apartment_id)}
-        allocations.update({row["resident_id"]: row["total_paise"] for row in bill["shares"]})
-        expense_id = new_id("furniture")
-        expenses._create_expense(
-            uow, apartment_id=apartment_id, expense_id=expense_id,
-            description=f"{service['display_name']} for {month_label(month)}",
-            amount_paise=bill["total_paise"], expense_date=f"{month}-01",
-            allocation_method="custom", allocations_paise=allocations,
-            allocation_basis={"method": "custom", "source": SERVICE_TYPE,
-                              "common_total_paise": bill["common_total_paise"],
-                              "private_total_paise": bill["private_total_paise"]},
-            provider_name=", ".join(dict.fromkeys(
-                _provider_name(svc, uow.furniture.config(svc["service_id"]))
-                for svc in billing)),
-            expense_definition_id=definition_id,
-            statement_id=statement["statement_id"] if statement else None,
-            period_rule="current_month", service_period=month, settlement_period=month,
-            due_date=due_dates[0] if due_dates else None,
-            notes=_bill_notes(bill), created_at=timestamp, actor=actor)
-        audit.record(uow, entity_type="household_service", entity_id=service["service_id"],
-                     action="generate", actor=actor, apartment_id=apartment_id,
-                     new_value={"settlement_month": month, "expense_id": expense_id,
-                                "total_paise": bill["total_paise"],
-                                "common_total_paise": bill["common_total_paise"],
-                                "private_total_paise": bill["private_total_paise"]})
+        _record_bill(uow, apartment_id, month, bill, excluded, services, definition_id,
+                     statement, timestamp, actor)
         return _overview(uow, apartment_id, month)
 
 
@@ -946,6 +1199,8 @@ def record_furniture_payment(db: Database, apartment_id: str, settlement_month: 
         resident = get_resident(uow, resident_id, apartment_id)
         name = resident["display_name"]
         service = _require_live(uow, apartment_id)
+        _sync_live_month_bill(uow, apartment_id, month, check_reduction_guards=False,
+                              timestamp=timestamp, actor=actor)
         expense = _require_recorded_bill(uow, apartment_id, service, month)
         charges = uow.furniture.resident_charges_for_expense(expense["expense_id"], resident_id)
         if not charges:
@@ -1041,6 +1296,8 @@ def record_provider_payout(db: Database, apartment_id: str, settlement_month: st
     timestamp = now_timestamp()
     with db.transaction() as uow:
         get_apartment(uow, apartment_id)
+        _sync_live_month_bill(uow, apartment_id, month, check_reduction_guards=False,
+                              timestamp=timestamp, actor=actor)
         expense = _require_recorded_bill(uow, apartment_id, _require_live(uow, apartment_id),
                                          month)
         services = _live_services(uow, apartment_id)
@@ -1187,6 +1444,8 @@ def reimburse_from_kitty(db: Database, apartment_id: str, settlement_month: str,
     with db.transaction() as uow:
         get_apartment(uow, apartment_id)
         service = _require_live(uow, apartment_id)
+        _sync_live_month_bill(uow, apartment_id, month, check_reduction_guards=False,
+                              timestamp=timestamp, actor=actor)
         expense = _require_recorded_bill(uow, apartment_id, service, month)
         provider = "the provider"
         owing = _funding(uow, expense)["reimbursements"]

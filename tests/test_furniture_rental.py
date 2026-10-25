@@ -33,6 +33,15 @@ from .support import DatabaseRefusal, connect, sign_in
 MONTH = "2026-11"
 
 
+@pytest.fixture(autouse=True)
+def _mid_september(monkeypatch):
+    """The tests run as if it were mid-September 2026. Furniture rental is set
+    up later than that, so no month bills by itself: November is ahead, and is
+    recorded when a test generates it -- after which, being still open, it
+    follows its items. A test about the live bill moves the date on itself."""
+    monkeypatch.setattr(furniture, "_today", lambda: "2026-09-15")
+
+
 def _rows(db, sql, params=()):
     with connect(db, read_only=True) as conn:
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
@@ -765,6 +774,131 @@ def test_several_providers_over_http(api):
     ended = api.post(f"{base}/retire", params={"month": MONTH, "service_id": rentomojo})
     assert ended.status_code == 200, ended.text
     assert [e["config"]["provider_name"] for e in ended.json()["services"]] == ["Furlenco"]
+
+
+# --------------------------------------------------------- the live bill --
+
+@pytest.fixture()
+def november(monkeypatch):
+    """It is 10 November 2026, the day furniture rental is set up. A test moves
+    the clock on by changing ``now``."""
+    clock = {"now": "2026-11-10T09:00:00+05:30"}
+    monkeypatch.setattr(furniture, "now_timestamp", lambda value=None: clock["now"])
+    monkeypatch.setattr(furniture, "_today", lambda: clock["now"][:10])
+    return clock
+
+
+def test_the_monthly_bill_is_live_and_tops_up_when_items_or_providers_are_added(apartment,
+                                                                                november):
+    furlenco_id = _setup(apartment, provider_name="Furlenco",
+                         billing_day_of_month=5)["service"]["service_id"]
+    assert _month(apartment)["bill_state"] == "not_billed"
+    assert _rows(apartment, "SELECT 1 FROM expense_instance") == []
+
+    # The first item bills the month: nobody records the bill.
+    sofa = _item(apartment, "Sofa", 120_000, service_id=furlenco_id, delivery_date="2026-09-01")
+    [expense] = _rows(apartment, "SELECT * FROM expense_instance")
+    assert (expense["amount_paise"], expense["settlement_period"], expense["due_date"]) == (
+        120_000, MONTH, "2026-11-05")
+    month = _month(apartment)
+    assert (month["bill_state"], month["can_generate"], month["total_paise"]) == (
+        "live", False, 120_000)
+    furniture.record_furniture_payment(apartment, APARTMENT, MONTH, "alice",
+                                       amount_paise=40_000, payment_date="2026-11-10")
+    [charge] = _rows(apartment, "SELECT allocation_id FROM allocation WHERE resident_id='alice'")
+
+    # A second provider's fridge, and Bob's own bed: the same bill tops up.
+    rentomojo_id = furniture.setup_furniture_rental(
+        apartment, APARTMENT, {"provider_name": "Rentomojo", "create_new": True},
+        settlement_month=MONTH)["services"][1]["service"]["service_id"]
+    fridge = _item(apartment, "Fridge", 90_000, service_id=rentomojo_id, category="appliance",
+                   delivery_date="2026-11-09")
+    _item(apartment, "Queen bed", 50_000, scope="resident", resident="bob",
+          category="bedroom", service_id=furlenco_id)
+    month = _month(apartment)
+    assert [(row["expense_id"], row["amount_paise"], row["provider_name"])
+            for row in _rows(apartment, "SELECT * FROM expense_instance")] == [
+        (expense["expense_id"], 260_000, "Furlenco, Rentomojo")]
+    assert {row["resident_id"]: (row["total_paise"], row["paid_paise"], row["outstanding_paise"])
+            for row in month["shares"]} == {"alice": (70_000, 40_000, 30_000),
+                                            "bob": (120_000, 0, 120_000),
+                                            "chris": (70_000, 0, 70_000)}
+    assert _payouts(month) == {"Furlenco": (170_000, 170_000, "pending"),
+                               "Rentomojo": (90_000, 90_000, "pending")}
+    # Alice's payment stays with her charge, which was changed rather than replaced.
+    assert _rows(apartment, """SELECT a.allocation_id, a.amount_paise
+                                 FROM payment_application pa
+                                 JOIN allocation a ON a.allocation_id = pa.allocation_id""") == [
+        {"allocation_id": charge["allocation_id"], "amount_paise": 70_000}]
+
+    # Nobody is paid back, and no provider handed money back, by the bill going down.
+    with pytest.raises(ConflictError) as below_paid:
+        furniture.delete_item(apartment, APARTMENT, sofa["item_id"])
+    assert below_paid.value.code == "furniture_share_below_paid"
+    _payout(apartment, service_id=rentomojo_id, amount_paise=40_000)
+    with pytest.raises(ConflictError) as below_paid_out:
+        furniture.update_item(apartment, APARTMENT, fridge["item_id"],
+                              {"monthly_rent_paise": 30_000})
+    assert below_paid_out.value.code == "furniture_provider_below_disbursed"
+    assert len(furniture.get_overview(apartment, APARTMENT, MONTH)["items"]) == 3
+    assert _month(apartment)["total_paise"] == 260_000
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+    assert sum(_net(apartment).values()) == 0
+
+    # The month over, its bill is kept as it stood; December bills by itself.
+    november["now"] = "2026-12-05T09:00:00+05:30"
+    _item(apartment, "Lamp", 10_000, service_id=furlenco_id, delivery_date="2026-11-20")
+    month = _month(apartment)
+    assert (month["bill_state"], month["total_paise"]) == ("frozen", 260_000)
+    december = _month(apartment, "2026-12")
+    assert (december["bill_state"], december["total_paise"]) == ("live", 270_000)
+    assert [(row["settlement_period"], row["amount_paise"]) for row in _rows(
+        apartment, "SELECT * FROM expense_instance ORDER BY settlement_period")] == [
+        (MONTH, 260_000), ("2026-12", 270_000)]
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+def test_a_live_bill_goes_with_its_last_item_unless_paid_and_freezes_with_its_statement(
+        apartment, november):
+    _setup(apartment, provider_name="Furlenco")
+    lamp = _item(apartment, "Lamp", 9_000)
+    assert _month(apartment)["bill_state"] == "live"
+    furniture.delete_item(apartment, APARTMENT, lamp["item_id"])
+    assert _rows(apartment, "SELECT 1 FROM expense_instance") == []
+    assert _month(apartment)["bill_state"] == "not_billed"
+
+    sofa = _item(apartment, "Sofa", 120_000)
+    furniture.record_furniture_payment(apartment, APARTMENT, MONTH, "alice",
+                                       amount_paise=40_000, payment_date="2026-11-10")
+    with pytest.raises(ConflictError) as paid:
+        furniture.delete_item(apartment, APARTMENT, sofa["item_id"])
+    assert paid.value.code == "furniture_bill_has_payments"
+
+    # Once the month's statement is finalized, the bill is its snapshot.
+    statement = statements.create_monthly_statement(apartment, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(apartment, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
+    _item(apartment, "Fridge", 90_000, category="appliance")
+    month = _month(apartment)
+    assert (month["bill_state"], month["total_paise"]) == ("frozen", 120_000)
+    assert [row["amount_paise"] for row in _rows(
+        apartment, "SELECT amount_paise FROM expense_instance")] == [120_000]
+
+    # A resident left out of a month stays out of it while it follows its items,
+    # and a change that would leave the bill impossible to share is refused.
+    assert _month(apartment, "2026-12")["bill_state"] == "upcoming"
+    furniture.generate_month(apartment, APARTMENT, "2026-12", ["chris"])
+    november["now"] = "2026-12-02T09:00:00+05:30"
+    _item(apartment, "Lamp", 10_000)
+    december = _month(apartment, "2026-12")
+    assert {row["resident_id"]: row["total_paise"] for row in december["shares"]} == {
+        "alice": 110_000, "bob": 110_000}
+    with pytest.raises(ValidationError) as blocked:
+        _item(apartment, "Desk", 20_000, scope="resident", resident="chris")
+    assert blocked.value.code == "furniture_bill_blocked"
+    assert _month(apartment, "2026-12")["total_paise"] == 220_000
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
 # ----------------------------------------------------------- retirement --
