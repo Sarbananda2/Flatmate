@@ -208,12 +208,13 @@ describe('signed in', () => {
     renderApp('/residents', { '/api/auth/status': SIGNED_IN, 'POST /api/auth/logout': {} })
     const signedIn = await screen.findByRole('group', { name: 'Signed in' })
     expect(signedIn).toHaveTextContent('Asha Rao')
-    expect(within(signedIn).getByText('Admin')).toBeInTheDocument()
 
-    // The ribbon shows only the initials; logging out is in the menu they open.
+    // The ribbon shows only the initials; who it is and the way out are in the menu they open.
     await userEvent.click(within(signedIn).getByRole('button', { name: /Asha Rao/i }))
+    expect(within(signedIn).getByText('Admin')).toBeInTheDocument()
     expect(within(signedIn).getByText('asha@example.com')).toBeInTheDocument()
-    await userEvent.click(within(signedIn).getByRole('menuitem', { name: 'Log out' }))
+
+    await userEvent.click(screen.getByRole('menuitem', { name: /Log out/i }))
     await waitFor(() => expect(posted('/api/auth/logout')).toBeDefined())
     expect(await screen.findByRole('heading', { name: 'Log in to your Household' })).toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Signed in' })).toBeNull()

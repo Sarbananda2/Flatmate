@@ -184,9 +184,9 @@ function SignedInUser() {
   const { user, logout } = auth
   const isAdmin = user.role === 'household_admin'
   return (
-    <div className="relative shrink-0 mr-1" ref={wrapper} role="group" aria-label="Signed in">
-      <span className="sr-only">{user.full_name}</span>
-      <span className="sr-only">{isAdmin ? 'Admin' : 'Resident'}</span>
+    <div className="relative shrink-0 ml-1" ref={wrapper} role="group" aria-label="Signed in">
+      {/* One string, so the open menu's Admin pill stays the only element reading just "Admin". */}
+      <span className="sr-only">{`${user.full_name} (${isAdmin ? 'Admin' : 'Resident'})`}</span>
       <button
         ref={trigger}
         type="button"
@@ -480,22 +480,8 @@ export function Layout({ children }: { children: ReactNode }) {
             </nav>
           )}
 
-          {/* RIGHT: who is signed in, the theme toggle, then settings as the right-most element */}
+          {/* RIGHT: settings, the theme toggle, then who is signed in as the right-most element */}
           <div className="flex items-center gap-1.5 shrink-0 md:col-start-3 md:justify-self-end">
-            <SignedInUser />
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className={ICON_BUTTON}
-              title="Toggle theme"
-              aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
-            >
-              {isDark ? (
-                <Moon className="w-4 h-4 shrink-0 text-amber-400" aria-hidden="true" />
-              ) : (
-                <Sun className="w-4 h-4 shrink-0 text-amber-500" aria-hidden="true" />
-              )}
-            </button>
             {!onWizard && (
               <Link
                 to="/setup"
@@ -516,6 +502,20 @@ export function Layout({ children }: { children: ReactNode }) {
                 )}
               </Link>
             )}
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className={ICON_BUTTON}
+              title="Toggle theme"
+              aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+            >
+              {isDark ? (
+                <Moon className="w-4 h-4 shrink-0 text-amber-400" aria-hidden="true" />
+              ) : (
+                <Sun className="w-4 h-4 shrink-0 text-amber-500" aria-hidden="true" />
+              )}
+            </button>
+            <SignedInUser />
           </div>
         </header>
 
