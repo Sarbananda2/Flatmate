@@ -759,7 +759,6 @@ function ProviderPayoutPanel({
   const status = PAYOUT[bill.payout_status]
   // Open until the provider has been paid in full: the bill can go in tranches.
   const owing = billed && bill.payout_status !== 'disbursed'
-  const advanced = bill.disbursements.some((tranche) => tranche.disbursed_by === 'resident_advance')
   const subscription =
     [config.customer_id && `Customer ${config.customer_id}`, config.subscription_reference]
       .filter(Boolean)
@@ -857,12 +856,6 @@ function ProviderPayoutPanel({
           </tbody>
         </table>
       </div>
-      {advanced && (
-        <p className="m-0 text-[11px] text-[var(--text-secondary)]">
-          A resident who paid {provider} directly is credited what they paid, and is still charged their own share;
-          the House Kitty pays them back the rest.
-        </p>
-      )}
     </Panel>
   )
 }

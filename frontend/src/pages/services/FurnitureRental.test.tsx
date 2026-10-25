@@ -515,7 +515,6 @@ describe('FurnitureRental', () => {
     show(overview({ month: paidByAlice() }))
     const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
     expect(within(panel).getByRole('button', { name: 'Pay now to Furlenco' })).toBeDisabled()
-    expect(panel).toHaveTextContent('A resident who paid Furlenco directly is credited what they paid')
     await userEvent.click(within(panel).getByRole('row', { name: /Furlenco/ }))
     const statement = screen.getByRole('dialog', { name: 'Provider Payout Statement' })
     expect(statement).toHaveTextContent('Furlenco · November 2026')
