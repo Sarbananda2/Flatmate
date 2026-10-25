@@ -5,9 +5,10 @@
  * Every figure comes from the backend. Shared items are split equally between
  * the residents taking part and a resident's own items are charged to them;
  * nothing is prorated, so an item in the flat at any point in a month counts in
- * full. Recording a month's bill writes one ordinary expense.
+ * full. Each month's bill is one ordinary expense, which follows the items while
+ * the month is open and is kept as it stands once the month closes.
  *
- * Once it is recorded, the month is paid in the same two steps as rent:
+ * The month is paid in the same two steps as rent:
  * flatmates pay their shares into the House Kitty, and the provider is paid the
  * bill, in one payout or several, from the kitty or by a resident from their own
  * account. A resident who paid the provider is paid back by the kitty out of
@@ -17,7 +18,7 @@
  * subscription with its deposit. The open tab is kept in the address
  * (`?tab=items`), so a link or a reload lands on it.
  */
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Archive,
@@ -48,6 +49,8 @@ import {
   BUTTON_PRIMARY,
   BUTTON_QUIET,
   BUTTON_SECONDARY,
+  CardActions,
+  DetailFact,
   EmptyBlock,
   MiniStat,
   Panel,
@@ -200,6 +203,7 @@ type Dialog =
   // `entry` is the provider to edit: none to set one up, or to add another.
   | { kind: 'setup'; entry: FurnitureServiceEntry | null; adding?: boolean }
   | { kind: 'retire'; entry: FurnitureServiceEntry }
+  | { kind: 'subscription_detail'; entry: FurnitureServiceEntry }
   | { kind: 'add' }
   | { kind: 'edit'; item: FurnitureItem }
   | { kind: 'return'; item: FurnitureItem }
@@ -320,25 +324,14 @@ export function FurnitureRental({ month }: { month: string }) {
                 )}
                 {tab === 'subscription' && (
                   <>
-                    <div className="flex justify-end">
-                      <button
-                        type="button"
-                        className={BUTTON_SECONDARY}
-                        onClick={() => setDialog({ kind: 'setup', entry: null, adding: true })}
-                      >
-                        <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                        Add rental provider
-                      </button>
-                    </div>
-                    {servicesOf(data).map((entry, _, all) => (
-                      <SubscriptionPanel
-                        key={entry.service.service_id}
-                        entry={entry}
-                        several={all.length > 1}
-                        onEdit={() => setDialog({ kind: 'setup', entry })}
-                        onRetire={() => setDialog({ kind: 'retire', entry })}
-                      />
-                    ))}
+                    <SubscriptionMetrics data={data} services={servicesOf(data)} />
+                    <SubscriptionsPanel
+                      services={servicesOf(data)}
+                      onAdd={() => setDialog({ kind: 'setup', entry: null, adding: true })}
+                      onView={(entry) => setDialog({ kind: 'subscription_detail', entry })}
+                      onEdit={(entry) => setDialog({ kind: 'setup', entry })}
+                      onRetire={(entry) => setDialog({ kind: 'retire', entry })}
+                    />
                   </>
                 )}
               </div>
@@ -356,6 +349,15 @@ export function FurnitureRental({ month }: { month: string }) {
                   dialog.entry ? 'Subscription saved' : dialog.adding ? 'Rental provider added' : 'Furniture rental set up',
                 )
               }
+            />
+          )}
+          {dialog?.kind === 'subscription_detail' && (
+            <SubscriptionDetailModal
+              entry={dialog.entry}
+              items={data.items.filter((item) => item.service_id === dialog.entry.service.service_id)}
+              onClose={() => setDialog(null)}
+              onEdit={() => setDialog({ kind: 'setup', entry: dialog.entry })}
+              onRetire={() => setDialog({ kind: 'retire', entry: dialog.entry })}
             />
           )}
           {dialog?.kind === 'retire' && (
@@ -447,50 +449,323 @@ export function FurnitureRental({ month }: { month: string }) {
 
 /* ----------------------------------------------------- 1. the subscription -- */
 
-function SubscriptionPanel({
+/** The household's furniture rental at a glance, across every provider. */
+function SubscriptionMetrics({
+  data,
+  services,
+}: {
+  data: FurnitureRentalOverview
+  services: FurnitureServiceEntry[]
+}) {
+  // What is in the flat now: the items the monthly total is made of.
+  const inFlat = data.items.filter((item) => item.status === 'active')
+  const sharedCount = inFlat.filter((item) => item.allocation_scope === 'common').length
+  const ownCount = inFlat.length - sharedCount
+  const depositPaid = services.reduce((sum, entry) => sum + entry.config.deposit_paid_paise, 0)
+  const depositRefunded = services.reduce((sum, entry) => sum + entry.config.deposit_refunded_paise, 0)
+  // The provider that bills soonest.
+  const nextUp = services
+    .filter((entry) => entry.next_billing_date)
+    .sort((a, b) => a.next_billing_date!.localeCompare(b.next_billing_date!))[0]
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+      <MiniStat
+        label="Active Providers"
+        value={services.length}
+        note={services.map((entry) => entry.config.provider_name).join(', ')}
+      />
+      <MiniStat
+        label="Monthly Commitment"
+        value={<Rupees paise={data.monthly_total_paise} />}
+        note={
+          data.active_item_count === 0
+            ? 'No active items in the flat'
+            : `${data.active_item_count} item${data.active_item_count === 1 ? '' : 's'} (${sharedCount} shared · ${ownCount} own)`
+        }
+      />
+      <MiniStat
+        label="Total Deposit Held"
+        value={<Rupees paise={data.deposit_held_paise} />}
+        note={
+          depositRefunded > 0
+            ? `${formatInr(depositPaid)} paid · ${formatInr(depositRefunded)} refunded`
+            : `${formatInr(depositPaid)} paid across ${services.length === 1 ? '1 provider' : `${services.length} providers`}`
+        }
+      />
+      <MiniStat
+        label="Next Billing Date"
+        value={<span className="tabular">{data.next_billing_date ? formatDate(data.next_billing_date) : '—'}</span>}
+        note={
+          nextUp?.service.billing_day_of_month
+            ? `${nextUp.config.provider_name} · Day ${nextUp.service.billing_day_of_month} each month`
+            : 'No billing day set'
+        }
+      />
+    </div>
+  )
+}
+
+function subscriptionReference(config: FurnitureConfig): string {
+  return [config.customer_id && `Customer ${config.customer_id}`, config.subscription_reference]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/** Every provider's subscription, one card each; a card opens its details (Rule U7). */
+function SubscriptionsPanel({
+  services,
+  onAdd,
+  onView,
+  onEdit,
+  onRetire,
+}: {
+  services: FurnitureServiceEntry[]
+  onAdd: () => void
+  onView: (entry: FurnitureServiceEntry) => void
+  onEdit: (entry: FurnitureServiceEntry) => void
+  onRetire: (entry: FurnitureServiceEntry) => void
+}) {
+  const several = services.length > 1
+  return (
+    <Panel
+      title="Rental Subscriptions"
+      icon={<Sofa className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint="Each provider's subscription, monthly commitment, and security deposit. Select a provider card for full details and its rented items."
+      menuActions={[{ label: 'Add rental provider', icon: Plus, onClick: onAdd }]}
+    >
+      <div className={several ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : 'grid grid-cols-1 gap-4'}>
+        {services.map((entry) => (
+          <ProviderSubscriptionCard
+            key={entry.service.service_id}
+            entry={entry}
+            several={several}
+            onView={() => onView(entry)}
+            onEdit={() => onEdit(entry)}
+            onRetire={() => onRetire(entry)}
+          />
+        ))}
+      </div>
+    </Panel>
+  )
+}
+
+function ProviderSubscriptionCard({
   entry,
   several,
+  onView,
   onEdit,
   onRetire,
 }: {
   entry: FurnitureServiceEntry
   several: boolean
+  onView: () => void
   onEdit: () => void
   onRetire: () => void
 }) {
   const { service, config } = entry
-  const reference = [config.customer_id && `Customer ${config.customer_id}`, config.subscription_reference]
-    .filter(Boolean)
-    .join(' · ')
+  const reference = subscriptionReference(config)
+  const headingId = `furniture-subscription-${service.service_id}`
   return (
-    <Panel
-      title={several ? `${service.display_name} · ${config.provider_name}` : service.display_name}
-      icon={<Sofa className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="The subscription, what it costs a month, and the deposit the provider holds."
-      menuActions={[
-        { label: 'Edit subscription', icon: Pencil, onClick: onEdit },
-        { label: 'End subscription', icon: Archive, onClick: onRetire, tone: 'danger' },
-      ]}
+    <article
+      // A tinted surface, so the card stands off the panel it sits in. (An
+      // opacity modifier like `/60` on a hex variable emits nothing in Tailwind 3.)
+      className="rounded-xl border border-[var(--border-subtle)] hover:border-[var(--border-medium)] bg-[color-mix(in_srgb,var(--bg-elevated)_60%,transparent)] hover:bg-[var(--bg-elevated)] p-4 sm:p-5 space-y-4 min-w-0 cursor-pointer transition-colors"
+      tabIndex={0}
+      aria-labelledby={headingId}
+      title={`View the ${config.provider_name} subscription`}
+      onClick={onView}
+      onKeyDown={(event) => {
+        // Only the card itself: keys pressed in its menu are the menu's.
+        if (event.target !== event.currentTarget) return
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onView()
+        }
+      }}
     >
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-        <MiniStat label="Provider" value={config.provider_name} note={reference || 'No customer ID on file'} />
-        <MiniStat
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Avatar name={config.provider_name} tone="accent" />
+          <div className="min-w-0">
+            <h3 id={headingId} className="m-0 font-bold text-sm text-[var(--text-primary)] truncate">
+              {several ? `${service.display_name} · ${config.provider_name}` : config.provider_name}
+            </h3>
+            <div className="text-[11px] text-[var(--text-secondary)] truncate">
+              {reference || 'No customer ID on file'}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Whether the subscription is running: the deposit's state is under Deposit held. */}
+          <Pill tone={service.status === 'paused' ? 'warning' : 'success'}>
+            {service.status === 'paused' ? 'Paused' : 'Active'}
+          </Pill>
+          {/* The card's own actions: choosing one does not also open the card. */}
+          <div onClick={(event) => event.stopPropagation()}>
+            <CardActions
+              actions={[
+                { label: 'Edit subscription', icon: Pencil, onClick: onEdit },
+                { label: 'End subscription', icon: Archive, onClick: onRetire, tone: 'danger' },
+              ]}
+            />
+          </div>
+        </div>
+      </div>
+      {/* The provider and its reference are in the header, so the figures start with the money. */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-3.5 border-t border-[var(--border-subtle)]">
+        <CardFigure
           label="Monthly total"
           value={<Rupees paise={entry.monthly_total_paise} />}
           note={`${entry.active_item_count} item${entry.active_item_count === 1 ? '' : 's'} in the flat`}
         />
-        <MiniStat
+        <CardFigure
           label="Next billing"
           value={<span className="tabular">{entry.next_billing_date ? formatDate(entry.next_billing_date) : '—'}</span>}
           note={service.billing_day_of_month ? `Day ${service.billing_day_of_month} each month` : 'No billing day set'}
         />
-        <MiniStat
+        <CardFigure
           label="Deposit held"
           value={<Rupees paise={entry.deposit_held_paise} />}
           note={`${DEPOSIT_STATUS[config.deposit_status]} · ${formatInr(config.deposit_paid_paise)} paid`}
         />
       </div>
-    </Panel>
+    </article>
+  )
+}
+
+/** One figure on a provider card: a MiniStat's type without its box, since the card is the box. */
+function CardFigure({ label, value, note }: { label: string; value: ReactNode; note: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">{label}</div>
+      <div className="mt-1 text-base font-bold text-[var(--text-primary)] truncate">{value}</div>
+      <div className="mt-0.5 text-[11px] text-[var(--text-secondary)]">{note}</div>
+    </div>
+  )
+}
+
+/** One provider's subscription in full: its deposit, its account, and what is rented from it. */
+function SubscriptionDetailModal({
+  entry,
+  items,
+  onClose,
+  onEdit,
+  onRetire,
+}: {
+  entry: FurnitureServiceEntry
+  /** The items rented from this provider. */
+  items: FurnitureItem[]
+  onClose: () => void
+  onEdit: () => void
+  onRetire: () => void
+}) {
+  const { service, config } = entry
+  const reference = subscriptionReference(config)
+  return (
+    <Modal
+      title={`${config.provider_name} Subscription`}
+      description={reference || 'Subscription details, security deposit, and rented items'}
+      onClose={onClose}
+      wide
+      footer={
+        <>
+          <button type="button" className={BUTTON_SECONDARY} onClick={onRetire}>
+            <Archive className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            End subscription
+          </button>
+          <button type="button" className={BUTTON_PRIMARY} onClick={onEdit}>
+            <Pencil className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            Edit subscription
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-5">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <MiniStat
+            label="Monthly Rent"
+            value={<Rupees paise={entry.monthly_total_paise} />}
+            note={`${entry.active_item_count} active item${entry.active_item_count === 1 ? '' : 's'}`}
+          />
+          <MiniStat
+            label="Next Billing"
+            value={<span className="tabular">{entry.next_billing_date ? formatDate(entry.next_billing_date) : '—'}</span>}
+            note={service.billing_day_of_month ? `Day ${service.billing_day_of_month} each month` : 'No billing day set'}
+          />
+          <MiniStat
+            label="Deposit Paid"
+            value={<Rupees paise={config.deposit_paid_paise} />}
+            note={
+              config.deposit_refunded_paise > 0
+                ? `${formatInr(config.deposit_refunded_paise)} refunded`
+                : 'No refund recorded yet'
+            }
+          />
+          <MiniStat
+            label="Deposit Held"
+            value={<Rupees paise={entry.deposit_held_paise} />}
+            note={DEPOSIT_STATUS[config.deposit_status]}
+          />
+        </div>
+
+        <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm" aria-label="Account and contract details">
+          <DetailFact label="Customer ID">{config.customer_id || '—'}</DetailFact>
+          <DetailFact label="Subscription Reference">{config.subscription_reference || '—'}</DetailFact>
+          <DetailFact label="Deposit Status">{DEPOSIT_STATUS[config.deposit_status]}</DetailFact>
+          {config.notes && <DetailFact label="Notes">{config.notes}</DetailFact>}
+        </dl>
+
+        <section className="space-y-2" aria-labelledby="furniture-subscription-items">
+          <h3 id="furniture-subscription-items" className="m-0 text-sm font-bold text-[var(--text-primary)]">
+            Rented Items from {config.provider_name}
+          </h3>
+          {items.length === 0 ? (
+            <EmptyBlock title="Nothing rented from this provider yet" />
+          ) : (
+            <div className="overflow-x-auto min-w-0">
+              <table className="w-full text-xs min-w-[560px] border-collapse">
+                <caption className="sr-only">Items rented from {config.provider_name}</caption>
+                <thead>
+                  <tr className={TABLE_HEAD}>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-left">Item</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Category</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Paid by</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Monthly rent</th>
+                    <th scope="col" className="pb-3 font-bold text-center">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+                  {items.map((item) => {
+                    const status = ITEM_STATUS[item.status]
+                    return (
+                      <tr key={item.item_id} className="align-middle">
+                        <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
+                          {item.name}
+                        </th>
+                        <td className="py-3 pr-3 text-center">{CATEGORY_LABELS[item.category]}</td>
+                        <td className="py-3 pr-3 text-center">
+                          {item.allocation_scope === 'common' ? (
+                            <Pill tone="accent">Shared</Pill>
+                          ) : (
+                            item.assigned_resident_name ?? item.assigned_resident_id
+                          )}
+                        </td>
+                        <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
+                          <Rupees paise={item.monthly_rent_paise} />
+                        </td>
+                        <td className="py-3 text-center whitespace-nowrap">
+                          <Pill tone={status.tone}>{status.label}</Pill>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
+    </Modal>
   )
 }
 

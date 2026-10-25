@@ -304,7 +304,7 @@ describe('FurnitureRental', () => {
 
     const expectations: Array<[RegExp, string, string]> = [
       [/Rented Items/, '/?tab=items', 'Rented Items'],
-      [/Subscription & Deposit/, '/?tab=subscription', 'Furniture rental'],
+      [/Subscription & Deposit/, '/?tab=subscription', 'Rental Subscriptions'],
     ]
     for (const [name, address, heading] of expectations) {
       await userEvent.click(screen.getByRole('tab', { name }))
@@ -359,20 +359,75 @@ describe('FurnitureRental', () => {
     })
   })
 
-  it('shows the subscription at a glance, with its actions in one menu', async () => {
+  it('sums up every subscription and deposit across the household', async () => {
     show(overview(), {}, '/?tab=subscription')
-    const subscription = (await screen.findByRole('heading', { name: 'Furniture rental' })).closest('section')!
-    expect(subscription).toHaveTextContent('ProviderFurlenco')
-    expect(subscription).toHaveTextContent('Customer FUR-2291')
-    expect(subscription).toHaveTextContent('Monthly total₹2,200.00')
-    expect(subscription).toHaveTextContent('3 items in the flat')
-    expect(subscription).toHaveTextContent('5 Dec 2026')
-    expect(subscription).toHaveTextContent('Deposit held₹5,000.00')
-    await userEvent.click(within(subscription).getByRole('button', { name: 'More options' }))
+    await screen.findByRole('heading', { name: 'Rental Subscriptions' })
+    const stat = (label: string) => screen.getByText(label).parentElement!
+    expect(stat('Active Providers')).toHaveTextContent('Active Providers1Furlenco')
+    // In the flat now: the sofa, the fridge and Bob's bed. The desk is not delivered yet.
+    expect(stat('Monthly Commitment')).toHaveTextContent('₹2,200.003 items (2 shared · 1 own)')
+    expect(stat('Total Deposit Held')).toHaveTextContent('₹5,000.00₹5,000.00 paid across 1 provider')
+    expect(stat('Next Billing Date')).toHaveTextContent('5 Dec 2026Furlenco · Day 5 each month')
+  })
+
+  it('shows each subscription as a card, with its actions in one menu', async () => {
+    show(overview(), {}, '/?tab=subscription')
+    const card = (await screen.findByRole('heading', { name: 'Furlenco' })).closest('article')!
+    expect(card).toHaveTextContent('Customer FUR-2291')
+    expect(within(card).getByText('Active')).toBeInTheDocument()
+    // The header names the provider, so the figures do not repeat it.
+    expect(within(card).queryByText('Provider')).toBeNull()
+    expect(card).toHaveTextContent('Monthly total₹2,200.00')
+    expect(card).toHaveTextContent('3 items in the flat')
+    expect(card).toHaveTextContent('5 Dec 2026')
+    expect(card).toHaveTextContent('Deposit held₹5,000.00')
+    await userEvent.click(within(card).getByRole('button', { name: 'More options' }))
     expect(screen.getAllByRole('menuitem').map((option) => option.textContent)).toEqual([
       'Edit subscription',
       'End subscription',
     ])
+    // Choosing from the card's menu is not also opening the card.
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Edit subscription' }))
+    expect(screen.getByRole('dialog', { name: 'Edit subscription' })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Furlenco Subscription' })).toBeNull()
+  })
+
+  it("opens a subscription's details, its deposit and what is rented from it", async () => {
+    show(overview(), {}, '/?tab=subscription')
+    await userEvent.click((await screen.findByRole('heading', { name: 'Furlenco' })).closest('article')!)
+    const dialog = screen.getByRole('dialog', { name: 'Furlenco Subscription' })
+    expect(dialog).toHaveTextContent('Customer FUR-2291')
+    expect(dialog).toHaveTextContent('Monthly Rent₹2,200.003 active items')
+    expect(dialog).toHaveTextContent('Next Billing5 Dec 2026Day 5 each month')
+    expect(dialog).toHaveTextContent('Deposit Paid₹5,000.00No refund recorded yet')
+    expect(dialog).toHaveTextContent('Deposit Held₹5,000.00Held by the provider')
+    const account = within(dialog).getByLabelText('Account and contract details')
+    expect(account).toHaveTextContent('Customer IDFUR-2291')
+    expect(account).toHaveTextContent('Subscription Reference—')
+    const rented = within(dialog).getByRole('table', { name: 'Items rented from Furlenco' })
+    expect(within(rented).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Item',
+      'Category',
+      'Paid by',
+      'Monthly rent',
+      'Status',
+    ])
+    expect(within(rented).getByRole('row', { name: /Sofa/ })).toHaveTextContent('SofaLiving roomShared₹1,000.00In the flat')
+    expect(within(rented).getByRole('row', { name: /Queen bed/ })).toHaveTextContent('Queen bedBedroomBob₹500.00In the flat')
+    expect(within(rented).getByRole('row', { name: /Desk/ })).toHaveTextContent('Awaiting delivery')
+
+    // Its actions are there too.
+    await userEvent.click(within(dialog).getByRole('button', { name: 'End subscription' }))
+    expect(screen.queryByRole('dialog', { name: 'Furlenco Subscription' })).toBeNull()
+    expect(screen.getByRole('dialog', { name: /End/ })).toBeInTheDocument()
+  })
+
+  it('opens a subscription card from the keyboard', async () => {
+    show(overview(), {}, '/?tab=subscription')
+    const card = (await screen.findByRole('heading', { name: 'Furlenco' })).closest('article')!
+    card.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(screen.getByRole('dialog', { name: 'Furlenco Subscription' })).toBeInTheDocument()
   })
 
   it('lists each item with who pays for it and where it is', async () => {
@@ -901,13 +956,23 @@ describe('FurnitureRental', () => {
 
     it('keeps a subscription for each provider, and adds another', async () => {
       show(both, {}, '/?tab=subscription')
-      const furlencoCard = (await screen.findByRole('heading', { name: 'Furniture rental · Furlenco' })).closest('section')!
+      const panel = (await screen.findByRole('heading', { name: 'Rental Subscriptions' })).closest('section')!
+      const furlencoCard = within(panel).getByRole('heading', { name: 'Furniture rental · Furlenco' }).closest('article')!
       expect(furlencoCard).toHaveTextContent('Deposit held₹5,000.00')
-      const rentomojoCard = screen.getByRole('heading', { name: 'Furniture rental · Rentomojo' }).closest('section')!
+      const rentomojoCard = within(panel).getByRole('heading', { name: 'Furniture rental · Rentomojo' }).closest('article')!
       expect(rentomojoCard).toHaveTextContent('Monthly total₹500.00')
       expect(rentomojoCard).toHaveTextContent('Deposit held₹2,000.00')
+      expect(screen.getByText('Active Providers').parentElement).toHaveTextContent('2Furlenco, Rentomojo')
+      expect(screen.getByText('Total Deposit Held').parentElement).toHaveTextContent(
+        '₹7,000.00 paid across 2 providers',
+      )
 
-      await userEvent.click(screen.getByRole('button', { name: 'Add rental provider' }))
+      // Each card has its own menu; adding a provider is the + in the panel's header.
+      expect(within(rentomojoCard).getByRole('button', { name: 'More options' })).toBeInTheDocument()
+      const add = within(panel).getByRole('button', { name: 'Add rental provider' })
+      expect(furlencoCard).not.toContainElement(add)
+      expect(rentomojoCard).not.toContainElement(add)
+      await userEvent.click(add)
       const dialog = screen.getByRole('dialog', { name: 'Add rental provider' })
       await userEvent.selectOptions(within(dialog).getByLabelText('Provider'), 'Rentomojo')
       await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
@@ -916,6 +981,21 @@ describe('FurnitureRental', () => {
         provider_name: 'Rentomojo',
         create_new: true,
       })
+    })
+
+    it("lists in a provider's details only what is rented from it", async () => {
+      show(both, {}, '/?tab=subscription')
+      await userEvent.click(
+        (await screen.findByRole('heading', { name: 'Furniture rental · Rentomojo' })).closest('article')!,
+      )
+      const dialog = screen.getByRole('dialog', { name: 'Rentomojo Subscription' })
+      expect(dialog).toHaveTextContent('Deposit Paid₹2,000.00')
+      const rented = within(dialog).getByRole('table', { name: 'Items rented from Rentomojo' })
+      expect(within(rented).getAllByRole('row').slice(1).map((row) => row.querySelector('th')!.textContent)).toEqual([
+        'Queen bed',
+      ])
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Edit subscription' }))
+      expect(screen.getByRole('dialog', { name: 'Edit subscription' })).toBeInTheDocument()
     })
   })
 
