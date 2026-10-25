@@ -6,10 +6,15 @@
  * the residents taking part and a resident's own items are charged to them;
  * nothing is prorated, so an item in the flat at any point in a month counts in
  * full. Recording a month's bill writes one ordinary expense.
+ *
+ * Once it is recorded, flatmates pay their shares into the kitty. When one of
+ * them paid the provider the whole bill instead, the kitty pays them back out
+ * of what the others paid in.
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Archive, Pencil, Plus, Receipt, Sofa, Undo2 } from 'lucide-react'
+import { Archive, Check, Clock, HandCoins, Pencil, Plus, Receipt, Sofa, Undo2 } from 'lucide-react'
+import { clsx } from 'clsx'
 import { Page, useApp } from '../../components/Layout'
 import { AsyncSection, ErrorNotice, Modal } from '../../components/Primitives'
 import { DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
@@ -34,7 +39,9 @@ import type {
   FurnitureItem,
   FurnitureItemStatus,
   FurnitureMonthBill,
+  FurnitureReimbursement,
   FurnitureRentalOverview,
+  FurnitureShareStatus,
   Resident,
 } from '../../api/types'
 
@@ -66,6 +73,13 @@ const DEPOSIT_STATUS: Record<FurnitureDepositStatus, string> = {
 
 const PROVIDERS = ['Furlenco', 'Rentomojo']
 
+// `funded_payout` reads "Paid Furlenco", with the provider's name.
+const SHARE_STATUS: Record<Exclude<FurnitureShareStatus, 'funded_payout'>, { label: string; tone: Tone }> = {
+  paid: { label: 'Paid into Kitty', tone: 'success' },
+  partial: { label: 'Part paid', tone: 'warning' },
+  unpaid: { label: 'Unpaid', tone: 'warning' },
+}
+
 type Dialog =
   | { kind: 'setup' }
   | { kind: 'retire' }
@@ -74,6 +88,8 @@ type Dialog =
   | { kind: 'return'; item: FurnitureItem }
   | { kind: 'remove'; item: FurnitureItem }
   | { kind: 'generate'; bill: FurnitureMonthBill }
+  | { kind: 'payout'; bill: FurnitureMonthBill }
+  | { kind: 'reimburse'; reimbursement: FurnitureReimbursement }
 
 export default function FurnitureRentalPage() {
   const { month } = useApp()
@@ -127,7 +143,17 @@ export function FurnitureRental({ month }: { month: string }) {
                 <BillPanel
                   month={month}
                   bill={data.month}
+                  provider={data.config.provider_name}
                   onGenerate={(bill) => setDialog({ kind: 'generate', bill })}
+                  onMarkPaid={(bill) => setDialog({ kind: 'payout', bill })}
+                />
+              )}
+              {data.month?.reimbursement && (
+                <ReimbursementPanel
+                  month={month}
+                  reimbursement={data.month.reimbursement}
+                  provider={data.config.provider_name}
+                  onReimburse={(reimbursement) => setDialog({ kind: 'reimburse', reimbursement })}
                 />
               )}
             </>
@@ -177,6 +203,30 @@ export function FurnitureRental({ month }: { month: string }) {
               onClose={() => setDialog(null)}
               onDone={() =>
                 done(`${formatMonth(month)} furniture bill recorded`, formatInr(dialog.bill.total_paise))
+              }
+            />
+          )}
+          {dialog?.kind === 'payout' && data.config && (
+            <MarkPaidByResidentDialog
+              month={month}
+              bill={dialog.bill}
+              provider={data.config.provider_name}
+              onClose={() => setDialog(null)}
+              onDone={(payer) =>
+                done(
+                  'Vendor payout recorded',
+                  `${payer} paid ${data.config!.provider_name} ${formatInr(dialog.bill.expense!.amount_paise)}`,
+                )
+              }
+            />
+          )}
+          {dialog?.kind === 'reimburse' && (
+            <ReimburseDialog
+              month={month}
+              reimbursement={dialog.reimbursement}
+              onClose={() => setDialog(null)}
+              onDone={(amount) =>
+                done('Reimbursement recorded', `${formatInr(amount)} from the kitty to ${dialog.reimbursement.recipient_name}`)
               }
             />
           )}
@@ -338,13 +388,20 @@ function ItemsPanel({
 function BillPanel({
   month,
   bill,
+  provider,
   onGenerate,
+  onMarkPaid,
 }: {
   month: string
   bill: FurnitureMonthBill
+  provider: string
   onGenerate: (bill: FurnitureMonthBill) => void
+  onMarkPaid: (bill: FurnitureMonthBill) => void
 }) {
   const finalized = bill.statement_status != null && bill.statement_status !== 'draft'
+  // Who has paid what means something only once the bill is recorded.
+  const billed = bill.expense != null
+  const payout = bill.vendor_payout
   return (
     <Panel
       title={`Monthly Bill & Shares · ${formatMonth(month)}`}
@@ -372,16 +429,43 @@ function BillPanel({
         </p>
       )}
 
+      {billed &&
+        (payout ? (
+          <div>
+            <Pill tone="success" className="!whitespace-normal">
+              <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
+              <span>
+                Paid directly to {provider} by {payout.payer_name} on {formatDate(payout.payment_date)}
+                {payout.reference && ` (Ref: ${payout.reference})`}
+              </span>
+            </Pill>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
+            <span className="min-w-0 text-xs text-[var(--text-secondary)]" role="status">
+              <span className="inline-flex items-center gap-1.5 font-semibold text-[var(--warning)]">
+                <Clock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                Pending vendor payout
+              </span>{' '}
+              · Nobody is recorded as having paid {provider} the {formatMonth(month)} bill yet.
+            </span>
+            <button type="button" className={BUTTON_SECONDARY} onClick={() => onMarkPaid(bill)}>
+              Mark Paid by Resident
+            </button>
+          </div>
+        ))}
+
       {bill.shares.length > 0 && (
         <div className="overflow-x-auto min-w-0">
-          <table className="w-full text-xs min-w-[560px] border-collapse">
+          <table className={clsx('w-full text-xs border-collapse', billed ? 'min-w-[680px]' : 'min-w-[560px]')}>
             <caption className="sr-only">Shares for {formatMonth(month)}</caption>
             <thead>
               <tr className={TABLE_HEAD}>
                 <th scope="col" className="pb-3 pr-3 font-bold text-center">Resident</th>
                 <th scope="col" className="pb-3 pr-3 font-bold text-center">Shared items</th>
                 <th scope="col" className="pb-3 pr-3 font-bold text-center">Own items</th>
-                <th scope="col" className="pb-3 font-bold text-center">Total</th>
+                <th scope="col" className={clsx('pb-3 font-bold text-center', billed && 'pr-3')}>Total</th>
+                {billed && <th scope="col" className="pb-3 font-bold text-center">Status</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -402,9 +486,24 @@ function BillPanel({
                       <span className="block text-[11px] text-[var(--text-tertiary)]">{share.private_items.join(', ')}</span>
                     )}
                   </td>
-                  <td className="py-3 text-center font-bold text-[var(--text-primary)]">
+                  <td className={clsx('py-3 text-center font-bold text-[var(--text-primary)]', billed && 'pr-3')}>
                     <Rupees paise={share.total_paise} />
                   </td>
+                  {billed && (
+                    <td className="py-3 text-center whitespace-nowrap">
+                      <ShareStatus status={share.status} provider={provider} />
+                      {share.status === 'partial' && (
+                        <span className="block mt-1 text-[11px] text-[var(--text-tertiary)] tabular">
+                          {formatInr(share.paid_paise)} of {formatInr(share.total_paise)}
+                        </span>
+                      )}
+                      {share.paid_date && share.status !== 'unpaid' && (
+                        <span className="block mt-1 text-[11px] text-[var(--text-tertiary)] tabular">
+                          On {formatDate(share.paid_date)}
+                        </span>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -437,6 +536,96 @@ function BillPanel({
               onClick={() => onGenerate(bill)}
             >
               Record {formatMonth(month)} bill
+            </button>
+          </>
+        )}
+      </div>
+    </Panel>
+  )
+}
+
+function ShareStatus({ status, provider }: { status: FurnitureShareStatus | null; provider: string }) {
+  if (!status) return <span className="text-[var(--text-tertiary)]">—</span>
+  const { label, tone } =
+    status === 'funded_payout' ? { label: `Paid ${provider}`, tone: 'accent' as Tone } : SHARE_STATUS[status]
+  return (
+    <Pill tone={tone}>
+      {status === 'paid' || status === 'funded_payout' ? (
+        <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
+      ) : (
+        <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
+      )}
+      {label}
+    </Pill>
+  )
+}
+
+/* -------------------------------------------- 4. paying back who paid it -- */
+
+function ReimbursementPanel({
+  month,
+  reimbursement,
+  provider,
+  onReimburse,
+}: {
+  month: string
+  reimbursement: FurnitureReimbursement
+  provider: string
+  onReimburse: (reimbursement: FurnitureReimbursement) => void
+}) {
+  const owed = reimbursement
+  const name = owed.recipient_name
+  const settled = owed.pending_reimbursement_paise === 0
+  return (
+    <Panel
+      title={`Reimbursement · ${name}`}
+      icon={<HandCoins className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint={`${name} paid ${provider} the whole ${formatMonth(month)} bill. The kitty pays them back out of what the others pay in for it.`}
+    >
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+        <MiniStat label="Fronted" value={<Rupees paise={owed.total_fronted_paise} />} note={`Paid to ${provider}`} />
+        <MiniStat
+          label="Owed back"
+          value={<Rupees paise={owed.net_reimbursement_owed_paise} />}
+          note={owed.payer_share_paise ? `Less their own share of ${formatInr(owed.payer_share_paise)}` : 'They have no share'}
+        />
+        <MiniStat
+          label="Paid back"
+          value={<Rupees paise={owed.reimbursed_so_far_paise} />}
+          note={settled ? 'Nothing still owed' : `${formatInr(owed.pending_reimbursement_paise)} still owed`}
+        />
+        <MiniStat
+          label="Kitty cash available"
+          value={<Rupees paise={owed.kitty_cash_available_paise} />}
+          note="Paid in for this bill, not yet paid back"
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {settled ? (
+          <span className="text-xs text-[var(--text-secondary)]">
+            <Pill tone="success">
+              <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
+              Reimbursed
+            </Pill>{' '}
+            {name} has been paid back in full.
+          </span>
+        ) : (
+          <>
+            <span className="text-xs text-[var(--text-secondary)]">
+              {owed.can_reimburse
+                ? `The kitty can pay back ${formatInr(owed.reimbursable_paise)} now.`
+                : 'Nothing paid into the kitty for this bill is waiting to go back yet.'}
+            </span>
+            <button
+              type="button"
+              className={BUTTON_PRIMARY}
+              disabled={!owed.can_reimburse}
+              onClick={() => onReimburse(owed)}
+            >
+              {owed.can_reimburse
+                ? `Reimburse ${formatInr(owed.reimbursable_paise)} from Kitty to ${name}`
+                : `Reimburse from Kitty to ${name}`}
             </button>
           </>
         )}
@@ -855,6 +1044,140 @@ function GenerateDialog({
             </li>
           ))}
         </ul>
+      </form>
+    </Modal>
+  )
+}
+
+function MarkPaidByResidentDialog({
+  month,
+  bill,
+  provider,
+  onClose,
+  onDone,
+}: {
+  month: string
+  bill: FurnitureMonthBill
+  provider: string
+  onClose: () => void
+  onDone: (payer: string) => void
+}) {
+  const residents = useResource<{ items: Resident[] }>('/api/residents')
+  const [payer, setPayer] = useState('')
+  const [date, setDate] = useState(todayIso())
+  const [reference, setReference] = useState('')
+  const [notes, setNotes] = useState('')
+  // The provider is paid the whole recorded bill, in one go.
+  const amount = bill.expense!.amount_paise
+  const people = (residents.data?.items ?? []).filter(
+    (resident) => resident.is_active || bill.shares.some((share) => share.resident_id === resident.resident_id),
+  )
+  const valid = Boolean(payer) && Boolean(date)
+  const save = useMutation(
+    () =>
+      api.post<FurnitureRentalOverview>(`${BASE}/mark-paid-by-resident`, {
+        settlement_month: month,
+        payer_resident_id: payer,
+        amount_paise: amount,
+        payment_date: date,
+        reference: reference.trim() || null,
+        notes: notes.trim() || null,
+      }),
+    { onSuccess: () => onDone(people.find((resident) => resident.resident_id === payer)?.display_name ?? payer) },
+  )
+  return (
+    <Modal
+      title="Mark Paid by Resident"
+      description={`Who paid ${provider} the ${formatMonth(month)} bill of ${formatInr(amount)} from their own account. They are credited the whole bill and still owe their own share, so the kitty pays them back the rest.`}
+      onClose={onClose}
+      footer={
+        <DialogFooter onClose={onClose} pending={save.pending} disabled={!valid} label="Record payout" form="furniture-payout" />
+      }
+    >
+      <form id="furniture-payout" className="stack" noValidate onSubmit={submitWith(() => valid && void save.run(undefined))}>
+        <ErrorNotice error={save.error} />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+          <SelectField
+            label="Paid by"
+            required
+            value={payer}
+            placeholder={residents.data ? 'Choose a resident' : 'Loading…'}
+            options={people.map((resident) => ({ value: resident.resident_id, label: resident.display_name }))}
+            onChange={setPayer}
+          />
+          <DateField label="Paid on" required value={date} onChange={setDate} />
+        </div>
+        <TextField
+          label="Reference / UTR"
+          value={reference}
+          onChange={setReference}
+          maxLength={200}
+          placeholder="e.g. UPI ref or bank UTR"
+        />
+        <TextField label="Note" value={notes} onChange={setNotes} maxLength={500} />
+      </form>
+    </Modal>
+  )
+}
+
+function ReimburseDialog({
+  month,
+  reimbursement,
+  onClose,
+  onDone,
+}: {
+  month: string
+  reimbursement: FurnitureReimbursement
+  onClose: () => void
+  onDone: (amount: number) => void
+}) {
+  const [date, setDate] = useState(todayIso())
+  const [reference, setReference] = useState('')
+  const [notes, setNotes] = useState('')
+  const name = reimbursement.recipient_name
+  // What the kitty holds for the bill now; the rest waits for the others to pay in.
+  const amount = reimbursement.reimbursable_paise
+  const later = reimbursement.pending_reimbursement_paise - amount
+  const save = useMutation(
+    () =>
+      api.post<FurnitureRentalOverview>(`${BASE}/reimburse-from-kitty`, {
+        settlement_month: month,
+        recipient_resident_id: reimbursement.recipient_resident_id,
+        amount_paise: amount,
+        payment_date: date,
+        reference: reference.trim() || null,
+        notes: notes.trim() || null,
+      }),
+    { onSuccess: () => onDone(amount) },
+  )
+  return (
+    <Modal
+      title={`Reimburse ${name}`}
+      description={`${formatInr(amount)} from the kitty to ${name}, out of what flatmates paid in for the ${formatMonth(month)} bill.${later > 0 ? ` ${formatInr(later)} more is owed once the rest have paid.` : ''}`}
+      onClose={onClose}
+      footer={
+        <DialogFooter
+          onClose={onClose}
+          pending={save.pending}
+          disabled={!date}
+          label="Record reimbursement"
+          form="furniture-reimburse"
+        />
+      }
+    >
+      <form id="furniture-reimburse" className="stack" noValidate onSubmit={submitWith(() => Boolean(date) && void save.run(undefined))}>
+        <ErrorNotice error={save.error} />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+          <DateField label="Paid on" required value={date} onChange={setDate} />
+          <TextField
+            label="Reference / UTR"
+            value={reference}
+            onChange={setReference}
+            maxLength={200}
+            placeholder="e.g. UPI ref or bank UTR"
+          />
+        </div>
+        <TextField label="Note" value={notes} onChange={setNotes} maxLength={500} />
       </form>
     </Modal>
   )

@@ -1385,6 +1385,12 @@ export interface FurnitureItem {
   updated_at: string
 }
 
+/**
+ * Where a resident's charge on a recorded bill stands. `funded_payout`: they
+ * paid the provider the whole bill, which covers their own share.
+ */
+export type FurnitureShareStatus = 'paid' | 'partial' | 'unpaid' | 'funded_payout'
+
 export interface FurnitureShare {
   resident_id: string
   display_name: string
@@ -1393,6 +1399,40 @@ export interface FurnitureShare {
   private_paise: number
   private_items: string[]
   total_paise: number
+  /** Paid towards their charge, into the kitty or by paying the provider. 0 until the bill is recorded. */
+  paid_paise: number
+  /** Null until the bill is recorded, and for a charge of nothing. */
+  status: FurnitureShareStatus | null
+  paid_date: string | null
+}
+
+/** A resident paying the provider the month's bill from their own account. */
+export interface FurnitureVendorPayout {
+  /** Null when more than one resident paid part of it (recorded outside this screen). */
+  payer_resident_id: string | null
+  payer_name: string
+  amount_paise: number
+  payment_date: string
+  reference: string | null
+}
+
+/** What the kitty owes the resident who paid the provider, and has paid back. */
+export interface FurnitureReimbursement {
+  recipient_resident_id: string
+  recipient_name: string
+  total_fronted_paise: number
+  /** Their own charge on the bill. */
+  payer_share_paise: number
+  /** What they paid, less the part of their own share not already paid into the kitty. */
+  net_reimbursement_owed_paise: number
+  reimbursed_so_far_paise: number
+  pending_reimbursement_paise: number
+  /** What flatmates paid into the kitty for the bill, less what has been paid back. */
+  kitty_cash_available_paise: number
+  /** What can be paid back now: the lesser of the two above. */
+  reimbursable_paise: number
+  can_reimburse: boolean
+  reimbursements: Array<{ payment_id: string; amount_paise: number; payment_date: string; reference: string | null }>
 }
 
 /** What a month bills. Nothing prorates: an item in the flat at any point counts in full. */
@@ -1413,6 +1453,10 @@ export interface FurnitureMonthBill {
   expense: { expense_id: string; description: string; amount_paise: number; statement_id: string | null } | null
   statement_status: StatementStatus | null
   can_generate: boolean
+  /** Null until a resident is recorded as having paid the provider the recorded bill. */
+  vendor_payout: FurnitureVendorPayout | null
+  /** Null unless one resident paid the provider. */
+  reimbursement: FurnitureReimbursement | null
 }
 
 export interface FurnitureRentalOverview {

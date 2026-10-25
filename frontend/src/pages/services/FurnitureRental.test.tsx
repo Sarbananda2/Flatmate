@@ -61,17 +61,85 @@ const bill = (overrides: Record<string, unknown> = {}) => ({
   base_share_paise: 56666,
   remainder_paise: 2,
   shares: [
-    { resident_id: 'alice', display_name: 'Alice', taking_part: true, common_share_paise: 56667, private_paise: 0, private_items: [], total_paise: 56667 },
-    { resident_id: 'bob', display_name: 'Bob', taking_part: true, common_share_paise: 56667, private_paise: 50000, private_items: ['Queen bed'], total_paise: 106667 },
-    { resident_id: 'chris', display_name: 'Chris', taking_part: true, common_share_paise: 56666, private_paise: 0, private_items: [], total_paise: 56666 },
+    share('alice', 'Alice', 56667),
+    share('bob', 'Bob', 56667, { private_paise: 50000, private_items: ['Queen bed'], total_paise: 106667 }),
+    share('chris', 'Chris', 56666),
   ],
   excluded_residents: [],
   blocked_reason: null,
   expense: null,
   statement_status: 'draft',
   can_generate: true,
+  vendor_payout: null,
+  reimbursement: null,
   ...overrides,
 })
+
+function share(residentId: string, name: string, common: number, overrides: Record<string, unknown> = {}) {
+  return {
+    resident_id: residentId,
+    display_name: name,
+    taking_part: true,
+    common_share_paise: common,
+    private_paise: 0,
+    private_items: [],
+    total_paise: common,
+    paid_paise: 0,
+    status: null,
+    paid_date: null,
+    ...overrides,
+  }
+}
+
+/** November recorded as an expense, with nobody yet paid. */
+const billed = (overrides: Record<string, unknown> = {}) =>
+  bill({
+    expense: { expense_id: 'furniture-1', description: 'Furniture rental for November 2026', amount_paise: 220000, statement_id: null },
+    can_generate: false,
+    shares: bill().shares.map((row) => ({ ...row, status: 'unpaid' })),
+    ...overrides,
+  })
+
+/** What the kitty owes Alice for paying Furlenco, with Bob's and part of Chris's share paid in. */
+const OWED_TO_ALICE = {
+  recipient_resident_id: 'alice',
+  recipient_name: 'Alice',
+  total_fronted_paise: 220000,
+  payer_share_paise: 56667,
+  net_reimbursement_owed_paise: 163333,
+  reimbursed_so_far_paise: 0,
+  pending_reimbursement_paise: 163333,
+  kitty_cash_available_paise: 136667,
+  reimbursable_paise: 136667,
+  can_reimburse: true,
+  reimbursements: [],
+}
+
+/** Alice paid Furlenco the whole bill; Bob has paid into the kitty and Chris part of his share. */
+const paidByAlice = (overrides: Record<string, unknown> = {}) =>
+  billed({
+    shares: [
+      share('alice', 'Alice', 56667, { paid_paise: 56667, status: 'funded_payout', paid_date: '2026-11-05' }),
+      share('bob', 'Bob', 56667, {
+        private_paise: 50000,
+        private_items: ['Queen bed'],
+        total_paise: 106667,
+        paid_paise: 106667,
+        status: 'paid',
+        paid_date: '2026-11-08',
+      }),
+      share('chris', 'Chris', 56666, { paid_paise: 30000, status: 'partial', paid_date: '2026-11-08' }),
+    ],
+    vendor_payout: {
+      payer_resident_id: 'alice',
+      payer_name: 'Alice',
+      amount_paise: 220000,
+      payment_date: '2026-11-05',
+      reference: 'UTR-4471',
+    },
+    reimbursement: OWED_TO_ALICE,
+    ...overrides,
+  })
 
 const overview = (overrides: Record<string, unknown> = {}) => ({
   service: {
@@ -259,6 +327,113 @@ describe('FurnitureRental', () => {
       delivery_date: null,
       status: 'active',
     })
+  })
+
+  it('says when nobody has paid the provider, and records who did', async () => {
+    show(overview({ month: billed() }), {
+      'POST /api/services/furniture/mark-paid-by-resident': overview({ month: paidByAlice() }),
+    })
+    expect(await screen.findByText('Pending vendor payout')).toBeInTheDocument()
+    const shares = screen.getByRole('table', { name: 'Shares for November 2026' })
+    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Unpaid')
+
+    await userEvent.click(screen.getByRole('button', { name: 'Mark Paid by Resident' }))
+    const dialog = screen.getByRole('dialog', { name: 'Mark Paid by Resident' })
+    expect(dialog).toHaveTextContent('Who paid Furlenco the November 2026 bill of ₹2,200.00')
+    const record = within(dialog).getByRole('button', { name: 'Record payout' })
+    expect(record).toBeDisabled()
+    await waitFor(() => expect(within(dialog).getByRole('option', { name: 'Alice' })).toBeInTheDocument())
+    await userEvent.selectOptions(within(dialog).getByLabelText(/^Paid by/), 'alice')
+    await userEvent.type(within(dialog).getByLabelText('Reference / UTR'), 'UTR-4471')
+    await userEvent.click(record)
+
+    await waitFor(() => expect(sent('POST', '/api/services/furniture/mark-paid-by-resident')).toBeDefined())
+    expect(sent('POST', '/api/services/furniture/mark-paid-by-resident')!.body).toEqual({
+      settlement_month: MONTH,
+      payer_resident_id: 'alice',
+      amount_paise: 220000,
+      payment_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      reference: 'UTR-4471',
+      notes: null,
+    })
+    expect(await screen.findByText('Vendor payout recorded')).toBeInTheDocument()
+  })
+
+  it('shows who paid the provider, what each flatmate has paid in, and reimburses from the kitty', async () => {
+    show(overview({ month: paidByAlice() }), {
+      'POST /api/services/furniture/reimburse-from-kitty': overview({ month: paidByAlice() }),
+    })
+    expect(
+      await screen.findByText('Paid directly to Furlenco by Alice on 5 Nov 2026 (Ref: UTR-4471)'),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Mark Paid by Resident' })).toBeNull()
+
+    const shares = screen.getByRole('table', { name: 'Shares for November 2026' })
+    expect(within(shares).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Resident',
+      'Shared items',
+      'Own items',
+      'Total',
+      'Status',
+    ])
+    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('Paid FurlencoOn 5 Nov 2026')
+    expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent('Paid into KittyOn 8 Nov 2026')
+    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Part paid₹300.00 of ₹566.66')
+
+    const card = screen.getByRole('heading', { name: 'Reimbursement · Alice' }).closest('section')!
+    expect(card).toHaveTextContent('Fronted₹2,200.00')
+    expect(card).toHaveTextContent('Owed back₹1,633.33Less their own share of ₹566.67')
+    expect(card).toHaveTextContent('Paid back₹0.00₹1,633.33 still owed')
+    expect(card).toHaveTextContent('Kitty cash available₹1,366.67')
+
+    await userEvent.click(within(card).getByRole('button', { name: 'Reimburse ₹1,366.67 from Kitty to Alice' }))
+    const dialog = screen.getByRole('dialog', { name: 'Reimburse Alice' })
+    expect(dialog).toHaveTextContent('₹1,366.67 from the kitty to Alice')
+    expect(dialog).toHaveTextContent('₹266.66 more is owed once the rest have paid.')
+    await userEvent.type(within(dialog).getByLabelText('Reference / UTR'), 'UPI-88')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Record reimbursement' }))
+
+    await waitFor(() => expect(sent('POST', '/api/services/furniture/reimburse-from-kitty')).toBeDefined())
+    expect(sent('POST', '/api/services/furniture/reimburse-from-kitty')!.body).toEqual({
+      settlement_month: MONTH,
+      recipient_resident_id: 'alice',
+      amount_paise: 136667,
+      payment_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      reference: 'UPI-88',
+      notes: null,
+    })
+    expect(await screen.findByText('Reimbursement recorded')).toBeInTheDocument()
+  })
+
+  it('waits for the kitty to collect before reimbursing, and says when it is done', async () => {
+    const { unmount } = show(
+      overview({
+        month: paidByAlice({
+          reimbursement: { ...OWED_TO_ALICE, kitty_cash_available_paise: 0, reimbursable_paise: 0, can_reimburse: false },
+        }),
+      }),
+    )
+    expect(await screen.findByRole('button', { name: 'Reimburse from Kitty to Alice' })).toBeDisabled()
+    unmount()
+    stub?.restore()
+
+    show(
+      overview({
+        month: paidByAlice({
+          reimbursement: {
+            ...OWED_TO_ALICE,
+            reimbursed_so_far_paise: 163333,
+            pending_reimbursement_paise: 0,
+            kitty_cash_available_paise: 0,
+            reimbursable_paise: 0,
+            can_reimburse: false,
+          },
+        }),
+      }),
+    )
+    const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
+    expect(card).toHaveTextContent('Alice has been paid back in full.')
+    expect(within(card).queryByRole('button', { name: /Reimburse/ })).toBeNull()
   })
 
   it('records the day an item went back', async () => {

@@ -147,3 +147,44 @@ class FurnitureRentalRepository(Repository):
         return self._s.fetch_one(
             "SELECT statement_id, status FROM monthly_statement "
             "WHERE apartment_id=%s AND settlement_month=%s", (apartment_id, settlement_month))
+
+    # ------------------------------------------------- paying the month's bill --
+
+    def charges_for_expense(self, expense_id: str) -> list[dict[str, Any]]:
+        """Each resident's charge on a month's bill, with what has been paid into
+        the pool against it and the date of the latest such payment."""
+        return self._s.fetch_all(
+            """SELECT a.resident_id,
+                      SUM(a.amount_paise)::BIGINT AS share_paise,
+                      COALESCE(SUM((SELECT SUM(pa.amount_paise) FROM payment_application pa
+                                     WHERE pa.allocation_id = a.allocation_id)), 0)::BIGINT
+                          AS settled_paise,
+                      (SELECT MAX(p.payment_date) FROM payment_application pa
+                         JOIN payment p ON p.payment_id = pa.payment_id
+                         JOIN allocation a2 ON a2.allocation_id = pa.allocation_id
+                        WHERE a2.expense_id = a.expense_id
+                          AND a2.resident_id = a.resident_id) AS last_payment_date
+                 FROM allocation a
+                WHERE a.expense_id = %s
+                GROUP BY a.expense_id, a.resident_id
+                ORDER BY a.resident_id""", (expense_id,))
+
+    def vendor_advances(self, expense_id: str) -> list[dict[str, Any]]:
+        """Active provider advances funding a month's bill, oldest first, with who paid."""
+        return self._s.fetch_all(
+            """SELECT p.payment_id, p.payer_resident_id, r.display_name AS payer_name,
+                      p.amount_paise, p.payment_date, p.reference
+                 FROM payment p JOIN resident r ON r.resident_id = p.payer_resident_id
+                WHERE p.expense_id = %s AND p.payment_kind = 'provider_advance'
+                  AND p.status = 'active'
+                ORDER BY p.payment_date, p.row_seq""", (expense_id,))
+
+    def reimbursements(self, payment_id_prefix: str) -> list[dict[str, Any]]:
+        """Active refunds from the pool whose payment ID starts with the prefix,
+        oldest first."""
+        return self._s.fetch_all(
+            """SELECT payment_id, payer_resident_id, amount_paise, payment_date, reference
+                 FROM payment
+                WHERE payment_kind = 'refund' AND status = 'active'
+                  AND starts_with(payment_id, %s)
+                ORDER BY payment_date, row_seq""", (payment_id_prefix,))

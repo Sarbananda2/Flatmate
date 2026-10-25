@@ -11,6 +11,8 @@ from ...schemas import (
     FurnitureGenerateRequest,
     FurnitureItemCreate,
     FurnitureItemUpdate,
+    FurniturePayoutRequest,
+    FurnitureReimburseRequest,
     FurnitureSetupRequest,
 )
 from ...services import furniture_rental
@@ -90,6 +92,38 @@ def generate_cycle(payload: FurnitureGenerateRequest, db: Db, apartment_id: Apar
         return furniture_rental.generate_month(
             db, apartment_id, payload.settlement_month, payload.excluded_resident_ids,
             actor=settings.operator_name)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.post("/mark-paid-by-resident", status_code=201,
+             summary="Record a resident paying the provider a month's bill")
+def mark_paid_by_resident(payload: FurniturePayoutRequest, db: Db, apartment_id: ApartmentId,
+                          settings: AppSettings) -> dict[str, Any]:
+    """A provider advance linked to the month's bill: the resident is credited
+    the whole bill and still owes their own share, so the kitty owes them the
+    rest. The bill must be recorded first, and is paid once, in full."""
+    try:
+        return furniture_rental.mark_paid_by_resident(
+            db, apartment_id, payload.settlement_month, payload.payer_resident_id,
+            payment_date=payload.payment_date, amount_paise=payload.amount_paise,
+            reference=payload.reference, notes=payload.notes, actor=settings.operator_name)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.post("/reimburse-from-kitty", status_code=201,
+             summary="Pay back the resident who paid a month's bill, from the kitty")
+def reimburse_from_kitty(payload: FurnitureReimburseRequest, db: Db, apartment_id: ApartmentId,
+                         settings: AppSettings) -> dict[str, Any]:
+    """A refund from the kitty, out of what flatmates paid in for the bill. It
+    can be no more than that, less what has been paid back already, nor more
+    than the resident is still owed."""
+    try:
+        return furniture_rental.reimburse_from_kitty(
+            db, apartment_id, payload.settlement_month, payload.recipient_resident_id,
+            amount_paise=payload.amount_paise, payment_date=payload.payment_date,
+            reference=payload.reference, notes=payload.notes, actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
 

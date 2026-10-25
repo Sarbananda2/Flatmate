@@ -1127,6 +1127,31 @@ class FurnitureGenerateRequest(ApiModel):
         default_factory=list,
         description="Active residents who do not share the common items this month.")
 
+
+class FurniturePayoutRequest(ApiModel):
+    """A resident paid the provider the month's bill from their own account."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    payer_resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int | None = _money_field(
+        "The whole month's bill; omit to use it.", ge=1, default=None)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    reference: str | None = Field(None, max_length=200,
+                                  description="Bank UTR or UPI transaction ID.")
+    notes: str | None = Field(None, max_length=500)
+
+
+class FurnitureReimburseRequest(ApiModel):
+    """The kitty paying back the resident who paid the provider the month's bill."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    recipient_resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "No more than the kitty collected for the bill and has not paid back, nor more "
+        "than the resident is still owed.", ge=1)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    reference: str | None = Field(None, max_length=200,
+                                  description="Bank UTR or UPI transaction ID.")
+    notes: str | None = Field(None, max_length=500)
+
 __all__ = [
     "AdjustmentCreate", "AdjustmentReverse", "AuthStatusResponse", "AuthUser",
     "AuthUserResponse", "LoginRequest", "SignupRequest", "AllocationMethod", "OpeningBalanceCreate", "OpeningBalanceItem",
@@ -1148,7 +1173,8 @@ __all__ = [
     "DepositConfigUpdate", "DepositSlotFundingRequest", "DepositSlotInitRequest",
     "DepositSlotItem", "DepositSlotVacateRequest",
     "FurnitureCategory", "FurnitureGenerateRequest", "FurnitureItemCreate",
-    "FurnitureItemUpdate", "FurnitureSetupRequest",
+    "FurnitureItemUpdate", "FurniturePayoutRequest", "FurnitureReimburseRequest",
+    "FurnitureSetupRequest",
     "RentLeaseConfigSave", "RentLeaseRenewRequest", "RentLeaseVacateRequest",
     "RentPaymentCreate",
     "ResidentCreate", "ResidentDeactivate", "ResidentUpdate", "SetupApartmentRequest",
