@@ -210,7 +210,10 @@ describe('signed in', () => {
     expect(signedIn).toHaveTextContent('Asha Rao')
     expect(within(signedIn).getByText('Admin')).toBeInTheDocument()
 
-    await userEvent.click(within(signedIn).getByRole('button', { name: 'Log out' }))
+    // The ribbon shows only the initials; logging out is in the menu they open.
+    await userEvent.click(within(signedIn).getByRole('button', { name: /Asha Rao/i }))
+    expect(within(signedIn).getByText('asha@example.com')).toBeInTheDocument()
+    await userEvent.click(within(signedIn).getByRole('menuitem', { name: 'Log out' }))
     await waitFor(() => expect(posted('/api/auth/logout')).toBeDefined())
     expect(await screen.findByRole('heading', { name: 'Log in to your Household' })).toBeInTheDocument()
     expect(screen.queryByRole('group', { name: 'Signed in' })).toBeNull()

@@ -9,6 +9,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -139,33 +140,108 @@ function readStoredTheme(): Theme {
 const ICON_BUTTON =
   'relative p-2 rounded-xl text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] transition-colors cursor-pointer active:scale-95'
 
-/** The signed-in user in the ribbon: initials, name, role, and the way out. */
+/**
+ * The signed-in user in the ribbon: just their initials, so the ribbon never
+ * crowds the tabs. The initials open a menu with the name, email and role, and
+ * the way out; it closes on an outside click or Escape.
+ */
 function SignedInUser() {
   const auth = useOptionalAuth()
   const [leaving, setLeaving] = useState(false)
+  const [open, setOpen] = useState(false)
+  const wrapper = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const menu = useRef<HTMLDivElement>(null)
+  const menuId = useId()
+
+  const close = (returnFocus: boolean) => {
+    setOpen(false)
+    if (returnFocus) trigger.current?.focus()
+  }
+
+  useEffect(() => {
+    if (!open) return
+    // Opening the menu puts the keyboard on its first action.
+    menu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
+    const onMouseDown = (event: MouseEvent) => {
+      if (wrapper.current && !wrapper.current.contains(event.target as Node)) setOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        close(true)
+      }
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
   if (!auth?.user) return null
   const { user, logout } = auth
+  const isAdmin = user.role === 'household_admin'
   return (
-    <div className="flex items-center gap-2 min-w-0 mr-1" role="group" aria-label="Signed in">
-      <Avatar name={user.full_name} size="sm" tone="accent" />
-      <span className="sr-only sm:not-sr-only text-xs font-semibold text-[var(--text-primary)] truncate max-w-[160px]">
-        {user.full_name}
-      </span>
-      {user.role === 'household_admin' && <Pill tone="accent">Admin</Pill>}
+    <div className="relative shrink-0 mr-1" ref={wrapper} role="group" aria-label="Signed in">
+      <span className="sr-only">{user.full_name}</span>
+      <span className="sr-only">{isAdmin ? 'Admin' : 'Resident'}</span>
       <button
+        ref={trigger}
         type="button"
-        className={clsx(ICON_BUTTON, 'flex items-center gap-1.5 text-xs font-semibold')}
-        title="Log out"
-        aria-label="Log out"
-        disabled={leaving}
-        onClick={() => {
-          setLeaving(true)
-          void logout().finally(() => setLeaving(false))
-        }}
+        onClick={() => setOpen((shown) => !shown)}
+        title={user.full_name}
+        aria-label={user.full_name}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        className="flex items-center justify-center w-8 h-8 rounded-full hover:bg-[var(--bg-elevated)] transition-colors cursor-pointer active:scale-95"
       >
-        <LogOut className="w-4 h-4 shrink-0" aria-hidden="true" />
-        <span className="hidden xl:inline">Log out</span>
+        <Avatar name={user.full_name} size="sm" tone="accent" />
       </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-56 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2 shadow-xl z-50 focus:outline-none">
+          <div className="flex items-center gap-2.5 px-2 py-1.5 min-w-0">
+            <Avatar name={user.full_name} tone="accent" />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-xs font-semibold text-[var(--text-primary)] truncate">
+                  {user.full_name}
+                </span>
+                {isAdmin && <Pill tone="accent">Admin</Pill>}
+              </div>
+              <div className="text-[11px] text-[var(--text-secondary)] truncate" title={user.email}>
+                {user.email}
+              </div>
+            </div>
+          </div>
+          <div className="my-1.5 border-t border-[var(--border-subtle)]" />
+          <div ref={menu} id={menuId} role="menu" aria-orientation="vertical" aria-label={user.full_name}>
+            <button
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              aria-disabled={leaving || undefined}
+              className={clsx(
+                'w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-lg text-left transition-colors cursor-pointer focus:outline-none focus-visible:bg-[var(--bg-elevated)] text-[var(--danger)] hover:bg-rose-500/10',
+                leaving && 'opacity-50 cursor-not-allowed',
+              )}
+              onClick={() => {
+                if (leaving) return
+                setLeaving(true)
+                void logout().finally(() => setLeaving(false))
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Tab') setOpen(false)
+              }}
+            >
+              <LogOut className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Log out</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
