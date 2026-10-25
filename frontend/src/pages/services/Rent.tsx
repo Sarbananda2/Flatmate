@@ -10,7 +10,6 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Building2,
-  CalendarDays,
   Check,
   Clock,
   CreditCard,
@@ -90,34 +89,13 @@ function overdueNotice(dueDate: string | null | undefined): string | null {
 
 export function RentMonth({ month, apartment = null }: { month: string; apartment?: Apartment | null }) {
   const toast = useToast()
-  const [excluded, setExcluded] = useState<string[]>([])
-  const overview = useResource<RentMonthOverview>(`/api/rent/cycle/${month}`, {
-    exclude: excluded.join(',') || undefined,
-  })
+  // An open month is charged by itself and follows the lease, so there is
+  // nothing to generate here: the month shows its live shares, or a preview.
+  const overview = useResource<RentMonthOverview>(`/api/rent/cycle/${month}`)
   const [dialog, setDialog] = useState<'payout' | null>(null)
   const [payingFor, setPayingFor] = useState<RentParticipant | null>(null)
   const [viewingStatement, setViewingStatement] = useState<RentParticipant | null>(null)
   const [viewingLandlordStatement, setViewingLandlordStatement] = useState(false)
-
-  const generate = useMutation(
-    () =>
-      api.post<RentCycle>(`/api/rent/cycle/${month}/generate`, {
-        // The split is the household's agreement model, saved on the lease.
-        excluded_resident_ids: excluded,
-      }),
-    {
-      onSuccess: (cycle) => {
-        toast.success(
-          `Rent for ${formatMonth(month)} generated`,
-          cycle.adopted_existing_expense
-            ? 'The rent expense already recorded for this month was linked, not duplicated.'
-            : `${formatInr(cycle.total_rent_paise)} split between ${cycle.participant_count}.`,
-        )
-        setExcluded([])
-        overview.reload()
-      },
-    },
-  )
 
   return (
     <AsyncSection resource={overview} loadingLabel="Loading rent…">
@@ -162,27 +140,12 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   <CyclePanel
                     cycle={cycle}
                     config={config}
+                    blockedReason={data.live_blocked_reason ?? null}
                     onPay={setPayingFor}
                     onViewStatement={setViewingStatement}
                   />
                 ) : (
-                  preview && (
-                    <PreviewPanel
-                      month={month}
-                      preview={preview}
-                      excluded={excluded}
-                      onToggle={(residentId, takesPart) =>
-                        setExcluded((current) =>
-                          takesPart
-                            ? current.filter((id) => id !== residentId)
-                            : [...current, residentId],
-                        )
-                      }
-                      generating={generate.pending}
-                      error={generate.error}
-                      onGenerate={() => void generate.run(undefined)}
-                    />
-                  )
+                  preview && <PreviewPanel month={month} preview={preview} />
                 )}
                 <LandlordPanel
                   config={config}
@@ -195,6 +158,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   config={config}
                   cycle={cycle}
                   preview={preview}
+                  roomTiered={data.room_tiered ?? preview?.room_tiered ?? null}
                   month={month}
                   onSaved={overview.reload}
                 />
@@ -319,7 +283,7 @@ function Metrics({
         note={
           cycle
             ? `${cycle.collected_count} of ${cycle.participant_count} covered · ${percent(cycle.collected_paise, cycle.total_rent_paise)}`
-            : 'Starts once rent is generated'
+            : 'Starts once the month begins'
         }
       />
       <MiniStat
@@ -347,11 +311,14 @@ const COLLECTION: Record<RentCollectionStatus, { tone: Tone; label: string }> = 
 function CyclePanel({
   cycle,
   config,
+  blockedReason,
   onPay,
   onViewStatement,
 }: {
   cycle: RentCycle
   config: RentLeaseConfig
+  /** Why the open month cannot follow the lease as it stands: it stays as it was. */
+  blockedReason: string | null
   onPay: (participant: RentParticipant) => void
   onViewStatement: (participant: RentParticipant) => void
 }) {
@@ -388,11 +355,15 @@ function CyclePanel({
       icon={<Users className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint="What each resident owes for this month's rent, and how much of it has been collected into the House Kitty."
     >
-
-      {!cycle.matches_lease_rent && (
+      {blockedReason && (
+        <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
+          {blockedReason} This month stays as charged until it does.
+        </p>
+      )}
+      {!blockedReason && !cycle.matches_lease_rent && (
         <p className="m-0 text-xs text-[var(--warning)]">
           This month was charged at {formatInr(cycle.total_rent_paise)}; the lease now says{' '}
-          {formatInr(config.monthly_rent_paise)}. A generated month keeps its own amount.
+          {formatInr(cycle.lease_rent_paise ?? config.monthly_rent_paise)}. A closed month keeps its own amount.
         </p>
       )}
 
@@ -408,125 +379,46 @@ function CyclePanel({
   )
 }
 
-function PreviewPanel({
-  month,
-  preview,
-  excluded,
-  onToggle,
-  generating,
-  error,
-  onGenerate,
-}: {
-  month: string
-  preview: RentPreview
-  excluded: string[]
-  onToggle: (residentId: string, takesPart: boolean) => void
-  generating: boolean
-  error: ReturnType<typeof useMutation>['error']
-  onGenerate: () => void
-}) {
-  const adopting = preview.mode === 'adopt'
-  const rows = [
-    ...preview.participants.map((row) => ({ ...row, takesPart: true })),
-    // In adopt mode the participants are whoever the existing expense charges.
-    ...(adopting ? [] : preview.excluded_residents).map((row) => ({
-      ...row,
-      share_paise: 0,
-      takesPart: false,
-    })),
-  ].sort((a, b) => a.display_name.localeCompare(b.display_name))
+function PreviewPanel({ month, preview }: { month: string; preview: RentPreview }) {
   // The split follows the agreement model; it is changed on the agreement card.
   const tiered = preview.split_mode === 'room_tiered'
   const rooms = new Map(preview.room_tiered.shares.map((row) => [row.resident_id, row.room_number]))
-
+  const items: ResidentCollectionItem[] = preview.participants.map((row) => ({
+    id: row.resident_id,
+    name: row.display_name,
+    href: `/residents/${row.resident_id}`,
+    subtitle: tiered ? (rooms.get(row.resident_id) ?? 'No room') : undefined,
+    sharePaise: row.share_paise,
+    // Nothing is owed, or can be paid, until the month is charged.
+    paidIntoKittyPaise: null,
+    stillOwedPaise: null,
+    status: null,
+    canPay: false,
+  }))
   return (
     <Panel
-      title={`Rent for ${formatMonth(month)} has not been generated`}
-      icon={<CalendarDays className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      title={`Resident Collection · ${formatMonth(month)}`}
+      icon={<Users className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint={
-        adopting
-          ? 'Rent for this month is already recorded as an expense. Generating links it here; it is not charged a second time.'
-          : tiered
-            ? "Each resident taking part is charged their room's base rent. A partial month never reduces a share."
-            : 'Everyone taking part is charged a full equal share. A partial month never reduces a share.'
-      }
-      actions={
-        <button
-          type="button"
-          className={BUTTON_PRIMARY}
-          disabled={generating || !preview.can_generate}
-          onClick={onGenerate}
-        >
-          {generating
-            ? 'Generating…'
-            : adopting
-              ? 'Link existing rent'
-              : `Generate ${formatMonth(month)} rent`}
-        </button>
+        tiered
+          ? "Each resident taking part is charged their room's base rent. A partial month never reduces a share."
+          : 'Everyone taking part is charged a full equal share. A partial month never reduces a share.'
       }
     >
-      {error && <ErrorNotice error={error} />}
       {preview.blocked_reason && (
         <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
           {preview.blocked_reason}
         </p>
       )}
-      {adopting && !preview.matches_lease_rent && (
-        <p className="m-0 text-xs text-[var(--warning)]">
-          The recorded expense is {formatInr(preview.total_rent_paise)}, which differs from the
-          lease. It is linked as recorded.
+      {items.length > 0 && (
+        <ResidentCollectionTable caption={`Rent shares for ${formatMonth(month)}`} items={items} />
+      )}
+      {preview.excluded_residents.length > 0 && (
+        <p className="m-0 text-[11px] text-[var(--text-secondary)]">
+          Not taking part:{' '}
+          {preview.excluded_residents.map((resident) => resident.display_name).join(', ')}.
         </p>
       )}
-      <div className="overflow-x-auto min-w-0">
-        <table className="w-full text-left text-xs min-w-[420px] border-collapse">
-          <caption className="sr-only">Shares that generating rent would charge</caption>
-          <thead>
-            <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[40%] pb-3 pr-3 font-bold text-center">Resident</th>
-              <th scope="col" className="w-[30%] pb-3 pr-3 font-bold text-center">Takes part</th>
-              <th scope="col" className="w-[30%] pb-3 pr-3 font-bold text-center">Share</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-            {rows.map((row) => (
-              <tr key={row.resident_id} className="align-middle">
-                <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
-                  {row.display_name}
-                  {tiered && row.takesPart && (
-                    <span className="block text-[11px] font-normal text-[var(--text-tertiary)]">
-                      {rooms.get(row.resident_id) ?? 'No room'}
-                    </span>
-                  )}
-                </th>
-                <td className="py-3 pr-3 text-center">
-                  {adopting ? (
-                    <Pill tone="success">Charged</Pill>
-                  ) : (
-                    <label className="inline-flex items-center justify-center gap-2 cursor-pointer text-[var(--text-secondary)]">
-                      <input
-                        type="checkbox"
-                        className="w-auto"
-                        checked={row.takesPart}
-                        disabled={generating}
-                        onChange={(event) => onToggle(row.resident_id, event.target.checked)}
-                        aria-label={`${row.display_name} takes part in ${formatMonth(month)} rent`}
-                      />
-                      {excluded.includes(row.resident_id)
-                        ? 'Left out'
-                        : tiered
-                          ? 'Room rent'
-                          : 'Full share'}
-                    </label>
-                  )}
-                </td>
-                <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                  <Rupees paise={row.share_paise} />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </Panel>
   )
 }
@@ -666,12 +558,12 @@ function LandlordPanel({
                     {status.label}
                   </Pill>
                 ) : (
-                  <Pill>Not generated</Pill>
+                  <Pill>Not billed</Pill>
                 )}
               </td>
               <td className="py-3 text-center whitespace-nowrap">
                 {/* Always there, as on each resident's row; off until the month is
-                    generated and once the landlord has been paid in full. */}
+                    charged and once the landlord has been paid in full. */}
                 <button
                   type="button"
                   className={BUTTON_SECONDARY}

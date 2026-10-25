@@ -185,6 +185,22 @@ class RentRepository(Repository):
             (status, last_disbursed_at, last_reference, total_rent_paise, participant_count,
              cycle_id))
 
+    def update_cycle_totals(self, cycle_id: str, *, total_rent_paise: int,
+                            participant_count: int, disbursement_status: str) -> int:
+        """A live month following its lease: the rent, the headcount, and where the
+        landlord's payout stands against the new rent."""
+        return self._s.execute(
+            """UPDATE rent_cycle SET total_rent_paise=%s, participant_count=%s,
+                      disbursement_status=%s
+                WHERE cycle_id=%s""",
+            (total_rent_paise, participant_count, disbursement_status, cycle_id))
+
+    def open_cycle_months(self, apartment_id: str) -> list[str]:
+        """Every month with a rent cycle, oldest first."""
+        return [row["settlement_month"] for row in self._s.fetch_all(
+            "SELECT settlement_month FROM rent_cycle WHERE apartment_id=%s "
+            "ORDER BY settlement_month", (apartment_id,))]
+
     def statement_for_month(self, apartment_id: str,
                             settlement_month: str) -> dict[str, Any] | None:
         """``statement_id``, ``settlement_month`` and ``status`` of the month's statement."""
@@ -253,6 +269,37 @@ class RentRepository(Repository):
                  FROM allocation a
                 WHERE a.expense_id = %s AND a.resident_id = %s ORDER BY a.row_seq""",
             (expense_id, resident_id))
+
+    def allocations_for_expense(self, expense_id: str) -> list[dict[str, Any]]:
+        """Each charge row on the rent expense, with what has been paid against it."""
+        return self._s.fetch_all(
+            """SELECT a.allocation_id, a.component_id, a.resident_id, a.amount_paise,
+                      a.allocation_basis_json,
+                      COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
+                                 WHERE pa.allocation_id = a.allocation_id), 0)::BIGINT
+                          AS settled_paise
+                 FROM allocation a WHERE a.expense_id = %s ORDER BY a.row_seq""",
+            (expense_id,))
+
+    def update_rent_expense(self, expense_id: str, *, amount_paise: int,
+                            allocation_method: str, provider_name: str, due_date: str,
+                            updated_at: str) -> int:
+        """A live month's rent following the lease."""
+        return self._s.execute(
+            """UPDATE expense_instance SET amount_paise=%s, allocation_method=%s,
+                      provider_name=%s, due_date=%s, updated_at=%s
+                WHERE expense_id=%s""",
+            (amount_paise, allocation_method, provider_name, due_date, updated_at, expense_id))
+
+    def update_allocation(self, allocation_id: str, *, amount_paise: int,
+                          allocation_basis_json: str) -> int:
+        """Change a charge in place, so the payments applied to it stay with it."""
+        return self._s.execute(
+            "UPDATE allocation SET amount_paise=%s, allocation_basis_json=%s "
+            "WHERE allocation_id=%s", (amount_paise, allocation_basis_json, allocation_id))
+
+    def delete_allocation(self, allocation_id: str) -> int:
+        return self._s.execute("DELETE FROM allocation WHERE allocation_id=%s", (allocation_id,))
 
     def expenses_for_definition_month(self, apartment_id: str, definition_id: str,
                                       settlement_month: str) -> list[dict[str, Any]]:

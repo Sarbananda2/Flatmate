@@ -1878,3 +1878,199 @@ def test_migration_0020_turns_each_paid_month_into_one_tranche(database_factory)
                      "disbursed_by FROM rent_disbursement")
     assert rows == [{"cycle_id": "paid", "amount_paise": 4_500_000, "disbursed_at": "2026-10-05",
                      "disbursement_reference": "UTR-OCT", "disbursed_by": "pool"}]
+
+
+# ------------------------------------------------------------- the live month --
+#
+# A month's rent is charged as soon as the month begins and follows the lease
+# -- its rent, its model, its rooms -- while the month is open, in place, so
+# what residents have paid stays with their charges. It is never taken below
+# what has been paid, and it freezes once the month is over, finalized, or paid
+# to the landlord in full.
+
+@pytest.fixture()
+def clock(monkeypatch):
+    """It is 10 November 2026; a test moves the clock on by changing ``now``."""
+    now = {"now": "2026-11-10T09:00:00+05:30"}
+    monkeypatch.setattr(rent, "now_timestamp", lambda value=None: now["now"])
+    monkeypatch.setattr(rent, "_today", lambda: now["now"][:10])
+    return now
+
+
+def _pay(db, resident, paise, month=MONTH, day="08"):
+    return rent.record_rent_payment(db, apartment_id=APARTMENT, settlement_month=month,
+                                    resident_id=resident, amount_paise=paise,
+                                    payment_date=f"{month}-{day}")
+
+
+def _row(cycle, resident):
+    row = next(p for p in cycle["participants"] if p["resident_id"] == resident)
+    return (row["share_paise"], row["settled_paise"], row["outstanding_paise"],
+            row["collection_status"])
+
+
+def _alice_charge(db):
+    return _rows(db, """SELECT a.allocation_id, a.amount_paise,
+                               (SELECT SUM(pa.amount_paise) FROM payment_application pa
+                                 WHERE pa.allocation_id = a.allocation_id) AS settled_paise
+                          FROM allocation a JOIN rent_cycle c ON c.expense_id = a.expense_id
+                         WHERE c.settlement_month = %s AND a.resident_id = 'alice'""", (MONTH,))
+
+
+def test_each_month_is_charged_by_itself_once_it_begins(apartment, clock):
+    clock["now"] = "2026-10-20T09:00:00+05:30"
+    _lease(apartment)
+    # Setting up the lease charges the month it is set up in.
+    october = rent.get_rent_cycle(apartment, APARTMENT, "2026-10")
+    assert (october["cycle_state"], _shares(october)) == (
+        "live", {"alice": 1_500_000, "bob": 1_500_000, "chris": 1_500_000})
+    # November is a preview until it begins...
+    november = rent.rent_month_overview(apartment, APARTMENT, MONTH)
+    assert (november["month_state"], november["cycle"], november["preview"]["total_rent_paise"]) == (
+        "upcoming", None, 4_500_000)
+    # ...and is then charged by whatever touches it first: paying a share,
+    clock["now"] = "2026-11-02T09:00:00+05:30"
+    paid = _pay(apartment, "alice", 1_500_000, day="02")
+    assert (paid["cycle_state"], _row(paid, "alice")) == ("live", (1_500_000, 1_500_000, 0, "paid"))
+    # or looking at it.
+    clock["now"] = "2026-12-01T09:00:00+05:30"
+    december = rent.rent_month_overview(apartment, APARTMENT, "2026-12")
+    assert (december["month_state"], december["cycle"]["total_rent_paise"], december["preview"]) == (
+        "live", 4_500_000, None)
+    # The months gone by are their snapshots; a month before the lease is charged by hand only.
+    assert rent.get_rent_cycle(apartment, APARTMENT, MONTH)["cycle_state"] == "frozen"
+    assert rent.get_rent_cycle(apartment, APARTMENT, "2026-09") is None
+    assert len(_rows(apartment, "SELECT 1 FROM rent_cycle")) == 3
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+def test_raising_the_rent_mid_month_tops_up_the_open_month_in_place(apartment, clock):
+    _lease(apartment)
+    _pay(apartment, "alice", 1_500_000)
+    [before] = _alice_charge(apartment)
+
+    _lease(apartment, monthly_rent_paise=4_800_000)
+    cycle = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
+    assert (cycle["total_rent_paise"], cycle["matches_lease_rent"]) == (4_800_000, True)
+    # Alice's payment stays with her charge, which grew rather than being replaced.
+    assert _row(cycle, "alice") == (1_600_000, 1_500_000, 100_000, "partial")
+    assert _alice_charge(apartment) == [{**before, "amount_paise": 1_600_000}]
+    assert _rows(apartment, "SELECT amount_paise FROM expense_instance") == [
+        {"amount_paise": 4_800_000}]
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+    assert sum(_positions(apartment).values()) == 0
+
+
+def test_switching_to_room_tiered_or_changing_a_room_moves_the_open_month(apartment, clock):
+    from aem.services import rooms
+
+    _lease(apartment)
+    _pay(apartment, "chris", 1_500_000)
+    _rooms(apartment, {"alice": 1_400_000, "bob": 1_500_000, "chris": 1_600_000})
+    # The rooms mean nothing to an equal month.
+    assert rent.get_rent_cycle(apartment, APARTMENT, MONTH)["split_mode"] == "equal"
+
+    rent.save_lease_config(apartment, APARTMENT, {"rent_split_mode": "room_tiered"})
+    cycle = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
+    assert (cycle["split_mode"], _shares(cycle)) == (
+        "room_tiered", {"alice": 1_400_000, "bob": 1_500_000, "chris": 1_600_000})
+    assert _row(cycle, "chris") == (1_600_000, 1_500_000, 100_000, "partial")
+
+    # Raising one room cannot add up until the lease is raised to match: the month
+    # waits as it was, saying why, rather than refusing either save.
+    room_1 = next(room for room in rooms.list_rooms(apartment, APARTMENT)["items"]
+                  if room["assigned_resident_id"] == "alice")
+    rooms.update_room(apartment, APARTMENT, room_1["room_id"], {"base_rent_paise": 1_700_000})
+    waiting = rent.rent_month_overview(apartment, APARTMENT, MONTH)
+    assert _shares(waiting["cycle"])["alice"] == 1_400_000
+    assert "does not equal the monthly lease rent" in waiting["live_blocked_reason"]
+    _lease(apartment, monthly_rent_paise=4_800_000)
+    cycle = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
+    assert (cycle["total_rent_paise"], _shares(cycle)) == (
+        4_800_000, {"alice": 1_700_000, "bob": 1_500_000, "chris": 1_600_000})
+    assert rent.rent_month_overview(apartment, APARTMENT, MONTH)["live_blocked_reason"] is None
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+def test_the_open_month_never_goes_below_what_was_paid(apartment, clock):
+    from aem.services import rooms
+
+    _lease(apartment)
+    _disburse(apartment, amount_paise=4_000_000, disbursed_date="2026-11-05")
+    with pytest.raises(ConflictError) as below_paid_out:
+        _lease(apartment, monthly_rent_paise=3_900_000)
+    assert below_paid_out.value.code == "rent_below_disbursed"
+    assert rent.get_lease_config(apartment, APARTMENT)["monthly_rent_paise"] == 4_500_000
+
+    _pay(apartment, "alice", 1_500_000)
+    with pytest.raises(ConflictError) as below_share:
+        _lease(apartment, monthly_rent_paise=4_200_000)
+    assert below_share.value.code == "rent_share_below_paid"
+    assert below_share.value.details == {"resident_id": "alice", "settled_paise": 1_500_000,
+                                         "share_paise": 1_400_000}
+
+    # A room is no different: Alice's room cannot go below what she has paid.
+    _rooms(apartment)
+    rent.save_lease_config(apartment, APARTMENT, {"rent_split_mode": "room_tiered"})
+    assert _shares(rent.get_rent_cycle(apartment, APARTMENT, MONTH)) == ROOM_RENTS
+    rent.save_lease_config(apartment, APARTMENT, {"monthly_rent_paise": 3_900_000})
+    room_1 = next(room for room in rooms.list_rooms(apartment, APARTMENT)["items"]
+                  if room["assigned_resident_id"] == "alice")
+    with pytest.raises(ConflictError) as below_room:
+        rooms.update_room(apartment, APARTMENT, room_1["room_id"], {"base_rent_paise": 1_400_000})
+    assert below_room.value.code == "rent_share_below_paid"
+    cycle = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
+    assert (cycle["total_rent_paise"], _shares(cycle)) == (4_500_000, ROOM_RENTS)
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+def test_a_closed_month_keeps_its_rent_whatever_the_lease_says_later(apartment, clock):
+    _lease(apartment)
+    statement = statements.create_monthly_statement(apartment, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(apartment, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
+    _lease(apartment, monthly_rent_paise=4_800_000)
+    finalized = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
+    assert (finalized["cycle_state"], finalized["total_rent_paise"],
+            finalized["matches_lease_rent"]) == ("frozen", 4_500_000, False)
+
+    # A month paid to the landlord in full is settled with them, and kept too.
+    clock["now"] = "2026-12-03T09:00:00+05:30"
+    assert rent.get_rent_cycle(apartment, APARTMENT, "2026-12")["total_rent_paise"] == 4_800_000
+    _disburse(apartment, month="2026-12")
+    _lease(apartment, monthly_rent_paise=5_000_000)
+    paid_out = rent.get_rent_cycle(apartment, APARTMENT, "2026-12")
+    assert (paid_out["cycle_state"], paid_out["total_rent_paise"]) == ("frozen", 4_800_000)
+
+    # And so is a month that is over: January is charged the new rent by itself.
+    clock["now"] = "2027-01-04T09:00:00+05:30"
+    _lease(apartment, monthly_rent_paise=5_100_000)
+    assert [(row["settlement_period"], row["amount_paise"]) for row in _rows(
+        apartment, "SELECT settlement_period, amount_paise FROM expense_instance "
+                   "ORDER BY settlement_period")] == [
+        (MONTH, 4_500_000), ("2026-12", 4_800_000), ("2027-01", 5_100_000)]
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+def test_who_a_month_charges_is_settled_when_it_is_charged(apartment, clock):
+    _lease(apartment)
+    residents.create_resident(apartment, apartment_id=APARTMENT, resident_id="dana",
+                              display_name="Dana", active_from="2026-11-20")
+    _lease(apartment, monthly_rent_paise=4_800_000)
+    # Dana moved in after November was charged: she starts with December.
+    assert set(_shares(rent.get_rent_cycle(apartment, APARTMENT, MONTH))) == {
+        "alice", "bob", "chris"}
+    clock["now"] = "2026-12-01T09:00:00+05:30"
+    assert _shares(rent.get_rent_cycle(apartment, APARTMENT, "2026-12")) == {
+        "alice": 1_200_000, "bob": 1_200_000, "chris": 1_200_000, "dana": 1_200_000}
+
+
+def test_renewing_keeps_the_ending_terms_rent_for_its_open_month(apartment, clock):
+    _lease(apartment, lease_start_date="2026-01-01", duration_months=11)
+    rent.renew_lease_contract(apartment, APARTMENT, {})
+    assert rent.get_lease_config(apartment, APARTMENT)["monthly_rent_paise"] == 4_725_000
+    november = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
+    assert (november["total_rent_paise"], november["matches_lease_rent"]) == (4_500_000, True)
+    assert rent.rent_month_overview(apartment, APARTMENT, "2026-12")["preview"][
+        "total_rent_paise"] == 4_725_000

@@ -765,7 +765,7 @@ describe('RentMonth', () => {
     expect(posted('/api/rent/config')).toBeUndefined()
   })
 
-  it('says why a room-tiered model cannot generate rent yet', async () => {
+  it('says why a room-tiered model cannot charge the month yet', async () => {
     renderRent(
       overview({
         config: { ...config, rent_split_mode: 'room_tiered' },
@@ -787,18 +787,36 @@ describe('RentMonth', () => {
     expect(agreement).toHaveTextContent('Room-Tiered Fixed Pricing')
     expect(agreement).toHaveTextContent("Each resident pays their room's base rent.")
     expect(agreement).toHaveTextContent('does not equal the monthly lease rent')
-    expect(screen.getByRole('button', { name: 'Generate October 2026 rent' })).toBeDisabled()
+    expect(screen.getAllByRole('status').map((notice) => notice.textContent)).toContain(
+      'The sum of room rents (₹40,000.00) does not equal the monthly lease rent (₹45,000.00).',
+    )
+    expect(screen.queryByRole('button', { name: /Generate/ })).toBeNull()
   })
 
-  it('generates rent without the residents the operator left out', async () => {
-    renderRent(overview({ cycle: null, preview }))
-    await userEvent.click(
-      await screen.findByRole('checkbox', { name: 'Chris takes part in October 2026 rent' }),
+  it("shows a month that has not begun with its shares read-only, and nothing to generate", async () => {
+    renderRent(overview({ cycle: null, preview, month_state: 'upcoming' }))
+    const shares = await screen.findByRole('table', { name: 'Rent shares for October 2026' })
+    // Nothing is owed until the month begins and charges itself.
+    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Chris₹15,000.00———')
+    expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeDisabled()
+    expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Generate/ })).toBeNull()
+    expect(stat('Internal Collection')).toHaveTextContent('Starts once the month begins')
+    expect(posted('/generate')).toBeUndefined()
+  })
+
+  it('says why an open month cannot follow the lease yet, keeping it as charged', async () => {
+    renderRent(
+      overview({
+        live_blocked_reason:
+          'The sum of room rents (₹48,000.00) does not equal the monthly lease rent (₹45,000.00).',
+      }),
     )
-    await userEvent.click(screen.getByRole('button', { name: 'Generate October 2026 rent' }))
-    await waitFor(() => expect(posted('/generate')).toBeDefined())
-    // The split is the household's saved model, so none is sent.
-    expect(posted('/generate')!.body).toEqual({ excluded_resident_ids: ['chris'] })
+    expect(
+      await screen.findByText(/does not equal the monthly lease rent \(₹45,000.00\)\. This month stays as charged until it does\./),
+    ).toHaveAttribute('role', 'status')
+    const shares = screen.getByRole('table', { name: 'Rent shares and collection' })
+    expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeEnabled()
   })
 
   it('shows each share with its room when the model is room-tiered', async () => {
@@ -809,15 +827,14 @@ describe('RentMonth', () => {
         preview: { ...tieredPreview, split_mode: 'room_tiered' },
       }),
     )
-    expect(await screen.findByText('Room 1')).toBeInTheDocument()
+    const shares = await screen.findByRole('table', { name: 'Rent shares for October 2026' })
+    expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('AliceRoom 1')
     expect(screen.getByText(/charged their room's base rent/)).toBeInTheDocument()
     expect(screen.queryByRole('radio', { name: 'Room-Tiered' })).toBeNull()
-    await userEvent.click(screen.getByRole('button', { name: 'Generate October 2026 rent' }))
-    await waitFor(() => expect(posted('/generate')).toBeDefined())
-    expect(posted('/generate')!.body).toEqual({ excluded_resident_ids: [] })
+    expect(screen.queryByRole('button', { name: /Generate/ })).toBeNull()
   })
 
-  it('does not offer generation when the backend says it is blocked', async () => {
+  it('says why the month cannot be charged when the backend says it is blocked', async () => {
     renderRent(
       overview({
         cycle: null,
@@ -828,8 +845,11 @@ describe('RentMonth', () => {
         },
       }),
     )
-    expect(await screen.findByText('The 2026-10 statement has been finalized.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Generate October 2026 rent' })).toBeDisabled()
+    expect(await screen.findByText('The 2026-10 statement has been finalized.')).toHaveAttribute(
+      'role',
+      'status',
+    )
+    expect(screen.queryByRole('button', { name: /Generate/ })).toBeNull()
   })
 
   it('shows a paid month as fully disbursed, with no HRA receipt on offer', async () => {
@@ -930,14 +950,14 @@ describe('RentMonth', () => {
       expect(payout[0]).toHaveTextContent('Pay Now')
     })
 
-    it('shows the landlord with nothing owed before the month is generated', async () => {
+    it('shows the landlord with nothing owed before the month is charged', async () => {
       renderRent(overview({ cycle: null, preview }))
       const table = await screen.findByRole('table', { name: 'Rent owed to the landlord' })
       const landlord = within(table).getByRole('row', { name: /Rajesh Kumar Sharma/ })
       expect(landlord).toHaveTextContent('₹45,000.00')
-      expect(landlord).toHaveTextContent('Not generated')
+      expect(landlord).toHaveTextContent('Not billed')
       expect(within(landlord).getByRole('button', { name: 'Pay now to landlord' })).toBeDisabled()
-      // Nothing to show until the month is generated, so the row opens nothing.
+      // Nothing to show until the month is charged, so the row opens nothing.
       await userEvent.click(landlord)
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })

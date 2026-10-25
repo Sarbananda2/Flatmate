@@ -9,6 +9,11 @@ refused, so a room is never emptied as a side effect.
 
 Every change is written to the audit trail. A move-out clearance frees the
 leaver's room in the same transaction, through :func:`vacate_resident_in`.
+
+Under a room-tiered lease each room's base rent is what its occupant is
+charged, so every change here brings the open months' rent up to date in the
+same transaction -- and is refused if it would take a resident's share below
+what they have already paid (see :func:`rent.sync_open_rent_cycles`).
 """
 from __future__ import annotations
 
@@ -20,7 +25,7 @@ from ..ids import new_id, now_timestamp
 from ..money import ensure_paise
 from ..periods import parse_iso_date
 from ..persistence import Database, UnitOfWork
-from . import audit
+from . import audit, rent
 from .common import get_apartment, get_resident, require_text
 
 ENTITY = "household_room"
@@ -137,6 +142,7 @@ def _save(uow: UnitOfWork, before: dict[str, Any], after: dict[str, Any], *,
     audit.record(uow, entity_type=ENTITY, entity_id=before["room_id"], action=action,
                  actor=actor, apartment_id=before["apartment_id"], reason=reason,
                  old_value=_audit_value(before), new_value=_audit_value(after))
+    rent.sync_open_rent_cycles(uow, before["apartment_id"], actor=actor, rooms_changed=True)
     return _present(uow.rooms.get(before["room_id"]))
 
 
@@ -201,6 +207,7 @@ def create_room(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
                      actor=actor, apartment_id=apartment_id, new_value=_audit_value(row))
         if payload.get("linked_slot_id"):
             link_slot_in(uow, apartment_id, payload["linked_slot_id"], room_id, actor=actor)
+        rent.sync_open_rent_cycles(uow, apartment_id, actor=actor, rooms_changed=True)
         return _present(uow.rooms.get(room_id))
 
 

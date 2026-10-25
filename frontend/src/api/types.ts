@@ -1071,6 +1071,8 @@ export interface RentCycle {
   funding_payment_id: string | null
   lease_rent_paise: number | null
   matches_lease_rent: boolean
+  /** 'live' while the month follows the lease; 'frozen' once it is over, finalized or paid to the landlord in full. */
+  cycle_state?: 'live' | 'frozen'
   landlord_receipt: {
     filename: string
     content_type: string
@@ -1145,6 +1147,15 @@ export interface RentMonthOverview {
   config: RentLeaseConfig | null
   cycle: RentCycle | null
   preview: RentPreview | null
+  /**
+   * 'live': charged, and following the lease while the month is open; 'frozen': its snapshot;
+   * 'upcoming': the month has not begun; 'not_generated': not charged.
+   */
+  month_state?: 'live' | 'frozen' | 'upcoming' | 'not_generated'
+  /** Why an open month cannot follow the lease as it stands, if it cannot: it stays as it was. */
+  live_blocked_reason?: string | null
+  /** Whether the month could be split by room, charged or not. */
+  room_tiered?: RoomTieredPlan | null
 }
 
 // ------------------------------------------------- household deposit slots --

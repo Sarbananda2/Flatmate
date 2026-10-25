@@ -140,7 +140,7 @@ describe('ServicesHub', () => {
     )
   })
 
-  it('shows the lease due day and no collection before the month is generated', async () => {
+  it('shows the lease due day and no collection for a month that is not billed', async () => {
     renderHub({
       rent: { config, cycle: null },
       electricity: { bill: null, bills_for_month: 0, latest_bill: null },
@@ -148,7 +148,7 @@ describe('ServicesHub', () => {
     const rent = screen.getByRole('region', { name: 'Rent' })
     expect(await within(rent).findByText('Kumar Yadav')).toBeInTheDocument()
     expect(fact(rent, 'Due date')).toHaveTextContent('Day 5')
-    expect(fact(rent, 'Kitty collection')).toHaveTextContent('Not generated')
+    expect(fact(rent, 'Kitty collection')).toHaveTextContent('Not billed')
     // The lease's term is shown under Housing, not here.
     expect(within(rent).queryByText(/Month Term/)).toBeNull()
   })

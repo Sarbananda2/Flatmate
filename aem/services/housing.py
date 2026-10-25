@@ -1,7 +1,9 @@
 """Housing & Utilities: one summary of the household's recurring services.
 
-Read-only. It composes what the rent and electricity services already report so
-the hub screen makes a single call; it computes no money of its own.
+It composes what the rent and electricity services already report so the hub
+screen makes a single call; it computes no money of its own. Reading the month's
+rent charges an open month, or brings it up to date with the lease, as the Rent
+screen does.
 """
 from __future__ import annotations
 

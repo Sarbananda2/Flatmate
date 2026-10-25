@@ -145,6 +145,61 @@ class ElectricityRepository(Repository):
                  JOIN allocation a ON a.allocation_id = pa.allocation_id
                 WHERE a.expense_id = %s""", (expense_id,), default=0))
 
+    def charges_for_expense(self, expense_id: str) -> list[dict[str, Any]]:
+        """Each allocation on the bill with its resident's name and what has been
+        paid against it."""
+        return self._s.fetch_all(
+            """SELECT a.allocation_id, a.component_id, a.resident_id, a.amount_paise,
+                      r.display_name,
+                      COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
+                                 WHERE pa.allocation_id = a.allocation_id), 0)::BIGINT
+                          AS settled_paise
+                 FROM allocation a LEFT JOIN resident r ON r.resident_id = a.resident_id
+                WHERE a.expense_id = %s ORDER BY a.row_seq""", (expense_id,))
+
+    def linked_advance_total_paise(self, expense_id: str) -> int:
+        """Active provider advances linked to the bill."""
+        return int(self._s.scalar(
+            """SELECT COALESCE(SUM(amount_paise), 0)::BIGINT FROM payment
+                WHERE expense_id=%s AND payment_kind='provider_advance'
+                  AND status='active'""", (expense_id,), 0))
+
+    def update_expense(self, expense_id: str, *, description: str, amount_paise: int,
+                       expense_date: str, expense_period: str,
+                       payer_resident_id: str | None, provider_name: str | None,
+                       service_period: str | None, settlement_period: str | None,
+                       period_rule: str | None, due_date: str | None,
+                       reference: str | None, notes: str | None, updated_at: str) -> int:
+        """A recalculated bill, in place: the row its payments are linked to stays."""
+        return self._s.execute(
+            """UPDATE expense_instance SET description=%s, amount_paise=%s, expense_date=%s,
+                      expense_period=%s, payer_resident_id=%s, provider_name=%s,
+                      service_period=%s, settlement_period=%s, period_rule=%s, due_date=%s,
+                      reference=%s, notes=%s, updated_at=%s
+                WHERE expense_id=%s""",
+            (description, amount_paise, expense_date, expense_period, payer_resident_id,
+             provider_name, service_period, settlement_period, period_rule, due_date,
+             reference, notes, updated_at, expense_id))
+
+    def update_component(self, component_id: str, *, name: str, amount_paise: int,
+                         allocation_method: str) -> int:
+        return self._s.execute(
+            "UPDATE expense_component SET name=%s, amount_paise=%s, allocation_method=%s "
+            "WHERE component_id=%s", (name, amount_paise, allocation_method, component_id))
+
+    def update_allocation(self, allocation_id: str, *, amount_paise: int,
+                          allocation_basis_json: str) -> int:
+        """Change a charge in place, so the payments applied to it stay with it."""
+        return self._s.execute(
+            "UPDATE allocation SET amount_paise=%s, allocation_basis_json=%s "
+            "WHERE allocation_id=%s", (amount_paise, allocation_basis_json, allocation_id))
+
+    def delete_allocation(self, allocation_id: str) -> None:
+        self._s.execute("DELETE FROM allocation WHERE allocation_id=%s", (allocation_id,))
+
+    def delete_component(self, component_id: str) -> None:
+        self._s.execute("DELETE FROM expense_component WHERE component_id=%s", (component_id,))
+
     def linked_payment_ids(self, expense_id: str) -> list[str]:
         """Payments that fund this expense, in the order they were recorded."""
         return [row["payment_id"] for row in self._s.fetch_all(

@@ -16,7 +16,7 @@ import { useToast } from '../../components/Toast'
 import { api } from '../../api/client'
 import { useMutation } from '../../lib/useApi'
 import { formatMonth } from '../../lib/format'
-import type { RentCycle, RentLeaseConfig, RentPreview, RentSplitMode } from '../../api/types'
+import type { RentCycle, RentLeaseConfig, RentPreview, RentSplitMode, RoomTieredPlan } from '../../api/types'
 
 type ModelStatus = 'available' | 'under_development'
 
@@ -161,21 +161,25 @@ export function RentAgreementCard({
   config,
   cycle,
   preview,
+  roomTiered = preview?.room_tiered ?? null,
   month,
   onSaved,
 }: {
   config: RentLeaseConfig
   cycle: RentCycle | null
   preview: RentPreview | null
+  /** Whether the month could be split by room, whether or not it is charged yet. */
+  roomTiered?: RoomTieredPlan | null
   month: string
   onSaved: () => void
 }) {
   const [changing, setChanging] = useState(false)
   const model = config.rent_split_mode
   const source = cycle ?? preview
-  // A generated month keeps the split it was generated with.
+  // An open month follows the model as soon as it is saved; a closed month, or
+  // one the rooms cannot split yet, keeps the split it was charged with.
   const monthSplit = cycle ? cycle.split_mode : model
-  const tieredAvailable = Boolean(preview?.room_tiered.available)
+  const tieredAvailable = Boolean(roomTiered?.available)
 
   return (
     <Panel
@@ -190,7 +194,7 @@ export function RentAgreementCard({
         <Fact label="Active Agreement Model">
           <div className="text-sm font-bold text-[var(--text-primary)]">{MODEL_TITLES[model]}</div>
           {cycle && cycle.split_mode !== model && (
-            <div>{`${formatMonth(month)} was generated with ${MODEL_TITLES[cycle.split_mode]}.`}</div>
+            <div>{`${formatMonth(month)} is charged with ${MODEL_TITLES[cycle.split_mode]}.`}</div>
           )}
         </Fact>
         <Fact label="Current Share Calculation">
@@ -209,8 +213,8 @@ export function RentAgreementCard({
               Each resident pays their room&apos;s base rent.
             </div>
           )}
-          {!cycle && model === 'room_tiered' && preview && !tieredAvailable && (
-            <div className="text-[var(--warning)]">{preview.room_tiered.blocked_reason}</div>
+          {model === 'room_tiered' && roomTiered && !tieredAvailable && (
+            <div className="text-[var(--warning)]">{roomTiered.blocked_reason}</div>
           )}
         </Fact>
       </dl>
@@ -259,7 +263,7 @@ function ChangeAgreementModal({
   return (
     <Modal
       title={AGREEMENT_TITLE}
-      description="How every month's rent is divided from now on. A month already generated keeps the split it was charged with."
+      description="How every month's rent is divided. The open month's shares follow it as soon as it is saved; a month already closed keeps the split it was charged with."
       onClose={onClose}
       wide
       footer={
@@ -288,8 +292,8 @@ function ChangeAgreementModal({
         />
         {model === 'room_tiered' && !roomTieredAvailable && (
           <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
-            The room base rents do not add up to the lease rent yet, so rent cannot be generated
-            this way until they do. Set them under Housing, in Rooms Inventory.
+            The room base rents do not add up to the lease rent yet, so the open month keeps its
+            current split until they do. Set them under Housing, in Rooms Inventory.
           </p>
         )}
       </div>

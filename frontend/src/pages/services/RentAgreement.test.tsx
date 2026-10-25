@@ -37,7 +37,7 @@ describe('AgreementModelPicker', () => {
 })
 
 describe('RentAgreementCard', () => {
-  it('says when a generated month was split differently from the model', () => {
+  it('says when the month is charged with another split than the model', () => {
     stub = installFetchStub({ routes: {} })
     render(
       <ToastProvider>
@@ -53,7 +53,7 @@ describe('RentAgreementCard', () => {
     const agreement = screen.getByLabelText('Rental agreement')
     expect(agreement).toHaveTextContent('Room-Tiered Fixed Pricing')
     expect(agreement).toHaveTextContent(
-      'October 2026 was generated with Single Master Lease (Equal Split).',
+      'October 2026 is charged with Single Master Lease (Equal Split).',
     )
     // The month's own split decides its share line.
     expect(agreement).toHaveTextContent('Equal share among 3 participants (₹9,500.00/resident)')

@@ -58,6 +58,19 @@ def cheap_password_hashing(monkeypatch: pytest.MonkeyPatch) -> None:
     auth._decoy_hash.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def rent_before_the_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run as if it were mid-September 2026, before any test's lease is set up.
+
+    An open month's rent is charged by itself, from the day it begins. Pinning
+    "today" before every lease keeps that from depending on when the suite runs:
+    no month is charged unless a test generates it -- after which, being still
+    open, it follows its lease. Tests about the live month move the date on."""
+    from aem.services import rent
+
+    monkeypatch.setattr(rent, "_today", lambda: "2026-09-15")
+
+
 @pytest.fixture(scope="session")
 def test_database_config() -> support.TestTarget:
     """Where the test database is, for both roles. Checked once: reachable, and

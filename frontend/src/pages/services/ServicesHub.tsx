@@ -214,7 +214,8 @@ function RentCard({ overview }: CardProps) {
             {cycle.disbursement_status === 'disbursed' ? 'Disbursed' : 'Pending'}
           </Pill>
         ) : config ? (
-          <Pill>Not generated</Pill>
+          // The open month is charged by itself; this is a month that is not.
+          <Pill>Not billed</Pill>
         ) : overview.data ? (
           <Pill tone="warning">No lease</Pill>
         ) : undefined
@@ -239,7 +240,7 @@ function RentCard({ overview }: CardProps) {
               )}
             </Fact>
             <Fact label="Landlord">{config ? config.landlord_name : NOT_CONFIGURED}</Fact>
-            {/* The month's own due date once its rent is generated; until then, the lease's day. */}
+            {/* The month's own due date once it is charged; until then, the lease's day. */}
             <Fact label="Due date">
               {cycle?.due_date
                 ? formatDate(cycle.due_date)
@@ -251,7 +252,7 @@ function RentCard({ overview }: CardProps) {
             <Fact label="Kitty collection">
               {!cycle ? (
                 config ? (
-                  <span className="font-normal text-[var(--text-tertiary)]">Not generated</span>
+                  <span className="font-normal text-[var(--text-tertiary)]">Not billed</span>
                 ) : (
                   NOT_CONFIGURED
                 )

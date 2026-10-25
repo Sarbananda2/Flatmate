@@ -46,7 +46,7 @@ from typing import Any, Mapping, Sequence
 from ..engine.electricity import ElectricityCalculationError, calculate_electricity
 from ..errors import ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
-from ..money import ensure_paise, kwh_to_wh, wh_to_kwh_string
+from ..money import ensure_paise, format_inr, kwh_to_wh, wh_to_kwh_string
 from ..periods import (
     default_due_date,
     month_end,
@@ -192,7 +192,7 @@ def create_electricity_expense(db: Database, **fields: Any):
         return _create_electricity_expense_in(uow, **fields)
 
 
-def _create_electricity_expense_in(
+def _plan_electricity_expense(
     uow: UnitOfWork, *, apartment_id: str, expense_id: str, description: str,
     expense_date: str,
     expense_period: str | None = None, total_amount_paise: int,
@@ -207,13 +207,10 @@ def _create_electricity_expense_in(
     period_rule: str | None = None, bill_number: str | None = None,
     notes: str | None = None, due_date: str | None = None, actor: str = "operator",
     participants: Sequence[str] | None = None,
-):
-    """Calculate and persist an electricity expense inside the caller's transaction.
-
-    The bill is shared between the apartment's currently active residents.
-    ``participants`` overrides that for a correction, which keeps the residents
-    the bill was originally shared between even if one has since moved out.
-    """
+) -> dict[str, Any]:
+    """Check and calculate an electricity bill without writing anything: what
+    :func:`_insert_electricity_expense` or :func:`_rewrite_electricity_expense_in`
+    then writes."""
     if not expense_id or not str(expense_id).strip():
         raise ValidationError("expense_id is required.", details={"field": "expense_id"})
     if not description or not str(description).strip():
@@ -334,23 +331,90 @@ def _create_electricity_expense_in(
         raise ValidationError("bill_period_end cannot be before bill_period_start.",
                               details={"field": "bill_period_end"})
 
+    return {
+        "apartment_id": apartment_id, "expense_id": str(expense_id).strip(),
+        "expense_definition_id": expense_definition_id, "statement_id": statement_id,
+        "description": str(description).strip(), "total_amount_paise": total_amount_paise,
+        "expense_date": expense_date,
+        "expense_period": expense_period or resolved.settlement_period,
+        "payer_resident_id": payer_resident_id, "provider_name": provider_name,
+        "timestamp": timestamp, "resolved": resolved, "due_date": resolved_due,
+        "bill_number": bill_number, "notes": notes, "result": result,
+        "readings": normalized, "period_start": period_start, "period_end": period_end,
+        "actor": actor,
+    }
+
+def _create_electricity_expense_in(uow: UnitOfWork, **fields: Any):
+    """Calculate and persist an electricity expense inside the caller's transaction.
+
+    The bill is shared between the apartment's currently active residents.
+    ``participants`` overrides that for a correction, which keeps the residents
+    the bill was originally shared between even if one has since moved out.
+    """
+    plan = _plan_electricity_expense(uow, **fields)
+    _insert_electricity_expense(uow, plan)
+    return plan["result"]
+
+
+def _allocation_basis_json(plan: Mapping[str, Any], component: Any) -> str:
+    return json.dumps({
+        "method": component.allocation_method,
+        "component_id": component.component_id,
+        "usage_kwh_by_resident": plan["result"].breakdown["usage_kwh_by_resident"],
+        "payer_resident_id": plan["payer_resident_id"],
+    }, sort_keys=True)
+
+
+def _insert_readings_and_bill(uow: UnitOfWork, plan: Mapping[str, Any]) -> None:
+    for reading in plan["readings"]:
+        uow.electricity.insert_reading(
+            reading_id=reading["reading_id"], resident_id=reading["resident_id"],
+            expense_id=plan["expense_id"], device_label=reading["device_label"],
+            period_start=reading["period_start"], period_end=reading["period_end"],
+            energy_wh=reading["energy_wh"], source_note=reading["source_note"])
+    uow.electricity.insert_bill(
+        electricity_bill_id=new_id("ebill"), expense_id=plan["expense_id"],
+        bill_period_start=plan["period_start"], bill_period_end=plan["period_end"],
+        settlement_period=plan["resolved"].settlement_period,
+        bill_number=optional_text(plan["bill_number"], "bill_number", max_length=120),
+        provider_name=plan["provider_name"], total_amount_paise=plan["total_amount_paise"],
+        calculation_json=json.dumps(plan["result"].to_dict(), sort_keys=True),
+        notes=optional_text(plan["notes"], "notes"), created_at=plan["timestamp"])
+
+
+def _audit_allocations(plan: Mapping[str, Any]) -> dict[str, Any]:
+    resolved = plan["resolved"]
+    return {"expense_kind": "electricity",
+            "total_amount_paise": plan["total_amount_paise"],
+            "settlement_period": resolved.settlement_period,
+            "service_period": resolved.service_period,
+            "bill_period": [plan["period_start"], plan["period_end"]],
+            "payer_resident_id": plan["payer_resident_id"],
+            "allocations": {a.resident_id: a.amount_paise
+                            for a in plan["result"].allocations}}
+
+
+def _insert_electricity_expense(uow: UnitOfWork, plan: Mapping[str, Any]) -> None:
+    """Write a planned bill: the expense, its components and charges, the
+    readings, and the bill itself."""
+    resolved, result = plan["resolved"], plan["result"]
     try:
         uow.electricity.insert_expense(
-            expense_id=str(expense_id).strip(),
-            expense_definition_id=expense_definition_id, statement_id=statement_id,
-            description=str(description).strip(), amount_paise=total_amount_paise,
-            expense_date=expense_date,
-            expense_period=expense_period or resolved.settlement_period,
-            payer_resident_id=payer_resident_id, provider_name=provider_name,
-            created_at=timestamp, service_period=resolved.service_period,
+            expense_id=plan["expense_id"],
+            expense_definition_id=plan["expense_definition_id"],
+            statement_id=plan["statement_id"], description=plan["description"],
+            amount_paise=plan["total_amount_paise"], expense_date=plan["expense_date"],
+            expense_period=plan["expense_period"],
+            payer_resident_id=plan["payer_resident_id"], provider_name=plan["provider_name"],
+            created_at=plan["timestamp"], service_period=resolved.service_period,
             settlement_period=resolved.settlement_period, period_rule=resolved.rule,
-            due_date=resolved_due, apartment_id=apartment_id,
-            reference=optional_text(bill_number, "bill_number", max_length=120),
-            notes=optional_text(notes, "notes"), updated_at=timestamp)
+            due_date=plan["due_date"], apartment_id=plan["apartment_id"],
+            reference=optional_text(plan["bill_number"], "bill_number", max_length=120),
+            notes=optional_text(plan["notes"], "notes"), updated_at=plan["timestamp"])
         for component in result.components:
             db_component_id = new_id("ec")
             uow.electricity.insert_component(
-                component_id=db_component_id, expense_id=str(expense_id).strip(),
+                component_id=db_component_id, expense_id=plan["expense_id"],
                 name=component.name, amount_paise=component.amount_paise,
                 allocation_method=_schema_method(component.allocation_method))
             for allocation in component.allocations:
@@ -358,46 +422,126 @@ def _create_electricity_expense_in(
                 # result, so electricity allocations are written in full --
                 # including zeros -- and the stored rows reconcile
                 # component by component to the actual bill.
-                basis = {
-                    "method": component.allocation_method,
-                    "component_id": component.component_id,
-                    "usage_kwh_by_resident": result.breakdown["usage_kwh_by_resident"],
-                    "payer_resident_id": payer_resident_id,
-                }
                 uow.electricity.insert_allocation(
-                    allocation_id=new_id("alloc"), expense_id=str(expense_id).strip(),
+                    allocation_id=new_id("alloc"), expense_id=plan["expense_id"],
                     component_id=db_component_id, resident_id=allocation.resident_id,
                     amount_paise=allocation.amount_paise,
-                    allocation_basis_json=json.dumps(basis, sort_keys=True))
-        for reading in normalized:
-            uow.electricity.insert_reading(
-                reading_id=reading["reading_id"], resident_id=reading["resident_id"],
-                expense_id=str(expense_id).strip(),
-                device_label=reading["device_label"],
-                period_start=reading["period_start"], period_end=reading["period_end"],
-                energy_wh=reading["energy_wh"], source_note=reading["source_note"])
-        uow.electricity.insert_bill(
-            electricity_bill_id=new_id("ebill"), expense_id=str(expense_id).strip(),
-            bill_period_start=period_start, bill_period_end=period_end,
-            settlement_period=resolved.settlement_period,
-            bill_number=optional_text(bill_number, "bill_number", max_length=120),
-            provider_name=provider_name, total_amount_paise=total_amount_paise,
-            calculation_json=json.dumps(result.to_dict(), sort_keys=True),
-            notes=optional_text(notes, "notes"), created_at=timestamp)
+                    allocation_basis_json=_allocation_basis_json(plan, component))
+        _insert_readings_and_bill(uow, plan)
     except PersistenceError as exc:
         raise ValidationError(f"Could not persist electricity expense: {exc}") from exc
 
-    audit.record(uow, entity_type="expense", entity_id=str(expense_id).strip(),
-                 action="create", actor=actor, apartment_id=apartment_id,
-                 new_value={"expense_kind": "electricity",
-                            "total_amount_paise": total_amount_paise,
-                            "settlement_period": resolved.settlement_period,
-                            "service_period": resolved.service_period,
-                            "bill_period": [period_start, period_end],
-                            "payer_resident_id": payer_resident_id,
-                            "allocations": {a.resident_id: a.amount_paise
-                                            for a in result.allocations}})
-    return result
+    audit.record(uow, entity_type="expense", entity_id=plan["expense_id"], action="create",
+                 actor=plan["actor"], apartment_id=plan["apartment_id"],
+                 new_value=_audit_allocations(plan))
+
+
+def _rewrite_electricity_expense_in(uow: UnitOfWork, plan: Mapping[str, Any]) -> None:
+    """Recalculate a bill in place: the expense, its components and its charges
+    are changed rather than replaced, so the payments applied to a charge stay
+    with it -- a resident who has paid part of their share sees the rest still owed.
+
+    Refused when it would take a charge below what has been paid against it
+    (``electricity_share_below_paid``), or the bill below what residents have
+    paid the provider for it (``electricity_below_disbursed``).
+    """
+    expense_id, result = plan["expense_id"], plan["result"]
+    old_components = uow.electricity.components_for_expense(expense_id)
+    charges = uow.electricity.charges_for_expense(expense_id)
+    by_component: dict[str | None, dict[str, dict[str, Any]]] = {}
+    for row in charges:
+        by_component.setdefault(row["component_id"], {})[row["resident_id"]] = row
+
+    # What each existing charge becomes: its component is matched by position.
+    new_amount: dict[str, int] = {}
+    for index, old in enumerate(old_components):
+        new = result.components[index] if index < len(result.components) else None
+        amounts = {a.resident_id: a.amount_paise for a in new.allocations} if new else {}
+        for rid, row in by_component.get(old["component_id"], {}).items():
+            new_amount[row["allocation_id"]] = amounts.get(rid, 0)
+    names = {row["resident_id"]: row["display_name"] or row["resident_id"] for row in charges}
+    paid: dict[str, int] = {}
+    for row in charges:
+        paid[row["resident_id"]] = paid.get(row["resident_id"], 0) + row["settled_paise"]
+    owed = {a.resident_id: a.amount_paise for a in result.allocations}
+    for rid, amount in sorted(paid.items()):
+        if amount > owed.get(rid, 0):
+            raise ConflictError(
+                f"{names[rid]} has already paid {format_inr(amount)} towards this electricity "
+                f"bill, more than this would leave their share at "
+                f"({format_inr(owed.get(rid, 0))}).", code="electricity_share_below_paid",
+                details={"resident_id": rid, "settled_paise": amount,
+                         "share_paise": owed.get(rid, 0)})
+    for row in charges:
+        if row["settled_paise"] > new_amount.get(row["allocation_id"], 0):
+            raise ConflictError(
+                f"{names[row['resident_id']]}'s payment is applied to a part of this bill "
+                "that this would take below it. Recalculate without moving money between "
+                "the bill's parts, or reverse the payment first.",
+                code="electricity_share_below_paid",
+                details={"resident_id": row["resident_id"],
+                         "allocation_id": row["allocation_id"],
+                         "settled_paise": row["settled_paise"],
+                         "share_paise": new_amount.get(row["allocation_id"], 0)})
+    advanced = uow.electricity.linked_advance_total_paise(expense_id)
+    if advanced > plan["total_amount_paise"]:
+        raise ConflictError(
+            f"Residents have already paid the provider {format_inr(advanced)} for this bill, "
+            f"more than this would leave it at ({format_inr(plan['total_amount_paise'])}).",
+            code="electricity_below_disbursed",
+            details={"advanced_paise": advanced,
+                     "total_amount_paise": plan["total_amount_paise"]})
+
+    resolved = plan["resolved"]
+    uow.electricity.update_expense(
+        expense_id, description=plan["description"], amount_paise=plan["total_amount_paise"],
+        expense_date=plan["expense_date"], expense_period=plan["expense_period"],
+        payer_resident_id=plan["payer_resident_id"], provider_name=plan["provider_name"],
+        service_period=resolved.service_period, settlement_period=resolved.settlement_period,
+        period_rule=resolved.rule, due_date=plan["due_date"],
+        reference=optional_text(plan["bill_number"], "bill_number", max_length=120),
+        notes=optional_text(plan["notes"], "notes"), updated_at=now_timestamp())
+    # Charges with no component of their own (from before components were kept)
+    # have nothing to follow; none of them has been paid, as checked above.
+    for row in by_component.get(None, {}).values():
+        uow.electricity.delete_allocation(row["allocation_id"])
+    for index, component in enumerate(result.components):
+        if index < len(old_components):
+            component_id = old_components[index]["component_id"]
+            uow.electricity.update_component(
+                component_id, name=component.name, amount_paise=component.amount_paise,
+                allocation_method=_schema_method(component.allocation_method))
+        else:
+            component_id = new_id("ec")
+            uow.electricity.insert_component(
+                component_id=component_id, expense_id=expense_id, name=component.name,
+                amount_paise=component.amount_paise,
+                allocation_method=_schema_method(component.allocation_method))
+        existing = by_component.get(component_id, {})
+        for allocation in component.allocations:
+            row = existing.pop(allocation.resident_id, None)
+            if row is not None:
+                uow.electricity.update_allocation(
+                    row["allocation_id"], amount_paise=allocation.amount_paise,
+                    allocation_basis_json=_allocation_basis_json(plan, component))
+            else:
+                uow.electricity.insert_allocation(
+                    allocation_id=new_id("alloc"), expense_id=expense_id,
+                    component_id=component_id, resident_id=allocation.resident_id,
+                    amount_paise=allocation.amount_paise,
+                    allocation_basis_json=_allocation_basis_json(plan, component))
+        for row in existing.values():
+            uow.electricity.delete_allocation(row["allocation_id"])
+    for old in old_components[len(result.components):]:
+        for row in by_component.get(old["component_id"], {}).values():
+            uow.electricity.delete_allocation(row["allocation_id"])
+        uow.electricity.delete_component(old["component_id"])
+    uow.electricity.delete_readings(expense_id)
+    uow.electricity.delete_bill(expense_id)
+    _insert_readings_and_bill(uow, plan)
+    audit.record(uow, entity_type="expense", entity_id=expense_id, action="recalculate",
+                 actor=plan["actor"], apartment_id=plan["apartment_id"],
+                 new_value=_audit_allocations(plan))
 
 
 def recalculate_electricity_expense(db: Database, expense_id: str, *, reason: str,
@@ -408,6 +552,13 @@ def recalculate_electricity_expense(db: Database, expense_id: str, *, reason: st
     replaced, the statement's edit rules are enforced, and a correction inside
     the 72-hour window is recorded as a statement revision. A closed statement
     is refused outright: that correction belongs in a ledger adjustment.
+
+    While the month is open (no statement, or a draft one) the bill is
+    recalculated in place, so payments residents have made towards it stay with
+    their charges: a bill that goes up leaves them the difference still owed. It
+    is refused if it would take a charge below what has been paid against it, or
+    the bill below what residents have paid the provider for it. In the
+    correction window a bill with payments applied is still refused.
     """
     reason = (reason or "").strip()
     if not reason:
@@ -473,6 +624,17 @@ def recalculate_electricity_expense(db: Database, expense_id: str, *, reason: st
                                        for a in c["allocations"]}}
                 if c["allocation_method"] == "custom" else {})}
             for c in stored["components"]]
+
+    if mode == "free":
+        with db.transaction() as uow:
+            audit.record(uow, entity_type="expense", entity_id=expense_id,
+                         action="supersede_electricity_calculation", actor=actor,
+                         apartment_id=expense["apartment_id"], reason=reason,
+                         old_value={"amount_paise": expense["amount_paise"],
+                                    "calculation": json.loads(bill["calculation_json"])
+                                    if bill else None})
+            _rewrite_electricity_expense_in(uow, _plan_electricity_expense(uow, **payload))
+        return get_electricity_expense(db, expense_id)
 
     with db.transaction() as uow:
         settled = uow.electricity.applied_paise_for_expense(expense_id)
