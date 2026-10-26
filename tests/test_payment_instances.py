@@ -411,8 +411,13 @@ def test_the_kitty_passbook_runs_its_balance_through_every_movement(passbooks):
     # The account keeps the name stored for it.
     assert pool["account"] == {"instance_id": "__pool__", "name": "House Kitty",
                                "account_holder": None}
-    # Newest first; each balance is the kitty's after that entry.
+    # Newest first; each balance is the kitty's after that entry. Bob paid the
+    # landlord December's rent himself: his own share went through the kitty.
     assert _rows(pool) == [
+        ("2026-12-04", "Rent Payout", "Rent payout · December 2026", "Kumar Yadav", "out",
+         950_000, -970_000),
+        ("2026-12-04", "Rent Collection", "Rent for December 2026", "Bob", "in",
+         950_000, -20_000),
         ("2026-11-06", "Resident Refund", "Refund from House Kitty", "Chris", "out",
          50_000, -970_000),
         ("2026-11-05", "House Expense", "Broadband", "ACT Fibernet", "out",
@@ -428,10 +433,10 @@ def test_the_kitty_passbook_runs_its_balance_through_every_movement(passbooks):
         ("2026-10-05", "Security Deposit", "Security deposit funded · Room 3", "Chris", "in",
          SHARE, SHARE),
     ]
-    assert [item["seq"] for item in pool["items"]] == [7, 6, 5, 4, 3, 2, 1]
+    assert [item["seq"] for item in pool["items"]] == [9, 8, 7, 6, 5, 4, 3, 2, 1]
     assert (pool["total_in_paise"], pool["total_out_paise"], pool["closing_balance_paise"]) == (
-        6_050_000, 7_020_000, -970_000)
-    rent_in = pool["items"][3]
+        7_000_000, 7_970_000, -970_000)
+    rent_in = pool["items"][5]
     assert (rent_in["payment_mode"], rent_in["reference"], rent_in["counterparty_resident_id"]) == (
         "upi", "UPI-77", "alice")
     assert rent_in["payment_id"] and rent_in["source_type"] == "payment"
@@ -439,7 +444,7 @@ def test_the_kitty_passbook_runs_its_balance_through_every_movement(passbooks):
     assert all(item["category"] != "Deposit Deduction" for item in pool["items"])
     # Only the kitty's own expenses: not Alice's groceries, not the bill Bob's
     # advance paid, and not the rent, whose payout is already its own line.
-    broadband = pool["items"][1]
+    broadband = pool["items"][3]
     assert (broadband["entry_id"], broadband["source_type"]) == ("expense:broadband", "expense")
     assert [item["description"] for item in pool["items"] if item["category"] == "House Expense"] == [
         "Broadband"]
@@ -450,9 +455,12 @@ def test_the_landlord_passbook_counts_rent_advances_and_the_deposit_held(passboo
         passbooks, APARTMENT)["landlord_statement"]
     assert landlord["account"] == {"instance_id": "__landlord__", "name": "Kumar Yadav",
                                    "owner_name": "Kumar Yadav"}
+    # December came from Bob: his own share through the kitty, the rest his advance.
     assert _rows(landlord) == [
         ("2026-12-04", "Rent Payout", "Monthly rent · December 2026", "Bob (Advance)", "in",
-         2_850_000, 10_900_000),
+         1_900_000, 10_900_000),
+        ("2026-12-04", "Rent Payout", "Monthly rent · December 2026", "House Kitty", "in",
+         950_000, 9_000_000),
         ("2026-11-08", "Direct Advance", "Plumbing, paid to the landlord", "Alice", "in",
          200_000, 8_050_000),
         ("2026-11-04", "Rent Payout", "Monthly rent · November 2026", "House Kitty", "in",
@@ -475,7 +483,7 @@ def test_the_landlord_passbook_counts_rent_advances_and_the_deposit_held(passboo
     assert landlord["closing_balance_paise"] == 10_900_000
     december = landlord["items"][0]
     assert december["payment_id"] and december["counterparty_resident_id"] == "bob"
-    assert landlord["items"][4]["note"] == "Repainting"
+    assert landlord["items"][5]["note"] == "Repainting"
 
 
 def test_a_signatory_fronted_deposit_is_on_the_landlords_passbook(leased):

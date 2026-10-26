@@ -223,6 +223,69 @@ class PaymentsRepository(Repository):
             "SELECT disbursement_id, settlement_month FROM service_disbursement "
             "WHERE funding_payment_id=%s", (payment_id,))
 
+    def rent_payout_of(self, payment_id: str) -> dict[str, Any] | None:
+        """The landlord payout this payment is part of, if any: the advance behind a
+        resident's payout, or their own share that the kitty paid out."""
+        return self._s.fetch_one(
+            """SELECT d.*, d.row_seq AS seq FROM rent_disbursement d
+                WHERE d.funding_payment_id = %s OR d.disbursement_id = 'rentdisb_' || %s
+                LIMIT 1""", (payment_id, payment_id))
+
+    def service_payout_of(self, payment_id: str) -> dict[str, Any] | None:
+        """The same for a payout to a household service's provider."""
+        return self._s.fetch_one(
+            """SELECT d.* FROM service_disbursement d
+                WHERE d.funding_payment_id = %s OR d.disbursement_id = 'svcdisb_' || %s
+                LIMIT 1""", (payment_id, payment_id))
+
+    def applied_by_expense(self, payment_id: str) -> list[dict[str, Any]]:
+        """What a payment has settled of each expense's charges."""
+        return self._s.fetch_all(
+            """SELECT a.expense_id, SUM(pa.amount_paise)::BIGINT AS amount_paise
+                 FROM payment_application pa
+                 JOIN allocation a ON a.allocation_id = pa.allocation_id
+                WHERE pa.payment_id = %s
+                GROUP BY a.expense_id ORDER BY a.expense_id""", (payment_id,))
+
+    def kitty_for_expense(self, expense_id: str) -> dict[str, Any] | None:
+        """A month's bill as the kitty sees it: what residents have paid in towards
+        its charges, what the kitty has paid out for it -- to the landlord or a
+        provider, and back to whoever paid them -- and which kind of bill it is."""
+        return self._s.fetch_one(
+            """SELECT
+                  e.expense_id, e.apartment_id, e.settlement_period,
+                  COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
+                              JOIN allocation a ON a.allocation_id = pa.allocation_id
+                             WHERE a.expense_id = e.expense_id), 0)::BIGINT AS collected_paise,
+                  (COALESCE((SELECT SUM(d.amount_paise) FROM rent_disbursement d
+                               JOIN rent_cycle c ON c.cycle_id = d.cycle_id
+                              WHERE c.expense_id = e.expense_id AND d.disbursed_by = 'pool'), 0)
+                   + COALESCE((SELECT SUM(d.amount_paise) FROM service_disbursement d
+                                WHERE d.expense_id = e.expense_id
+                                  AND d.disbursed_by = 'pool'), 0))::BIGINT AS paid_out_paise,
+                  COALESCE((SELECT SUM(p.amount_paise) FROM payment p
+                             WHERE p.payment_kind = 'refund' AND p.status = 'active'
+                               AND starts_with(p.payment_id, e.expense_id || '-reimbursement_')),
+                           0)::BIGINT AS reimbursed_paise,
+                  EXISTS (SELECT 1 FROM rent_cycle c WHERE c.expense_id = e.expense_id)
+                      AS is_rent,
+                  EXISTS (SELECT 1 FROM furniture_rental_config f
+                           WHERE f.expense_definition_id = e.expense_definition_id)
+                      AS is_service
+                 FROM expense_instance e WHERE e.expense_id = %s""", (expense_id,))
+
+    def statement_status_for_month(self, apartment_id: str,
+                                   settlement_month: str) -> str | None:
+        return self._s.scalar(
+            "SELECT status FROM monthly_statement WHERE apartment_id=%s AND settlement_month=%s",
+            (apartment_id, settlement_month))
+
+    def delete_payment(self, payment_id: str) -> int:
+        """A payment recorded by mistake, while its month is still open. Its
+        applications go first."""
+        self._s.execute("DELETE FROM payment_application WHERE payment_id=%s", (payment_id,))
+        return self._s.execute("DELETE FROM payment WHERE payment_id=%s", (payment_id,))
+
     def payer_display_name(self, resident_id: str) -> str | None:
         return self._s.scalar(
             "SELECT display_name FROM resident WHERE resident_id=%s", (resident_id,))

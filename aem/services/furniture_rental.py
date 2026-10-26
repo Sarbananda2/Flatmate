@@ -40,7 +40,7 @@ from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, format_inr
 from ..periods import month_end, normalize_month, parse_iso_date
 from ..persistence import Database, UnitOfWork
-from . import audit, definitions, expenses, payments
+from . import audit, definitions, deletions, expenses, payments
 from .common import get_apartment, get_resident, list_residents, optional_text, require_text
 from .rent import month_label
 
@@ -836,6 +836,8 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
     # 'upcoming': not begun; 'not_billed': nothing to bill, or before the rental.
     bill["bill_state"] = (("live" if _bill_is_live(month, statement) else "frozen") if expense
                           else "upcoming" if month > _current_month() else "not_billed")
+    # Whether a payment or payout recorded by mistake can still be deleted.
+    bill["transactions_open"] = deletions.month_is_open(uow, apartment_id, month)
     _attach_funding(uow, apartment_id, bill, expense, services)
     billing_dates = [entry["next_billing_date"] for entry in entries if entry["next_billing_date"]]
     return {
@@ -1425,6 +1427,31 @@ def mark_paid_by_resident(db: Database, apartment_id: str, settlement_month: str
         reference=reference or "", disbursed_date=payment_date, amount_paise=amount_paise,
         funding_resident_id=payer_resident_id, service_id=service_id, notes=notes,
         actor=actor)
+
+
+def delete_payment(db: Database, apartment_id: str, payment_id: str, *,
+                   actor: str = "operator") -> dict[str, Any]:
+    """Delete, while its month is open, a resident's payment into the kitty towards
+    a furniture bill or the kitty's reimbursement for one -- recorded by mistake.
+    Returns the overview of that month. See :mod:`aem.services.deletions`."""
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        deleted = deletions.delete_payment_in(uow, apartment_id=apartment_id, scope="service",
+                                              payment_id=payment_id, actor=actor)
+        return {**_overview(uow, apartment_id, deleted["settlement_month"]),
+                "deleted": deleted}
+
+
+def delete_provider_payout(db: Database, apartment_id: str, disbursement_id: str, *,
+                           actor: str = "operator") -> dict[str, Any]:
+    """Delete, while its month is open, a payout to a provider recorded by mistake,
+    with the payments recorded alongside it. Returns the overview of that month."""
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        deleted = deletions.delete_payout_in(uow, apartment_id=apartment_id, scope="service",
+                                             disbursement_id=disbursement_id, actor=actor)
+        return {**_overview(uow, apartment_id, deleted["settlement_month"]),
+                "deleted": deleted}
 
 
 def reimburse_from_kitty(db: Database, apartment_id: str, settlement_month: str,

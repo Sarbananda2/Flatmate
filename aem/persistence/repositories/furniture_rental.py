@@ -295,6 +295,15 @@ class FurnitureRentalRepository(Repository):
                 WHERE d.expense_id = %s
                 ORDER BY d.disbursed_at, d.row_seq""", (expense_id,))
 
+    def service_disbursement(self, disbursement_id: str) -> dict[str, Any] | None:
+        return self._s.fetch_one(
+            "SELECT * FROM service_disbursement WHERE disbursement_id=%s", (disbursement_id,))
+
+    def delete_service_disbursement(self, disbursement_id: str) -> int:
+        """A payout recorded by mistake, while the month is still open."""
+        return self._s.execute("DELETE FROM service_disbursement WHERE disbursement_id=%s",
+                               (disbursement_id,))
+
     def pool_disbursements_for_apartment(self, apartment_id: str) -> list[dict[str, Any]]:
         """Every payout the kitty made to a service's provider, oldest first, with
         the service it was for and the order it was recorded in."""

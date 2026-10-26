@@ -16,12 +16,15 @@ Two flows of money, kept apart:
   rent charge for the month, so it settles the rent it was paid for even when
   they have older charges open. A pool payment recorded elsewhere, with no
   target, still goes to their oldest charge first.
-* **Landlord disbursement.** The whole rent goes to the landlord, either from
-  the pool, or from one resident's own account. A resident who pays the
-  landlord has funded the expense: that is recorded as a ``provider_advance``
-  linked to the rent expense, which credits them the full rent while they are
-  still charged their own share. Nothing is counted twice, because a linked
-  advance replaces the expense's payer field as its funding record.
+* **Landlord disbursement.** The rent goes to the landlord, in one payout or
+  several, from the pool or from one resident's own account. A resident who
+  pays the landlord pays their own open share through the kitty, as everyone
+  else does: a payment into it settling their share, and the kitty's payout of
+  it. Only what they paid beyond their share is a ``provider_advance`` linked
+  to the rent expense, which the kitty pays back to them -- out of what the
+  others pay in -- as a ``refund`` (a **reimbursement**). Nothing is counted
+  twice, because a linked advance replaces the expense's payer field as its
+  funding record.
 
 Rules this module holds to (see ``docs/ACCOUNTING_RULES.md``):
 
@@ -56,7 +59,7 @@ from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, format_inr, paise_in_words
 from ..periods import normalize_month, parse_iso_date
 from ..persistence import Database, UnitOfWork
-from . import audit, definitions, expenses, names, payments
+from . import audit, definitions, deletions, expenses, names, payments
 from . import property as household
 from .allocation import plan_allocation
 from .apartments import premises_address
@@ -573,6 +576,74 @@ def _advanced_by_resident(tranches: list[dict[str, Any]]) -> dict[str, int]:
     return advanced
 
 
+def _reimbursement_id_base(expense_id: str) -> str:
+    """The kitty's refunds to whoever paid the landlord more than their share
+    are named after the rent expense, so they can be found again."""
+    return f"{expense_id}-reimbursement"
+
+
+def _share_payout_id(payment_id: str) -> str:
+    """The kitty's payout to the landlord of a resident's own share, when they
+    paid the landlord themselves: named after their payment into the kitty."""
+    return f"rentdisb_{payment_id}"
+
+
+def _kitty_reimbursements(uow: UnitOfWork, expense_id: str, charges: list[dict[str, Any]],
+                          tranches: list[dict[str, Any]],
+                          paid_in: Mapping[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """What the kitty owes back to each resident who paid the landlord more than
+    their own share, and what it can pay now.
+
+    Their share went through the kitty, so their advance is the extra alone;
+    ``total_fronted_paise`` is everything they paid the landlord, their share
+    included. They are owed the advance, out of what the kitty collected for the
+    month less what it has paid the landlord itself and already paid back.
+    """
+    advanced = _advanced_by_resident(tranches)
+    advancers = list(dict.fromkeys(t["funding_resident_id"] for t in tranches
+                                   if t["disbursed_by"] == "resident_advance"))
+    if not advancers:
+        return []
+    by_resident = {charge["resident_id"]: charge for charge in charges}
+    refunds_all = uow.rent.reimbursements(f"{_reimbursement_id_base(expense_id)}_")
+    from_kitty = sum(t["amount_paise"] for t in tranches if t["disbursed_by"] == "pool")
+    kitty = max(0, sum(charge["settled_paise"] for charge in charges) - from_kitty
+                - sum(row["amount_paise"] for row in refunds_all))
+    owing: list[dict[str, Any]] = []
+    for payer in advancers:
+        own = by_resident.get(payer)
+        share = own["share_paise"] if own else 0
+        fronted = advanced[payer]
+        owed_back = max(0, fronted - max(0, share - (own["settled_paise"] if own else 0)))
+        if owed_back <= 0:
+            continue
+        # Their own share, paid to the landlord through the kitty.
+        via_kitty_ids = {_share_payout_id(payment["payment_id"])
+                         for payment in paid_in.get(payer, [])}
+        via_kitty = sum(t["amount_paise"] for t in tranches
+                        if t["disbursed_by"] == "pool" and t["disbursement_id"] in via_kitty_ids)
+        refunds = [row for row in refunds_all if row["payer_resident_id"] == payer]
+        reimbursed = sum(row["amount_paise"] for row in refunds)
+        pending = max(0, owed_back - reimbursed)
+        reimbursable = min(kitty, pending)
+        owing.append({
+            "recipient_resident_id": payer,
+            "recipient_name": next(t["funding_resident_name"] for t in tranches
+                                   if t["funding_resident_id"] == payer),
+            "total_fronted_paise": fronted + via_kitty,
+            "payer_share_paise": share,
+            "net_reimbursement_owed_paise": owed_back,
+            "reimbursed_so_far_paise": reimbursed,
+            "pending_reimbursement_paise": pending,
+            "kitty_cash_available_paise": kitty,
+            "reimbursable_paise": reimbursable,
+            "can_reimburse": reimbursable > 0,
+            "reimbursements": [{key: row[key] for key in (
+                "payment_id", "amount_paise", "payment_date", "reference")} for row in refunds],
+        })
+    return owing
+
+
 def _public_tranche(tranche: dict[str, Any]) -> dict[str, Any]:
     return {key: tranche.get(key) for key in (
         "disbursement_id", "cycle_id", "amount_paise", "disbursed_at", "disbursement_reference",
@@ -641,6 +712,8 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
     landlord_receipt = uow.rent.landlord_receipt_summary(cycle["cycle_id"])
     lease_rent = (_rent_for_month(uow, config, cycle["settlement_month"]) if config
                   else None)
+    reimbursements = _kitty_reimbursements(uow, cycle["expense_id"], charges, tranches,
+                                           payments_by_resident)
     return {
         "cycle_id": cycle["cycle_id"],
         "apartment_id": cycle["apartment_id"],
@@ -691,6 +764,14 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
                                     _statement_row(uow, cycle["apartment_id"],
                                                    cycle["settlement_month"])),
         "landlord_receipt": landlord_receipt,
+        # What the kitty owes back to whoever paid the landlord more than their
+        # share: one for each such resident, and the first of them.
+        "reimbursements": reimbursements,
+        # Whether a payment or payout recorded by mistake can still be deleted:
+        # until the month's statement is finalized.
+        "transactions_open": deletions.month_is_open(uow, cycle["apartment_id"],
+                                                     cycle["settlement_month"]),
+        "reimbursement": reimbursements[0] if reimbursements else None,
         # 'pending' only once the landlord has been paid something: there is
         # nothing to chase before that.
         "landlord_receipt_status": (
@@ -1360,6 +1441,11 @@ def record_rent_payment(
                 f"{resident['display_name']} is not taking part in this month's rent.",
                 code="not_a_rent_participant",
                 details={"field": "resident_id", "resident_id": resident_id})
+        target = next((c for c in open_charges if c["outstanding_paise"] > 0), None)
+        if target is None:
+            raise ConflictError(
+                f"{resident['display_name']} has already paid their share of this month's rent.",
+                code="rent_share_already_paid", details={"resident_id": resident_id})
         own_advance = _advanced_by_resident(
             uow.rent.disbursements_for_cycle(cycle["cycle_id"])).get(resident_id, 0)
         if own_advance and own_advance >= sum(c["outstanding_paise"] for c in open_charges):
@@ -1367,11 +1453,6 @@ def record_rent_payment(
                 f"{resident['display_name']} paid the landlord for this month, which already "
                 "covers their share; the household owes them the rest.",
                 code="rent_share_funded_by_payout", details={"resident_id": resident_id})
-        target = next((c for c in open_charges if c["outstanding_paise"] > 0), None)
-        if target is None:
-            raise ConflictError(
-                f"{resident['display_name']} has already paid their share of this month's rent.",
-                code="rent_share_already_paid", details={"resident_id": resident_id})
         payment = payments._record_payment(
             uow, apartment_id=apartment_id, payment_id=new_id("payment"),
             payer_resident_id=resident_id, amount_paise=amount_paise,
@@ -1465,12 +1546,16 @@ def record_landlord_disbursement(
         into the pool are what covered it.
 
     ``resident_advance``
-        A resident paid it from their own account. A ``provider_advance`` for
-        the tranche is linked to the rent expense, crediting them with it while
-        they keep their own share. When one advance pays the whole rent at once,
-        the resident is also recorded as the expense's payer and -- while the
-        statement is still a draft and nobody has paid their rent charge yet --
-        the shares are re-split so that any remainder paisa avoids them.
+        A resident paid it from their own account. What it covers of their own
+        open share goes through the kitty, as everyone else's share does: a
+        payment into the kitty settling their share, and a ``pool`` tranche
+        paying it out. Only what they paid beyond their share is an advance: a
+        ``provider_advance`` linked to the rent expense and a
+        ``resident_advance`` tranche, which the kitty pays back to them (see
+        :func:`reimburse_from_kitty`). When one payment covers the whole rent --
+        while the statement is still a draft and nobody has paid their rent
+        charge yet -- the shares are first re-split so that any remainder paisa
+        avoids them.
 
     No HRA receipts are written (they are switched off; see DEBT-001). The
     landlord's own receipt never holds up a payout: when the lease says the
@@ -1560,9 +1645,13 @@ def record_landlord_disbursement(
                          "payer_resident_id": expense["payer_resident_id"],
                          "linked_advance_paise": external})
 
-        funding_payment_id = None
-        if disbursement_mode == "resident_advance":
-            get_resident(uow, funding_resident_id, apartment_id)
+        written: list[dict[str, Any]] = []
+        if disbursement_mode == "pool":
+            written.append(dict(disbursement_id=new_id("rentdisb"), amount_paise=amount,
+                                disbursed_by="pool", funding_resident_id=None,
+                                funding_payment_id=None, note=note))
+        else:
+            funder = get_resident(uow, funding_resident_id, apartment_id)
             if whole and statement_edit_mode(uow, expense["statement_id"]) == "free" \
                     and expense.get("allocation_method") == "equal":
                 current = {c["resident_id"]: c["share_paise"]
@@ -1589,19 +1678,45 @@ def record_landlord_disbursement(
                             reason="Remainder paise moved away from the resident who paid "
                                    "the landlord",
                             new_value={k: v for k, v in plan.shares_paise.items() if v})
-            if whole:
-                uow.rent.set_expense_payer(expense["expense_id"],
-                                           payer_resident_id=funding_resident_id,
-                                           updated_at=timestamp)
-            funding_payment_id = new_id("rent-advance")
-            payments._record_payment(
-                uow, apartment_id=apartment_id, payment_id=funding_payment_id,
-                payer_resident_id=funding_resident_id, amount_paise=amount,
-                payment_date=disbursed_date, payment_kind="provider_advance",
-                payee_or_provider=config["landlord_name"], reference=reference,
-                note=(f"Rent for {month_label(settlement_month)} paid to the landlord"
-                      + ("" if whole else " (part payment)")),
-                timestamp=timestamp, expense_id=expense["expense_id"], actor=actor)
+            name = funder["display_name"]
+            open_charge = next((charge for charge in uow.rent.resident_charges_for_expense(
+                expense["expense_id"], funding_resident_id) if charge["outstanding_paise"] > 0),
+                None)
+            share_paise = min(amount, open_charge["outstanding_paise"]) if open_charge else 0
+            extra_paise = amount - share_paise
+            if share_paise:
+                # Their own share goes through the kitty, as everyone else's does:
+                # a payment into it, and the kitty's payout of it to the landlord.
+                share_payment_id = new_id("payment")
+                payments._record_payment(
+                    uow, apartment_id=apartment_id, payment_id=share_payment_id,
+                    payer_resident_id=funding_resident_id, amount_paise=share_paise,
+                    payment_date=disbursed_date, payment_kind="to_pool", payee_or_provider=None,
+                    reference=reference, note=f"Rent for {month_label(settlement_month)}",
+                    timestamp=timestamp, expense_id=None, actor=actor,
+                    target_allocation_id=open_charge["allocation_id"])
+                written.append(dict(disbursement_id=_share_payout_id(share_payment_id),
+                                    amount_paise=share_paise, disbursed_by="pool",
+                                    funding_resident_id=None, funding_payment_id=None,
+                                    note=f"{name}'s allotted share via House Kitty"))
+            if extra_paise:
+                # Only what they paid beyond their share is an advance, which the
+                # kitty pays back out of what the others pay in.
+                funding_payment_id = new_id("rent-advance")
+                payments._record_payment(
+                    uow, apartment_id=apartment_id, payment_id=funding_payment_id,
+                    payer_resident_id=funding_resident_id, amount_paise=extra_paise,
+                    payment_date=disbursed_date, payment_kind="provider_advance",
+                    payee_or_provider=config["landlord_name"], reference=reference,
+                    note=(f"Extra paid for rent for {month_label(settlement_month)} "
+                          "to be reimbursed via House Kitty"),
+                    timestamp=timestamp, expense_id=expense["expense_id"], actor=actor)
+                written.append(dict(disbursement_id=new_id("rentdisb"),
+                                    amount_paise=extra_paise, disbursed_by="resident_advance",
+                                    funding_resident_id=funding_resident_id,
+                                    funding_payment_id=funding_payment_id,
+                                    note=note or (f"Extra above {name}'s share "
+                                                  "(reimbursable via House Kitty)")))
 
         charges = _charges(uow, expense["expense_id"])
         if sum(c["share_paise"] for c in charges) != total or not charges:
@@ -1622,13 +1737,12 @@ def record_landlord_disbursement(
             cycle["cycle_id"], status=status, last_disbursed_at=latest["disbursed_at"],
             last_reference=latest["disbursement_reference"], total_rent_paise=total,
             participant_count=len(charges))
-        disbursement_id = new_id("rentdisb")
-        uow.rent.insert_disbursement(
-            disbursement_id=disbursement_id, cycle_id=cycle["cycle_id"],
-            apartment_id=apartment_id, settlement_month=settlement_month, amount_paise=amount,
-            disbursed_at=disbursed_date, disbursement_reference=reference,
-            disbursed_by=disbursement_mode, funding_resident_id=funding_resident_id,
-            funding_payment_id=funding_payment_id, note=note, created_at=timestamp)
+        for tranche in written:
+            uow.rent.insert_disbursement(
+                cycle_id=cycle["cycle_id"], apartment_id=apartment_id,
+                settlement_month=settlement_month, disbursed_at=disbursed_date,
+                disbursement_reference=reference, created_at=timestamp, **tranche)
+        disbursement_id = written[-1]["disbursement_id"]
         if attachment:
             _store_landlord_receipt(uow, cycle["cycle_id"], attachment, timestamp)
         audit.record(
@@ -1639,12 +1753,131 @@ def record_landlord_disbursement(
                        "disbursed_paise": paid, "remaining_paise": total - paid,
                        "disbursement_status": status, "disbursed_by": disbursement_mode,
                        "disbursed_at": disbursed_date, "disbursement_reference": reference,
-                       "funding_resident_id": funding_resident_id,
-                       "funding_payment_id": funding_payment_id, "note": note,
+                       "funding_resident_id": funding_resident_id, "note": note,
+                       "tranches": [{key: tranche[key] for key in (
+                           "disbursement_id", "amount_paise", "disbursed_by",
+                           "funding_payment_id")} for tranche in written],
                        "landlord_receipt_sha256": attachment["sha256"] if attachment else None})
         summary = _summarize(uow, _cycle_row(uow, apartment_id, settlement_month), config)
     summary["warnings"] = warnings
     summary["disbursement_id"] = disbursement_id
+    summary["disbursement_ids"] = [tranche["disbursement_id"] for tranche in written]
+    return summary
+
+
+def reimburse_from_kitty(
+    db: Database, *, apartment_id: str, settlement_month: str, recipient_resident_id: str,
+    amount_paise: int, payment_date: str, reference: str | None = None,
+    note: str | None = None, actor: str = "operator",
+) -> dict[str, Any]:
+    """Pay back, from the kitty, a resident who paid the landlord more than their share.
+
+    It is a ``refund`` to them out of what the kitty collected for the month. It
+    can be no more than the kitty has collected for it and not yet paid out or
+    back, nor more than they are still owed for it; part of it can wait until
+    the rest of the flatmates have paid in.
+    """
+    settlement_month = normalize_month(settlement_month, "settlement_month")
+    amount = ensure_paise(amount_paise, "amount_paise", allow_zero=False)
+    payment_date = parse_iso_date(payment_date, "payment_date").isoformat()
+    timestamp = now_timestamp()
+    month_name = month_label(settlement_month)
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        cycle = _sync_live_rent_cycle(uow, apartment_id, settlement_month,
+                                      check_reduction_guards=False, timestamp=timestamp,
+                                      actor=actor)
+        if cycle is None:
+            raise NotFoundError(
+                f"Rent for {month_name} has not been generated.",
+                code="rent_cycle_not_found", details={"settlement_month": settlement_month})
+        config = _config_row(uow, apartment_id)
+        owing = _summarize(uow, cycle, config)["reimbursements"]
+        if not owing:
+            raise ConflictError(
+                f"Nobody is recorded as having paid the landlord more than their share for "
+                f"{month_name}, so the kitty has nobody to pay back.",
+                code="rent_no_advance", details={"settlement_month": settlement_month})
+        owed = next((entry for entry in owing
+                     if entry["recipient_resident_id"] == recipient_resident_id), None)
+        if owed is None:
+            names = ", ".join(entry["recipient_name"] for entry in owing)
+            raise ValidationError(
+                f"The kitty owes {names} for {month_name}, not this resident.",
+                code="not_the_payout_resident",
+                details={"field": "recipient_resident_id",
+                         "payer_resident_ids": [entry["recipient_resident_id"]
+                                                for entry in owing]})
+        name = owed["recipient_name"]
+        if amount > owed["pending_reimbursement_paise"]:
+            raise ValidationError(
+                f"That is more than the {format_inr(owed['pending_reimbursement_paise'])} "
+                f"still owed to {name} for {month_name}.",
+                code="exceeds_pending_reimbursement",
+                details={"field": "amount_paise", "amount_paise": amount,
+                         "pending_reimbursement_paise": owed["pending_reimbursement_paise"]})
+        if amount > owed["kitty_cash_available_paise"]:
+            raise ValidationError(
+                f"The kitty holds only {format_inr(owed['kitty_cash_available_paise'])} from "
+                f"flatmates for {month_name} rent that has not already gone to the landlord "
+                f"or back to {name}.",
+                code="exceeds_kitty_cash",
+                details={"field": "amount_paise", "amount_paise": amount,
+                         "kitty_cash_available_paise": owed["kitty_cash_available_paise"]})
+        payment = payments._record_payment(
+            uow, apartment_id=apartment_id,
+            payment_id=new_id(_reimbursement_id_base(cycle["expense_id"])),
+            payer_resident_id=recipient_resident_id, amount_paise=amount,
+            payment_date=payment_date, payment_kind="refund", payee_or_provider=None,
+            reference=optional_text(reference, "reference", max_length=200),
+            note=(optional_text(note, "note", max_length=500)
+                  or f"Reimbursement for rent for {month_name}, paid to the landlord on the "
+                     "household's behalf"),
+            timestamp=timestamp, expense_id=None, actor=actor)
+        audit.record(uow, entity_type="rent_cycle", entity_id=cycle["cycle_id"],
+                     action="reimburse", actor=actor, apartment_id=apartment_id,
+                     new_value={"settlement_month": settlement_month,
+                                "expense_id": cycle["expense_id"],
+                                "recipient_resident_id": recipient_resident_id,
+                                "amount_paise": amount, "payment_id": payment["payment_id"],
+                                "payment_date": payment_date, "reference": reference})
+        summary = _summarize(uow, _cycle_row(uow, apartment_id, settlement_month), config)
+    summary["payment"] = payment
+    return summary
+
+
+def delete_rent_payment(db: Database, *, apartment_id: str, settlement_month: str,
+                        payment_id: str, actor: str = "operator") -> dict[str, Any]:
+    """Delete, while the month is open, a resident's payment into the kitty towards
+    the month's rent or the kitty's reimbursement to a resident -- recorded by
+    mistake. See :mod:`aem.services.deletions` for what goes with it."""
+    settlement_month = normalize_month(settlement_month, "settlement_month")
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        deleted = deletions.delete_payment_in(
+            uow, apartment_id=apartment_id, scope="rent", payment_id=payment_id,
+            settlement_month=settlement_month, actor=actor)
+        summary = _summarize(uow, _cycle_row(uow, apartment_id, settlement_month),
+                             _config_row(uow, apartment_id))
+    summary["deleted"] = deleted
+    return summary
+
+
+def delete_landlord_disbursement(db: Database, *, apartment_id: str, settlement_month: str,
+                                 disbursement_id: str,
+                                 actor: str = "operator") -> dict[str, Any]:
+    """Delete, while the month is open, a payout to the landlord recorded by
+    mistake -- with the payments recorded alongside it -- and restate the month's
+    payout status from the payouts left. See :mod:`aem.services.deletions`."""
+    settlement_month = normalize_month(settlement_month, "settlement_month")
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        deleted = deletions.delete_payout_in(
+            uow, apartment_id=apartment_id, scope="rent", disbursement_id=disbursement_id,
+            settlement_month=settlement_month, actor=actor)
+        summary = _summarize(uow, _cycle_row(uow, apartment_id, settlement_month),
+                             _config_row(uow, apartment_id))
+    summary["deleted"] = deleted
     return summary
 
 

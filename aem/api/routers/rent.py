@@ -16,6 +16,7 @@ from ...schemas import (
     RentLeaseRenewRequest,
     RentLeaseVacateRequest,
     RentPaymentCreate,
+    RentReimburseRequest,
 )
 from ...services import rent
 from ..deps import ApartmentId, AppSettings, Db, to_http
@@ -148,6 +149,56 @@ def disburse_cycle(payload: RentDisburseRequest, db: Db, apartment_id: Apartment
         return rent.record_landlord_disbursement(
             db, apartment_id=apartment_id, settlement_month=settlement_month,
             actor=settings.operator_name, **payload.model_dump())
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.post("/cycle/{settlement_month}/reimburse", status_code=201,
+             summary="Pay back, from the kitty, a resident who paid the landlord extra")
+def reimburse_cycle(payload: RentReimburseRequest, db: Db, apartment_id: ApartmentId,
+                    settings: AppSettings,
+                    settlement_month: SettlementMonth) -> dict[str, Any]:
+    """A ``refund`` from the kitty to a resident who paid the landlord more than
+    their own share, out of what the others paid in for the month. Never more
+    than the kitty holds for the month, nor than they are still owed."""
+    try:
+        return rent.reimburse_from_kitty(
+            db, apartment_id=apartment_id, settlement_month=settlement_month,
+            actor=settings.operator_name, **payload.model_dump())
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.delete("/cycle/{settlement_month}/payments/{payment_id}",
+               summary="Delete a rent payment or reimbursement recorded by mistake")
+def delete_cycle_payment(db: Db, apartment_id: ApartmentId, settings: AppSettings,
+                         settlement_month: SettlementMonth,
+                         payment_id: str = Path()) -> dict[str, Any]:
+    """A resident's payment into the kitty towards the month's rent, or the
+    kitty's reimbursement to a resident, deleted outright while the month's
+    statement is a draft. One the kitty paid out as part of a resident's payout
+    to the landlord deletes that payout. Returns the month as it then stands."""
+    try:
+        return rent.delete_rent_payment(db, apartment_id=apartment_id,
+                                        settlement_month=settlement_month,
+                                        payment_id=payment_id, actor=settings.operator_name)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.delete("/cycle/{settlement_month}/disbursements/{disbursement_id}",
+               summary="Delete a landlord payout recorded by mistake")
+def delete_cycle_disbursement(db: Db, apartment_id: ApartmentId, settings: AppSettings,
+                              settlement_month: SettlementMonth,
+                              disbursement_id: str = Path()) -> dict[str, Any]:
+    """Deleted outright while the month's statement is a draft, with whatever was
+    recorded with it: a resident's payout takes its advance, and the kitty's
+    payout of their own share with their payment into the kitty. Refused while
+    the kitty has reimbursed that advance. Returns the month as it then stands."""
+    try:
+        return rent.delete_landlord_disbursement(
+            db, apartment_id=apartment_id, settlement_month=settlement_month,
+            disbursement_id=disbursement_id, actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
 

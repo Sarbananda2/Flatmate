@@ -24,14 +24,13 @@ import {
   Archive,
   Check,
   Clock,
-  CreditCard,
-  HandCoins,
   Pencil,
   Plus,
   Receipt,
   ShieldCheck,
   Sofa,
   Store,
+  Trash2,
   Undo2,
   Users,
 } from 'lucide-react'
@@ -43,6 +42,14 @@ import {
   type CollectionStatus,
   type ResidentCollectionItem,
 } from '../../components/ResidentCollectionTable'
+import { DeleteTransactionDialog, type PendingDeletion } from '../../components/DeleteTransactionDialog'
+import { KittyReimbursementPanel, ReimburseDialog, billFor } from '../../components/KittyReimbursement'
+import {
+  PAYOUT_STATUS,
+  ProviderPayoutStatementModal,
+  ProviderPayoutTable,
+  type ProviderPayoutItem,
+} from '../../components/ProviderPayoutTable'
 import { useToast } from '../../components/Toast'
 import {
   Avatar,
@@ -67,7 +74,6 @@ import type {
   FurnitureItem,
   FurnitureItemStatus,
   FurnitureMonthBill,
-  FurniturePayoutStatus,
   FurnitureProviderPayout,
   FurnitureReimbursement,
   FurnitureRentalOverview,
@@ -127,13 +133,6 @@ const PAYMENT_MODES: Array<{ value: PaymentMode; label: string }> = [
 /** Nothing left to pay on the share: paid into the kitty, or covered by paying the provider. */
 function isSettled(share: FurnitureShare): boolean {
   return share.status === 'paid' || share.status === 'funded_payout' || share.outstanding_paise <= 0
-}
-
-/** The provider's side of the month, worded as the collection table words a resident's. */
-const PAYOUT: Record<FurniturePayoutStatus, { tone: Tone; label: string }> = {
-  pending: { tone: 'warning', label: 'Unpaid' },
-  partially_disbursed: { tone: 'warning', label: 'Part paid' },
-  disbursed: { tone: 'success', label: 'Paid' },
 }
 
 /** A share of the whole to one decimal place, for display only. */
@@ -214,6 +213,9 @@ export default function FurnitureRentalPage() {
 export function FurnitureRental({ month }: { month: string }) {
   const overview = useResource<FurnitureRentalOverview>(BASE, { month })
   const [dialog, setDialog] = useState<Dialog | null>(null)
+  // A payment or payout recorded by mistake, about to be deleted. It opens over
+  // the statement it was chosen from, which then shows the month as it stands.
+  const [deleting, setDeleting] = useState<PendingDeletion | null>(null)
   const [params, setParams] = useSearchParams()
   const requested = params.get('tab')
   const tab: FurnitureTab = FURNITURE_TABS.some((entry) => entry.value === requested)
@@ -293,14 +295,24 @@ export function FurnitureRental({ month }: { month: string }) {
                     />
                     {(data.month.reimbursements ?? (data.month.reimbursement ? [data.month.reimbursement] : [])).map(
                       (reimbursement) => (
-                        <ReimbursementPanel
+                        <KittyReimbursementPanel
                           key={reimbursement.recipient_resident_id}
-                          month={month}
                           reimbursement={reimbursement}
-                          provider={servicesOf(data)
+                          billLabel={billFor(month)}
+                          paidTo={servicesOf(data)
                             .map((entry) => entry.config.provider_name)
                             .join(', ')}
                           onReimburse={(owed) => setDialog({ kind: 'reimburse', reimbursement: owed })}
+                          onDelete={
+                            data.month?.transactions_open
+                              ? (refund) =>
+                                  setDeleting({
+                                    title: 'Delete this reimbursement?',
+                                    what: `${formatInr(refund.amount_paise)} paid back from the kitty to ${reimbursement.recipient_name} on ${formatDate(refund.payment_date)}.`,
+                                    url: `${BASE}/payments/${encodeURIComponent(refund.payment_id)}`,
+                                  })
+                              : undefined
+                          }
                         />
                       ),
                     )}
@@ -410,16 +422,68 @@ export function FurnitureRental({ month }: { month: string }) {
               }}
             />
           )}
-          {dialog?.kind === 'payout_statement' && (
-            <ProviderPayoutStatementModal month={month} payout={dialog.payout} onClose={() => setDialog(null)} />
-          )}
+          {dialog?.kind === 'payout_statement' &&
+            (() => {
+              // The provider's side of the month as it now stands, not as it was when opened.
+              const payout =
+                (data.month && data.service && data.config
+                  ? payoutsOf(data.month, data.service, data.config).find(
+                      (row) => row.service_id === dialog.payout.service_id,
+                    )
+                  : undefined) ?? dialog.payout
+              return (
+                <ProviderPayoutStatementModal
+                  title="Provider Payout Statement"
+                  name={payout.provider_name}
+                  month={month}
+                  totalPaise={payout.total_paise}
+                  paidPaise={payout.disbursed_paise}
+                  stillOwedPaise={payout.remaining_disbursement_paise}
+                  status={payout.payout_status}
+                  disbursements={payout.disbursements}
+                  onDeleteDisbursement={
+                    data.month?.transactions_open
+                      ? (tranche) =>
+                          setDeleting({
+                            title: 'Delete this payout?',
+                            what: `${formatInr(tranche.amount_paise)} paid to ${payout.provider_name} on ${formatDate(tranche.disbursed_at)}${tranche.disbursed_by === 'pool' ? ' from the House Kitty' : ` by ${tranche.funding_resident_name ?? 'a resident'}`}.`,
+                            url: `${BASE}/disbursements/${encodeURIComponent(tranche.disbursement_id)}`,
+                          })
+                      : undefined
+                  }
+                  onClose={() => setDialog(null)}
+                />
+              )
+            })()}
           {dialog?.kind === 'share_detail' && data.config && (
             <FurnitureStatementModal
               month={month}
-              share={dialog.share}
-              bill={dialog.bill}
+              // The share as it now stands, not as it was when opened.
+              share={data.month?.shares.find((row) => row.resident_id === dialog.share.resident_id) ?? dialog.share}
+              bill={data.month ?? dialog.bill}
               provider={data.config.provider_name}
+              onDeletePayment={
+                data.month?.transactions_open
+                  ? (payment) =>
+                      setDeleting({
+                        title: 'Delete this payment?',
+                        what: `${dialog.share.display_name}'s ${formatInr(payment.amount_paise)} payment of ${formatDate(payment.payment_date)}.`,
+                        url: `${BASE}/payments/${encodeURIComponent(payment.payment_id)}`,
+                      })
+                  : undefined
+              }
               onClose={() => setDialog(null)}
+            />
+          )}
+          {deleting && (
+            <DeleteTransactionDialog
+              deletion={deleting}
+              onClose={() => setDeleting(null)}
+              onDeleted={() => {
+                setDeleting(null)
+                toast.success('Deleted', 'The month owes what it owed before.')
+                overview.reload()
+              }}
             />
           )}
           {dialog?.kind === 'pay_share' && (
@@ -435,7 +499,18 @@ export function FurnitureRental({ month }: { month: string }) {
           {dialog?.kind === 'reimburse' && (
             <ReimburseDialog
               month={month}
+              billLabel={billFor(month)}
               reimbursement={dialog.reimbursement}
+              submit={(details) =>
+                api.post<FurnitureRentalOverview>(`${BASE}/reimburse-from-kitty`, {
+                  settlement_month: month,
+                  recipient_resident_id: dialog.reimbursement.recipient_resident_id,
+                  amount_paise: details.amount_paise,
+                  payment_date: details.payment_date,
+                  reference: details.reference,
+                  notes: details.note,
+                })
+              }
               onClose={() => setDialog(null)}
               onDone={(amount) =>
                 done('Reimbursement recorded', `${formatInr(amount)} from the kitty to ${dialog.reimbursement.recipient_name}`)
@@ -942,7 +1017,7 @@ function Metrics({ bill, billingDay }: { bill: FurnitureMonthBill; billingDay: n
   const charged = bill.shares.filter((share) => share.total_paise > 0).length
   const lastPaid = bill.disbursements.length ? bill.disbursements[bill.disbursements.length - 1].disbursed_at : null
   const due = billingDay ? billingDate(bill.settlement_month, billingDay) : null
-  const payout = PAYOUT[bill.payout_status]
+  const payout = PAYOUT_STATUS[bill.payout_status]
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
       <MiniStat label="Shared items" value={<Rupees paise={bill.common_total_paise} />} note="Split equally" />
@@ -1074,8 +1149,20 @@ function ProviderPayoutPanel({
   onViewStatement: (payout: FurnitureProviderPayout) => void
 }) {
   const billed = bill.expense != null
-  const dash = <span className="text-[var(--text-tertiary)]">—</span>
   const single = payouts.length === 1 ? payouts[0].provider_name : null
+  const items: ProviderPayoutItem[] = payouts.map((payout) => ({
+    id: payout.service_id,
+    name: payout.provider_name,
+    totalPaise: payout.total_paise,
+    // Nothing is paid or owed until the bill is recorded.
+    paidPaise: billed ? payout.disbursed_paise : null,
+    stillOwedPaise: billed ? payout.remaining_disbursement_paise : null,
+    status: billed ? payout.payout_status : null,
+    // Open until the provider has been paid in full: the bill can go in tranches.
+    canPay: billed && payout.payout_status !== 'disbursed' && payout.total_paise > 0,
+    onPay: () => onPayout(payout),
+    onViewStatement: billed ? () => onViewStatement(payout) : undefined,
+  }))
   return (
     <Panel
       title={single ? `Provider Payout · ${single}` : 'Provider Payout'}
@@ -1086,101 +1173,10 @@ function ProviderPayoutPanel({
           : 'What each provider is owed for the month, and payouts made to them. Select a row for its disbursement history.'
       }
     >
-      {/* Laid out as the collection table above: what was due, what has been paid, what is still owed. */}
-      <div className="overflow-x-auto min-w-0">
-        <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse">
-          <caption className="sr-only">
-            {single ? `The furniture bill owed to ${single}` : 'The furniture bill owed to each provider'}
-          </caption>
-          <thead>
-            <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-left">Provider</th>
-              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Total Bill</th>
-              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid to Provider</th>
-              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still Owed</th>
-              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
-              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-            {payouts.map((payout) => {
-              const provider = payout.provider_name
-              const status = PAYOUT[payout.payout_status]
-              // Open until the provider has been paid in full: the bill can go in tranches.
-              const owing = billed && payout.payout_status !== 'disbursed' && payout.total_paise > 0
-              return (
-                // Once the bill is recorded, the row opens the provider's payout
-                // statement; the button in it does its own thing instead.
-                <tr
-                  key={payout.service_id}
-                  className={
-                    billed
-                      ? 'align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors'
-                      : 'align-middle'
-                  }
-                  {...(billed && {
-                    tabIndex: 0,
-                    title: `View the ${provider} payout statement`,
-                    onClick: () => onViewStatement(payout),
-                    onKeyDown: (event: React.KeyboardEvent<HTMLTableRowElement>) => {
-                      if (event.target !== event.currentTarget) return
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        onViewStatement(payout)
-                      }
-                    },
-                  })}
-                >
-                  <th scope="row" className="py-3 pr-3 text-left font-normal">
-                    <span className="flex items-center gap-2.5 min-w-0">
-                      <Avatar name={provider} />
-                      <span className="font-semibold text-[var(--text-primary)] truncate">{provider}</span>
-                    </span>
-                  </th>
-                  <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                    <Rupees paise={payout.total_paise} />
-                  </td>
-                  <td className="py-3 pr-3 text-center">{billed ? <Rupees paise={payout.disbursed_paise} /> : dash}</td>
-                  <td className="py-3 pr-3 text-center">
-                    {billed ? <Rupees paise={payout.remaining_disbursement_paise} /> : dash}
-                  </td>
-                  <td className="py-3 pr-3 text-center whitespace-nowrap">
-                    {billed ? (
-                      <Pill tone={status.tone}>
-                        {payout.payout_status === 'disbursed' ? (
-                          <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-                        ) : (
-                          <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
-                        )}
-                        {status.label}
-                      </Pill>
-                    ) : (
-                      <Pill>Not billed</Pill>
-                    )}
-                  </td>
-                  <td className="py-3 text-center whitespace-nowrap">
-                    {/* Always there, as on each resident's row; off until the bill is
-                        recorded and once the provider is paid in full. */}
-                    <button
-                      type="button"
-                      className={BUTTON_SECONDARY}
-                      disabled={!owing}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onPayout(payout)
-                      }}
-                      aria-label={`Pay now to ${provider}`}
-                    >
-                      <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      Pay Now
-                    </button>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+      <ProviderPayoutTable
+        caption={single ? `The furniture bill owed to ${single}` : 'The furniture bill owed to each provider'}
+        items={items}
+      />
     </Panel>
   )
 }
@@ -1201,86 +1197,6 @@ function ShareStatus({ status }: { status: FurnitureShareStatus | null; provider
 }
 
 /* -------------------------------------------- 5. paying back who paid it -- */
-
-function ReimbursementPanel({
-  month,
-  reimbursement,
-  provider,
-  onReimburse,
-}: {
-  month: string
-  reimbursement: FurnitureReimbursement
-  provider: string
-  onReimburse: (reimbursement: FurnitureReimbursement) => void
-}) {
-  const owed = reimbursement
-  const name = owed.recipient_name
-  const settled = owed.pending_reimbursement_paise === 0
-  // What of the total they paid was their own share, paid through the kitty.
-  const viaKitty = owed.total_fronted_paise - owed.net_reimbursement_owed_paise
-  return (
-    <Panel
-      title={`Reimbursement · ${name}`}
-      icon={<HandCoins className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint={`${name} paid extra beyond their allotted share for the ${formatMonth(month)} bill. The House Kitty reimburses the extra amount out of what the other flatmates pay in.`}
-    >
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-        <MiniStat
-          label="Total paid"
-          value={<Rupees paise={owed.total_fronted_paise} />}
-          note={
-            viaKitty > 0 ? `Includes ${formatInr(viaKitty)} allotted share` : `All of it beyond their share, to ${provider}`
-          }
-        />
-        <MiniStat
-          label="Extra (reimbursable)"
-          value={<Rupees paise={owed.net_reimbursement_owed_paise} />}
-          note="To be reimbursed via House Kitty"
-        />
-        <MiniStat
-          label="Reimbursed so far"
-          value={<Rupees paise={owed.reimbursed_so_far_paise} />}
-          note={settled ? 'Nothing still owed' : `${formatInr(owed.pending_reimbursement_paise)} still owed`}
-        />
-        <MiniStat
-          label="Kitty cash available"
-          value={<Rupees paise={owed.kitty_cash_available_paise} />}
-          note="Collected from other flatmates"
-        />
-      </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {settled ? (
-          <span className="text-xs text-[var(--text-secondary)]">
-            <Pill tone="success">
-              <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-              Reimbursed
-            </Pill>{' '}
-            {name} has been paid back in full.
-          </span>
-        ) : (
-          <>
-            <span className="text-xs text-[var(--text-secondary)]">
-              {owed.can_reimburse
-                ? `The kitty can pay back ${formatInr(owed.reimbursable_paise)} now.`
-                : 'Nothing paid into the kitty for this bill is waiting to go back yet.'}
-            </span>
-            <button
-              type="button"
-              className={BUTTON_PRIMARY}
-              disabled={!owed.can_reimburse}
-              onClick={() => onReimburse(owed)}
-            >
-              {owed.can_reimburse
-                ? `Reimburse ${formatInr(owed.reimbursable_paise)} from Kitty to ${name}`
-                : `Reimburse from Kitty to ${name}`}
-            </button>
-          </>
-        )}
-      </div>
-    </Panel>
-  )
-}
 
 /* -------------------------------------------------------------- dialogs -- */
 
@@ -1828,155 +1744,21 @@ function ProviderPayoutModal({
 }
 
 /** The provider's side of the month: what is due to them, and every payment made (Rule U7). */
-function ProviderPayoutStatementModal({
-  month,
-  payout,
-  onClose,
-}: {
-  month: string
-  payout: FurnitureProviderPayout
-  onClose: () => void
-}) {
-  const provider = payout.provider_name
-  const status = PAYOUT[payout.payout_status]
-  const dash = <span className="text-[var(--text-tertiary)]">—</span>
-  return (
-    <Modal title="Provider Payout Statement" description={`${provider} · ${formatMonth(month)}`} onClose={onClose}>
-      <div className="stack">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <MiniStat label="Total Bill" value={<Rupees paise={payout.total_paise} />} />
-          <MiniStat label="Paid to Provider" value={<Rupees paise={payout.disbursed_paise} />} />
-          <MiniStat label="Still Owed" value={<Rupees paise={payout.remaining_disbursement_paise} />} />
-        </div>
-
-        <section aria-label="Disbursement history" className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="m-0 text-sm font-bold text-[var(--text-primary)]">Disbursement History</h3>
-            <Pill tone={status.tone}>
-              {payout.payout_status === 'disbursed' ? (
-                <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-              ) : (
-                <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
-              )}
-              {status.label}
-            </Pill>
-          </div>
-          {payout.disbursements.length === 0 ? (
-            <EmptyBlock title="No payouts recorded yet for this month." />
-          ) : (
-            <div className="overflow-x-auto min-w-0">
-              <table className="w-full text-left text-xs min-w-[560px] border-collapse">
-                <caption className="sr-only">Payments to {provider}</caption>
-                <thead>
-                  <tr className={TABLE_HEAD}>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Funded From</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Reference / UTR</th>
-                    <th scope="col" className="pb-3 font-bold text-center">Note</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-                  {payout.disbursements.map((tranche) => (
-                    <tr key={tranche.disbursement_id} className="align-middle">
-                      <td className="py-2.5 pr-3 text-center tabular">{formatDate(tranche.disbursed_at)}</td>
-                      <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
-                        <Rupees paise={tranche.amount_paise} />
-                      </td>
-                      <td className="py-2.5 pr-3 text-center">
-                        {tranche.disbursed_by === 'pool'
-                          ? 'House Kitty'
-                          : `${tranche.funding_resident_name ?? tranche.funding_resident_id} (advance)`}
-                      </td>
-                      <td className="py-2.5 pr-3 text-center tabular break-all">{tranche.disbursement_reference}</td>
-                      <td className="py-2.5 text-center text-[var(--text-secondary)]">{tranche.note ?? dash}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </div>
-    </Modal>
-  )
-}
-
-function ReimburseDialog({
-  month,
-  reimbursement,
-  onClose,
-  onDone,
-}: {
-  month: string
-  reimbursement: FurnitureReimbursement
-  onClose: () => void
-  onDone: (amount: number) => void
-}) {
-  const [date, setDate] = useState(todayIso())
-  const [reference, setReference] = useState('')
-  const [notes, setNotes] = useState('')
-  const name = reimbursement.recipient_name
-  // What the kitty holds for the bill now; the rest waits for the others to pay in.
-  const amount = reimbursement.reimbursable_paise
-  const later = reimbursement.pending_reimbursement_paise - amount
-  const save = useMutation(
-    () =>
-      api.post<FurnitureRentalOverview>(`${BASE}/reimburse-from-kitty`, {
-        settlement_month: month,
-        recipient_resident_id: reimbursement.recipient_resident_id,
-        amount_paise: amount,
-        payment_date: date,
-        reference: reference.trim() || null,
-        notes: notes.trim() || null,
-      }),
-    { onSuccess: () => onDone(amount) },
-  )
-  return (
-    <Modal
-      title={`Reimburse ${name}`}
-      description={`${formatInr(amount)} from the kitty to ${name}, out of what flatmates paid in for the ${formatMonth(month)} bill.${later > 0 ? ` ${formatInr(later)} more is owed once the rest have paid.` : ''}`}
-      onClose={onClose}
-      footer={
-        <DialogFooter
-          onClose={onClose}
-          pending={save.pending}
-          disabled={!date}
-          label="Record reimbursement"
-          form="furniture-reimburse"
-        />
-      }
-    >
-      <form id="furniture-reimburse" className="stack" noValidate onSubmit={submitWith(() => Boolean(date) && void save.run(undefined))}>
-        <ErrorNotice error={save.error} />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <DateField label="Paid on" required value={date} onChange={setDate} />
-          <TextField
-            label="Reference / UTR"
-            value={reference}
-            onChange={setReference}
-            maxLength={200}
-            placeholder="e.g. UPI ref or bank UTR"
-          />
-        </div>
-        <TextField label="Note" value={notes} onChange={setNotes} maxLength={500} />
-      </form>
-    </Modal>
-  )
-}
-
 /** One resident's share of the month: what they owe, and every payment into the kitty towards it (Rule U7). */
 function FurnitureStatementModal({
   month,
   share,
   bill,
   provider,
+  onDeletePayment,
   onClose,
 }: {
   month: string
   share: FurnitureShare
   bill: FurnitureMonthBill
   provider: string
+  /** Deletes a payment recorded by mistake, while the month is open; without it none is offered. */
+  onDeletePayment?: (payment: FurnitureShare['payments'][number]) => void
   onClose: () => void
 }) {
   const billed = bill.expense != null
@@ -2026,7 +1808,8 @@ function FurnitureStatementModal({
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Mode</th>
-                    <th scope="col" className="pb-3 font-bold text-center">Reference / UTR</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Reference / UTR</th>
+                    {onDeletePayment && <th scope="col" className="pb-3 font-bold text-center">Actions</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -2039,9 +1822,22 @@ function FurnitureStatementModal({
                       <td className="py-2.5 pr-3 text-center">
                         {payment.payment_mode ? modes.get(payment.payment_mode) : dash}
                       </td>
-                      <td className="py-2.5 text-center tabular break-all text-[var(--text-primary)]">
+                      <td className="py-2.5 pr-3 text-center tabular break-all text-[var(--text-primary)]">
                         {payment.reference || dash}
                       </td>
+                      {onDeletePayment && (
+                        <td className="py-2.5 text-center">
+                          <button
+                            type="button"
+                            className={BUTTON_QUIET}
+                            onClick={() => onDeletePayment(payment)}
+                            aria-label={`Delete the ${formatInr(payment.amount_paise)} payment of ${formatDate(payment.payment_date)}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                            Delete
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

@@ -616,7 +616,7 @@ describe('RentMonth', () => {
     expect(confirm).toBeDisabled()
     await userEvent.selectOptions(within(dialog).getByLabelText(/Funding resident/), 'alice')
     expect(dialog).toHaveTextContent(
-      'Credited this payout as a provider advance. They still owe their own share.',
+      'Their own share goes through the House Kitty; the kitty pays back what they paid beyond it.',
     )
     await userEvent.click(confirm)
 
@@ -930,7 +930,7 @@ describe('RentMonth', () => {
       renderRent(overview())
       const table = await screen.findByRole('table', { name: 'Rent owed to the landlord' })
       expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
-        'Landlord / Destination',
+        'Landlord',
         'Total Rent',
         'Paid to Owner',
         'Still Owed',
@@ -938,8 +938,9 @@ describe('RentMonth', () => {
         'Actions',
       ])
       const landlord = within(table).getByRole('row', { name: /Rajesh Kumar Sharma/ })
-      expect(landlord).toHaveTextContent('rajeshsharma@okaxis')
-      expect(landlord).toHaveTextContent('₹45,000.00₹0.00₹45,000.00Unpaid')
+      // Just the landlord's name, as a resident's row has theirs; where the money goes is in the payout dialog.
+      expect(landlord).not.toHaveTextContent('rajeshsharma@okaxis')
+      expect(landlord).toHaveTextContent('Rajesh Kumar Sharma₹45,000.00₹0.00₹45,000.00Unpaid')
       // Nothing paid yet, so there are no payments to list beneath it.
       expect(screen.queryByRole('table', { name: 'Payments to the landlord' })).not.toBeInTheDocument()
 
@@ -1102,6 +1103,170 @@ describe('RentMonth', () => {
         reference: 'UTR-SECOND',
         note: 'Chris paid late',
       })
+    })
+  })
+
+  describe('the kitty paying back a resident who paid the landlord', () => {
+    /** Alice paid the landlord ₹45,000: her ₹15,000 share through the kitty, ₹30,000 beyond it. */
+    const owedToAlice = {
+      recipient_resident_id: 'alice',
+      recipient_name: 'Alice',
+      total_fronted_paise: 4500000,
+      payer_share_paise: 1500000,
+      net_reimbursement_owed_paise: 3000000,
+      reimbursed_so_far_paise: 1000000,
+      pending_reimbursement_paise: 2000000,
+      kitty_cash_available_paise: 1500000,
+      reimbursable_paise: 1500000,
+      can_reimburse: true,
+      reimbursements: [{ payment_id: 'rent-oct-reimbursement_1', amount_paise: 1000000, payment_date: '2026-10-06', reference: 'UPI-R1' }],
+    }
+
+    it('says what the kitty owes her and pays it back', async () => {
+      renderRent(overview({ cycle: cycle({ reimbursements: [owedToAlice], reimbursement: owedToAlice }) }), {
+        [`POST /api/rent/cycle/${MONTH}/reimburse`]: cycle(),
+      })
+      const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
+      expect(card).toHaveTextContent('Alice paid extra beyond their allotted share for October 2026 rent.')
+      expect(card).toHaveTextContent('Total paid₹45,000.00Includes ₹15,000.00 allotted share')
+      expect(card).toHaveTextContent('Reimbursed so far₹10,000.00₹20,000.00 still owed')
+      const made = within(card).getByRole('table', { name: 'Reimbursements to Alice' })
+      expect(within(made).getAllByRole('row')[1]).toHaveTextContent('6 Oct 2026₹10,000.00UPI-R1')
+
+      await userEvent.click(within(card).getByRole('button', { name: 'Reimburse ₹15,000.00 from Kitty to Alice' }))
+      const dialog = screen.getByRole('dialog', { name: 'Reimburse Alice' })
+      expect(dialog).toHaveTextContent('₹15,000.00 from the kitty to Alice, out of what flatmates paid in for October 2026 rent. ₹5,000.00 more is owed once the rest have paid.')
+      await userEvent.type(within(dialog).getByLabelText('Reference / UTR'), 'UPI-R2')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Record reimbursement' }))
+      await waitFor(() => expect(posted('/reimburse')).toBeDefined())
+      expect(posted('/reimburse')!.body).toEqual({
+        recipient_resident_id: 'alice',
+        amount_paise: 1500000,
+        payment_date: '2026-10-03',
+        reference: 'UPI-R2',
+        note: null,
+      })
+    })
+
+    it('shows no reimbursement when nobody paid the landlord extra', async () => {
+      renderRent(overview())
+      await screen.findByRole('table', { name: 'Rent owed to the landlord' })
+      expect(screen.queryByRole('heading', { name: /Reimbursement/ })).toBeNull()
+    })
+  })
+
+  describe('deleting what was recorded by mistake', () => {
+    const deleted = () => stub!.calls.find((call) => call.method === 'DELETE')
+    const payoutTranche = {
+      disbursement_id: 'rentdisb-1',
+      cycle_id: 'rentcycle-oct',
+      amount_paise: 3000000,
+      disbursed_at: '2026-10-05',
+      disbursement_reference: 'UTR-1',
+      disbursed_by: 'pool',
+      funding_resident_id: null,
+      funding_resident_name: null,
+      funding_payment_id: null,
+      note: null,
+      created_at: '2026-10-05T10:00:00+05:30',
+    }
+    const partPaid = (overrides: Record<string, unknown> = {}) =>
+      cycle({
+        transactions_open: true,
+        disbursement_status: 'partially_disbursed',
+        disbursed_at: '2026-10-05',
+        disbursement_reference: 'UTR-1',
+        disbursed_by: 'pool',
+        disbursed_paise: 3000000,
+        remaining_disbursement_paise: 1500000,
+        disbursements: [payoutTranche],
+        participants: cycle().participants.map((row) =>
+          row.resident_id === 'chris'
+            ? {
+                ...row,
+                settled_paise: 500000,
+                outstanding_paise: 1000000,
+                collection_status: 'partial',
+                payments: [
+                  {
+                    payment_id: 'pay-chris',
+                    payment_date: '2026-10-08',
+                    amount_paise: 500000,
+                    payment_mode: 'upi',
+                    reference: 'UPI-1',
+                    note: null,
+                    created_at: '2026-10-08T10:00:00+05:30',
+                  },
+                ],
+              }
+            : row,
+        ),
+        ...overrides,
+      })
+
+    it("deletes a resident's payment from their statement while the month is open", async () => {
+      renderRent(overview({ cycle: partPaid() }), { [`DELETE /api/rent/cycle/${MONTH}/payments/pay-chris`]: partPaid() })
+      const shares = await screen.findByRole('table', { name: 'Rent shares and collection' })
+      await userEvent.click(within(shares).getByRole('row', { name: /Chris/ }))
+      const statement = await screen.findByRole('dialog', { name: 'Rent Statement' })
+      await userEvent.click(within(statement).getByRole('button', { name: 'Delete the ₹5,000.00 payment of 8 Oct 2026' }))
+      const confirm = screen.getByRole('dialog', { name: 'Delete this payment?' })
+      expect(confirm).toHaveTextContent("Chris's ₹5,000.00 payment of 8 Oct 2026.")
+      expect(confirm).toHaveTextContent("only possible while the month's statement is open")
+      await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+      await waitFor(() => expect(deleted()).toBeDefined())
+      expect(deleted()!.path).toBe(`/api/rent/cycle/${MONTH}/payments/pay-chris`)
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete this payment?' })).toBeNull())
+    })
+
+    it('deletes a landlord payout from its statement', async () => {
+      renderRent(overview({ cycle: partPaid() }), {
+        [`DELETE /api/rent/cycle/${MONTH}/disbursements/rentdisb-1`]: partPaid(),
+      })
+      await userEvent.click(await screen.findByRole('row', { name: /Rajesh Kumar Sharma/ }))
+      const statement = await screen.findByRole('dialog', { name: 'Landlord Payout Statement' })
+      await userEvent.click(within(statement).getByRole('button', { name: 'Delete the ₹30,000.00 payout of 5 Oct 2026' }))
+      const confirm = screen.getByRole('dialog', { name: 'Delete this payout?' })
+      expect(confirm).toHaveTextContent('₹30,000.00 paid to the landlord on 5 Oct 2026 from the House Kitty.')
+      await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+      await waitFor(() => expect(deleted()!.path).toBe(`/api/rent/cycle/${MONTH}/disbursements/rentdisb-1`))
+    })
+
+    it('offers no delete once the month is finalized', async () => {
+      renderRent(overview({ cycle: partPaid({ transactions_open: false }) }))
+      const shares = await screen.findByRole('table', { name: 'Rent shares and collection' })
+      await userEvent.click(within(shares).getByRole('row', { name: /Chris/ }))
+      const statement = await screen.findByRole('dialog', { name: 'Rent Statement' })
+      expect(within(statement).queryByRole('button', { name: /Delete/ })).toBeNull()
+      expect(within(statement).queryByRole('columnheader', { name: 'Actions' })).toBeNull()
+    })
+
+    it('deletes a reimbursement from the kitty', async () => {
+      const owed = {
+        recipient_resident_id: 'alice',
+        recipient_name: 'Alice',
+        total_fronted_paise: 4500000,
+        payer_share_paise: 1500000,
+        net_reimbursement_owed_paise: 3000000,
+        reimbursed_so_far_paise: 1000000,
+        pending_reimbursement_paise: 2000000,
+        kitty_cash_available_paise: 500000,
+        reimbursable_paise: 500000,
+        can_reimburse: true,
+        reimbursements: [{ payment_id: 'rent-oct-reimbursement_1', amount_paise: 1000000, payment_date: '2026-10-06', reference: 'UPI-R1' }],
+      }
+      const withRefund = partPaid({ reimbursements: [owed], reimbursement: owed })
+      renderRent(overview({ cycle: withRefund }), {
+        [`DELETE /api/rent/cycle/${MONTH}/payments/rent-oct-reimbursement_1`]: withRefund,
+      })
+      const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
+      await userEvent.click(within(card).getByRole('button', { name: 'Delete the ₹10,000.00 reimbursement of 6 Oct 2026' }))
+      const confirm = screen.getByRole('dialog', { name: 'Delete this reimbursement?' })
+      expect(confirm).toHaveTextContent('₹10,000.00 paid back from the kitty to Alice on 6 Oct 2026.')
+      await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+      await waitFor(() =>
+        expect(deleted()!.path).toBe(`/api/rent/cycle/${MONTH}/payments/rent-oct-reimbursement_1`),
+      )
     })
   })
 

@@ -879,6 +879,43 @@ describe('FurnitureRental', () => {
     expect(within(card).queryByRole('button', { name: /Reimburse/ })).toBeNull()
   })
 
+  describe('deleting what was recorded by mistake', () => {
+    const deleted = () => stub!.calls.find((call) => call.method === 'DELETE')
+    const open = () => overview({ month: paidByAlice({ transactions_open: true }) })
+
+    it("deletes a resident's payment from their statement while the month is open", async () => {
+      show(open(), { 'DELETE /api/services/furniture/payments/pay-bob': open() })
+      const shares = await screen.findByRole('table', { name: 'Shares for November 2026' })
+      await userEvent.click(within(shares).getByRole('row', { name: /Bob/ }))
+      const statement = await screen.findByRole('dialog', { name: 'Furniture Statement' })
+      await userEvent.click(within(statement).getByRole('button', { name: 'Delete the ₹1,066.67 payment of 8 Nov 2026' }))
+      const confirm = screen.getByRole('dialog', { name: 'Delete this payment?' })
+      expect(confirm).toHaveTextContent("Bob's ₹1,066.67 payment of 8 Nov 2026.")
+      await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+      await waitFor(() => expect(deleted()!.path).toBe('/api/services/furniture/payments/pay-bob'))
+    })
+
+    it('deletes a payout to the provider from its statement', async () => {
+      show(open(), { 'DELETE /api/services/furniture/disbursements/svcdisb-1': open() })
+      const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
+      await userEvent.click(within(panel).getByRole('row', { name: /Furlenco/ }))
+      const statement = await screen.findByRole('dialog', { name: 'Provider Payout Statement' })
+      await userEvent.click(within(statement).getByRole('button', { name: 'Delete the ₹1,633.33 payout of 5 Nov 2026' }))
+      const confirm = screen.getByRole('dialog', { name: 'Delete this payout?' })
+      expect(confirm).toHaveTextContent('₹1,633.33 paid to Furlenco on 5 Nov 2026 by Alice.')
+      await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+      await waitFor(() => expect(deleted()!.path).toBe('/api/services/furniture/disbursements/svcdisb-1'))
+    })
+
+    it('offers no delete once the month is finalized', async () => {
+      show(overview({ month: paidByAlice({ transactions_open: false }) }))
+      const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
+      await userEvent.click(within(panel).getByRole('row', { name: /Furlenco/ }))
+      const statement = await screen.findByRole('dialog', { name: 'Provider Payout Statement' })
+      expect(within(statement).queryByRole('button', { name: /Delete/ })).toBeNull()
+    })
+  })
+
   describe('with several rental providers', () => {
     const furlenco = overview()
     const rentomojo = {

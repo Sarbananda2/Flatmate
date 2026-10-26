@@ -148,6 +148,34 @@ def mark_paid_by_resident(payload: FurniturePayoutRequest, db: Db, apartment_id:
         raise to_http(exc) from exc
 
 
+@router.delete("/payments/{payment_id}",
+               summary="Delete a furniture payment or reimbursement recorded by mistake")
+def delete_payment(db: Db, apartment_id: ApartmentId, settings: AppSettings,
+                   payment_id: str = Path()) -> dict[str, Any]:
+    """A resident's payment into the kitty towards a furniture bill, or the
+    kitty's reimbursement for one, deleted outright while the bill's month is
+    open. Returns that month's overview."""
+    try:
+        return furniture_rental.delete_payment(db, apartment_id, payment_id,
+                                               actor=settings.operator_name)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.delete("/disbursements/{disbursement_id}",
+               summary="Delete a payout to a provider recorded by mistake")
+def delete_disbursement(db: Db, apartment_id: ApartmentId, settings: AppSettings,
+                        disbursement_id: str = Path()) -> dict[str, Any]:
+    """Deleted outright while the bill's month is open, with whatever was
+    recorded with it. Refused while the kitty has reimbursed its advance.
+    Returns that month's overview."""
+    try:
+        return furniture_rental.delete_provider_payout(db, apartment_id, disbursement_id,
+                                                       actor=settings.operator_name)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
 @router.post("/reimburse-from-kitty", status_code=201,
              summary="Pay back the resident who paid a month's bill, from the kitty")
 def reimburse_from_kitty(payload: FurnitureReimburseRequest, db: Db, apartment_id: ApartmentId,

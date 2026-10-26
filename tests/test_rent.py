@@ -462,12 +462,21 @@ def test_a_reversed_payment_drops_out_of_the_history(owing):
     assert bob["settled_paise"] == 400_000
 
 
-def test_what_a_resident_paid_the_landlord_is_not_a_payment_to_the_pool(leased):
+def test_paying_the_landlord_pays_a_residents_own_share_through_the_kitty(leased):
     _generate(leased)
-    cycle = _tranche(leased, 1_000_000, "resident_advance", funding_resident_id="alice")
+    cycle = _tranche(leased, 1_000_000, "resident_advance", funding_resident_id="alice",
+                     reference="UTR-A")
     alice = _participant(cycle, "alice")
-    assert (alice["advanced_paise"], alice["payments"], alice["settled_paise"]) == (
-        1_000_000, [], 0)
+    # All of it was her own share, so it went through the kitty: nothing is owed back.
+    assert (alice["advanced_paise"], alice["settled_paise"], alice["outstanding_paise"],
+            alice["collection_status"]) == (0, 1_000_000, 500_000, "partial")
+    [share] = alice["payments"]
+    assert (share["amount_paise"], share["reference"]) == (1_000_000, "UTR-A")
+    [tranche] = cycle["disbursements"]
+    assert (tranche["disbursement_id"], tranche["disbursed_by"], tranche["amount_paise"],
+            tranche["note"]) == (f"rentdisb_{share['payment_id']}", "pool", 1_000_000,
+                                 "Alice's allotted share via House Kitty")
+    assert cycle["reimbursements"] == []
     assert _participant(cycle, "bob")["advanced_paise"] == 0
 
 
@@ -491,8 +500,9 @@ def test_a_rent_payment_is_refused_when_there_is_no_rent_share_to_pay(owing):
     _disburse(owing, "resident_advance", funding_resident_id="alice")
     with pytest.raises(ConflictError) as funder:
         _pay_rent(owing, "alice", 1_500_000)
-    assert funder.value.code == "rent_share_funded_by_payout"
-    assert len(_rows(owing, "SELECT 1 FROM payment WHERE payment_kind='to_pool'")) == 1
+    # Paying the landlord paid her share, through the kitty.
+    assert funder.value.code == "rent_share_already_paid"
+    assert len(_rows(owing, "SELECT 1 FROM payment WHERE payment_kind='to_pool'")) == 2
 
 
 def test_someone_left_out_of_the_rent_cannot_pay_it(leased):
@@ -561,44 +571,56 @@ def test_a_payout_needs_generated_rent_a_reference_and_a_coherent_mode(leased):
 
 # ------------------------------------------------- one resident pays landlord --
 
-def test_a_resident_advance_credits_the_whole_rent_and_keeps_their_share(leased):
+def test_a_resident_who_pays_the_landlord_pays_their_share_through_the_kitty(leased):
     _generate(leased)
     cycle = _disburse(leased, "resident_advance", funding_resident_id="alice")
 
-    assert (cycle["disbursed_by"], cycle["funding_resident_id"]) == ("resident_advance", "alice")
+    assert (cycle["disbursement_status"], cycle["disbursed_by"],
+            cycle["funding_resident_id"]) == ("disbursed", "mixed", "alice")
     # Alice paid ₹45,000 and owes ₹15,000 of it: the household owes her ₹30,000.
     assert _positions(leased) == {"alice": 3_000_000, "bob": -1_500_000,
                                   "chris": -1_500_000, "__pool__": 0}
-    assert _shares(cycle)["alice"] == 1_500_000, "funding it does not waive her share"
+    assert _shares(cycle)["alice"] == 1_500_000, "paying it does not waive her share"
 
-    advance = _rows(leased, "SELECT * FROM payment")
-    assert len(advance) == 1
-    assert (advance[0]["payment_kind"], advance[0]["expense_id"], advance[0]["amount_paise"],
-            advance[0]["payer_resident_id"], advance[0]["reference"]) == (
-        "provider_advance", cycle["expense_id"], 4_500_000, "alice", "UTR329188401928")
-    assert cycle["funding_payment_id"] == advance[0]["payment_id"]
-    assert expenses.read_expense(leased, cycle["expense_id"])["payer_resident_id"] == "alice"
+    # Her ₹15,000 share went into the kitty and out to the landlord; the ₹30,000
+    # beyond it is her advance.
+    assert _rows(leased, """SELECT payment_kind, expense_id, amount_paise, payer_resident_id,
+                                   reference FROM payment ORDER BY row_seq""") == [
+        {"payment_kind": "to_pool", "expense_id": None, "amount_paise": 1_500_000,
+         "payer_resident_id": "alice", "reference": "UTR329188401928"},
+        {"payment_kind": "provider_advance", "expense_id": cycle["expense_id"],
+         "amount_paise": 3_000_000, "payer_resident_id": "alice",
+         "reference": "UTR329188401928"}]
+    assert [(t["disbursed_by"], t["amount_paise"]) for t in cycle["disbursements"]] == [
+        ("pool", 1_500_000), ("resident_advance", 3_000_000)]
+    assert cycle["funding_payment_id"] == cycle["disbursements"][1]["funding_payment_id"]
+    assert expenses.read_expense(leased, cycle["expense_id"])["payer_resident_id"] is None
+    owed = cycle["reimbursement"]
+    assert (owed["recipient_resident_id"], owed["total_fronted_paise"], owed["payer_share_paise"],
+            owed["net_reimbursement_owed_paise"], owed["pending_reimbursement_paise"],
+            owed["kitty_cash_available_paise"], owed["can_reimburse"]) == (
+        "alice", 4_500_000, 1_500_000, 3_000_000, 3_000_000, 0, False)
 
 
 def test_a_resident_advance_is_not_counted_twice(leased):
-    """The expense names Alice as payer *and* has her advance linked to it.
-    She must be credited ₹45,000 once, not ₹90,000."""
+    """Alice paid the landlord ₹45,000: ₹15,000 into the kitty for her share and
+    ₹30,000 as an advance. Each is credited once."""
     _generate(leased)
     _disburse(leased, "resident_advance", funding_resident_id="alice")
     result = reconciliation.reconcile(leased, apartment_id=APARTMENT)
     alice = next(a for a in result["accounts"] if a["account_id"] == "alice")
-    assert alice["funding_credits_paise"] == 4_500_000
+    assert alice["funding_credits_paise"] == 3_000_000
     assert result["totals"]["household_expenses_paise"] == 4_500_000
     assert sum(result["net_positions_paise_by_account"].values()) == 0
     report = validation.validate(leased, APARTMENT)
     assert report["issues"] == [], report["issues"]
 
 
-def test_the_funder_shows_as_covered_without_paying_the_pool(leased):
+def test_the_resident_who_paid_the_landlord_shows_as_paid(leased):
     _generate(leased)
     cycle = _disburse(leased, "resident_advance", funding_resident_id="alice")
     status = {p["resident_id"]: p["collection_status"] for p in cycle["participants"]}
-    assert status == {"alice": "funded_payout", "bob": "unpaid", "chris": "unpaid"}
+    assert status == {"alice": "paid", "bob": "unpaid", "chris": "unpaid"}
     assert (cycle["collected_paise"], cycle["collected_count"]) == (1_500_000, 1)
 
 
@@ -648,7 +670,9 @@ def test_the_advance_behind_a_recorded_payout_cannot_be_reversed(leased):
     assert _positions(leased)["alice"] == 3_000_000
     with pytest.raises(ConflictError) as kept:
         expenses.delete_expense(leased, cycle["expense_id"], apartment_id=APARTMENT)
-    assert kept.value.code in ("rent_cycle_disbursed", "expense_has_linked_payment")
+    # Her share went into the kitty against the rent, so the rent keeps its record.
+    assert kept.value.code in ("rent_cycle_disbursed", "expense_has_linked_payment",
+                               "allocations_have_payments")
 
 
 def test_a_failed_payout_changes_nothing(leased, monkeypatch):
@@ -1719,26 +1743,27 @@ def test_a_tranche_out_of_order_does_not_move_the_latest_date_back(leased):
     assert [t["disbursed_at"] for t in cycle["disbursements"]] == ["2026-11-03", "2026-11-07"]
 
 
-def test_resident_advance_tranche(leased):
+def test_a_resident_paying_the_rest_of_the_rent_pays_their_share_through_the_kitty(leased):
     _generate(leased)
     _tranche(leased, 3_000_000)
     cycle = _tranche(leased, 1_500_000, "resident_advance", funding_resident_id="alice",
                      reference="UTR-ALICE")
-    assert (cycle["disbursement_status"], cycle["disbursed_by"]) == ("disbursed", "mixed")
-    advance = _rows(leased, "SELECT * FROM payment")
-    assert len(advance) == 1
-    assert (advance[0]["payment_kind"], advance[0]["payer_resident_id"],
-            advance[0]["amount_paise"], advance[0]["expense_id"], advance[0]["reference"]) == (
-        "provider_advance", "alice", 1_500_000, cycle["expense_id"], "UTR-ALICE")
-    assert cycle["disbursements"][1]["funding_payment_id"] == advance[0]["payment_id"]
-    assert cycle["disbursements"][1]["funding_resident_name"] == "Alice"
+    # ₹15,000 is exactly Alice's share: it all went through the kitty, so nothing
+    # is an advance and nothing is owed back to her.
+    assert (cycle["disbursement_status"], cycle["disbursed_by"]) == ("disbursed", "pool")
+    [share] = _rows(leased, "SELECT * FROM payment")
+    assert (share["payment_kind"], share["payer_resident_id"], share["amount_paise"],
+            share["expense_id"], share["reference"]) == (
+        "to_pool", "alice", 1_500_000, None, "UTR-ALICE")
+    assert cycle["disbursements"][1]["disbursement_id"] == f"rentdisb_{share['payment_id']}"
     # Alice paid ₹15,000 and owes ₹15,000: she is square; the others still owe.
-    assert _positions(leased) == {"alice": 0, "bob": -1_500_000, "chris": -1_500_000,
-                                  "__pool__": 3_000_000}
-    assert expenses.read_expense(leased, cycle["expense_id"])["payer_resident_id"] is None, \
-        "a part payment does not make Alice the expense's payer"
+    assert {k: v for k, v in _positions(leased).items() if k != "__pool__"} == {
+        "alice": 0, "bob": -1_500_000, "chris": -1_500_000}
+    assert sum(_positions(leased).values()) == 0
+    assert expenses.read_expense(leased, cycle["expense_id"])["payer_resident_id"] is None
     status = {p["resident_id"]: p["collection_status"] for p in cycle["participants"]}
-    assert status == {"alice": "funded_payout", "bob": "unpaid", "chris": "unpaid"}
+    assert status == {"alice": "paid", "bob": "unpaid", "chris": "unpaid"}
+    assert cycle["reimbursements"] == []
     assert validation.validate(leased, APARTMENT)["issues"] == []
 
 
@@ -1756,22 +1781,24 @@ def test_an_advance_larger_than_the_share_covers_it_and_is_owed_back(leased):
     assert sum(_positions(leased).values()) == 0
 
 
-def test_a_resident_whose_advance_covers_their_share_cannot_pay_it_again(owing):
+def test_a_resident_whose_payment_to_the_landlord_paid_their_share_cannot_pay_it_again(owing):
     _tranche(owing, 500_000, "resident_advance", funding_resident_id="alice")
-    # ₹5,000 does not cover Alice's ₹15,000: she can still pay her share.
-    _pay_rent(owing, "alice", 1_500_000)
+    # ₹5,000 of Alice's ₹15,000 is paid: she can still pay the rest.
+    _pay_rent(owing, "alice", 1_000_000)
     _tranche(owing, 1_500_000, "resident_advance", funding_resident_id="bob")
     with pytest.raises(ConflictError) as covered:
         _pay_rent(owing, "bob", 1_500_000)
-    assert covered.value.code == "rent_share_funded_by_payout"
+    assert covered.value.code == "rent_share_already_paid"
 
 
 def test_an_advance_behind_a_tranche_cannot_be_reversed(leased):
     _generate(leased)
-    cycle = _tranche(leased, 1_000_000, "resident_advance", funding_resident_id="bob")
+    # ₹20,000 from Bob: his ₹15,000 share through the kitty, and a ₹5,000 advance.
+    cycle = _tranche(leased, 2_000_000, "resident_advance", funding_resident_id="bob")
+    advance = next(t["funding_payment_id"] for t in cycle["disbursements"]
+                   if t["funding_payment_id"])
     with pytest.raises(ConflictError) as refused:
-        payments.reverse_payment(leased, cycle["disbursements"][0]["funding_payment_id"],
-                                 reason="wrong resident")
+        payments.reverse_payment(leased, advance, reason="wrong resident")
     assert refused.value.code == "rent_funding_payment"
 
 
@@ -1786,8 +1813,6 @@ def test_a_part_paid_month_keeps_its_record(leased):
             conn.execute("DELETE FROM rent_cycle")
         with pytest.raises(DatabaseRefusal):
             conn.execute("UPDATE rent_disbursement SET amount_paise = 1")
-        with pytest.raises(DatabaseRefusal):
-            conn.execute("DELETE FROM rent_disbursement")
     # Even written directly, tranches cannot add up to more than the rent.
     with connect(leased) as conn, pytest.raises(DatabaseRefusal) as overpaid:
         conn.execute(
@@ -1797,6 +1822,15 @@ def test_a_part_paid_month_keeps_its_record(leased):
                VALUES ('x', %s, %s, %s, 3500001, '2026-11-06', 'UTR-X', 'pool', 'now')""",
             (cycle["cycle_id"], APARTMENT, MONTH))
     assert "overpaid_rent" in str(overpaid.value)
+    # A payout recorded by mistake can be deleted while the month is open (see the
+    # deleting tests below); once its statement is finalized it is there for good.
+    statement = statements.create_monthly_statement(leased, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(leased, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
+    with connect(leased, as_owner=True) as conn, pytest.raises(DatabaseRefusal) as locked:
+        conn.execute("DELETE FROM rent_disbursement")
+    assert "locked_statement" in str(locked.value)
 
 
 def test_the_pool_cannot_pay_in_parts_what_the_expense_says_a_resident_paid(configured):
@@ -1832,11 +1866,13 @@ def test_the_passbooks_list_each_tranche(leased):
     kitty = [e for e in books["pool_statement"]["items"] if e["category"] == "Rent Payout"]
     landlord = [e for e in books["landlord_statement"]["items"]
                 if e["category"] == "Rent Payout"]
-    assert [(e["amount_paise"], e["reference"]) for e in kitty] == [(3_000_000, "UTR-0005")]
+    # Chris paid the last ₹15,000, which is his share: through the kitty, like the rest.
+    assert sorted((e["amount_paise"], e["reference"]) for e in kitty) == [
+        (1_500_000, "UTR-0007"), (3_000_000, "UTR-0005")]
     assert sorted((e["amount_paise"], e["counterparty_name"]) for e in landlord) == [
-        (1_500_000, "Chris (Advance)"), (3_000_000, "House Kitty")]
+        (1_500_000, "House Kitty"), (3_000_000, "House Kitty")]
     assert not [e for e in books["landlord_statement"]["items"]
-                if e["category"] == "Direct Advance"], "the advance is listed once"
+                if e["category"] == "Direct Advance"], "there is no advance to list"
 
 
 def test_tranches_over_http(api):
@@ -2074,3 +2110,246 @@ def test_renewing_keeps_the_ending_terms_rent_for_its_open_month(apartment, cloc
     assert (november["total_rent_paise"], november["matches_lease_rent"]) == (4_500_000, True)
     assert rent.rent_month_overview(apartment, APARTMENT, "2026-12")["preview"][
         "total_rent_paise"] == 4_725_000
+
+
+# ------------------------------------------------ the kitty paying a resident back --
+#
+# Alice pays the landlord the whole ₹45,000 herself. Her ₹15,000 share goes
+# through the kitty; the ₹30,000 beyond it is owed back to her, and the kitty
+# pays it as Bob and Chris pay in.
+
+def _reimburse(db, resident="alice", amount_paise=1_500_000, **extra):
+    return rent.reimburse_from_kitty(
+        db, apartment_id=APARTMENT, settlement_month=MONTH, recipient_resident_id=resident,
+        amount_paise=amount_paise, payment_date=extra.pop("payment_date", "2026-11-09"),
+        **extra)
+
+
+def test_the_kitty_pays_back_the_resident_who_paid_the_landlord(leased):
+    _generate(leased)
+    _disburse(leased, "resident_advance", funding_resident_id="alice")
+    with pytest.raises(ValidationError) as empty:
+        _reimburse(leased, amount_paise=100)
+    assert empty.value.code == "exceeds_kitty_cash", "nobody else has paid in yet"
+
+    owed = _pay_rent(leased, "bob", 1_500_000)["reimbursement"]
+    assert (owed["kitty_cash_available_paise"], owed["reimbursable_paise"],
+            owed["can_reimburse"]) == (1_500_000, 1_500_000, True)
+    with pytest.raises(ValidationError) as more:
+        _reimburse(leased, amount_paise=1_500_001)
+    assert more.value.code == "exceeds_kitty_cash"
+    cycle = _reimburse(leased, reference="UPI-R1")
+    owed = cycle["reimbursement"]
+    assert (owed["reimbursed_so_far_paise"], owed["pending_reimbursement_paise"],
+            owed["kitty_cash_available_paise"]) == (1_500_000, 1_500_000, 0)
+    [refund] = owed["reimbursements"]
+    assert (refund["amount_paise"], refund["reference"]) == (1_500_000, "UPI-R1")
+    assert refund["payment_id"].startswith(f"{cycle['expense_id']}-reimbursement_")
+    assert _rows(leased, "SELECT payment_kind, payer_resident_id FROM payment "
+                         "WHERE payment_id=%s", (refund["payment_id"],)) == [
+        {"payment_kind": "refund", "payer_resident_id": "alice"}]
+
+    _pay_rent(leased, "chris", 1_500_000)
+    with pytest.raises(ValidationError) as owed_less:
+        _reimburse(leased, amount_paise=1_500_001)
+    assert owed_less.value.code == "exceeds_pending_reimbursement"
+    owed = _reimburse(leased)["reimbursement"]
+    assert (owed["pending_reimbursement_paise"], owed["can_reimburse"]) == (0, False)
+    # Everyone has paid their share, and Alice has been paid back what she paid beyond hers.
+    assert _positions(leased) == {"alice": 0, "bob": 0, "chris": 0, "__pool__": 0}
+    assert validation.validate(leased, APARTMENT)["issues"] == []
+
+
+def test_only_the_resident_who_paid_the_landlord_extra_is_paid_back(leased):
+    _generate(leased)
+    with pytest.raises(ConflictError) as nobody:
+        _reimburse(leased)
+    assert nobody.value.code == "rent_no_advance"
+    _disburse(leased, "resident_advance", funding_resident_id="alice")
+    _pay_rent(leased, "bob", 1_500_000)
+    with pytest.raises(ValidationError) as other:
+        _reimburse(leased, "bob")
+    assert other.value.code == "not_the_payout_resident"
+    with pytest.raises(NotFoundError):
+        rent.reimburse_from_kitty(leased, apartment_id=APARTMENT, settlement_month="2027-01",
+                                  recipient_resident_id="alice", amount_paise=100,
+                                  payment_date="2027-01-09")
+
+
+def test_the_kitty_pays_a_resident_back_over_http(api):
+    api.post("/api/rent/config", json=LEASE)
+    assert api.post(f"/api/rent/cycle/{MONTH}/generate", json={}).status_code == 201
+    paid = api.post(f"/api/rent/cycle/{MONTH}/disburse", json={
+        "disbursement_mode": "resident_advance", "funding_resident_id": "alice",
+        "reference": "UTR-A", "disbursed_date": "2026-11-04"})
+    assert paid.status_code == 200, paid.text
+    assert paid.json()["reimbursement"]["net_reimbursement_owed_paise"] == 3_000_000
+    api.post(f"/api/rent/cycle/{MONTH}/pay", json={
+        "resident_id": "bob", "amount_paise": 1_500_000, "payment_date": "2026-11-05"})
+    url = f"/api/rent/cycle/{MONTH}/reimburse"
+    body = {"recipient_resident_id": "alice", "amount_paise": 1_500_000,
+            "payment_date": "2026-11-06"}
+    assert api.post(url, json={**body, "amount_paise": 0}).status_code == 422
+    done = api.post(url, json={**body, "reference": "UPI-R1"})
+    assert done.status_code == 201, done.text
+    assert done.json()["reimbursement"]["reimbursed_so_far_paise"] == 1_500_000
+    too_much = api.post(url, json=body)
+    assert (too_much.status_code, too_much.json()["error"]["code"]) == (
+        422, "exceeds_kitty_cash")
+
+
+# ------------------------------------------------ deleting what was recorded by mistake --
+#
+# While the month's statement is a draft, a wrong payment into the kitty, a wrong
+# payout to the landlord, or a wrong reimbursement is deleted outright -- with
+# whatever was recorded together with it -- and the month owes what it owed
+# before. Once the statement is finalized, they are locked.
+
+def _delete_payment(db, payment_id, month=MONTH):
+    return rent.delete_rent_payment(db, apartment_id=APARTMENT, settlement_month=month,
+                                    payment_id=payment_id)
+
+
+def _delete_payout(db, disbursement_id, month=MONTH):
+    return rent.delete_landlord_disbursement(db, apartment_id=APARTMENT, settlement_month=month,
+                                             disbursement_id=disbursement_id)
+
+
+def _audit(db, action="delete"):
+    return _rows(db, "SELECT entity_type, entity_id FROM audit_log WHERE action=%s "
+                     "ORDER BY row_seq", (action,))
+
+
+def test_a_wrong_payment_into_the_kitty_is_deleted_while_the_month_is_open(leased):
+    _generate(leased)
+    paid = _pay_rent(leased, "bob", 1_500_000)
+    payment_id = paid["payment"]["payment_id"]
+    cycle = _delete_payment(leased, payment_id)
+    assert _row(cycle, "bob") == (1_500_000, 0, 1_500_000, "unpaid")
+    assert (cycle["collected_paise"], cycle["deleted"]["deleted_payment_ids"]) == (0, [payment_id])
+    assert _rows(leased, "SELECT 1 FROM payment") == []
+    assert _rows(leased, "SELECT 1 FROM payment_application") == []
+    assert _audit(leased) == [{"entity_type": "payment", "entity_id": payment_id}]
+    old = _rows(leased, "SELECT old_value FROM audit_log WHERE action='delete'")[0]
+    assert '"amount_paise": 1500000' in old["old_value"]
+    with pytest.raises(NotFoundError):
+        _delete_payment(leased, payment_id)
+    assert validation.validate(leased, APARTMENT)["issues"] == []
+
+
+def test_a_wrong_landlord_payout_is_deleted_and_the_landlord_is_owed_again(leased):
+    _generate(leased)
+    first = _tranche(leased, 3_000_000, reference="UTR-1", disbursed_date="2026-11-04")
+    paid = _tranche(leased, 1_500_000, reference="UTR-2", disbursed_date="2026-11-06")
+    assert paid["disbursement_status"] == "disbursed"
+    cycle = _delete_payout(leased, paid["disbursement_id"])
+    assert (cycle["disbursement_status"], cycle["remaining_disbursement_paise"],
+            cycle["disbursed_at"], cycle["disbursement_reference"]) == (
+        "partially_disbursed", 1_500_000, "2026-11-04", "UTR-1")
+    cycle = _delete_payout(leased, first["disbursement_id"])
+    assert (cycle["disbursement_status"], cycle["remaining_disbursement_paise"],
+            cycle["disbursed_at"], cycle["disbursements"]) == ("pending", 4_500_000, None, [])
+    assert [row["entity_type"] for row in _audit(leased)] == ["rent_disbursement"] * 2
+    # The month can be paid again, in full.
+    assert _disburse(leased)["disbursement_status"] == "disbursed"
+
+
+def test_deleting_a_residents_payout_deletes_what_was_recorded_with_it(leased):
+    _generate(leased)
+    before = _positions(leased)
+    cycle = _disburse(leased, "resident_advance", funding_resident_id="alice")
+    share, advance = cycle["disbursements"]
+    # Deleting either part deletes the payout: her share through the kitty, and her advance.
+    cycle = _delete_payout(leased, advance["disbursement_id"])
+    assert sorted(cycle["deleted"]["deleted_disbursement_ids"]) == sorted(
+        [share["disbursement_id"], advance["disbursement_id"]])
+    assert (cycle["disbursement_status"], cycle["reimbursements"]) == ("pending", [])
+    assert _row(cycle, "alice") == (1_500_000, 0, 1_500_000, "unpaid")
+    assert _rows(leased, "SELECT 1 FROM payment") == []
+    assert _positions(leased) == before
+
+    # From Alice's statement, deleting the share payment she made by paying the
+    # landlord deletes that payout too.
+    cycle = _disburse(leased, "resident_advance", funding_resident_id="alice")
+    [share_payment] = _participant(cycle, "alice")["payments"]
+    cycle = _delete_payment(leased, share_payment["payment_id"])
+    assert (cycle["disbursement_status"], len(cycle["deleted"]["deleted_payment_ids"])) == (
+        "pending", 2)
+    assert _rows(leased, "SELECT 1 FROM rent_disbursement") == []
+    assert validation.validate(leased, APARTMENT)["issues"] == []
+
+
+def test_a_reimbursed_advance_is_deleted_only_after_the_reimbursement(leased):
+    _generate(leased)
+    cycle = _disburse(leased, "resident_advance", funding_resident_id="alice")
+    advance = cycle["disbursements"][1]["disbursement_id"]
+    bob = _pay_rent(leased, "bob", 1_500_000)["payment"]["payment_id"]
+    refund = _reimburse(leased)["reimbursement"]["reimbursements"][0]["payment_id"]
+
+    with pytest.raises(ConflictError) as reimbursed:
+        _delete_payout(leased, advance)
+    assert reimbursed.value.code == "payout_reimbursed"
+    # Bob's money has gone back out to Alice: it cannot be taken out from under that.
+    with pytest.raises(ConflictError) as depends:
+        _delete_payment(leased, bob)
+    assert depends.value.code == "kitty_reimbursement_depends"
+
+    owed = _delete_payment(leased, refund)["reimbursement"]
+    assert (owed["reimbursed_so_far_paise"], owed["pending_reimbursement_paise"],
+            owed["kitty_cash_available_paise"]) == (0, 3_000_000, 1_500_000)
+    _delete_payment(leased, bob)
+    assert _delete_payout(leased, advance)["disbursement_status"] == "pending"
+    assert _rows(leased, "SELECT 1 FROM payment") == []
+    assert sum(_positions(leased).values()) == 0
+
+
+def test_a_finalized_months_transactions_are_locked(leased):
+    _generate(leased)
+    bob = _pay_rent(leased, "bob", 1_500_000)["payment"]["payment_id"]
+    payout = _tranche(leased, 1_000_000)["disbursement_id"]
+    assert rent.get_rent_cycle(leased, APARTMENT, MONTH)["transactions_open"] is True
+    statement = statements.create_monthly_statement(leased, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(leased, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
+    assert rent.get_rent_cycle(leased, APARTMENT, MONTH)["transactions_open"] is False
+    for delete, target in ((_delete_payment, bob), (_delete_payout, payout)):
+        with pytest.raises(ConflictError) as locked:
+            delete(leased, target)
+        assert locked.value.code == "statement_not_draft"
+    assert len(_rows(leased, "SELECT 1 FROM payment")) == 1
+
+
+def test_only_this_months_rent_transactions_are_deleted_here(leased):
+    _generate(leased)
+    payment_id = _pay_rent(leased, "bob", 1_500_000)["payment"]["payment_id"]
+    payout = _tranche(leased, 1_000_000)["disbursement_id"]
+    _generate(leased, month="2026-12")
+    with pytest.raises(NotFoundError):
+        _delete_payment(leased, payment_id, month="2026-12")
+    with pytest.raises(NotFoundError):
+        _delete_payout(leased, payout, month="2026-12")
+    payments.record_payment(leased, apartment_id=APARTMENT, payment_id="dinner",
+                            payer_resident_id="bob", amount_paise=10_000,
+                            payment_date="2026-11-08")
+    with pytest.raises(NotFoundError):
+        _delete_payment(leased, "dinner"), "not towards the rent"
+
+
+def test_wrong_rent_transactions_are_deleted_over_http(api):
+    api.post("/api/rent/config", json=LEASE)
+    assert api.post(f"/api/rent/cycle/{MONTH}/generate", json={}).status_code == 201
+    paid = api.post(f"/api/rent/cycle/{MONTH}/pay", json={
+        "resident_id": "bob", "amount_paise": 1_500_000, "payment_date": "2026-11-05"})
+    payment_id = paid.json()["payment"]["payment_id"]
+    payout = api.post(f"/api/rent/cycle/{MONTH}/disburse", json={
+        "disbursement_mode": "pool", "reference": "UTR-1", "disbursed_date": "2026-11-05",
+        "amount_paise": 1_000_000}).json()["disbursement_id"]
+    gone = api.delete(f"/api/rent/cycle/{MONTH}/disbursements/{payout}")
+    assert gone.status_code == 200, gone.text
+    assert gone.json()["disbursement_status"] == "pending"
+    gone = api.delete(f"/api/rent/cycle/{MONTH}/payments/{payment_id}")
+    assert gone.status_code == 200, gone.text
+    assert gone.json()["collected_paise"] == 0
+    missing = api.delete(f"/api/rent/cycle/{MONTH}/payments/{payment_id}")
+    assert (missing.status_code, missing.json()["error"]["code"]) == (404, "payment_not_found")

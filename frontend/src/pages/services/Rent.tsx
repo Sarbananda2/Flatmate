@@ -12,8 +12,8 @@ import {
   Building2,
   Check,
   Clock,
-  CreditCard,
   Settings,
+  Trash2,
   Users,
 } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
@@ -25,10 +25,17 @@ import {
   type CollectionStatus,
   type ResidentCollectionItem,
 } from '../../components/ResidentCollectionTable'
+import { DeleteTransactionDialog, type PendingDeletion } from '../../components/DeleteTransactionDialog'
+import { KittyReimbursementPanel, ReimburseDialog } from '../../components/KittyReimbursement'
+import {
+  ProviderPayoutStatementModal,
+  ProviderPayoutTable,
+  type PayoutColumns,
+} from '../../components/ProviderPayoutTable'
 import { useToast } from '../../components/Toast'
 import {
-  Avatar,
   BUTTON_PRIMARY,
+  BUTTON_QUIET,
   BUTTON_SECONDARY,
   EmptyBlock,
   MiniStat,
@@ -45,10 +52,10 @@ import { formatDate, formatInr, formatMonth, paiseToInput, todayIso } from '../.
 import type {
   Apartment,
   RentCollectionStatus,
+  KittyReimbursement,
   RentCycle,
   RentDisbursement,
   RentDisbursementMode,
-  RentDisbursementStatus,
   RentLeaseConfig,
   RentMonthOverview,
   RentParticipant,
@@ -93,6 +100,10 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
   // nothing to generate here: the month shows its live shares, or a preview.
   const overview = useResource<RentMonthOverview>(`/api/rent/cycle/${month}`)
   const [dialog, setDialog] = useState<'payout' | null>(null)
+  // Whom the kitty is paying back, when it is.
+  const [reimbursing, setReimbursing] = useState<KittyReimbursement | null>(null)
+  // A payment or payout recorded by mistake, about to be deleted.
+  const [deleting, setDeleting] = useState<PendingDeletion | null>(null)
   const [payingFor, setPayingFor] = useState<RentParticipant | null>(null)
   const [viewingStatement, setViewingStatement] = useState<RentParticipant | null>(null)
   const [viewingLandlordStatement, setViewingLandlordStatement] = useState(false)
@@ -101,6 +112,10 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
     <AsyncSection resource={overview} loadingLabel="Loading rent…">
       {(data) => {
         const { config, cycle, preview } = data
+        // While the month's statement is open, a transaction recorded by mistake can be deleted.
+        const open = Boolean(cycle?.transactions_open)
+        const deletePayment = (paymentId: string, title: string, what: string) =>
+          setDeleting({ title, what, url: `/api/rent/cycle/${month}/payments/${encodeURIComponent(paymentId)}` })
         return (
           <Page
             title="Rent"
@@ -153,6 +168,26 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   onPayout={() => setDialog('payout')}
                   onViewStatement={() => setViewingLandlordStatement(true)}
                 />
+                {/* Whoever paid the landlord more than their share is paid back from the kitty. */}
+                {(cycle?.reimbursements ?? []).map((reimbursement) => (
+                  <KittyReimbursementPanel
+                    key={reimbursement.recipient_resident_id}
+                    reimbursement={reimbursement}
+                    billLabel={`${formatMonth(month)} rent`}
+                    paidTo="the landlord"
+                    onReimburse={setReimbursing}
+                    onDelete={
+                      open
+                        ? (refund) =>
+                            deletePayment(
+                              refund.payment_id,
+                              'Delete this reimbursement?',
+                              `${formatInr(refund.amount_paise)} paid back from the kitty to ${reimbursement.recipient_name} on ${formatDate(refund.payment_date)}.`,
+                            )
+                        : undefined
+                    }
+                  />
+                ))}
                 {/* The contract the rent is charged under, for reference. */}
                 <RentAgreementCard
                   config={config}
@@ -165,6 +200,26 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
               </>
             )}
 
+            {reimbursing && (
+              <ReimburseDialog
+                month={month}
+                billLabel={`${formatMonth(month)} rent`}
+                reimbursement={reimbursing}
+                submit={(details) =>
+                  api.post<RentCycle>(`/api/rent/cycle/${month}/reimburse`, {
+                    recipient_resident_id: reimbursing.recipient_resident_id,
+                    ...details,
+                  })
+                }
+                onClose={() => setReimbursing(null)}
+                onDone={(amount) => {
+                  const name = reimbursing.recipient_name
+                  setReimbursing(null)
+                  toast.success('Reimbursement recorded', `${formatInr(amount)} from the kitty to ${name}`)
+                  overview.reload()
+                }}
+              />
+            )}
             {dialog === 'payout' && cycle && config && (
               <PayoutModal
                 month={month}
@@ -185,10 +240,27 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
               />
             )}
             {viewingLandlordStatement && cycle && config && (
-              <LandlordStatementModal
+              <ProviderPayoutStatementModal
+                title="Landlord Payout Statement"
+                name={config.landlord_name}
                 month={month}
-                config={config}
-                cycle={cycle}
+                columns={LANDLORD_COLUMNS}
+                totalPaise={cycle.total_rent_paise}
+                paidPaise={cycle.disbursed_paise}
+                stillOwedPaise={cycle.remaining_disbursement_paise}
+                status={cycle.disbursement_status}
+                disbursements={cycle.disbursements}
+                caption="Payments to the landlord"
+                onDeleteDisbursement={
+                  open
+                    ? (tranche) =>
+                        setDeleting({
+                          title: 'Delete this payout?',
+                          what: `${formatInr(tranche.amount_paise)} paid to the landlord on ${formatDate(tranche.disbursed_at)}${tranche.disbursed_by === 'pool' ? ' from the House Kitty' : ` by ${tranche.funding_resident_name ?? 'a resident'}`}.`,
+                          url: `/api/rent/cycle/${month}/disbursements/${encodeURIComponent(tranche.disbursement_id)}`,
+                        })
+                    : undefined
+                }
                 onClose={() => setViewingLandlordStatement(false)}
               />
             )}
@@ -203,7 +275,28 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   ) ?? viewingStatement
                 }
                 disbursements={cycle.disbursements}
+                onDeletePayment={
+                  open
+                    ? (entry) =>
+                        deletePayment(
+                          entry.paymentId!,
+                          'Delete this payment?',
+                          `${viewingStatement.display_name}'s ${formatInr(entry.amount_paise)} payment of ${formatDate(entry.date)}.`,
+                        )
+                    : undefined
+                }
                 onClose={() => setViewingStatement(null)}
+              />
+            )}
+            {deleting && (
+              <DeleteTransactionDialog
+                deletion={deleting}
+                onClose={() => setDeleting(null)}
+                onDeleted={() => {
+                  setDeleting(null)
+                  toast.success('Deleted', 'The month owes what it owed before.')
+                  overview.reload()
+                }}
               />
             )}
             {payingFor && cycle && (
@@ -423,15 +516,11 @@ function PreviewPanel({ month, preview }: { month: string; preview: RentPreview 
   )
 }
 
-function maskAccount(account: string): string {
-  return account.length > 4 ? `****${account.slice(-4)}` : account
-}
-
-/** The landlord's side of the month, worded as the collection table words a resident's. */
-const PAYOUT: Record<RentDisbursementStatus, { tone: Tone; label: string }> = {
-  pending: { tone: 'warning', label: 'Unpaid' },
-  partially_disbursed: { tone: 'warning', label: 'Part paid' },
-  disbursed: { tone: 'success', label: 'Paid' },
+/** The payout table's and statement's headings, for the landlord. */
+const LANDLORD_COLUMNS: PayoutColumns = {
+  payee: 'Landlord',
+  total: 'Total Rent',
+  paid: 'Paid to Owner',
 }
 
 function LandlordPanel({
@@ -445,26 +534,9 @@ function LandlordPanel({
   onPayout: () => void
   onViewStatement: () => void
 }) {
-  const dash = <span className="text-[var(--text-tertiary)]">—</span>
   const tranches = cycle?.disbursements ?? []
   const advanced = tranches.some((tranche) => tranche.disbursed_by === 'resident_advance')
-  // Open until the landlord has been paid in full: the rent can go in tranches.
-  const owing = cycle != null && cycle.disbursement_status !== 'disbursed'
-  const status = cycle ? PAYOUT[cycle.disbursement_status] : null
   const overdue = overdueNotice(cycle?.due_date)
-  const beneficiary = config.payout_beneficiary_name || config.landlord_name
-  const bank = [
-    config.landlord_bank_ifsc,
-    config.landlord_bank_account && maskAccount(config.landlord_bank_account),
-  ]
-    .filter(Boolean)
-    .join(' · ')
-  const destination = [
-    beneficiary !== config.landlord_name ? `To ${beneficiary}` : null,
-    config.landlord_upi_id || bank || 'No bank account or UPI ID on file',
-  ]
-    .filter(Boolean)
-    .join(' · ')
   return (
     <Panel
       title="Landlord Payout"
@@ -473,119 +545,31 @@ function LandlordPanel({
     >
       {/* Laid out as the collection table above, so the two read column for
           column: what was due, what has been paid, what is still owed. */}
-      <div className="overflow-x-auto min-w-0">
-        <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse">
-          <caption className="sr-only">Rent owed to the landlord</caption>
-          <thead>
-            <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-center">
-                Landlord / Destination
-              </th>
-              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Total Rent</th>
-              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid to Owner</th>
-              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still Owed</th>
-              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
-              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-            {/* Once the month is generated, the row opens the landlord's payout
-                statement, as a resident's row opens theirs; the button in it
-                does its own thing instead. */}
-            <tr
-              className={
-                cycle
-                  ? 'align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors'
-                  : 'align-middle'
-              }
-              {...(cycle && {
-                tabIndex: 0,
-                title: 'View the landlord payout statement',
-                onClick: onViewStatement,
-                onKeyDown: (event: React.KeyboardEvent<HTMLTableRowElement>) => {
-                  if (event.target !== event.currentTarget) return
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    onViewStatement()
-                  }
-                },
-              })}
-            >
-              <th scope="row" className="py-3 pr-3 text-left font-normal">
-                <span className="flex items-center gap-2.5 min-w-0">
-                  <Avatar name={config.landlord_name} />
-                  <span className="min-w-0">
-                    <span className="block font-semibold text-[var(--text-primary)] truncate">
-                      {config.landlord_name}
-                    </span>
-                    <span
-                      className="block text-[11px] text-[var(--text-tertiary)] tabular truncate"
-                      title={destination}
-                    >
-                      {destination}
-                    </span>
-                  </span>
-                </span>
-              </th>
-              <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                <Rupees paise={cycle ? cycle.total_rent_paise : config.monthly_rent_paise} />
-              </td>
-              <td className="py-3 pr-3 text-center">
-                {cycle ? <Rupees paise={cycle.disbursed_paise} /> : dash}
-              </td>
-              <td className="py-3 pr-3 text-center">
-                {cycle ? (
-                  <>
-                    <Rupees paise={cycle.remaining_disbursement_paise} />
-                    {cycle.remaining_disbursement_paise > 0 && overdue && (
-                      <span className="block text-[10px] font-semibold text-[var(--danger)] tabular">
-                        {overdue}
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  dash
-                )}
-              </td>
-              <td className="py-3 pr-3 text-center whitespace-nowrap">
-                {cycle && status ? (
-                  <Pill tone={status.tone}>
-                    {cycle.disbursement_status === 'disbursed' ? (
-                      <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-                    ) : (
-                      <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
-                    )}
-                    {status.label}
-                  </Pill>
-                ) : (
-                  <Pill>Not billed</Pill>
-                )}
-              </td>
-              <td className="py-3 text-center whitespace-nowrap">
-                {/* Always there, as on each resident's row; off until the month is
-                    charged and once the landlord has been paid in full. */}
-                <button
-                  type="button"
-                  className={BUTTON_SECONDARY}
-                  disabled={!owing || !cycle}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    onPayout()
-                  }}
-                  aria-label="Pay now to landlord"
-                >
-                  <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  Pay Now
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <ProviderPayoutTable
+        caption="Rent owed to the landlord"
+        columns={LANDLORD_COLUMNS}
+        items={[
+          {
+            id: 'landlord',
+            name: config.landlord_name,
+            totalPaise: cycle ? cycle.total_rent_paise : config.monthly_rent_paise,
+            // Nothing is paid or owed until the month is charged.
+            paidPaise: cycle ? cycle.disbursed_paise : null,
+            stillOwedPaise: cycle ? cycle.remaining_disbursement_paise : null,
+            overdueNotice: overdue ?? undefined,
+            status: cycle ? cycle.disbursement_status : null,
+            // Open until the landlord has been paid in full: the rent can go in tranches.
+            canPay: cycle != null && cycle.disbursement_status !== 'disbursed',
+            payLabel: 'Pay now to landlord',
+            onPay: onPayout,
+            onViewStatement: cycle ? onViewStatement : undefined,
+          },
+        ]}
+      />
       {advanced && (
         <p className="m-0 text-[11px] text-[var(--text-secondary)]">
-          A resident who paid the landlord directly is credited what they paid as a provider
-          advance, and is still charged their own share.
+          A resident who paid the landlord directly paid their own share through the House
+          Kitty; what they paid beyond it the kitty pays back to them.
         </p>
       )}
     </Panel>
@@ -597,6 +581,8 @@ function LandlordPanel({
 /** One payment towards a share: into the kitty, or the part of a direct payment to the landlord that covered it. */
 interface StatementEntry {
   id: string
+  /** Set on a payment into the kitty, which can be deleted while the month is open. */
+  paymentId?: string
   date: string
   amount_paise: number
   modeLabel: string | null
@@ -609,12 +595,15 @@ function RentStatementModal({
   dueDate,
   participant,
   disbursements,
+  onDeletePayment,
   onClose,
 }: {
   month: string
   dueDate: string | null
   participant: RentParticipant
   disbursements: RentDisbursement[]
+  /** Deletes a payment recorded by mistake, while the month is open; without it none is offered. */
+  onDeletePayment?: (entry: StatementEntry) => void
   onClose: () => void
 }) {
   const status = COLLECTION[participant.collection_status]
@@ -627,6 +616,7 @@ function RentStatementModal({
   const dash = <span className="text-[var(--text-tertiary)]">—</span>
   const history: StatementEntry[] = participant.payments.map((payment) => ({
     id: payment.payment_id,
+    paymentId: payment.payment_id,
     date: payment.payment_date,
     amount_paise: payment.amount_paise,
     modeLabel: payment.payment_mode ? (modes.get(payment.payment_mode) ?? null) : null,
@@ -715,7 +705,8 @@ function RentStatementModal({
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Mode</th>
-                    <th scope="col" className="pb-3 font-bold text-center">Reference / UTR</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Reference / UTR</th>
+                    {onDeletePayment && <th scope="col" className="pb-3 font-bold text-center">Actions</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -726,9 +717,24 @@ function RentStatementModal({
                         <Rupees paise={entry.amount_paise} />
                       </td>
                       <td className="py-2.5 pr-3 text-center">{entry.modeLabel ?? dash}</td>
-                      <td className="py-2.5 text-center tabular break-all text-[var(--text-primary)]">
+                      <td className="py-2.5 pr-3 text-center tabular break-all text-[var(--text-primary)]">
                         {entry.reference || dash}
                       </td>
+                      {onDeletePayment && (
+                        <td className="py-2.5 text-center">
+                          {entry.paymentId && (
+                            <button
+                              type="button"
+                              className={BUTTON_QUIET}
+                              onClick={() => onDeletePayment(entry)}
+                              aria-label={`Delete the ${formatInr(entry.amount_paise)} payment of ${formatDate(entry.date)}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                              Delete
+                            </button>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -744,96 +750,6 @@ function RentStatementModal({
 /* ----------------------------------------------- landlord statement modal -- */
 
 /** The landlord's side of the month: what is due to them, and every payment made. */
-function LandlordStatementModal({
-  month,
-  config,
-  cycle,
-  onClose,
-}: {
-  month: string
-  config: RentLeaseConfig
-  cycle: RentCycle
-  onClose: () => void
-}) {
-  const status = PAYOUT[cycle.disbursement_status]
-  const dash = <span className="text-[var(--text-tertiary)]">—</span>
-  return (
-    <Modal
-      title="Landlord Payout Statement"
-      description={`${config.landlord_name} · ${formatMonth(month)}`}
-      onClose={onClose}
-    >
-      <div className="stack">
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <MiniStat label="Total Rent" value={<Rupees paise={cycle.total_rent_paise} />} />
-          <MiniStat label="Paid to Owner" value={<Rupees paise={cycle.disbursed_paise} />} />
-          <MiniStat
-            label="Still Owed"
-            value={<Rupees paise={cycle.remaining_disbursement_paise} />}
-          />
-        </div>
-
-        <section aria-label="Disbursement history" className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="m-0 text-sm font-bold text-[var(--text-primary)]">
-              Disbursement History
-            </h3>
-            <Pill tone={status.tone}>
-              {cycle.disbursement_status === 'disbursed' ? (
-                <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-              ) : (
-                <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
-              )}
-              {status.label}
-            </Pill>
-          </div>
-          {cycle.disbursements.length === 0 ? (
-            <EmptyBlock title="No payouts recorded yet for this month." />
-          ) : (
-            <div className="overflow-x-auto min-w-0">
-              <table className="w-full text-left text-xs min-w-[560px] border-collapse">
-                <caption className="sr-only">Payments to the landlord</caption>
-                <thead>
-                  <tr className={TABLE_HEAD}>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Funded From</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Reference / UTR</th>
-                    <th scope="col" className="pb-3 font-bold text-center">Note</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-                  {cycle.disbursements.map((tranche) => (
-                    <tr key={tranche.disbursement_id} className="align-middle">
-                      <td className="py-2.5 pr-3 text-center tabular">
-                        {formatDate(tranche.disbursed_at)}
-                      </td>
-                      <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
-                        <Rupees paise={tranche.amount_paise} />
-                      </td>
-                      <td className="py-2.5 pr-3 text-center">
-                        {tranche.disbursed_by === 'pool'
-                          ? 'House Kitty'
-                          : `${tranche.funding_resident_name ?? tranche.funding_resident_id} (advance)`}
-                      </td>
-                      <td className="py-2.5 pr-3 text-center tabular break-all">
-                        {tranche.disbursement_reference}
-                      </td>
-                      <td className="py-2.5 text-center text-[var(--text-secondary)]">
-                        {tranche.note ?? dash}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </div>
-    </Modal>
-  )
-}
-
 /* ----------------------------------------------------- rent payment modal -- */
 
 type PaymentMode = 'upi' | 'bank_transfer' | 'cash' | 'other'
@@ -1113,7 +1029,7 @@ function PayoutModal({
               label: resident.display_name,
             }))}
             onChange={setFunder}
-            hint="Credited this payout as a provider advance. They still owe their own share."
+            hint="Their own share goes through the House Kitty; the kitty pays back what they paid beyond it."
           />
         )}
         <TextField

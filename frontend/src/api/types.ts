@@ -1073,6 +1073,11 @@ export interface RentCycle {
   matches_lease_rent: boolean
   /** 'live' while the month follows the lease; 'frozen' once it is over, finalized or paid to the landlord in full. */
   cycle_state?: 'live' | 'frozen'
+  /** What the kitty owes back to each resident who paid the landlord more than their share. */
+  reimbursements?: KittyReimbursement[]
+  reimbursement?: KittyReimbursement | null
+  /** Whether a payment or payout recorded by mistake can still be deleted: until the statement is finalized. */
+  transactions_open?: boolean
   landlord_receipt: {
     filename: string
     content_type: string
@@ -1480,7 +1485,11 @@ export interface FurnitureServiceEntry {
 }
 
 /** What the kitty owes the resident who paid the provider, and has paid back. */
-export interface FurnitureReimbursement {
+/**
+ * What the House Kitty owes back to a resident who paid the landlord or a
+ * provider more than their own share of a month's bill, and what it has paid.
+ */
+export interface KittyReimbursement {
   recipient_resident_id: string
   recipient_name: string
   total_fronted_paise: number
@@ -1498,6 +1507,9 @@ export interface FurnitureReimbursement {
   reimbursements: Array<{ payment_id: string; amount_paise: number; payment_date: string; reference: string | null }>
 }
 
+/** The furniture bill's name for it. */
+export type FurnitureReimbursement = KittyReimbursement
+
 /** What a month bills. Nothing prorates: an item in the flat at any point counts in full. */
 export interface FurnitureMonthBill {
   settlement_month: string
@@ -1512,6 +1524,8 @@ export interface FurnitureMonthBill {
   excluded_residents: Array<{ resident_id: string; display_name: string }>
   /** Why the month cannot be billed as it stands, if it cannot. */
   blocked_reason: string | null
+  /** Whether a payment or payout recorded by mistake can still be deleted: until the statement is finalized. */
+  transactions_open?: boolean
   /** The month's bill once recorded. */
   expense: { expense_id: string; description: string; amount_paise: number; statement_id: string | null } | null
   statement_status: StatementStatus | null

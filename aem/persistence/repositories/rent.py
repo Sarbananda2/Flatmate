@@ -147,6 +147,39 @@ class RentRepository(Repository):
                 ORDER BY d.disbursed_at, d.row_seq""",
             (cycle_id,))
 
+    def disbursement(self, disbursement_id: str) -> dict[str, Any] | None:
+        return self._s.fetch_one(
+            "SELECT d.*, d.row_seq AS seq FROM rent_disbursement d WHERE d.disbursement_id=%s",
+            (disbursement_id,))
+
+    def delete_disbursement(self, disbursement_id: str) -> int:
+        """A payout recorded by mistake, while the month is still open."""
+        return self._s.execute("DELETE FROM rent_disbursement WHERE disbursement_id=%s",
+                               (disbursement_id,))
+
+    def cycle(self, cycle_id: str) -> dict[str, Any] | None:
+        return self._s.fetch_one("SELECT * FROM rent_cycle WHERE cycle_id=%s", (cycle_id,))
+
+    def restate_cycle_disbursement(self, cycle_id: str, *, status: str,
+                                   last_disbursed_at: str | None, last_reference: str | None,
+                                   clear_funding: bool) -> int:
+        """The month's state after a payout is deleted: its status, and the latest
+        payout's date and reference. ``clear_funding`` forgets the resident named
+        as having paid a single payout -- always so once back to pending."""
+        clear = clear_funding or status == "pending"
+        return self._s.execute(
+            """UPDATE rent_cycle SET disbursement_status=%s, disbursed_at=%s,
+                      disbursement_reference=%s,
+                      disbursed_by = CASE WHEN %s = 1 THEN NULL ELSE disbursed_by END,
+                      funding_resident_id = CASE WHEN %s = 1 THEN NULL
+                                                 ELSE funding_resident_id END,
+                      funding_payment_id = CASE WHEN %s = 1 THEN NULL
+                                                ELSE funding_payment_id END
+                WHERE cycle_id=%s""",
+            # Flags as 0 or 1: the adapter sends a Python bool as a smallint.
+            (status, last_disbursed_at, last_reference, int(status == "pending"), int(clear),
+             int(clear), cycle_id))
+
     def insert_disbursement(self, *, disbursement_id: str, cycle_id: str, apartment_id: str,
                             settlement_month: str, amount_paise: int, disbursed_at: str,
                             disbursement_reference: str, disbursed_by: str,
@@ -315,6 +348,16 @@ class RentRepository(Repository):
             """SELECT COALESCE(SUM(amount_paise), 0)::BIGINT FROM payment
                 WHERE expense_id=%s AND payment_kind='provider_advance'
                   AND status='active'""", (expense_id,), 0))
+
+    def reimbursements(self, payment_id_prefix: str) -> list[dict[str, Any]]:
+        """Active refunds from the kitty whose payment ID starts with the prefix,
+        oldest first: what it has paid back to whoever paid the landlord."""
+        return self._s.fetch_all(
+            """SELECT payment_id, payer_resident_id, amount_paise, payment_date, reference
+                 FROM payment
+                WHERE payment_kind = 'refund' AND status = 'active'
+                  AND starts_with(payment_id, %s)
+                ORDER BY payment_date, row_seq""", (payment_id_prefix,))
 
     def set_expense_payer(self, expense_id: str, *, payer_resident_id: str | None,
                           updated_at: str) -> int:

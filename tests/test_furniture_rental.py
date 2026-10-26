@@ -515,8 +515,6 @@ def test_a_payout_is_kept_for_good(billed):
     with connect(billed, as_owner=True) as conn:
         with pytest.raises(DatabaseRefusal):
             conn.execute("UPDATE service_disbursement SET amount_paise = 1")
-        with pytest.raises(DatabaseRefusal):
-            conn.execute("DELETE FROM service_disbursement")
     # Even written directly, tranches cannot add up to more than the bill.
     service_id = furniture.get_overview(billed, APARTMENT, MONTH)["service"]["service_id"]
     with connect(billed) as conn, pytest.raises(DatabaseRefusal) as overpaid:
@@ -527,6 +525,15 @@ def test_a_payout_is_kept_for_good(billed):
                VALUES ('x', %s, %s, %s, %s, 120001, '2026-11-06', 'UTR-X', 'pool', 'now')""",
             (service_id, month["expense"]["expense_id"], APARTMENT, MONTH))
     assert "overpaid_service" in str(overpaid.value)
+    # A payout recorded by mistake can be deleted while the month is open; once its
+    # statement is finalized it is there for good.
+    statement = statements.create_monthly_statement(billed, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(billed, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
+    with connect(billed, as_owner=True) as conn, pytest.raises(DatabaseRefusal) as locked:
+        conn.execute("DELETE FROM service_disbursement")
+    assert "locked_statement" in str(locked.value)
 
 
 def test_a_bill_paid_out_from_the_kitty_cannot_be_deleted(billed):
@@ -658,6 +665,67 @@ def test_an_unbilled_month_has_no_payments_to_show(rented):
     assert {row["status"] for row in month["shares"]} == {None}
     assert (month["collected_paise"], month["payout_status"], month["disbursements"],
             month["reimbursement"]) == (0, "pending", [], None)
+
+
+# ------------------------------------------- deleting what was recorded by mistake --
+
+def test_wrong_furniture_transactions_are_deleted_while_the_month_is_open(billed):
+    before = _net(billed)
+    _into_kitty(billed, "chris", 56_666, "pay-chris")
+    month = furniture.delete_payment(billed, APARTMENT, "pay-chris")["month"]
+    assert _statuses(month)["chris"] == ("unpaid", 0, None)
+    assert month["transactions_open"] is True
+
+    tranche = _payout(billed, amount_paise=50_000)["disbursements"][0]["disbursement_id"]
+    month = furniture.delete_provider_payout(billed, APARTMENT, tranche)["month"]
+    assert (month["payout_status"], month["disbursements"]) == ("pending", [])
+
+    # Alice paid Furlenco the whole bill: deleting her payout deletes her share
+    # through the kitty and her advance with it.
+    month = _advance(billed)
+    share, advance = month["disbursements"]
+    gone = furniture.delete_provider_payout(billed, APARTMENT, advance["disbursement_id"])
+    assert sorted(gone["deleted"]["deleted_disbursement_ids"]) == sorted(
+        [share["disbursement_id"], advance["disbursement_id"]])
+    month = gone["month"]
+    assert (month["payout_status"], month["reimbursements"], _statuses(month)["alice"]) == (
+        "pending", [], ("unpaid", 0, None))
+    assert _rows(billed, "SELECT 1 FROM payment") == []
+    assert _net(billed) == before
+    assert validation.validate(billed, APARTMENT)["issues"] == []
+
+
+def test_a_reimbursed_furniture_advance_is_deleted_only_after_the_reimbursement(billed):
+    advance = _advance(billed)["disbursements"][1]["disbursement_id"]
+    _into_kitty(billed, "bob", 106_667, "pay-bob")
+    refund = furniture.reimburse_from_kitty(
+        billed, APARTMENT, MONTH, "alice", amount_paise=100_000,
+        payment_date="2026-11-09")["month"]["reimbursement"]["reimbursements"][0]["payment_id"]
+    with pytest.raises(ConflictError) as reimbursed:
+        furniture.delete_provider_payout(billed, APARTMENT, advance)
+    assert reimbursed.value.code == "payout_reimbursed"
+    with pytest.raises(ConflictError) as depends:
+        furniture.delete_payment(billed, APARTMENT, "pay-bob")
+    assert depends.value.code == "kitty_reimbursement_depends"
+    owed = furniture.delete_payment(billed, APARTMENT, refund)["month"]["reimbursement"]
+    assert (owed["reimbursed_so_far_paise"], owed["kitty_cash_available_paise"]) == (0, 106_667)
+    assert furniture.delete_provider_payout(billed, APARTMENT, advance)["month"][
+        "payout_status"] == "pending"
+
+
+def test_a_finalized_furniture_month_is_locked(billed):
+    _into_kitty(billed, "chris", 56_666, "pay-chris")
+    tranche = _payout(billed, amount_paise=50_000)["disbursements"][0]["disbursement_id"]
+    statement = statements.create_monthly_statement(billed, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(billed, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
+    assert _month(billed)["transactions_open"] is False
+    with pytest.raises(ConflictError) as payment:
+        furniture.delete_payment(billed, APARTMENT, "pay-chris")
+    with pytest.raises(ConflictError) as payout:
+        furniture.delete_provider_payout(billed, APARTMENT, tranche)
+    assert {payment.value.code, payout.value.code} == {"statement_not_draft"}
 
 
 # ------------------------------------------------------ several providers --
@@ -947,6 +1015,25 @@ def api(apartment):
     with TestClient(create_app(settings, database=apartment)) as client:
         sign_in(client)
         yield client
+
+
+def test_wrong_furniture_transactions_are_deleted_over_http(api):
+    base = "/api/services/furniture"
+    api.post(f"{base}/setup", params={"month": MONTH}, json={"provider_name": "Furlenco"})
+    api.post(f"{base}/items", json={"name": "Sofa", "monthly_rent_paise": 90_000,
+                                    "allocation_scope": "common"})
+    assert api.post(f"{base}/generate-cycle", json={"settlement_month": MONTH}).status_code in (
+        200, 201)
+    payout = api.post(f"{base}/disburse-payout", json={
+        "settlement_month": MONTH, "disbursement_mode": "pool", "reference": "UTR-1",
+        "disbursed_date": "2026-11-05", "amount_paise": 30_000})
+    assert payout.status_code in (200, 201), payout.text
+    tranche = payout.json()["month"]["disbursements"][0]["disbursement_id"]
+    gone = api.delete(f"{base}/disbursements/{tranche}")
+    assert gone.status_code == 200, gone.text
+    assert gone.json()["month"]["payout_status"] == "pending"
+    missing = api.delete(f"{base}/payments/no-such-payment")
+    assert (missing.status_code, missing.json()["error"]["code"]) == (404, "payment_not_found")
 
 
 def test_furniture_rental_over_http(api):

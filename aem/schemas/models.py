@@ -1185,6 +1185,18 @@ class FurniturePayoutRequest(ApiModel):
     notes: str | None = Field(None, max_length=500)
 
 
+class RentReimburseRequest(ApiModel):
+    """The kitty paying back a resident who paid the landlord more than their share."""
+    recipient_resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "No more than the kitty collected for the month and has not paid out or back, "
+        "nor more than the resident is still owed.", ge=1)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    reference: str | None = Field(None, max_length=200,
+                                  description="Bank UTR or UPI transaction ID.")
+    note: str | None = Field(None, max_length=500)
+
+
 class FurnitureReimburseRequest(ApiModel):
     """The kitty paying back the resident who paid the provider the month's bill."""
     settlement_month: str = Field(pattern=MONTH_PATTERN)
@@ -1198,7 +1210,7 @@ class FurnitureReimburseRequest(ApiModel):
     notes: str | None = Field(None, max_length=500)
 
 __all__ = [
-    "AdjustmentCreate", "AdjustmentReverse", "AuthStatusResponse", "AuthUser",
+    "AdjustmentCreate", "AdjustmentReverse", "RentReimburseRequest", "AuthStatusResponse", "AuthUser",
     "AuthUserResponse", "LoginRequest", "SignupRequest", "AllocationMethod", "OpeningBalanceCreate", "OpeningBalanceItem",
     "AllocationPreviewRequest", "ApartmentCreate", "ApartmentResponse", "ApartmentUpdate",
     "ApiModel", "PINCODE_PATTERN",
