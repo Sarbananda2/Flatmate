@@ -1094,7 +1094,7 @@ function ProviderPayoutPanel({
           </caption>
           <thead>
             <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-left">Provider / Subscription</th>
+              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-left">Provider</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Total Bill</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid to Provider</th>
               <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still Owed</th>
@@ -1108,13 +1108,6 @@ function ProviderPayoutPanel({
               const status = PAYOUT[payout.payout_status]
               // Open until the provider has been paid in full: the bill can go in tranches.
               const owing = billed && payout.payout_status !== 'disbursed' && payout.total_paise > 0
-              const subscription = [
-                payout.customer_id && `Customer ${payout.customer_id}`,
-                payout.subscription_reference,
-                `${payout.item_count} item${payout.item_count === 1 ? '' : 's'}`,
-              ]
-                .filter(Boolean)
-                .join(' · ')
               return (
                 // Once the bill is recorded, the row opens the provider's payout
                 // statement; the button in it does its own thing instead.
@@ -1141,12 +1134,7 @@ function ProviderPayoutPanel({
                   <th scope="row" className="py-3 pr-3 text-left font-normal">
                     <span className="flex items-center gap-2.5 min-w-0">
                       <Avatar name={provider} />
-                      <span className="min-w-0">
-                        <span className="block font-semibold text-[var(--text-primary)] truncate">{provider}</span>
-                        <span className="block text-[11px] text-[var(--text-tertiary)] tabular truncate" title={subscription}>
-                          {subscription}
-                        </span>
-                      </span>
+                      <span className="font-semibold text-[var(--text-primary)] truncate">{provider}</span>
                     </span>
                   </th>
                   <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">

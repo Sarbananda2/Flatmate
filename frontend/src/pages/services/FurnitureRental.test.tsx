@@ -586,7 +586,7 @@ describe('FurnitureRental', () => {
     })
     const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
     expect(within(panel).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
-      'Provider / Subscription',
+      'Provider',
       'Total Bill',
       'Paid to Provider',
       'Still Owed',
@@ -594,9 +594,9 @@ describe('FurnitureRental', () => {
       'Actions',
     ])
     // Over the provider's avatar and name, as Resident is over each resident's.
-    expect(within(panel).getByRole('columnheader', { name: 'Provider / Subscription' })).toHaveClass('text-left')
+    expect(within(panel).getByRole('columnheader', { name: 'Provider' })).toHaveClass('text-left')
     expect(within(panel).getByRole('row', { name: /Furlenco/ })).toHaveTextContent(
-      'FurlencoCustomer FUR-2291 · 3 items₹2,200.00₹0.00₹2,200.00UnpaidPay Now',
+      'Furlenco₹2,200.00₹0.00₹2,200.00UnpaidPay Now',
     )
 
     await userEvent.click(within(panel).getByRole('button', { name: 'Pay now to Furlenco' }))
@@ -956,10 +956,10 @@ describe('FurnitureRental', () => {
       show(both, { 'POST /api/services/furniture/disburse-payout': both })
       const panel = (await screen.findByRole('heading', { name: 'Provider Payout' })).closest('section')!
       expect(within(panel).getByRole('row', { name: /Furlenco/ })).toHaveTextContent(
-        'FurlencoCustomer FUR-2291 · 2 items₹1,700.00₹1,700.00₹0.00PaidPay Now',
+        'Furlenco₹1,700.00₹1,700.00₹0.00PaidPay Now',
       )
       expect(within(panel).getByRole('row', { name: /Rentomojo/ })).toHaveTextContent(
-        'RentomojoCustomer RM-1 · 1 item₹500.00₹0.00₹500.00UnpaidPay Now',
+        'Rentomojo₹500.00₹0.00₹500.00UnpaidPay Now',
       )
       expect(within(panel).getByRole('button', { name: 'Pay now to Furlenco' })).toBeDisabled()
 
