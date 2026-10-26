@@ -314,10 +314,60 @@ export interface PaymentApplicationRow {
   expense_date: string
 }
 
+/**
+ * A resident's payout to the landlord or a provider, whole. It is recorded as
+ * their own share, paid into the House Kitty and straight out again, and an
+ * advance for anything beyond it; each part is a payment of its own.
+ */
+export interface ResidentPayout {
+  scope: 'rent' | 'service'
+  paid_to_name: string
+  /** "Rent for October 2026", "Furniture rental for October 2026". */
+  description: string
+  amount_paise: number
+  disbursed_at: string
+  reference: string | null
+  note: string | null
+  parts: Array<{ payment_id: string; kind: 'share' | 'advance'; amount_paise: number }>
+}
+
 export interface PaymentDetail extends PaymentRow {
   applications: PaymentApplicationRow[]
   linked_expense: { expense_id: string; description: string; amount_paise: number; settlement_period: string } | null
   reversal: { payment_id: string; payment_date: string; note: string | null } | null
+  /** Set when the payment is part of a resident's payout to the landlord or a provider. */
+  payout: ResidentPayout | null
+}
+
+/**
+ * A row of the All Payments table (`/api/payments?view=ledger`): an active
+ * payment, a resident's payout to the landlord or a provider as one payment of
+ * the whole amount, or a payout the House Kitty made itself.
+ */
+export interface LedgerRow {
+  row_id: string
+  source: 'payment' | 'payout' | 'expense'
+  /** Null on the kitty's own payouts, which are not payments. */
+  payment_id: string | null
+  payment_kind: PaymentKind | 'kitty_payout'
+  payment_date: string
+  amount_paise: number
+  description: string
+  paid_by_name: string
+  paid_to_name: string
+  payer_resident_id: string | null
+  payer_display_name: string | null
+  payee_or_provider: string | null
+  reference: string | null
+  note: string | null
+  payment_mode: string | null
+  status: PaymentStatus
+  expense_id: string | null
+  linked_expense_description: string | null
+  reverses_payment_id: string | null
+  applied_paise: number
+  unapplied_paise: number
+  application_count: number
 }
 
 export interface CreditRow {

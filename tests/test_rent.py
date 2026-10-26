@@ -1866,11 +1866,14 @@ def test_the_passbooks_list_each_tranche(leased):
     kitty = [e for e in books["pool_statement"]["items"] if e["category"] == "Rent Payout"]
     landlord = [e for e in books["landlord_statement"]["items"]
                 if e["category"] == "Rent Payout"]
-    # Chris paid the last ₹15,000, which is his share: through the kitty, like the rest.
+    # Chris paid the last ₹15,000 himself. It is all his share, recorded as
+    # passing through the kitty, but it never did: the kitty paid out only its
+    # own ₹30,000, and the landlord had the rest from Chris.
     assert sorted((e["amount_paise"], e["reference"]) for e in kitty) == [
-        (1_500_000, "UTR-0007"), (3_000_000, "UTR-0005")]
-    assert sorted((e["amount_paise"], e["counterparty_name"]) for e in landlord) == [
-        (1_500_000, "House Kitty"), (3_000_000, "House Kitty")]
+        (3_000_000, "UTR-0005")]
+    assert sorted((e["amount_paise"], e["counterparty_name"], e["reference"])
+                  for e in landlord) == [
+        (1_500_000, "Chris (Advance)", "UTR-0007"), (3_000_000, "House Kitty", "UTR-0005")]
     assert not [e for e in books["landlord_statement"]["items"]
                 if e["category"] == "Direct Advance"], "there is no advance to list"
 

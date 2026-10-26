@@ -57,7 +57,7 @@ from typing import Any, Mapping, Sequence
 from ..errors import AemError, ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, format_inr, paise_in_words
-from ..periods import normalize_month, parse_iso_date
+from ..periods import month_label, normalize_month, parse_iso_date
 from ..persistence import Database, UnitOfWork
 from . import audit, definitions, deletions, expenses, names, payments
 from . import property as household
@@ -106,12 +106,6 @@ _TERM_DEFAULTS: dict[str, Any] = {
 }
 ESCALATION_TYPES = ("percent", "fixed", "none")
 MAX_TERM_MONTHS = 60
-
-
-def month_label(settlement_month: str) -> str:
-    """``2026-10`` -> ``October 2026``."""
-    year, month = settlement_month.split("-")
-    return f"{calendar.month_name[int(month)]} {year}"
 
 
 # ---------------------------------------------------------------- the lease --

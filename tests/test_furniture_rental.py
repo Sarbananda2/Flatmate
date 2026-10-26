@@ -451,14 +451,15 @@ def test_a_resident_who_paid_the_provider_pays_their_share_through_the_kitty(bil
     assert again.value.code == "furniture_already_disbursed"
 
 
-def test_the_kitty_passbook_shows_a_share_paid_to_the_provider_coming_in_and_going_out(billed):
-    _advance(billed)
+def test_the_kitty_passbook_leaves_out_what_a_resident_paid_the_provider_themselves(billed):
+    # Alice paid ₹1,000 of the bill herself, her share among it; the kitty the rest.
+    _advance(billed, amount_paise=100_000)
+    _payout(billed, reference="UTR-4472")
     items = pool_statements.get_payment_pools_statement(billed, APARTMENT)["pool_statement"]["items"]
-    entries = sorted((e["direction"], e["category"], e["amount_paise"]) for e in items)
-    assert entries == [("in", "Kitty Payment", 56_667), ("out", "House Expense", 56_667)]
-    payout = next(e for e in items if e["direction"] == "out")
-    assert (payout["description"], payout["counterparty_name"], payout["reference"]) == (
-        "Furniture rental payout · November 2026", "Furlenco", "UTR-4471")
+    assert [(e["direction"], e["category"], e["description"], e["counterparty_name"],
+             e["amount_paise"], e["reference"]) for e in items] == [
+        ("out", "House Expense", "Furniture rental payout · November 2026", "Furlenco",
+         120_000, "UTR-4472")]
 
 
 @pytest.mark.parametrize("mode, details, code", [

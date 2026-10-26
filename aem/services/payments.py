@@ -38,6 +38,12 @@ Corrections are reversals, never edits: ``reverse_payment`` marks the original
 removes the original's applications so the charges reopen. Both rows stay in
 the ledger and both are excluded from net positions, which keeps the audit
 trail complete while the money nets to nothing.
+
+``list_payments`` gives the records as stored, or, as the ``ledger`` view, the
+All Payments table: the active payments as the residents made them -- a
+resident's payout to the landlord or a provider is one payment of the whole
+amount, however it was recorded (see ``resident_payouts``) -- and the payouts
+the House Kitty made itself, as ``kitty_payout``.
 """
 from __future__ import annotations
 
@@ -53,10 +59,11 @@ from ..engine.ledger import (
 from ..errors import ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
 from ..money import ensure_paise
-from ..periods import normalize_month, parse_iso_date
+from ..periods import month_label, normalize_month, parse_iso_date
 from ..persistence import Database, UnitOfWork
-from . import audit
+from . import audit, resident_payouts
 from .common import (
+    DEFAULT_POOL_NAME,
     PAYMENT_KINDS,
     PAYMENT_MODES,
     get_apartment,
@@ -71,6 +78,25 @@ APPLICABLE_KINDS = ("to_pool",)
 
 #: Sort keys ``list_payments`` accepts; the repository owns the ORDER BY for each.
 PAYMENT_SORTS = ("payment_date_desc", "payment_date_asc", "amount_desc", "amount_asc")
+
+#: ``list_payments``' views: the payment records as stored, or the All Payments ledger.
+PAYMENT_VIEWS = ("records", "ledger")
+#: A payout the House Kitty made itself, as the ledger view lists it.
+KITTY_PAYOUT = "kitty_payout"
+#: The kinds the ledger view lists.
+LEDGER_KINDS = (*PAYMENT_KINDS, KITTY_PAYOUT)
+#: What every row of the ledger view carries, whatever it was recorded as.
+#: ``payment_id`` is null on the kitty's own payouts, which are not payments;
+#: ``row_id`` identifies every row.
+LEDGER_FIELDS = (
+    "row_id", "source", "payment_id", "payment_kind", "payment_date", "amount_paise",
+    "description", "paid_by_name", "paid_to_name", "payer_resident_id",
+    "payer_display_name", "payee_or_provider", "reference", "note", "payment_mode",
+    "status", "expense_id", "linked_expense_description", "reverses_payment_id",
+    "applied_paise", "unapplied_paise", "application_count",
+)
+_LEDGER_DEFAULTS = {"status": "active", "applied_paise": 0, "unapplied_paise": 0,
+                    "application_count": 0}
 
 
 def _open_charges(uow: UnitOfWork, resident_id: str) -> tuple[list[Charge], dict[str, int]]:
@@ -501,7 +527,185 @@ def read_payment(db: Database, payment_id: str) -> dict[str, Any]:
         payment["linked_expense"] = uow.payments.linked_expense_summary(payment["expense_id"]) \
             if payment["expense_id"] else None
         payment["reversal"] = uow.payments.reversal_of(payment_id)
+        payment["payout"] = _payout_of(uow, payment)
         return payment
+
+
+# -- the All Payments ledger ------------------------------------------------------
+
+def _landlord_name(uow: UnitOfWork, apartment_id: str) -> str:
+    return (uow.rent.active_lease(apartment_id) or {}).get("landlord_name") or "Landlord"
+
+
+def _resident_payouts(uow: UnitOfWork, apartment_id: str,
+                      payments: dict[str, dict[str, Any]],
+                      ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """The residents' own payouts to the landlord and providers, and the
+    payouts the kitty made itself, to the landlord and to providers."""
+    rent, kitty_rent = resident_payouts.group_payouts(
+        "rent", uow.rent.disbursements_for_apartment(apartment_id), payments)
+    service, kitty_service = resident_payouts.group_payouts(
+        "service", uow.furniture.service_disbursements_for_apartment(apartment_id), payments)
+    return rent + service, kitty_rent, kitty_service
+
+
+def _payout_names(payout: dict[str, Any], landlord_name: str) -> tuple[str, str]:
+    """Whom a resident's payout went to, and what it was for: "Rent for October
+    2026", "Furniture rental for October 2026"."""
+    month = month_label(payout["settlement_month"])
+    if payout["scope"] == "rent":
+        return landlord_name, f"Rent for {month}"
+    first = payout["tranches"][0]
+    return first["provider_name"], f"{first['display_name']} for {month}"
+
+
+def _payout_of(uow: UnitOfWork, payment: dict[str, Any]) -> dict[str, Any] | None:
+    """The resident's payout to the landlord or a provider this payment is part
+    of, whole: whom it went to, the amount, and the parts it was recorded in."""
+    payment_id = payment["payment_id"]
+    if not (uow.payments.rent_payout_of(payment_id)
+            or uow.payments.service_payout_of(payment_id)):
+        return None
+    apartment_id = payment["apartment_id"]
+    active = {row["payment_id"]: row for row in uow.payments.active_payments(apartment_id)}
+    payouts, _, _ = _resident_payouts(uow, apartment_id, active)
+    payout = next((row for row in payouts
+                   if payment_id in (row["share_payment_id"], row["advance_payment_id"])), None)
+    if payout is None:
+        return None
+    paid_to, description = _payout_names(payout, _landlord_name(uow, apartment_id))
+    parts = []
+    if payout["share_payment_id"]:
+        parts.append({"payment_id": payout["share_payment_id"], "kind": "share",
+                      "amount_paise": active[payout["share_payment_id"]]["amount_paise"]})
+    if payout["advance_payment_id"]:
+        parts.append({"payment_id": payout["advance_payment_id"], "kind": "advance",
+                      "amount_paise": sum(t["amount_paise"] for t in payout["tranches"]
+                                          if t["disbursed_by"] == "resident_advance")})
+    return {"scope": payout["scope"], "paid_to_name": paid_to, "description": description,
+            "amount_paise": payout["amount_paise"], "disbursed_at": payout["disbursed_at"],
+            "reference": payout["reference"], "note": payout["note"], "parts": parts}
+
+
+def _ledger_row(order: tuple[Any, ...], **fields: Any) -> dict[str, Any]:
+    row = {field: fields.get(field, _LEDGER_DEFAULTS.get(field)) for field in LEDGER_FIELDS}
+    row["_order"] = order
+    return row
+
+
+def _ledger_rows(uow: UnitOfWork, apartment_id: str) -> list[dict[str, Any]]:
+    """The All Payments ledger, in no order: the active payments, a resident's
+    payout as one payment of the whole amount, and the kitty's own payouts --
+    to the landlord, to providers, and the household expenses it paid."""
+    apartment = get_apartment(uow, apartment_id)
+    kitty = apartment.get("pool_name") or DEFAULT_POOL_NAME
+    landlord = _landlord_name(uow, apartment_id)
+    payments = uow.payments.active_payments(apartment_id)
+    active = {payment["payment_id"]: payment for payment in payments}
+    payouts, kitty_rent, kitty_service = _resident_payouts(uow, apartment_id, active)
+    in_payouts = {payment_id for payout in payouts
+                  for payment_id in (payout["share_payment_id"], payout["advance_payment_id"])}
+    rows: list[dict[str, Any]] = []
+
+    for payment in payments:
+        if payment["payment_id"] in in_payouts:
+            continue
+        kind, payee = payment["payment_kind"], payment["payee_or_provider"]
+        name = payment["payer_display_name"] or payment["payer_resident_id"]
+        if kind == "to_pool":
+            paid_by, paid_to, default = name, kitty, f"Payment into {kitty}"
+        elif kind == "refund":
+            paid_by, paid_to, default = kitty, name, f"Refund from {kitty}"
+        elif kind == "provider_advance":
+            paid_by, paid_to, default = name, payee or "Provider", f"Paid {payee or 'a provider'}"
+        else:
+            paid_by, paid_to, default = name, payee or kitty, "Legacy adjustment"
+        rows.append(_ledger_row(
+            (payment["created_at"] or "", payment["recorded_order"]),
+            **{**payment, "row_id": f"payment:{payment['payment_id']}", "source": "payment",
+               "description": (payment["note"] or payment["linked_expense_description"]
+                               or default),
+               "paid_by_name": paid_by, "paid_to_name": paid_to,
+               "unapplied_paise": (payment["amount_paise"] - payment["applied_paise"]
+                                   if kind == "to_pool" else 0)}))
+
+    for payout in payouts:
+        paid_to, description = _payout_names(payout, landlord)
+        stands_for = active.get(payout["payment_id"]) or {}
+        rows.append(_ledger_row(
+            (payout["created_at"], payout["seq"]),
+            row_id=f"payout:{payout['tranches'][0]['disbursement_id']}", source="payment",
+            payment_id=payout["payment_id"], payment_kind="provider_advance",
+            payment_date=payout["disbursed_at"], amount_paise=payout["amount_paise"],
+            description=description, paid_by_name=payout["resident_name"],
+            paid_to_name=paid_to, payer_resident_id=payout["resident_id"],
+            payer_display_name=payout["resident_name"], payee_or_provider=paid_to,
+            reference=payout["reference"], note=payout["note"],
+            payment_mode=stands_for.get("payment_mode"),
+            expense_id=stands_for.get("expense_id"),
+            linked_expense_description=stands_for.get("linked_expense_description")))
+
+    for scope, tranches in (("rent", kitty_rent), ("service", kitty_service)):
+        for tranche in tranches:
+            month = month_label(tranche["settlement_month"])
+            if scope == "rent":
+                paid_to, description = landlord, f"Rent payout · {month}"
+            else:
+                paid_to = tranche["provider_name"]
+                description = f"{tranche['display_name']} payout · {month}"
+            rows.append(_ledger_row(
+                (tranche["created_at"], tranche["seq"]),
+                row_id=f"payout:{tranche['disbursement_id']}", source="payout",
+                payment_kind=KITTY_PAYOUT, payment_date=tranche["disbursed_at"],
+                amount_paise=tranche["amount_paise"], description=description,
+                paid_by_name=kitty, paid_to_name=paid_to, payee_or_provider=paid_to,
+                reference=tranche["disbursement_reference"], note=tranche["note"]))
+
+    for expense in uow.expenses.kitty_paid_expenses(apartment_id):
+        rows.append(_ledger_row(
+            (expense.get("created_at") or "", expense["recorded_order"]),
+            row_id=f"expense:{expense['expense_id']}", source="expense",
+            payment_kind=KITTY_PAYOUT, payment_date=expense["expense_date"],
+            amount_paise=expense["amount_paise"], description=expense["description"],
+            paid_by_name=kitty, paid_to_name=expense.get("provider_name") or "House Expense",
+            payee_or_provider=expense.get("provider_name"),
+            reference=expense.get("reference"), note=expense.get("notes"),
+            expense_id=expense["expense_id"],
+            linked_expense_description=expense["description"]))
+    return rows
+
+
+def _ledger_page(rows: list[dict[str, Any]], *, resident_id: str | None,
+                 payment_kind: str | None, settlement_period: str | None,
+                 date_from: str | None, date_to: str | None, search: str | None,
+                 sort: str, limit: int, offset: int) -> dict[str, Any]:
+    """Filter, sort and page the ledger, as the repository does the records."""
+    needle = search.casefold() if search else None
+
+    def keep(row: dict[str, Any]) -> bool:
+        date_ = row["payment_date"]
+        return ((not resident_id or row["payer_resident_id"] == resident_id)
+                and (not payment_kind or row["payment_kind"] == payment_kind)
+                and (not settlement_period or date_[:7] == settlement_period)
+                and (not date_from or date_ >= date_from)
+                and (not date_to or date_ <= date_to)
+                and (needle is None or any(
+                    needle in str(row[field]).casefold() for field in (
+                        "description", "paid_by_name", "paid_to_name", "payee_or_provider",
+                        "reference", "note", "payment_id", "row_id") if row[field])))
+
+    kept = [row for row in rows if keep(row)]
+    if sort.startswith("amount"):
+        kept.sort(key=lambda row: (row["amount_paise"], row["payment_date"], row["_order"]),
+                  reverse=sort == "amount_desc")
+    else:
+        kept.sort(key=lambda row: (row["payment_date"], row["_order"]),
+                  reverse=sort == "payment_date_desc")
+    page = [{key: value for key, value in row.items() if key != "_order"}
+            for row in kept[offset:offset + limit]]
+    return {"items": page, "total": len(kept),
+            "total_amount_paise": sum(row["amount_paise"] for row in kept),
+            "limit": limit, "offset": offset}
 
 
 def list_payments(
@@ -511,15 +715,26 @@ def list_payments(
     date_to: str | None = None, expense_id: str | None = None,
     unapplied_only: bool = False, search: str | None = None,
     limit: int | None = 50, offset: int | None = 0, sort: str = "payment_date_desc",
+    view: str = "records",
 ) -> dict[str, Any]:
+    """One page of payments: the records as stored, or the ``ledger`` view --
+    the All Payments table, active entries only (see the module docstring)."""
     limit, offset = paginate(limit, offset)
+    if view not in PAYMENT_VIEWS:
+        raise ValidationError(f"Unsupported view: {view}",
+                              details={"field": "view", "allowed": list(PAYMENT_VIEWS)})
+    ledger = view == "ledger"
+    if ledger and (status not in (None, "", "active") or expense_id or unapplied_only):
+        raise ValidationError(
+            "The ledger lists active payments and payouts only; filter the records by "
+            "status, expense or unapplied credit instead.", details={"field": "view"})
     filters: dict[str, Any] = {
         "apartment_id": apartment_id, "resident_id": resident_id, "payment_kind": None,
         "status": status, "settlement_period": None, "date_from": None, "date_to": None,
         "expense_id": expense_id, "unapplied_only": bool(unapplied_only), "search": None,
     }
     if payment_kind:
-        if payment_kind not in PAYMENT_KINDS:
+        if payment_kind not in (LEDGER_KINDS if ledger else PAYMENT_KINDS):
             raise ValidationError("Unsupported payment_kind.",
                                   details={"field": "payment_kind"})
         filters["payment_kind"] = payment_kind
@@ -535,6 +750,14 @@ def list_payments(
     if sort not in PAYMENT_SORTS:
         raise ValidationError(f"Unsupported sort: {sort}",
                               details={"field": "sort", "allowed": sorted(PAYMENT_SORTS)})
+    if ledger:
+        with db.read() as uow:
+            rows = _ledger_rows(uow, apartment_id)
+        return _ledger_page(
+            rows, resident_id=resident_id, payment_kind=filters["payment_kind"],
+            settlement_period=filters["settlement_period"], date_from=filters["date_from"],
+            date_to=filters["date_to"], search=filters["search"], sort=sort, limit=limit,
+            offset=offset)
     with db.read() as uow:
         get_apartment(uow, apartment_id)
         total = uow.payments.count_payments(**filters)

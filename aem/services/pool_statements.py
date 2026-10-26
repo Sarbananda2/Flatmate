@@ -6,10 +6,14 @@ elsewhere; nothing here is stored, and building it writes nothing.
 The **House Kitty** (the household pool) takes in residents' payments --
 their shares, rent among them -- and security deposits paid to it, and pays out
 refunds to residents, the household expenses nobody else paid for, rent to the
-landlord, and deposits it hands back.
+landlord, and deposits it hands back. A resident who paid the landlord or a
+provider themselves is not in it: the share of theirs recorded as passing
+through the kitty comes in and goes straight out, so it is left out on both
+sides (see ``resident_payouts``).
 
 The **landlord** account counts what has been paid to the landlord -- each
-month's rent, advances paid to them directly, and security deposits -- and what
+month's rent, by the kitty or by a resident, one entry for each payout whatever
+it is made up of; advances paid to them directly; and security deposits -- and what
 they have handed back or kept from a deposit. Its balance is what the landlord
 has had, net; ``deposit_held_paise`` is the part of it that is deposit. The
 account goes by the name it is held in: the lease's payout beneficiary when
@@ -25,9 +29,9 @@ from __future__ import annotations
 from typing import Any
 
 from ..persistence import Database
-from . import deposits
+from ..periods import month_label
+from . import deposits, resident_payouts
 from .common import DEFAULT_POOL_NAME, get_apartment
-from .rent import month_label
 
 POOL_INSTANCE_ID = "__pool__"
 LANDLORD_INSTANCE_ID = "__landlord__"
@@ -82,7 +86,7 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
         payments = uow.payments.statement_payments(apartment_id)
         tranches = uow.rent.disbursements_for_apartment(apartment_id)
         expenses = uow.expenses.kitty_paid_expenses(apartment_id)
-        service_tranches = uow.furniture.pool_disbursements_for_apartment(apartment_id)
+        service_tranches = uow.furniture.service_disbursements_for_apartment(apartment_id)
         deposit = deposits.summary_in(uow, apartment_id)
 
     pool_name = apartment.get("pool_name") or DEFAULT_KITTY_NAME
@@ -92,9 +96,16 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
     landlord_payees = {landlord_name.strip().lower(), account_name.strip().lower()}
     pool: list[dict[str, Any]] = []
     landlord: list[dict[str, Any]] = []
+    by_id = {payment["payment_id"]: payment for payment in payments}
+    rent_payouts, kitty_rent = resident_payouts.group_payouts("rent", tranches, by_id)
+    service_payouts, kitty_service = resident_payouts.group_payouts(
+        "service", service_tranches, by_id)
+    passed_through = {payout["share_payment_id"] for payout in rent_payouts + service_payouts}
 
     # Residents' payments into the kitty, and the kitty's refunds to them.
     for payment in payments:
+        if payment["payment_id"] in passed_through:
+            continue
         name = payment["payer_display_name"] or payment["payer_resident_id"]
         common = dict(date=payment["payment_date"], source_type="payment",
                       order=payment["recorded_order"], counterparty_name=name,
@@ -114,29 +125,32 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
                 category="Resident Refund",
                 description=payment["note"] or "Refund from House Kitty", **common))
 
-    # Rent paid to the landlord, tranche by tranche: out of the kitty, or
-    # advanced by a resident.
+    # Rent paid to the landlord: out of the kitty, tranche by tranche, or by a
+    # resident from their own account, as one payout of the whole amount.
     advanced = {t["funding_payment_id"] for t in tranches if t["funding_payment_id"]}
-    for tranche in tranches:
+    for tranche in kitty_rent:
         month = month_label(tranche["settlement_month"])
         common = dict(date=tranche["disbursed_at"], source_type="rent_cycle",
                       order=tranche["seq"], amount_paise=tranche["amount_paise"],
                       reference=tranche["disbursement_reference"], note=tranche["note"])
-        if tranche["disbursed_by"] == "pool":
-            pool.append(_entry(
-                entry_id=f"rent:{tranche['disbursement_id']}", account="pool", direction="out",
-                category="Rent Payout", description=f"Rent payout · {month}",
-                counterparty_name=landlord_name, **common))
-            payer, payer_id = DEFAULT_KITTY_NAME, None
-        else:
-            payer = (f"{tranche['funding_resident_name'] or tranche['funding_resident_id']}"
-                     " (Advance)")
-            payer_id = tranche["funding_resident_id"]
+        pool.append(_entry(
+            entry_id=f"rent:{tranche['disbursement_id']}", account="pool", direction="out",
+            category="Rent Payout", description=f"Rent payout · {month}",
+            counterparty_name=landlord_name, **common))
         landlord.append(_entry(
             entry_id=f"rent:{tranche['disbursement_id']}", account="landlord", direction="in",
             category="Rent Payout", description=f"Monthly rent · {month}",
-            counterparty_name=payer, counterparty_resident_id=payer_id,
-            payment_id=tranche["funding_payment_id"], **common))
+            counterparty_name=DEFAULT_KITTY_NAME, **common))
+    for payout in rent_payouts:
+        landlord.append(_entry(
+            entry_id=f"rent:{payout['tranches'][0]['disbursement_id']}", account="landlord",
+            direction="in", date=payout["disbursed_at"], source_type="rent_cycle",
+            order=payout["seq"], category="Rent Payout",
+            description=f"Monthly rent · {month_label(payout['settlement_month'])}",
+            counterparty_name=f"{payout['resident_name']} (Advance)",
+            counterparty_resident_id=payout["resident_id"],
+            amount_paise=payout["amount_paise"], reference=payout["reference"],
+            payment_id=payout["payment_id"], note=payout["note"]))
 
     # Household expenses the kitty paid itself. A month's rent is not among them:
     # its payout above is the same money.
@@ -149,10 +163,9 @@ def get_payment_pools_statement(db: Database, apartment_id: str) -> dict[str, An
             amount_paise=expense["amount_paise"], reference=expense.get("reference"),
             note=expense.get("notes")))
 
-    # A household service's bill, paid out of the kitty payout by payout. A
-    # resident's own share they paid the provider directly is among them: it came
-    # into the kitty above, so the two net to nothing.
-    for tranche in service_tranches:
+    # A household service's bill, paid out of the kitty payout by payout. What a
+    # resident paid the provider themselves never passed through it.
+    for tranche in kitty_service:
         pool.append(_entry(
             entry_id=f"service:{tranche['disbursement_id']}", account="pool", direction="out",
             date=tranche["disbursed_at"], source_type="expense", order=tranche["seq"],

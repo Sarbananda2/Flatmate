@@ -412,12 +412,9 @@ def test_the_kitty_passbook_runs_its_balance_through_every_movement(passbooks):
     assert pool["account"] == {"instance_id": "__pool__", "name": "House Kitty",
                                "account_holder": None}
     # Newest first; each balance is the kitty's after that entry. Bob paid the
-    # landlord December's rent himself: his own share went through the kitty.
+    # landlord December's rent himself, so none of it passed through the kitty:
+    # not even his own share, recorded as going in and straight out again.
     assert _rows(pool) == [
-        ("2026-12-04", "Rent Payout", "Rent payout · December 2026", "Kumar Yadav", "out",
-         950_000, -970_000),
-        ("2026-12-04", "Rent Collection", "Rent for December 2026", "Bob", "in",
-         950_000, -20_000),
         ("2026-11-06", "Resident Refund", "Refund from House Kitty", "Chris", "out",
          50_000, -970_000),
         ("2026-11-05", "House Expense", "Broadband", "ACT Fibernet", "out",
@@ -433,10 +430,10 @@ def test_the_kitty_passbook_runs_its_balance_through_every_movement(passbooks):
         ("2026-10-05", "Security Deposit", "Security deposit funded · Room 3", "Chris", "in",
          SHARE, SHARE),
     ]
-    assert [item["seq"] for item in pool["items"]] == [9, 8, 7, 6, 5, 4, 3, 2, 1]
+    assert [item["seq"] for item in pool["items"]] == [7, 6, 5, 4, 3, 2, 1]
     assert (pool["total_in_paise"], pool["total_out_paise"], pool["closing_balance_paise"]) == (
-        7_000_000, 7_970_000, -970_000)
-    rent_in = pool["items"][5]
+        6_050_000, 7_020_000, -970_000)
+    rent_in = pool["items"][3]
     assert (rent_in["payment_mode"], rent_in["reference"], rent_in["counterparty_resident_id"]) == (
         "upi", "UPI-77", "alice")
     assert rent_in["payment_id"] and rent_in["source_type"] == "payment"
@@ -444,7 +441,7 @@ def test_the_kitty_passbook_runs_its_balance_through_every_movement(passbooks):
     assert all(item["category"] != "Deposit Deduction" for item in pool["items"])
     # Only the kitty's own expenses: not Alice's groceries, not the bill Bob's
     # advance paid, and not the rent, whose payout is already its own line.
-    broadband = pool["items"][3]
+    broadband = pool["items"][1]
     assert (broadband["entry_id"], broadband["source_type"]) == ("expense:broadband", "expense")
     assert [item["description"] for item in pool["items"] if item["category"] == "House Expense"] == [
         "Broadband"]
@@ -455,12 +452,11 @@ def test_the_landlord_passbook_counts_rent_advances_and_the_deposit_held(passboo
         passbooks, APARTMENT)["landlord_statement"]
     assert landlord["account"] == {"instance_id": "__landlord__", "name": "Kumar Yadav",
                                    "owner_name": "Kumar Yadav"}
-    # December came from Bob: his own share through the kitty, the rest his advance.
+    # December came from Bob, in one payment: recorded as his own share through
+    # the kitty and the rest his advance, but the landlord had it all from him.
     assert _rows(landlord) == [
         ("2026-12-04", "Rent Payout", "Monthly rent · December 2026", "Bob (Advance)", "in",
-         1_900_000, 10_900_000),
-        ("2026-12-04", "Rent Payout", "Monthly rent · December 2026", "House Kitty", "in",
-         950_000, 9_000_000),
+         2_850_000, 10_900_000),
         ("2026-11-08", "Direct Advance", "Plumbing, paid to the landlord", "Alice", "in",
          200_000, 8_050_000),
         ("2026-11-04", "Rent Payout", "Monthly rent · November 2026", "House Kitty", "in",
@@ -482,8 +478,97 @@ def test_the_landlord_passbook_counts_rent_advances_and_the_deposit_held(passboo
     assert (landlord["total_in_paise"], landlord["total_out_paise"]) == (15_900_000, 5_000_000)
     assert landlord["closing_balance_paise"] == 10_900_000
     december = landlord["items"][0]
-    assert december["payment_id"] and december["counterparty_resident_id"] == "bob"
-    assert landlord["items"][5]["note"] == "Repainting"
+    assert december["payment_id"].startswith("rent-advance_")
+    assert (december["counterparty_resident_id"], december["reference"], december["note"]) == (
+        "bob", "UTR-DEC", None)
+    assert landlord["items"][4]["note"] == "Repainting"
+
+
+def _ledger(db, **filters):
+    return payments.list_payments(db, apartment_id=APARTMENT, view="ledger", **filters)
+
+
+def _ledger_rows(page):
+    return [(row["payment_date"], row["payment_kind"], row["description"], row["paid_by_name"],
+             row["paid_to_name"], row["amount_paise"]) for row in page["items"]]
+
+
+def test_all_payments_lists_a_residents_payout_whole_and_the_kittys_own_payouts(passbooks):
+    page = _ledger(passbooks)
+    # Newest first. Bob paid the landlord December's rent in one payment, though it
+    # is recorded as his share through the kitty and an advance for the rest; the
+    # kitty's own payouts are listed beside the residents' payments.
+    assert _ledger_rows(page) == [
+        ("2026-12-04", "provider_advance", "Rent for December 2026", "Bob", "Kumar Yadav",
+         2_850_000),
+        ("2026-11-09", "provider_advance", "Electricity bill", "Bob", "BESCOM", 30_000),
+        ("2026-11-08", "provider_advance", "Plumbing, paid to the landlord", "Alice",
+         "kumar yadav", 200_000),
+        ("2026-11-06", "refund", "Refund from House Kitty", "House Kitty", "Chris", 50_000),
+        ("2026-11-05", "kitty_payout", "Broadband", "House Kitty", "ACT Fibernet", 120_000),
+        ("2026-11-04", "kitty_payout", "Rent payout · November 2026", "House Kitty",
+         "Kumar Yadav", 2_850_000),
+        ("2026-11-03", "to_pool", "Rent for November 2026", "Alice", "House Kitty", 950_000),
+        ("2026-11-01", "to_pool", "Payment into House Kitty", "Bob", "House Kitty", 100_000),
+    ]
+    assert (page["total"], page["total_amount_paise"]) == (8, 7_150_000)
+    december, *_, bob_kitty = page["items"]
+    # The payout opens as the advance behind it; the kitty's payouts are no payment.
+    assert december["payment_id"].startswith("rent-advance_")
+    assert (december["source"], december["payer_resident_id"], december["reference"],
+            december["status"]) == ("payment", "bob", "UTR-DEC", "active")
+    assert [row["payment_id"] for row in page["items"] if row["source"] != "payment"] == [
+        None, None]
+    assert len({row["row_id"] for row in page["items"]}) == 8
+    assert (bob_kitty["applied_paise"], bob_kitty["unapplied_paise"]) == (0, 100_000)
+    assert all(set(row) == set(payments.LEDGER_FIELDS) for row in page["items"])
+    # The records themselves are unchanged: the share and the advance, apart.
+    records = payments.list_payments(passbooks, apartment_id=APARTMENT)
+    assert sorted(row["amount_paise"] for row in records["items"]
+                  if row["payment_date"] == "2026-12-04") == [950_000, 1_900_000]
+
+
+def test_all_payments_filters_sorts_and_pages_the_ledger(passbooks):
+    def amounts(**filters):
+        return [row["amount_paise"] for row in _ledger(passbooks, **filters)["items"]]
+
+    assert amounts(payment_kind="kitty_payout") == [120_000, 2_850_000]
+    assert amounts(resident_id="bob") == [2_850_000, 30_000, 100_000]
+    assert amounts(search="KUMAR") == [2_850_000, 200_000, 2_850_000]
+    assert amounts(search="UTR-DEC") == [2_850_000]
+    assert amounts(settlement_period="2026-12") == [2_850_000]
+    assert amounts(date_from="2026-11-05", date_to="2026-11-08") == [200_000, 50_000, 120_000]
+    assert amounts(sort="amount_asc")[:3] == [30_000, 50_000, 100_000]
+    assert amounts(sort="payment_date_asc")[0] == 100_000
+    second = _ledger(passbooks, limit=3, offset=3)
+    assert ([row["amount_paise"] for row in second["items"]], second["total"],
+            second["total_amount_paise"]) == ([50_000, 120_000, 2_850_000], 8, 7_150_000)
+    with pytest.raises(ValidationError):
+        _ledger(passbooks, status="reversed")
+    with pytest.raises(ValidationError):
+        _ledger(passbooks, unapplied_only=True)
+    with pytest.raises(ValidationError):
+        payments.list_payments(passbooks, apartment_id=APARTMENT, payment_kind="kitty_payout")
+    with pytest.raises(ValidationError):
+        payments.list_payments(passbooks, apartment_id=APARTMENT, view="everything")
+
+
+def test_a_payment_that_is_part_of_a_residents_payout_reads_back_the_whole_payout(passbooks):
+    december = _ledger(passbooks)["items"][0]
+    advance = payments.read_payment(passbooks, december["payment_id"])
+    payout = advance["payout"]
+    assert {key: payout[key] for key in (
+        "scope", "paid_to_name", "description", "amount_paise", "disbursed_at", "reference",
+        "note")} == {
+        "scope": "rent", "paid_to_name": "Kumar Yadav", "description": "Rent for December 2026",
+        "amount_paise": 2_850_000, "disbursed_at": "2026-12-04", "reference": "UTR-DEC",
+        "note": None}
+    assert [(part["kind"], part["amount_paise"]) for part in payout["parts"]] == [
+        ("share", 950_000), ("advance", 1_900_000)]
+    # Bob's share, read on its own, is the same payout.
+    share = payments.read_payment(passbooks, payout["parts"][0]["payment_id"])
+    assert share["payout"] == payout
+    assert payments.read_payment(passbooks, "bob-kitty")["payout"] is None
 
 
 def test_a_signatory_fronted_deposit_is_on_the_landlords_passbook(leased):
@@ -622,3 +707,21 @@ def test_the_lease_endpoint_saves_the_beneficiary(client):
                            json={"beneficiary_name": None})
     assert cleared.status_code == 200
     assert client.get("/api/rent/config").json()["config"]["payout_beneficiary_name"] is None
+
+
+def test_the_payments_endpoint_gives_the_ledger_and_the_export_follows_it(client):
+    client.post("/api/apartments", json={"apartment_id": APARTMENT, "name": "Flat 402"})
+    client.post("/api/residents", json={"resident_id": "alice", "display_name": "Alice"})
+    client.post("/api/payments", json={"payer_resident_id": "alice", "amount_paise": 250_000,
+                                       "payment_date": "2026-10-02", "payment_kind": "to_pool"})
+    ledger = client.get("/api/payments", params={"view": "ledger"})
+    assert ledger.status_code == 200, ledger.text
+    assert [(row["description"], row["paid_by_name"], row["paid_to_name"], row["amount_paise"])
+            for row in ledger.json()["items"]] == [
+        ("Payment into House Kitty", "Alice", "House Kitty", 250_000)]
+    assert client.get("/api/payments", params={"view": "everything"}).status_code == 422
+    export = client.get("/api/payments/export/csv")
+    header, row = export.text.splitlines()
+    assert header.startswith("row_id,source,payment_id,payment_kind,payment_date,amount_paise,"
+                             "amount_rupees,description,paid_by_name,paid_to_name,")
+    assert ",Payment into House Kitty,Alice,House Kitty," in row

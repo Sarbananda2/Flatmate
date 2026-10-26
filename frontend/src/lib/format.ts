@@ -264,10 +264,11 @@ export const ALLOCATION_METHOD_LABELS: Record<string, string> = {
 }
 
 export const PAYMENT_KIND_LABELS: Record<string, string> = {
-  to_pool: 'Into the pool',
+  to_pool: 'Into House Kitty',
   provider_advance: 'Paid a provider',
-  refund: 'Refund from the pool',
+  refund: 'From House Kitty',
   adjustment: 'Legacy adjustment',
+  kitty_payout: 'Kitty payout',
 }
 
 export const STATEMENT_STATUS_LABELS: Record<string, string> = {

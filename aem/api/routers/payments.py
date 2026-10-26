@@ -39,14 +39,20 @@ def list_payments(
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
     sort: Annotated[str, Query()] = "payment_date_desc",
+    view: Annotated[str, Query()] = "records",
 ) -> dict[str, Any]:
+    """The payment records as stored, or with ``view=ledger`` the All Payments
+    table: active payments, a resident's payout to the landlord or a provider as
+    one payment of the whole amount, and the House Kitty's own payouts as
+    ``kitty_payout``. Every ledger row carries ``description``, ``paid_by_name``
+    and ``paid_to_name``."""
     try:
         return payments.list_payments(
             db, apartment_id=apartment_id, resident_id=resident_id,
             payment_kind=payment_kind, status=status, settlement_period=settlement_period,
             date_from=date_from, date_to=date_to, expense_id=expense_id,
             unapplied_only=unapplied_only, search=search, limit=limit, offset=offset,
-            sort=sort)
+            sort=sort, view=view)
     except AemError as exc:
         raise to_http(exc) from exc
 
@@ -215,8 +221,10 @@ def reverse_adjustment(payload: AdjustmentReverse, db: Db,
 
 @router.get("/payments/export/csv", summary="Export payments as CSV")
 def export_payments(db: Db, apartment_id: ApartmentId):
+    """The All Payments table, as the ``ledger`` view lists it."""
     try:
-        rows = payments.list_payments(db, apartment_id=apartment_id, limit=500)["items"]
+        rows = payments.list_payments(db, apartment_id=apartment_id, limit=500,
+                                      view="ledger")["items"]
     except AemError as exc:
         raise to_http(exc) from exc
     return csv_response(rows, "payments")

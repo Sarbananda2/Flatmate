@@ -304,14 +304,20 @@ class FurnitureRentalRepository(Repository):
         return self._s.execute("DELETE FROM service_disbursement WHERE disbursement_id=%s",
                                (disbursement_id,))
 
-    def pool_disbursements_for_apartment(self, apartment_id: str) -> list[dict[str, Any]]:
-        """Every payout the kitty made to a service's provider, oldest first, with
-        the service it was for and the order it was recorded in."""
+    def service_disbursements_for_apartment(self, apartment_id: str) -> list[dict[str, Any]]:
+        """Every payout to a household service's provider, from the kitty or by a
+        resident, oldest first: the service, the provider's name, who advanced it,
+        and the order recorded."""
         return self._s.fetch_all(
-            """SELECT d.*, d.row_seq AS seq, s.display_name, s.provider_name
+            """SELECT d.*, d.row_seq AS seq, s.display_name,
+                      COALESCE(c.provider_name, s.provider_name, s.display_name)
+                          AS provider_name,
+                      r.display_name AS funding_resident_name
                  FROM service_disbursement d
                  JOIN household_service s ON s.service_id = d.service_id
-                WHERE d.apartment_id = %s AND d.disbursed_by = 'pool'
+                 LEFT JOIN furniture_rental_config c ON c.service_id = d.service_id
+                 LEFT JOIN resident r ON r.resident_id = d.funding_resident_id
+                WHERE d.apartment_id = %s
                 ORDER BY d.disbursed_at, d.row_seq""", (apartment_id,))
 
     def insert_service_disbursement(self, *, disbursement_id: str, service_id: str,

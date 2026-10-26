@@ -74,11 +74,13 @@ import type {
   StatementEntry,
   CreditRow,
   ExpenseRow,
+  LedgerRow,
   Paged,
   PaymentDetail,
   PaymentKind,
   PaymentRow,
   ProviderAdvanceRow,
+  ResidentPayout,
   RentLeaseConfig,
   Resident,
   StatementRow,
@@ -95,6 +97,14 @@ type Tab =
 
 /** What a reversal needs to know about the payment it reverses. */
 type Reversible = Pick<PaymentRow, 'payment_id' | 'amount_paise'>
+
+/** Money into the kitty, a resident paying a provider, and money out of the kitty. */
+const KIND_TONES: Record<string, BadgeTone> = {
+  to_pool: 'ok',
+  provider_advance: 'accent',
+  kitty_payout: 'warn',
+  refund: 'warn',
+}
 
 /** How money moved, for any payment or deposit entry. */
 const MODE_LABELS: Record<string, string> = {
@@ -115,19 +125,20 @@ export default function PaymentsPage() {
   const [search, setSearch] = useState('')
   const [residentId, setResidentId] = useState('')
   const [kind, setKind] = useState('')
-  const [status, setStatus] = useState('')
   const [offset, setOffset] = useState(0)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const debouncedSearch = useDebounced(search)
 
   // Both passbooks, which also feed the two accounts' balance strips.
   const statement = useResource<PaymentPoolsStatement>('/api/payments/pools/statement')
-  const payments = useResource<Paged<PaymentRow> & { total_amount_paise: number }>(
+  // All Payments: the active payments, a resident's payout to the landlord or a
+  // provider as one payment, and the kitty's own payouts.
+  const payments = useResource<Paged<LedgerRow> & { total_amount_paise: number }>(
     '/api/payments',
     {
+      view: 'ledger',
       resident_id: residentId || undefined,
       payment_kind: kind || undefined,
-      status: status || undefined,
       search: debouncedSearch || undefined,
       limit: PAGE_SIZE,
       offset,
@@ -159,7 +170,7 @@ export default function PaymentsPage() {
     advances.reload()
     adjustments.reload()
   }
-  const activeFilters = [search.trim(), residentId, kind, status].filter(Boolean).length
+  const activeFilters = [search.trim(), residentId, kind].filter(Boolean).length
   const poolName = apartment?.pool_name || 'House Kitty'
 
   return (
@@ -320,7 +331,7 @@ export default function PaymentsPage() {
                     setSearch(value)
                     setOffset(0)
                   }}
-                  placeholder="Provider, reference, note…"
+                  placeholder="Description, name, reference…"
                 />
                 <SelectField
                   label="Resident"
@@ -341,6 +352,7 @@ export default function PaymentsPage() {
                   options={[
                     { value: 'to_pool', label: PAYMENT_KIND_LABELS.to_pool },
                     { value: 'provider_advance', label: PAYMENT_KIND_LABELS.provider_advance },
+                    { value: 'kitty_payout', label: PAYMENT_KIND_LABELS.kitty_payout },
                     { value: 'refund', label: PAYMENT_KIND_LABELS.refund },
                     { value: 'adjustment', label: PAYMENT_KIND_LABELS.adjustment },
                   ]}
@@ -349,20 +361,6 @@ export default function PaymentsPage() {
                     setOffset(0)
                   }}
                   placeholder="All kinds"
-                />
-                <SelectField
-                  label="Status"
-                  value={status}
-                  options={[
-                    { value: 'active', label: 'Active' },
-                    { value: 'reversed', label: 'Reversed' },
-                    { value: 'reversal', label: 'Reversal entries' },
-                  ]}
-                  onChange={(value) => {
-                    setStatus(value)
-                    setOffset(0)
-                  }}
-                  placeholder="All statuses"
                 />
               </div>
             </div>
@@ -388,71 +386,88 @@ export default function PaymentsPage() {
           >
             {(data) => (
               <div className="table-scroll">
-                <table className="data">
-                  <caption className="sr-only">Payments</caption>
+                <table className="data statement-table">
+                  <caption className="sr-only">All Payments</caption>
                   <thead>
                     <tr>
                       <th scope="col">Date</th>
-                      <th scope="col">Resident</th>
-                      <th scope="col">Kind</th>
-                      <th scope="col">Counterparty</th>
+                      <th scope="col">Description</th>
+                      <th scope="col">Paid By</th>
+                      <th scope="col">Paid To</th>
+                      <th scope="col" className="text-center">
+                        Kind
+                      </th>
                       <th scope="col" className="num">
                         Amount
                       </th>
-                      <th scope="col">Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {data.items.map((payment) => {
-                      const name = payment.payer_display_name ?? payment.payer_resident_id
                       const kindLabel = PAYMENT_KIND_LABELS[payment.payment_kind] ?? payment.payment_kind
+                      const date = formatDate(payment.payment_date)
+                      const paymentId = payment.payment_id
                       return (
-                        // The whole row opens the payment. The date's button holds
-                        // the keyboard focus, and its click reaches the row.
+                        // A payment's whole row opens it. The date's button holds the
+                        // keyboard focus, and its click reaches the row. The kitty's own
+                        // payouts are no payment, so they open nothing.
                         <tr
-                          key={payment.payment_id}
-                          className="cursor-pointer"
-                          onClick={() => setViewing(payment.payment_id)}
+                          key={payment.row_id}
+                          className={paymentId ? 'cursor-pointer' : undefined}
+                          onClick={paymentId ? () => setViewing(paymentId) : undefined}
                         >
                           <td className="nowrap">
-                            <button
-                              type="button"
-                              aria-haspopup="dialog"
-                              aria-label={`Payment details: ${name}, ${kindLabel}, ${formatDate(payment.payment_date)}, ${formatInr(payment.amount_paise)}`}
-                              className="rounded tabular cursor-pointer"
-                            >
-                              {formatDate(payment.payment_date)}
-                            </button>
+                            {paymentId ? (
+                              <button
+                                type="button"
+                                aria-haspopup="dialog"
+                                aria-label={`Payment details: ${payment.paid_by_name}, ${kindLabel}, ${date}, ${formatInr(payment.amount_paise)}`}
+                                className="rounded tabular cursor-pointer"
+                              >
+                                {date}
+                              </button>
+                            ) : (
+                              <span className="tabular">{date}</span>
+                            )}
                           </td>
-                          <th scope="row" className="nowrap">
-                            {name}
-                          </th>
-                          <td>
-                            <Badge
-                              tone={
-                                payment.payment_kind === 'to_pool'
-                                  ? 'ok'
-                                  : payment.payment_kind === 'provider_advance'
-                                    ? 'accent'
-                                    : 'warn'
-                              }
+                          {/* One line, as in the statements: the description takes the width
+                              the other columns leave. */}
+                          <td className="w-full max-w-0">
+                            <span
+                              className="block truncate font-medium text-[var(--text-primary)]"
+                              title={payment.description}
                             >
-                              {kindLabel}
-                            </Badge>
+                              {payment.description}
+                            </span>
                           </td>
-                          <td>{payment.payee_or_provider ?? poolName}</td>
+                          <td className="nowrap">
+                            <span className="block truncate max-w-[12rem]" title={payment.paid_by_name}>
+                              {payment.paid_by_name}
+                            </span>
+                          </td>
+                          <td className="nowrap">
+                            <span className="block truncate max-w-[12rem]" title={payment.paid_to_name}>
+                              {payment.paid_to_name}
+                            </span>
+                          </td>
+                          <td className="nowrap text-center">
+                            <Badge tone={KIND_TONES[payment.payment_kind] ?? 'neutral'}>{kindLabel}</Badge>
+                          </td>
                           <td className="num">
                             <Money paise={payment.amount_paise} />
-                          </td>
-                          <td>
-                            <Badge tone={payment.status === 'active' ? 'ok' : 'neutral'}>
-                              {payment.status}
-                            </Badge>
                           </td>
                         </tr>
                       )
                     })}
                   </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={5}>Total</td>
+                      <td className="num font-bold">
+                        <Money paise={data.total_amount_paise} />
+                      </td>
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             )}
@@ -1618,7 +1633,7 @@ function HowItWorksDialog({ onClose }: { onClose: () => void }) {
         </p>
         <ul className="m-0 pl-5 space-y-1.5">
           <li>
-            <strong>Into the pool</strong> — a resident hands money to the household. It settles
+            <strong>Into House Kitty</strong> — a resident hands money to the household. It settles
             their oldest open charges first; anything left over stays a visible credit.
           </li>
           <li>
@@ -1627,7 +1642,7 @@ function HowItWorksDialog({ onClose }: { onClose: () => void }) {
             replaces that expense's payer field, so the same rupee is credited once.
           </li>
           <li>
-            <strong>Refund</strong> — the kitty pays money back out to a resident.
+            <strong>From House Kitty</strong> — the kitty pays money back out to a resident.
           </li>
           <li>
             <strong>Adjustment</strong> — a signed correction. Positive credits the resident,
@@ -1637,6 +1652,11 @@ function HowItWorksDialog({ onClose }: { onClose: () => void }) {
         <p className="m-0">
           A resident paying another resident directly is two of these, not an expense: record it as
           a payment into the kitty plus a refund, or as a pair of adjustments.
+        </p>
+        <p className="m-0">
+          All Payments lists them beside the kitty&apos;s own payouts to the landlord and providers.
+          A resident who paid the landlord or a provider themselves is listed as one payment of the
+          whole amount, though their own share is recorded as passing through the kitty.
         </p>
       </div>
     </Modal>
@@ -1926,7 +1946,8 @@ function PaymentDetailDialog({
   onReverse?: (payment: Reversible) => void
 }) {
   const resource = useResource<PaymentDetail>(`/api/payments/${encodeURIComponent(paymentId)}`)
-  const active = resource.data?.status === 'active'
+  // A payout's parts are deleted together, from the month's payout statement.
+  const active = resource.data?.status === 'active' && !resource.data.payout
   return (
     <Modal
       title="Payment"
@@ -1953,125 +1974,216 @@ function PaymentDetailDialog({
       }
     >
       <AsyncSection resource={resource}>
-        {(data) => (
-          <div className="stack">
-            <dl className="kv">
-              <dt>Resident</dt>
-              <dd>{data.payer_display_name ?? data.payer_resident_id}</dd>
-              <dt>Kind</dt>
-              <dd>{PAYMENT_KIND_LABELS[data.payment_kind] ?? data.payment_kind}</dd>
-              <dt>Date</dt>
-              <dd>{formatDate(data.payment_date)}</dd>
-              <dt>Amount</dt>
-              <dd>
-                <Money paise={data.amount_paise} />
-              </dd>
-              <dt>Applied to charges</dt>
-              <dd>
-                <Money paise={data.applied_paise} />
-              </dd>
-              <dt>Held as credit</dt>
-              <dd>
-                <Money paise={data.unapplied_paise} tone={data.unapplied_paise ? 'credit' : 'plain'} />
-              </dd>
-              <dt>Status</dt>
-              <dd>
-                <Badge tone={data.status === 'active' ? 'ok' : 'neutral'}>{data.status}</Badge>
-              </dd>
-              {data.linked_expense && (
-                <>
-                  <dt>Funds expense</dt>
-                  <dd>
-                    {data.linked_expense.description} ({formatInr(data.linked_expense.amount_paise)},{' '}
-                    {formatMonth(data.linked_expense.settlement_period)})
-                  </dd>
-                </>
-              )}
-              {data.reference && (
-                <>
-                  <dt>Reference</dt>
-                  <dd className="mono">{data.reference}</dd>
-                </>
-              )}
-              {data.note && (
-                <>
-                  <dt>Note</dt>
-                  <dd>{data.note}</dd>
-                </>
-              )}
-              {data.reversal && (
-                <>
-                  <dt>Reversed by</dt>
-                  <dd>
-                    <span className="id-chip">{data.reversal.payment_id}</span>{' '}
-                    {formatDate(data.reversal.payment_date)}
-                  </dd>
-                </>
-              )}
-            </dl>
+        {(data) =>
+          data.payout ? (
+            <ResidentPayoutDetail payment={data} payout={data.payout} />
+          ) : (
+            <div className="stack">
+              <dl className="kv">
+                <dt>Resident</dt>
+                <dd>{data.payer_display_name ?? data.payer_resident_id}</dd>
+                <dt>Kind</dt>
+                <dd>{PAYMENT_KIND_LABELS[data.payment_kind] ?? data.payment_kind}</dd>
+                <dt>Date</dt>
+                <dd>{formatDate(data.payment_date)}</dd>
+                <dt>Amount</dt>
+                <dd>
+                  <Money paise={data.amount_paise} />
+                </dd>
+                <dt>Applied to charges</dt>
+                <dd>
+                  <Money paise={data.applied_paise} />
+                </dd>
+                <dt>Held as credit</dt>
+                <dd>
+                  <Money paise={data.unapplied_paise} tone={data.unapplied_paise ? 'credit' : 'plain'} />
+                </dd>
+                <dt>Status</dt>
+                <dd>
+                  <Badge tone={data.status === 'active' ? 'ok' : 'neutral'}>{data.status}</Badge>
+                </dd>
+                {data.linked_expense && (
+                  <>
+                    <dt>Funds expense</dt>
+                    <dd>
+                      {data.linked_expense.description} ({formatInr(data.linked_expense.amount_paise)},{' '}
+                      {formatMonth(data.linked_expense.settlement_period)})
+                    </dd>
+                  </>
+                )}
+                {data.reference && (
+                  <>
+                    <dt>Reference</dt>
+                    <dd className="mono">{data.reference}</dd>
+                  </>
+                )}
+                {data.note && (
+                  <>
+                    <dt>Note</dt>
+                    <dd>{data.note}</dd>
+                  </>
+                )}
+                {data.reversal && (
+                  <>
+                    <dt>Reversed by</dt>
+                    <dd>
+                      <span className="id-chip">{data.reversal.payment_id}</span>{' '}
+                      {formatDate(data.reversal.payment_date)}
+                    </dd>
+                  </>
+                )}
+              </dl>
 
-            <div className="card" style={{ borderRadius: 'var(--radius)' }}>
-              <div className="card-header">
-                <div>
-                  <div className="card-title">Exactly which charges this settles</div>
-                  <div className="card-hint">Oldest due date first, then creation order.</div>
+              <div className="card" style={{ borderRadius: 'var(--radius)' }}>
+                <div className="card-header">
+                  <div>
+                    <div className="card-title">Exactly which charges this settles</div>
+                    <div className="card-hint">Oldest due date first, then creation order.</div>
+                  </div>
                 </div>
-              </div>
-              {data.applications.length === 0 ? (
-                <EmptyState
-                  title="Not applied to any charge"
-                  body={
-                    data.payment_kind === 'to_pool'
-                      ? 'There were no open charges when it was recorded, so the whole amount is held as a credit.'
-                      : 'This kind of payment is not applied to personal charges; it funds the household.'
-                  }
-                />
-              ) : (
-                <div className="table-scroll">
-                  <table className="data">
-                    <caption className="sr-only">Payment applications</caption>
-                    <thead>
-                      <tr>
-                        <th scope="col">Charge from</th>
-                        <th scope="col">Settlement month</th>
-                        <th scope="col" className="num">
-                          Charge
-                        </th>
-                        <th scope="col" className="num">
-                          Applied
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.applications.map((application) => (
-                        <tr key={application.payment_application_id}>
-                          <th scope="row">{application.expense_description}</th>
-                          <td className="nowrap">{formatMonth(application.settlement_period)}</td>
+                {data.applications.length === 0 ? (
+                  <EmptyState
+                    title="Not applied to any charge"
+                    body={
+                      data.payment_kind === 'to_pool'
+                        ? 'There were no open charges when it was recorded, so the whole amount is held as a credit.'
+                        : 'This kind of payment is not applied to personal charges; it funds the household.'
+                    }
+                  />
+                ) : (
+                  <div className="table-scroll">
+                    <table className="data">
+                      <caption className="sr-only">Payment applications</caption>
+                      <thead>
+                        <tr>
+                          <th scope="col">Charge from</th>
+                          <th scope="col">Settlement month</th>
+                          <th scope="col" className="num">
+                            Charge
+                          </th>
+                          <th scope="col" className="num">
+                            Applied
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.applications.map((application) => (
+                          <tr key={application.payment_application_id}>
+                            <th scope="row">{application.expense_description}</th>
+                            <td className="nowrap">{formatMonth(application.settlement_period)}</td>
+                            <td className="num">
+                              <Money paise={application.charge_amount_paise} />
+                            </td>
+                            <td className="num">
+                              <Money paise={application.amount_paise} />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr>
+                          <td colSpan={3}>Total applied</td>
                           <td className="num">
-                            <Money paise={application.charge_amount_paise} />
-                          </td>
-                          <td className="num">
-                            <Money paise={application.amount_paise} />
+                            <Money paise={data.applied_paise} />
                           </td>
                         </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr>
-                        <td colSpan={3}>Total applied</td>
-                        <td className="num">
-                          <Money paise={data.applied_paise} />
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                </div>
-              )}
+                      </tfoot>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )
+        }
       </AsyncSection>
     </Modal>
+  )
+}
+
+/**
+ * A resident's payout to the landlord or a provider, as the one payment it was:
+ * whom it went to and the whole amount, then the two parts it is recorded in.
+ */
+function ResidentPayoutDetail({ payment, payout }: { payment: PaymentDetail; payout: ResidentPayout }) {
+  const name = payment.payer_display_name ?? payment.payer_resident_id
+  return (
+    <div className="stack">
+      <dl className="kv">
+        <dt>Paid by</dt>
+        <dd>{name}</dd>
+        <dt>Paid to</dt>
+        <dd>{payout.paid_to_name}</dd>
+        <dt>Kind</dt>
+        <dd>{PAYMENT_KIND_LABELS.provider_advance}</dd>
+        <dt>For</dt>
+        <dd>{payout.description}</dd>
+        <dt>Date</dt>
+        <dd>{formatDate(payout.disbursed_at)}</dd>
+        <dt>Amount</dt>
+        <dd>
+          <Money paise={payout.amount_paise} />
+        </dd>
+        {payout.reference && (
+          <>
+            <dt>Reference</dt>
+            <dd className="mono">{payout.reference}</dd>
+          </>
+        )}
+        {payout.note && (
+          <>
+            <dt>Note</dt>
+            <dd>{payout.note}</dd>
+          </>
+        )}
+      </dl>
+
+      <div className="card" style={{ borderRadius: 'var(--radius)' }}>
+        <div className="card-header">
+          <div>
+            <div className="card-title">How it is recorded</div>
+            <div className="card-hint">
+              {name}&apos;s own share counts as paid into the House Kitty and out to{' '}
+              {payout.paid_to_name}; anything beyond it is an advance the kitty pays back.
+            </div>
+          </div>
+        </div>
+        <div className="table-scroll">
+          <table className="data">
+            <caption className="sr-only">Parts of the payout</caption>
+            <thead>
+              <tr>
+                <th scope="col">Part</th>
+                <th scope="col" className="num">
+                  Amount
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {payout.parts.map((part) => (
+                <tr key={part.payment_id}>
+                  <th scope="row">
+                    {part.kind === 'share'
+                      ? `${name}'s own share, through the House Kitty`
+                      : 'Paid beyond their share, reimbursable from the House Kitty'}
+                  </th>
+                  <td className="num">
+                    <Money paise={part.amount_paise} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td>Total</td>
+                <td className="num">
+                  <Money paise={payout.amount_paise} />
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </div>
   )
 }
 

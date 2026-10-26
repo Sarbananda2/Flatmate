@@ -126,7 +126,7 @@ describe('StatementSlip', () => {
     expect(power).toHaveTextContent('Energy charges ₹1,150.00 + Fixed charges ₹300.00')
 
     const credits = screen.getByRole('table', { name: 'Payments credited' })
-    expect(within(credits).getByRole('row', { name: /Into the pool/ })).toHaveTextContent(
+    expect(within(credits).getByRole('row', { name: /Into House Kitty/ })).toHaveTextContent(
       'UPI/4289',
     )
     const figures = screen.getByLabelText('Statement figures')

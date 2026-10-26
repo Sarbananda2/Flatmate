@@ -81,6 +81,12 @@ def month_of(value: date) -> str:
     return f"{value.year:04d}-{value.month:02d}"
 
 
+def month_label(month: str) -> str:
+    """``2026-10`` -> ``October 2026``."""
+    year, mon = parse_month(month)
+    return f"{calendar.month_name[mon]} {year}"
+
+
 def shift_month(month: str, delta: int) -> str:
     """Return `month` shifted by `delta` months, e.g. ('2026-01', -1) -> '2025-12'."""
     year, mon = parse_month(month)

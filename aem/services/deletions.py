@@ -33,11 +33,11 @@ from typing import Any, Literal, Mapping
 from ..errors import ConflictError, NotFoundError
 from ..persistence import UnitOfWork
 from . import audit
+from .resident_payouts import SHARE_PREFIX as _SHARE_PREFIX
 
 #: Which bills a payment or payout belongs to.
 Scope = Literal["rent", "service"]
 
-_SHARE_PREFIX = {"rent": "rentdisb_", "service": "svcdisb_"}
 _REIMBURSEMENT = "-reimbursement_"
 
 

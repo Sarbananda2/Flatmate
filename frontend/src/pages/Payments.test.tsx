@@ -628,15 +628,21 @@ const LANDLORD_STATEMENT: LandlordStatement = {
 }
 
 const ALICE_RENT = {
+  row_id: 'payment:p2',
+  source: 'payment',
   payment_id: 'p2',
   payer_resident_id: 'alice',
   payer_display_name: 'Alice',
   amount_paise: 950000,
   payment_date: '2026-11-03',
   payment_kind: 'to_pool',
+  description: 'Rent for November 2026',
+  paid_by_name: 'Alice',
+  paid_to_name: 'House Kitty',
   payee_or_provider: null,
   reference: 'UPI-77',
   note: 'Rent for November 2026',
+  payment_mode: 'upi',
   status: 'active',
   expense_id: null,
   reverses_payment_id: null,
@@ -644,6 +650,43 @@ const ALICE_RENT = {
   unapplied_paise: 0,
   application_count: 1,
   linked_expense_description: null,
+}
+
+/** The kitty paying the landlord November's rent: no payment, so it opens nothing. */
+const KITTY_RENT_PAYOUT = {
+  ...ALICE_RENT,
+  row_id: 'payout:rentdisb_nov',
+  source: 'payout',
+  payment_id: null,
+  payer_resident_id: null,
+  payer_display_name: null,
+  amount_paise: 2850000,
+  payment_date: '2026-11-04',
+  payment_kind: 'kitty_payout',
+  description: 'Rent payout · November 2026',
+  paid_by_name: 'House Kitty',
+  paid_to_name: 'Kumar Yadav',
+  payee_or_provider: 'Kumar Yadav',
+  reference: 'UTR-NOV',
+  note: null,
+  payment_mode: null,
+  applied_paise: 0,
+  application_count: 0,
+}
+
+/** Bob paying the landlord December's rent himself: his share and an advance, as one payment. */
+const BOB_DECEMBER = {
+  ...KITTY_RENT_PAYOUT,
+  row_id: 'payout:rentdisb_payment_bob',
+  source: 'payment',
+  payment_id: 'rent-advance_bob',
+  payer_resident_id: 'bob',
+  payer_display_name: 'Bob',
+  payment_date: '2026-12-04',
+  payment_kind: 'provider_advance',
+  description: 'Rent for December 2026',
+  paid_by_name: 'Bob',
+  reference: 'UTR-DEC',
 }
 
 function showPage() {
@@ -658,8 +701,34 @@ function showPage() {
         pool_statement: POOL_STATEMENT,
         landlord_statement: LANDLORD_STATEMENT,
       },
-      '/api/payments': { items: [ALICE_RENT], total: 1, total_amount_paise: 950000, limit: 25, offset: 0 },
-      '/api/payments/p2': { ...ALICE_RENT, applications: [], linked_expense: null, reversal: null },
+      '/api/payments': {
+        items: [BOB_DECEMBER, KITTY_RENT_PAYOUT, ALICE_RENT],
+        total: 3,
+        total_amount_paise: 6650000,
+        limit: 25,
+        offset: 0,
+      },
+      '/api/payments/p2': { ...ALICE_RENT, applications: [], linked_expense: null, reversal: null, payout: null },
+      '/api/payments/rent-advance_bob': {
+        ...BOB_DECEMBER,
+        amount_paise: 1900000,
+        applications: [],
+        linked_expense: null,
+        reversal: null,
+        payout: {
+          scope: 'rent',
+          paid_to_name: 'Kumar Yadav',
+          description: 'Rent for December 2026',
+          amount_paise: 2850000,
+          disbursed_at: '2026-12-04',
+          reference: 'UTR-DEC',
+          note: null,
+          parts: [
+            { payment_id: 'payment_bob', kind: 'share', amount_paise: 950000 },
+            { payment_id: 'rent-advance_bob', kind: 'advance', amount_paise: 1900000 },
+          ],
+        },
+      },
       '/api/credits': { items: [], total: 0, total_paise: 0, by_resident_paise: {} },
       '/api/provider-advances': { items: [], total_paise: 0, unlinked_count: 0 },
       '/api/adjustments': { items: [], total: 0, limit: 200, offset: 0 },
@@ -853,30 +922,82 @@ describe('Payment Pools page', () => {
     showPage()
     await userEvent.click(await screen.findByRole('button', { name: 'How it works' }))
     const dialog = screen.getByRole('dialog', { name: 'How Payment Pools & Transfers Work' })
-    for (const kind of ['Into the pool', 'Paid a provider', 'Refund', 'Adjustment']) {
+    for (const kind of ['Into House Kitty', 'Paid a provider', 'From House Kitty', 'Adjustment']) {
       expect(within(dialog).getByText(kind)).toBeInTheDocument()
     }
     await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('lists all payments in six columns and opens one with Reverse in its footer', async () => {
+  it('lists all payments as a passbook does, who paid whom, with their total', async () => {
     showPage()
     await userEvent.click(await screen.findByRole('tab', { name: 'All Payments' }))
-    const table = await screen.findByRole('table', { name: 'Payments' })
+    const table = await screen.findByRole('table', { name: 'All Payments' })
+    expect(table).toHaveClass('statement-table')
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Date',
-      'Resident',
+      'Description',
+      'Paid By',
+      'Paid To',
       'Kind',
-      'Counterparty',
       'Amount',
-      'Status',
     ])
-    // Applied, credit and the actions moved into the payment's own dialog.
+    // Bob's payout is one payment; the kitty's own payout is listed beside it.
+    expect(bodyRows(table)).toEqual([
+      ['4 Dec 2026', 'Rent for December 2026', 'Bob', 'Kumar Yadav', 'Paid a provider', '₹28,500.00'],
+      ['4 Nov 2026', 'Rent payout · November 2026', 'House Kitty', 'Kumar Yadav', 'Kitty payout', '₹28,500.00'],
+      ['3 Nov 2026', 'Rent for November 2026', 'Alice', 'House Kitty', 'Into House Kitty', '₹9,500.00'],
+    ])
+    const [, , footer] = within(table).getAllByRole('rowgroup')
+    expect(within(footer).getByRole('row')).toHaveTextContent('Total₹66,500.00')
+    // Only active entries are listed, so there is no status to show or filter by.
+    expect(within(table).queryByText('active')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Filters' }))
+    expect(screen.queryByRole('combobox', { name: 'Status' })).toBeNull()
+    expect(
+      within(screen.getByRole('combobox', { name: 'Kind' }))
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toContain('Kitty payout')
+    // The kitty's payout is no payment, so it opens nothing.
+    expect(within(table).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Payment details: Bob, Paid a provider, 4 Dec 2026, ₹28,500.00',
+      'Payment details: Alice, Into House Kitty, 3 Nov 2026, ₹9,500.00',
+    ])
+  })
+
+  it('opens a payment with Reverse in its footer', async () => {
+    showPage()
+    await userEvent.click(await screen.findByRole('tab', { name: 'All Payments' }))
+    const table = await screen.findByRole('table', { name: 'All Payments' })
+    // Applied, credit and the actions are in the payment's own dialog.
     expect(within(table).queryByRole('button', { name: 'Reverse' })).toBeNull()
-    await userEvent.click(within(table).getByRole('button', { name: /^Payment details: Alice, Into the pool/ }))
+    await userEvent.click(within(table).getByRole('button', { name: /^Payment details: Alice, Into House Kitty/ }))
     const payment = await screen.findByRole('dialog', { name: 'Payment' })
     expect(await within(payment).findByRole('button', { name: 'Reverse' })).toBeInTheDocument()
+  })
+
+  it("opens a resident's payout as the one payment it was, whole", async () => {
+    showPage()
+    await userEvent.click(await screen.findByRole('tab', { name: 'All Payments' }))
+    const table = await screen.findByRole('table', { name: 'All Payments' })
+    await userEvent.click(within(table).getByRole('button', { name: /^Payment details: Bob, Paid a provider/ }))
+    const payment = await screen.findByRole('dialog', { name: 'Payment' })
+    const fact = (term: string) => within(payment).getByText(term, { selector: 'dt' }).nextElementSibling
+    await within(payment).findByText('Paid to', { selector: 'dt' })
+    expect(fact('Paid by')).toHaveTextContent('Bob')
+    expect(fact('Paid to')).toHaveTextContent('Kumar Yadav')
+    expect(fact('Amount')).toHaveTextContent('₹28,500.00')
+    expect(fact('For')).toHaveTextContent('Rent for December 2026')
+    expect(fact('Reference')).toHaveTextContent('UTR-DEC')
+    const parts = within(payment).getByRole('table', { name: 'Parts of the payout' })
+    expect(bodyRows(parts)).toEqual([['₹9,500.00'], ['₹19,000.00']])
+    expect(within(parts).getAllByRole('rowheader').map((cell) => cell.textContent)).toEqual([
+      "Bob's own share, through the House Kitty",
+      'Paid beyond their share, reimbursable from the House Kitty',
+    ])
+    // Its parts are deleted together from the month's payout, never reversed one by one.
+    expect(within(payment).queryByRole('button', { name: 'Reverse' })).toBeNull()
   })
 })
 

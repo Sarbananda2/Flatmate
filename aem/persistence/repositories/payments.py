@@ -396,6 +396,22 @@ class PaymentsRepository(Repository):
                 ORDER BY p.payment_date, p.row_seq""",
             (apartment_id,))
 
+    def active_payments(self, apartment_id: str) -> list[dict[str, Any]]:
+        """Every active payment, oldest first, with the payer's name, what has been
+        applied out of it, and the expense it is linked to."""
+        return self._s.fetch_all(
+            f"""SELECT p.*, p.row_seq AS recorded_order, r.display_name AS payer_display_name,
+                       {_APPLIED_TO_PAYMENT} AS applied_paise,
+                       (SELECT COUNT(*) FROM payment_application pa
+                         WHERE pa.payment_id = p.payment_id) AS application_count,
+                       (SELECT e.description FROM expense_instance e
+                         WHERE e.expense_id = p.expense_id) AS linked_expense_description
+                  FROM payment p
+                  LEFT JOIN resident r ON r.resident_id = p.payer_resident_id
+                 WHERE p.apartment_id = %s AND p.status = 'active'
+                 ORDER BY p.payment_date, p.row_seq""",
+            (apartment_id,))
+
     def unapplied_credits(self, apartment_id: str) -> list[dict[str, Any]]:
         """Active pool payments with money left over, oldest first."""
         return self._s.fetch_all(
