@@ -423,7 +423,7 @@ def test_a_resident_who_paid_the_provider_pays_their_share_through_the_kitty(bil
     # Her own ₹566.67 share went into the kitty, settling her charge on the bill...
     assert (share["payer_resident_id"], share["amount_paise"], share["payment_date"],
             share["reference"], share["expense_id"]) == (
-        "alice", 56_667, "2026-11-05", "UTR-4471", None)
+        "alice", 56_667, "2026-11-05", "UTR-4471", expense_id)
     # ...and only the ₹1,633.33 beyond it is an advance, linked to the bill.
     assert (advance["payer_resident_id"], advance["amount_paise"], advance["expense_id"],
             advance["payee_or_provider"], advance["reference"]) == (
@@ -449,6 +449,115 @@ def test_a_resident_who_paid_the_provider_pays_their_share_through_the_kitty(bil
     with pytest.raises(ConflictError) as again:
         _advance(billed, "bob")
     assert again.value.code == "furniture_already_disbursed"
+
+
+# ------------------------------------- shares that change once they are paid --
+#
+# While the month is open the bill follows its items whoever has paid: what each
+# resident paid moves to their new share, and what is then beyond it the kitty
+# owes back to them.
+
+def _standing(db):
+    return {row["resident_id"]: (row["total_paise"], row["paid_paise"],
+                                 row["outstanding_paise"], row["status"])
+            for row in _month(db)["shares"]}
+
+
+def _owed(db):
+    return [(row["recipient_resident_id"], row["net_reimbursement_owed_paise"],
+             row["pending_reimbursement_paise"], row["can_reimburse"])
+            for row in _month(db)["reimbursements"]]
+
+
+def _item_id(db, name):
+    return next(item["item_id"] for item in furniture.get_overview(db, APARTMENT, MONTH)["items"]
+                if item["name"] == name)
+
+
+def _pay_in(db, resident, paise):
+    return furniture.record_furniture_payment(db, APARTMENT, MONTH, resident,
+                                              amount_paise=paise, payment_date="2026-11-08")
+
+
+def _split(db):
+    return sorted((row["disbursed_by"], row["amount_paise"])
+                  for row in _month(db)["disbursements"])
+
+
+def test_a_share_raised_after_it_was_paid_into_the_kitty_stands_part_paid(billed):
+    _pay_in(billed, "alice", 56_667)
+    assert _standing(billed)["alice"] == (56_667, 56_667, 0, "paid")
+    # A lamp for everyone: her share goes up by ₹100, which she still owes.
+    _item(billed, "Lamp", 30_000, delivery_date="2026-09-01")
+    assert _standing(billed)["alice"] == (66_667, 56_667, 10_000, "partial")
+    assert _owed(billed) == []
+    _pay_in(billed, "alice", 10_000)
+    assert _standing(billed)["alice"] == (66_667, 66_667, 0, "paid")
+    assert validation.validate(billed, APARTMENT)["issues"] == []
+    assert sum(_net(billed).values()) == 0
+
+
+def test_a_share_lowered_after_it_was_paid_into_the_kitty_is_owed_back(billed):
+    _pay_in(billed, "alice", 56_667)
+    furniture.delete_item(billed, APARTMENT, _item_id(billed, "Fridge"))
+    # Her share is ₹333.34 now: paid, and the ₹233.33 beyond it is hers to have
+    # back, from the kitty that holds it -- not a credit for anything else.
+    assert _standing(billed)["alice"] == (33_334, 33_334, 0, "paid")
+    assert _owed(billed) == [("alice", 23_333, 23_333, True)]
+    assert payments.unapplied_credits(billed, APARTMENT) == []
+    [payment] = _rows(billed, "SELECT * FROM payment")
+    assert payment["expense_id"] == _month(billed)["expense"]["expense_id"]
+
+    # A share gone up again takes back what she overpaid first.
+    _item(billed, "Lamp", 30_000, delivery_date="2026-09-01")
+    assert _standing(billed)["alice"] == (43_334, 43_334, 0, "paid")
+    assert _owed(billed) == [("alice", 13_333, 13_333, True)]
+    furniture.reimburse_from_kitty(billed, APARTMENT, MONTH, "alice", amount_paise=13_333,
+                                   payment_date="2026-11-09")
+    assert _owed(billed) == [("alice", 13_333, 0, False)]
+    assert _net(billed)["alice"] == 0
+
+    # The kitty has paid her back: a share that would leave her owed less is refused.
+    with pytest.raises(ConflictError) as refused:
+        _item(billed, "Fridge", 70_000, category="appliance", delivery_date="2026-09-01")
+    assert refused.value.code == "reimbursement_exceeds_new_extra"
+    assert _month(billed)["total_paise"] == 180_000
+    assert validation.validate(billed, APARTMENT)["issues"] == []
+    assert sum(_net(billed).values()) == 0
+
+
+def test_a_payout_to_the_provider_is_split_again_as_the_share_changes(billed):
+    # Alice paid Furlenco ₹1,000: her ₹566.67 share through the kitty, the rest an advance.
+    _advance(billed, amount_paise=100_000)
+    assert _split(billed) == [("pool", 56_667), ("resident_advance", 43_333)]
+
+    _item(billed, "Lamp", 30_000, delivery_date="2026-09-01")
+    assert _split(billed) == [("pool", 66_667), ("resident_advance", 33_333)]
+    assert _standing(billed)["alice"] == (66_667, 66_667, 0, "paid")
+    # Owed back, once the others pay in: the kitty holds nothing from them yet.
+    assert _owed(billed) == [("alice", 33_333, 33_333, False)]
+
+    furniture.delete_item(billed, APARTMENT, _item_id(billed, "Sofa"))
+    assert _split(billed) == [("pool", 33_334), ("resident_advance", 66_666)]
+    assert _owed(billed)[0][:2] == ("alice", 66_666)
+
+    # A share beyond the payout: all of it went to her share, the rest still owed.
+    _item(billed, "Desk", 150_000, scope="resident", resident="alice", category="workstation",
+          delivery_date="2026-09-01")
+    assert _split(billed) == [("pool", 100_000)]
+    assert _standing(billed)["alice"] == (183_334, 100_000, 83_334, "partial")
+    assert _owed(billed) == []
+    assert _rows(billed, "SELECT payment_kind, amount_paise FROM payment") == [
+        {"payment_kind": "to_pool", "amount_paise": 100_000}]
+
+    # And back down: what is beyond her share is an advance again.
+    furniture.delete_item(billed, APARTMENT, _item_id(billed, "Desk"))
+    assert _split(billed) == [("pool", 33_334), ("resident_advance", 66_666)]
+    assert sorted((row["payment_kind"], row["amount_paise"]) for row in _rows(
+        billed, "SELECT payment_kind, amount_paise FROM payment")) == [
+        ("provider_advance", 66_666), ("to_pool", 33_334)]
+    assert validation.validate(billed, APARTMENT)["issues"] == []
+    assert sum(_net(billed).values()) == 0
 
 
 def test_the_kitty_passbook_leaves_out_what_a_resident_paid_the_provider_themselves(billed):
@@ -513,9 +622,14 @@ def test_a_payout_is_kept_for_good(billed):
     with pytest.raises(ConflictError) as reversal:
         payments.reverse_payment(billed, advance, reason="Wrong resident")
     assert reversal.value.code == "service_funding_payment"
+    # Only a payout's amount may change, while the month is open, as a resident's
+    # payout is split again; never more than the bill.
     with connect(billed, as_owner=True) as conn:
         with pytest.raises(DatabaseRefusal):
-            conn.execute("UPDATE service_disbursement SET amount_paise = 1")
+            conn.execute("UPDATE service_disbursement SET disbursement_reference = 'edited'")
+        with pytest.raises(DatabaseRefusal) as over:
+            conn.execute("UPDATE service_disbursement SET amount_paise = 220001")
+        assert "overpaid_service" in str(over.value)
     # Even written directly, tranches cannot add up to more than the bill.
     service_id = furniture.get_overview(billed, APARTMENT, MONTH)["service"]["service_id"]
     with connect(billed) as conn, pytest.raises(DatabaseRefusal) as overpaid:
@@ -914,17 +1028,23 @@ def test_the_monthly_bill_is_live_and_tops_up_when_items_or_providers_are_added(
                                  JOIN allocation a ON a.allocation_id = pa.allocation_id""") == [
         {"allocation_id": charge["allocation_id"], "amount_paise": 70_000}]
 
-    # Nobody is paid back, and no provider handed money back, by the bill going down.
-    with pytest.raises(ConflictError) as below_paid:
-        furniture.delete_item(apartment, APARTMENT, sofa["item_id"])
-    assert below_paid.value.code == "furniture_share_below_paid"
+    # A share may go below what was paid into the kitty: the rest is owed back.
+    furniture.delete_item(apartment, APARTMENT, sofa["item_id"])
+    month = _month(apartment)
+    assert month["total_paise"] == 140_000
+    assert {row["resident_id"]: (row["total_paise"], row["paid_paise"], row["status"])
+            for row in month["shares"]}["alice"] == (30_000, 30_000, "paid")
+    assert [(r["recipient_resident_id"], r["net_reimbursement_owed_paise"],
+             r["reimbursable_paise"]) for r in month["reimbursements"]] == [
+        ("alice", 10_000, 10_000)]
+    # No provider is handed money back by the bill going down, though.
     _payout(apartment, service_id=rentomojo_id, amount_paise=40_000)
     with pytest.raises(ConflictError) as below_paid_out:
         furniture.update_item(apartment, APARTMENT, fridge["item_id"],
                               {"monthly_rent_paise": 30_000})
     assert below_paid_out.value.code == "furniture_provider_below_disbursed"
-    assert len(furniture.get_overview(apartment, APARTMENT, MONTH)["items"]) == 3
-    assert _month(apartment)["total_paise"] == 260_000
+    assert len(furniture.get_overview(apartment, APARTMENT, MONTH)["items"]) == 2
+    assert _month(apartment)["total_paise"] == 140_000
     assert validation.validate(apartment, APARTMENT)["issues"] == []
     assert sum(_net(apartment).values()) == 0
 
@@ -932,12 +1052,12 @@ def test_the_monthly_bill_is_live_and_tops_up_when_items_or_providers_are_added(
     november["now"] = "2026-12-05T09:00:00+05:30"
     _item(apartment, "Lamp", 10_000, service_id=furlenco_id, delivery_date="2026-11-20")
     month = _month(apartment)
-    assert (month["bill_state"], month["total_paise"]) == ("frozen", 260_000)
+    assert (month["bill_state"], month["total_paise"]) == ("frozen", 140_000)
     december = _month(apartment, "2026-12")
-    assert (december["bill_state"], december["total_paise"]) == ("live", 270_000)
+    assert (december["bill_state"], december["total_paise"]) == ("live", 150_000)
     assert [(row["settlement_period"], row["amount_paise"]) for row in _rows(
         apartment, "SELECT * FROM expense_instance ORDER BY settlement_period")] == [
-        (MONTH, 260_000), ("2026-12", 270_000)]
+        (MONTH, 140_000), ("2026-12", 150_000)]
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 

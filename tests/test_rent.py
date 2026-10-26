@@ -548,6 +548,12 @@ def test_a_payout_is_recorded_once(leased):
         _disburse(leased, "resident_advance", funding_resident_id="alice")
     assert again.value.code == "rent_already_disbursed"
     assert _rows(leased, "SELECT 1 FROM payment") == []
+    # The month paid in full still follows its lease while it is open; once its
+    # statement is finalized it is there for good.
+    statement = statements.create_monthly_statement(leased, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(leased, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
     with connect(leased) as conn, pytest.raises(DatabaseRefusal):
         conn.execute("UPDATE rent_cycle SET disbursement_reference='edited'")
 
@@ -583,10 +589,10 @@ def test_a_resident_who_pays_the_landlord_pays_their_share_through_the_kitty(lea
     assert _shares(cycle)["alice"] == 1_500_000, "paying it does not waive her share"
 
     # Her ₹15,000 share went into the kitty and out to the landlord; the ₹30,000
-    # beyond it is her advance.
+    # beyond it is her advance. Both are for the month's rent.
     assert _rows(leased, """SELECT payment_kind, expense_id, amount_paise, payer_resident_id,
                                    reference FROM payment ORDER BY row_seq""") == [
-        {"payment_kind": "to_pool", "expense_id": None, "amount_paise": 1_500_000,
+        {"payment_kind": "to_pool", "expense_id": cycle["expense_id"], "amount_paise": 1_500_000,
          "payer_resident_id": "alice", "reference": "UTR329188401928"},
         {"payment_kind": "provider_advance", "expense_id": cycle["expense_id"],
          "amount_paise": 3_000_000, "payer_resident_id": "alice",
@@ -1714,8 +1720,6 @@ def test_tranche_disbursement_two_parts(leased):
     with pytest.raises(ConflictError) as done:
         _tranche(leased, 100)
     assert done.value.code == "rent_already_disbursed"
-    with connect(leased) as conn, pytest.raises(DatabaseRefusal):
-        conn.execute("UPDATE rent_cycle SET disbursement_reference='edited'")
 
 
 def test_disbursement_cannot_exceed_remaining(leased):
@@ -1754,7 +1758,7 @@ def test_a_resident_paying_the_rest_of_the_rent_pays_their_share_through_the_kit
     [share] = _rows(leased, "SELECT * FROM payment")
     assert (share["payment_kind"], share["payer_resident_id"], share["amount_paise"],
             share["expense_id"], share["reference"]) == (
-        "to_pool", "alice", 1_500_000, None, "UTR-ALICE")
+        "to_pool", "alice", 1_500_000, cycle["expense_id"], "UTR-ALICE")
     assert cycle["disbursements"][1]["disbursement_id"] == f"rentdisb_{share['payment_id']}"
     # Alice paid ₹15,000 and owes ₹15,000: she is square; the others still owe.
     assert {k: v for k, v in _positions(leased).items() if k != "__pool__"} == {
@@ -1811,8 +1815,13 @@ def test_a_part_paid_month_keeps_its_record(leased):
     with connect(leased, as_owner=True) as conn:
         with pytest.raises(DatabaseRefusal):
             conn.execute("DELETE FROM rent_cycle")
+        # Only a payout's amount may change, while the month is open, as a
+        # resident's payout is split again; never more than the rent.
         with pytest.raises(DatabaseRefusal):
-            conn.execute("UPDATE rent_disbursement SET amount_paise = 1")
+            conn.execute("UPDATE rent_disbursement SET disbursement_reference = 'edited'")
+        with pytest.raises(DatabaseRefusal) as over:
+            conn.execute("UPDATE rent_disbursement SET amount_paise = 4500001")
+        assert "overpaid_rent" in str(over.value)
     # Even written directly, tranches cannot add up to more than the rent.
     with connect(leased) as conn, pytest.raises(DatabaseRefusal) as overpaid:
         conn.execute(
@@ -1923,9 +1932,9 @@ def test_migration_0020_turns_each_paid_month_into_one_tranche(database_factory)
 #
 # A month's rent is charged as soon as the month begins and follows the lease
 # -- its rent, its model, its rooms -- while the month is open, in place, so
-# what residents have paid stays with their charges. It is never taken below
-# what has been paid, and it freezes once the month is over, finalized, or paid
-# to the landlord in full.
+# what residents have paid stays with their charges, and moves with their new
+# shares. It is never taken below what the landlord has been paid, and it
+# freezes once the month is over or finalized.
 
 @pytest.fixture()
 def clock(monkeypatch):
@@ -2031,7 +2040,7 @@ def test_switching_to_room_tiered_or_changing_a_room_moves_the_open_month(apartm
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
-def test_the_open_month_never_goes_below_what_was_paid(apartment, clock):
+def test_the_open_month_never_goes_below_what_the_landlord_was_paid(apartment, clock):
     from aem.services import rooms
 
     _lease(apartment)
@@ -2041,14 +2050,16 @@ def test_the_open_month_never_goes_below_what_was_paid(apartment, clock):
     assert below_paid_out.value.code == "rent_below_disbursed"
     assert rent.get_lease_config(apartment, APARTMENT)["monthly_rent_paise"] == 4_500_000
 
+    # A share may go below what was paid into the kitty: the rest is owed back.
     _pay(apartment, "alice", 1_500_000)
-    with pytest.raises(ConflictError) as below_share:
-        _lease(apartment, monthly_rent_paise=4_200_000)
-    assert below_share.value.code == "rent_share_below_paid"
-    assert below_share.value.details == {"resident_id": "alice", "settled_paise": 1_500_000,
-                                         "share_paise": 1_400_000}
+    _lease(apartment, monthly_rent_paise=4_200_000)
+    cycle = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
+    assert _row(cycle, "alice") == (1_400_000, 1_400_000, 0, "paid")
+    assert [(r["recipient_resident_id"], r["net_reimbursement_owed_paise"])
+            for r in cycle["reimbursements"]] == [("alice", 100_000)]
 
-    # A room is no different: Alice's room cannot go below what she has paid.
+    # A room is no different, and cannot take the rent below what the landlord has.
+    _lease(apartment, monthly_rent_paise=4_500_000)
     _rooms(apartment)
     rent.save_lease_config(apartment, APARTMENT, {"rent_split_mode": "room_tiered"})
     assert _shares(rent.get_rent_cycle(apartment, APARTMENT, MONTH)) == ROOM_RENTS
@@ -2057,10 +2068,113 @@ def test_the_open_month_never_goes_below_what_was_paid(apartment, clock):
                   if room["assigned_resident_id"] == "alice")
     with pytest.raises(ConflictError) as below_room:
         rooms.update_room(apartment, APARTMENT, room_1["room_id"], {"base_rent_paise": 1_400_000})
-    assert below_room.value.code == "rent_share_below_paid"
+    assert below_room.value.code == "rent_below_disbursed"
     cycle = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
     assert (cycle["total_rent_paise"], _shares(cycle)) == (4_500_000, ROOM_RENTS)
     assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+def _owed_rent(db):
+    return [(row["recipient_resident_id"], row["net_reimbursement_owed_paise"],
+             row["pending_reimbursement_paise"], row["can_reimburse"])
+            for row in rent.get_rent_cycle(db, APARTMENT, MONTH)["reimbursements"]]
+
+
+def _payout_split(db):
+    return sorted((row["disbursed_by"], row["amount_paise"])
+                  for row in rent.get_rent_cycle(db, APARTMENT, MONTH)["disbursements"])
+
+
+def test_a_rent_share_raised_after_it_was_paid_into_the_kitty_stands_part_paid(leased, clock):
+    _generate(leased)
+    _pay(leased, "alice", 1_500_000)
+    _lease(leased, monthly_rent_paise=4_800_000)
+    cycle = rent.get_rent_cycle(leased, APARTMENT, MONTH)
+    assert _row(cycle, "alice") == (1_600_000, 1_500_000, 100_000, "partial")
+    assert cycle["reimbursements"] == []
+    _pay(leased, "alice", 100_000)
+    assert _row(rent.get_rent_cycle(leased, APARTMENT, MONTH), "alice") == (
+        1_600_000, 1_600_000, 0, "paid")
+    assert validation.validate(leased, APARTMENT)["issues"] == []
+    assert sum(_positions(leased).values()) == 0
+
+
+def test_a_rent_share_lowered_after_it_was_paid_into_the_kitty_is_owed_back(leased, clock):
+    _generate(leased)
+    _pay(leased, "alice", 1_500_000)
+    _pay(leased, "bob", 1_500_000)
+    _lease(leased, monthly_rent_paise=4_200_000)
+    cycle = rent.get_rent_cycle(leased, APARTMENT, MONTH)
+    assert _row(cycle, "alice") == (1_400_000, 1_400_000, 0, "paid")
+    # ₹1,000 each beyond the new share, held by the kitty for them -- no credit.
+    assert _owed_rent(leased) == [("alice", 100_000, 100_000, True),
+                                  ("bob", 100_000, 100_000, True)]
+    assert payments.unapplied_credits(leased, APARTMENT) == []
+    _reimburse(leased, "alice", 100_000)
+    assert _owed_rent(leased)[0] == ("alice", 100_000, 0, False)
+    assert _positions(leased)["alice"] == 0
+
+    # Alice has been paid back, so the rent cannot go back up past it.
+    with pytest.raises(ConflictError) as refused:
+        _lease(leased, monthly_rent_paise=4_500_000)
+    assert refused.value.code == "reimbursement_exceeds_new_extra"
+    assert refused.value.details["resident_id"] == "alice"
+    assert rent.get_rent_cycle(leased, APARTMENT, MONTH)["total_rent_paise"] == 4_200_000
+    assert validation.validate(leased, APARTMENT)["issues"] == []
+    assert sum(_positions(leased).values()) == 0
+
+
+def test_a_rent_share_raised_again_takes_back_what_was_overpaid_into_the_kitty(leased, clock):
+    _generate(leased)
+    _pay(leased, "alice", 1_500_000)
+    _lease(leased, monthly_rent_paise=3_900_000)
+    assert _owed_rent(leased) == [("alice", 200_000, 200_000, True)]
+    # Up again: her overpayment settles the higher share first.
+    _lease(leased, monthly_rent_paise=4_200_000)
+    assert _row(rent.get_rent_cycle(leased, APARTMENT, MONTH), "alice") == (
+        1_400_000, 1_400_000, 0, "paid")
+    assert _owed_rent(leased) == [("alice", 100_000, 100_000, True)]
+    # Beyond what she paid, the rest is still owed.
+    _lease(leased, monthly_rent_paise=4_800_000)
+    assert _row(rent.get_rent_cycle(leased, APARTMENT, MONTH), "alice") == (
+        1_600_000, 1_500_000, 100_000, "partial")
+    assert _owed_rent(leased) == []
+    assert validation.validate(leased, APARTMENT)["issues"] == []
+    assert sum(_positions(leased).values()) == 0
+
+
+def test_a_payout_to_the_landlord_is_split_again_as_the_rent_changes(leased, clock):
+    _generate(leased)
+    # Bob paid the landlord ₹20,000: his ₹15,000 share through the kitty, ₹5,000 extra.
+    _tranche(leased, 2_000_000, "resident_advance", funding_resident_id="bob",
+             reference="UTR-BOB")
+    assert _payout_split(leased) == [("pool", 1_500_000), ("resident_advance", 500_000)]
+
+    _lease(leased, monthly_rent_paise=4_800_000)
+    assert _payout_split(leased) == [("pool", 1_600_000), ("resident_advance", 400_000)]
+    cycle = rent.get_rent_cycle(leased, APARTMENT, MONTH)
+    assert _row(cycle, "bob") == (1_600_000, 1_600_000, 0, "paid")
+    assert [r[:2] for r in _owed_rent(leased)] == [("bob", 400_000)]
+
+    # A share beyond the payout: all of it went to his share, the rest still owed.
+    _lease(leased, monthly_rent_paise=6_300_000)
+    assert _payout_split(leased) == [("pool", 2_000_000)]
+    cycle = rent.get_rent_cycle(leased, APARTMENT, MONTH)
+    assert _row(cycle, "bob") == (2_100_000, 2_000_000, 100_000, "partial")
+    assert (cycle["reimbursements"], cycle["disbursed_paise"]) == ([], 2_000_000)
+    assert _rows(leased, "SELECT payment_kind, amount_paise FROM payment") == [
+        {"payment_kind": "to_pool", "amount_paise": 2_000_000}]
+
+    # And back down: what is beyond his share is an advance again.
+    _lease(leased, monthly_rent_paise=4_200_000)
+    assert _payout_split(leased) == [("pool", 1_400_000), ("resident_advance", 600_000)]
+    assert [r[:2] for r in _owed_rent(leased)] == [("bob", 600_000)]
+    landlord = pool_statements.get_payment_pools_statement(leased, APARTMENT)[
+        "landlord_statement"]
+    assert [(e["counterparty_name"], e["amount_paise"]) for e in landlord["items"]] == [
+        ("Bob (Advance)", 2_000_000)]
+    assert validation.validate(leased, APARTMENT)["issues"] == []
+    assert sum(_positions(leased).values()) == 0
 
 
 def test_a_closed_month_keeps_its_rent_whatever_the_lease_says_later(apartment, clock):
@@ -2074,13 +2188,16 @@ def test_a_closed_month_keeps_its_rent_whatever_the_lease_says_later(apartment, 
     assert (finalized["cycle_state"], finalized["total_rent_paise"],
             finalized["matches_lease_rent"]) == ("frozen", 4_500_000, False)
 
-    # A month paid to the landlord in full is settled with them, and kept too.
+    # A month paid to the landlord in full still follows the lease while it is
+    # open: the landlord is owed the difference.
     clock["now"] = "2026-12-03T09:00:00+05:30"
     assert rent.get_rent_cycle(apartment, APARTMENT, "2026-12")["total_rent_paise"] == 4_800_000
     _disburse(apartment, month="2026-12")
     _lease(apartment, monthly_rent_paise=5_000_000)
     paid_out = rent.get_rent_cycle(apartment, APARTMENT, "2026-12")
-    assert (paid_out["cycle_state"], paid_out["total_rent_paise"]) == ("frozen", 4_800_000)
+    assert (paid_out["cycle_state"], paid_out["total_rent_paise"],
+            paid_out["disbursement_status"], paid_out["remaining_disbursement_paise"]) == (
+        "live", 5_000_000, "partially_disbursed", 200_000)
 
     # And so is a month that is over: January is charged the new rent by itself.
     clock["now"] = "2027-01-04T09:00:00+05:30"
@@ -2088,7 +2205,7 @@ def test_a_closed_month_keeps_its_rent_whatever_the_lease_says_later(apartment, 
     assert [(row["settlement_period"], row["amount_paise"]) for row in _rows(
         apartment, "SELECT settlement_period, amount_paise FROM expense_instance "
                    "ORDER BY settlement_period")] == [
-        (MONTH, 4_500_000), ("2026-12", 4_800_000), ("2027-01", 5_100_000)]
+        (MONTH, 4_500_000), ("2026-12", 5_000_000), ("2027-01", 5_100_000)]
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 

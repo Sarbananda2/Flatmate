@@ -285,7 +285,7 @@ class FurnitureRentalRepository(Repository):
         """The payouts to the provider towards a bill, oldest first, with who
         funded each one that a resident paid."""
         return self._s.fetch_all(
-            """SELECT d.*, r.display_name AS funding_resident_name,
+            """SELECT d.*, d.row_seq AS seq, r.display_name AS funding_resident_name,
                       COALESCE(c.provider_name, s.provider_name, s.display_name)
                           AS provider_name
                  FROM service_disbursement d
@@ -303,6 +303,14 @@ class FurnitureRentalRepository(Repository):
         """A payout recorded by mistake, while the month is still open."""
         return self._s.execute("DELETE FROM service_disbursement WHERE disbursement_id=%s",
                                (disbursement_id,))
+
+    def update_service_disbursement_amount(self, disbursement_id: str,
+                                           amount_paise: int) -> int:
+        """A resident's payout split again between their share and their advance,
+        while the month is open."""
+        return self._s.execute(
+            "UPDATE service_disbursement SET amount_paise=%s WHERE disbursement_id=%s",
+            (amount_paise, disbursement_id))
 
     def service_disbursements_for_apartment(self, apartment_id: str) -> list[dict[str, Any]]:
         """Every payout to a household service's provider, from the kitty or by a

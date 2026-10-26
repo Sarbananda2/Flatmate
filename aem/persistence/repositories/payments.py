@@ -103,6 +103,63 @@ class PaymentsRepository(Repository):
         return self._s.execute(
             "DELETE FROM payment_application WHERE payment_id=%s", (payment_id,))
 
+    def update_application_amount(self, payment_application_id: str, amount_paise: int) -> int:
+        return self._s.execute(
+            "UPDATE payment_application SET amount_paise=%s WHERE payment_application_id=%s",
+            (amount_paise, payment_application_id))
+
+    def delete_application(self, payment_application_id: str) -> int:
+        return self._s.execute(
+            "DELETE FROM payment_application WHERE payment_application_id=%s",
+            (payment_application_id,))
+
+    # -- payments towards one bill -------------------------------------------
+
+    def bill_applications(self, expense_id: str) -> list[dict[str, Any]]:
+        """Every application settling a charge on one bill, oldest first: the
+        resident charged, the payment, and the bill that payment is for."""
+        return self._s.fetch_all(
+            """SELECT pa.payment_application_id, pa.payment_id, pa.allocation_id,
+                      pa.amount_paise, a.resident_id, p.expense_id AS payment_expense_id,
+                      p.payment_kind, p.created_at, p.row_seq AS payment_seq
+                 FROM payment_application pa
+                 JOIN allocation a ON a.allocation_id = pa.allocation_id
+                 JOIN payment p ON p.payment_id = pa.payment_id
+                WHERE a.expense_id = %s AND p.status = 'active'
+                ORDER BY p.created_at, p.row_seq, pa.row_seq""", (expense_id,))
+
+    def kitty_payments_for_bill(self, expense_id: str) -> list[dict[str, Any]]:
+        """The active payments into the kitty made for one bill, oldest first, with
+        what each has applied to any charge."""
+        return self._s.fetch_all(
+            f"""SELECT p.payment_id, p.payer_resident_id, p.amount_paise, p.created_at,
+                       p.row_seq AS seq, {_APPLIED_TO_PAYMENT} AS applied_paise
+                  FROM payment p
+                 WHERE p.expense_id = %s AND p.payment_kind = 'to_pool'
+                   AND p.status = 'active'
+                 ORDER BY p.created_at, p.row_seq""", (expense_id,))
+
+    def link_kitty_payments_to_bill(self, expense_id: str) -> int:
+        """Name the bill on each active payment into the kitty that settles a
+        charge on it and is not already for a bill."""
+        return self._s.execute(
+            """UPDATE payment p SET expense_id = %s
+                WHERE p.expense_id IS NULL AND p.payment_kind = 'to_pool'
+                  AND p.status = 'active'
+                  AND EXISTS (SELECT 1 FROM payment_application pa
+                                JOIN allocation a ON a.allocation_id = pa.allocation_id
+                               WHERE pa.payment_id = p.payment_id AND a.expense_id = %s)""",
+            (expense_id, expense_id))
+
+    def update_payment_amount(self, payment_id: str, amount_paise: int) -> int:
+        """A resident's payout split again: its share or its advance, re-sized."""
+        return self._s.execute("UPDATE payment SET amount_paise=%s WHERE payment_id=%s",
+                               (amount_paise, payment_id))
+
+    def allocation_expense_id(self, allocation_id: str) -> str | None:
+        return self._s.scalar("SELECT expense_id FROM allocation WHERE allocation_id=%s",
+                              (allocation_id,))
+
     def applications_for_payment(self, payment_id: str) -> list[dict[str, Any]]:
         """A payment's applications with the charge each one settles, oldest charge first."""
         return self._s.fetch_all(
@@ -171,13 +228,15 @@ class PaymentsRepository(Repository):
             "WHERE reverses_payment_id=%s", (payment_id,))
 
     def pool_payments_with_applied(self, resident_id: str) -> list[dict[str, Any]]:
-        """A resident's active pool payments, oldest first, with what each has applied."""
+        """A resident's active pool payments, oldest first, with what each has
+        applied. A payment made for a bill keeps what it paid beyond the share for
+        that bill, which the kitty owes back, so it is not among them."""
         return self._s.fetch_all(
             f"""SELECT p.payment_id, p.amount_paise, p.payment_date,
                       {_APPLIED_TO_PAYMENT} AS applied
                  FROM payment p
                 WHERE p.payer_resident_id = %s AND p.payment_kind = 'to_pool'
-                  AND p.status = 'active'
+                  AND p.status = 'active' AND p.expense_id IS NULL
                 ORDER BY p.payment_date, p.row_seq""", (resident_id,))
 
     # -- what a provider advance is linked to --------------------------------
@@ -254,9 +313,17 @@ class PaymentsRepository(Repository):
         return self._s.fetch_one(
             """SELECT
                   e.expense_id, e.apartment_id, e.settlement_period,
-                  COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
-                              JOIN allocation a ON a.allocation_id = pa.allocation_id
-                             WHERE a.expense_id = e.expense_id), 0)::BIGINT AS collected_paise,
+                  (COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
+                               JOIN allocation a ON a.allocation_id = pa.allocation_id
+                              WHERE a.expense_id = e.expense_id), 0)
+                   -- and what a payment made for the bill paid beyond the share
+                   + COALESCE((SELECT SUM(p.amount_paise - COALESCE(
+                                   (SELECT SUM(pa.amount_paise) FROM payment_application pa
+                                     WHERE pa.payment_id = p.payment_id), 0))
+                                 FROM payment p
+                                WHERE p.expense_id = e.expense_id
+                                  AND p.payment_kind = 'to_pool' AND p.status = 'active'), 0)
+                  )::BIGINT AS collected_paise,
                   (COALESCE((SELECT SUM(d.amount_paise) FROM rent_disbursement d
                                JOIN rent_cycle c ON c.cycle_id = d.cycle_id
                               WHERE c.expense_id = e.expense_id AND d.disbursed_by = 'pool'), 0)
@@ -413,7 +480,9 @@ class PaymentsRepository(Repository):
             (apartment_id,))
 
     def unapplied_credits(self, apartment_id: str) -> list[dict[str, Any]]:
-        """Active pool payments with money left over, oldest first."""
+        """Active pool payments with money left over, oldest first. What a payment
+        made for a bill paid beyond the share is the kitty's to pay back for that
+        bill, as a reimbursement, so it is no credit here."""
         return self._s.fetch_all(
             f"""SELECT p.payment_id, p.payer_resident_id, r.display_name, p.payment_date,
                       p.amount_paise,
@@ -422,6 +491,7 @@ class PaymentsRepository(Repository):
                           AS unapplied_paise
                  FROM payment p JOIN resident r ON r.resident_id = p.payer_resident_id
                 WHERE p.apartment_id = %s AND p.payment_kind = 'to_pool' AND p.status = 'active'
+                  AND p.expense_id IS NULL
                   AND p.amount_paise > {_APPLIED_TO_PAYMENT}
                 ORDER BY p.payment_date, p.row_seq""", (apartment_id,))
 

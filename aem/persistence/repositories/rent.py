@@ -157,6 +157,13 @@ class RentRepository(Repository):
         return self._s.execute("DELETE FROM rent_disbursement WHERE disbursement_id=%s",
                                (disbursement_id,))
 
+    def update_disbursement_amount(self, disbursement_id: str, amount_paise: int) -> int:
+        """A resident's payout split again between their share and their advance,
+        while the month is open."""
+        return self._s.execute(
+            "UPDATE rent_disbursement SET amount_paise=%s WHERE disbursement_id=%s",
+            (amount_paise, disbursement_id))
+
     def cycle(self, cycle_id: str) -> dict[str, Any] | None:
         return self._s.fetch_one("SELECT * FROM rent_cycle WHERE cycle_id=%s", (cycle_id,))
 

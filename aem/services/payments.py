@@ -208,7 +208,13 @@ def _record_payment(
     reference: str | None, note: str | None, timestamp: str, expense_id: str | None,
     actor: str, target_allocation_id: str | None = None, payment_mode: str | None = None,
 ) -> dict[str, Any]:
-    """Write one payment inside the caller's transaction."""
+    """Write one payment inside the caller's transaction.
+
+    ``expense_id`` links a provider advance to the expense it funds, or a payment
+    into the pool to the bill whose charge it is targeted at: what such a
+    payment pays beyond the share stays with that bill, owed back to the payer
+    (see :mod:`aem.services.bill_shares`).
+    """
     if payment_mode is not None and payment_mode not in PAYMENT_MODES:
         raise ValidationError("Unsupported payment_mode.",
                               details={"field": "payment_mode",
@@ -241,8 +247,15 @@ def _record_payment(
                             code="payment_exists",
                             details={"payment_id": payment_id.strip()})
     if expense_id:
-        if payment_kind != "provider_advance":
-            raise ValidationError("Only provider advances may be linked to an expense.",
+        if payment_kind == "to_pool":
+            if (not target_allocation_id
+                    or uow.payments.allocation_expense_id(target_allocation_id) != expense_id):
+                raise ValidationError(
+                    "A payment into the pool can be linked only to the bill whose charge it "
+                    "is for.", details={"field": "expense_id"})
+        elif payment_kind != "provider_advance":
+            raise ValidationError("Only provider advances, and payments into the pool for a "
+                                  "bill, may be linked to an expense.",
                                   details={"field": "expense_id"})
         expense = uow.payments.expense_for_link(expense_id)
         if not expense:
@@ -257,7 +270,8 @@ def _record_payment(
             raise ValidationError("Linked expense must belong to this apartment.",
                                   details={"expense_id": expense_id})
         already_linked = uow.payments.linked_advances_paise(expense_id)
-        if already_linked + amount_paise > expense["amount_paise"]:
+        if (payment_kind == "provider_advance"
+                and already_linked + amount_paise > expense["amount_paise"]):
             raise ValidationError(
                 "Linked provider advances would exceed the expense they fund. "
                 "An advance funds an expense; it cannot exceed it.",

@@ -237,9 +237,14 @@ def delete_payment_in(uow: UnitOfWork, *, apartment_id: str, scope: Scope, payme
         if bill is not None:
             bills.append((bill, 0))
     elif payment["payment_kind"] == "to_pool":
-        for row in uow.payments.applied_by_expense(payment_id):
-            bill = uow.payments.kitty_for_expense(row["expense_id"])
-            bills.append((bill, row["amount_paise"]))
+        towards = {row["expense_id"]: row["amount_paise"]
+                   for row in uow.payments.applied_by_expense(payment_id)}
+        if payment["expense_id"]:
+            # Made for a bill: what it paid beyond the share is with that bill too.
+            unapplied = payment["amount_paise"] - sum(towards.values())
+            towards[payment["expense_id"]] = towards.get(payment["expense_id"], 0) + unapplied
+        for expense_id, amount in towards.items():
+            bills.append((uow.payments.kitty_for_expense(expense_id), amount))
     bills = [(bill, applied) for bill, applied in bills
              if bill["is_rent" if scope == "rent" else "is_service"]]
     months = sorted({bill["settlement_period"] for bill, _ in bills})
