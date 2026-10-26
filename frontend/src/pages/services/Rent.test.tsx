@@ -1126,8 +1126,7 @@ describe('RentMonth', () => {
       renderRent(overview({ cycle: cycle({ reimbursements: [owedToAlice], reimbursement: owedToAlice }) }), {
         [`POST /api/rent/cycle/${MONTH}/reimburse`]: cycle(),
       })
-      const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
-      expect(card).toHaveTextContent('Alice paid extra beyond their allotted share for October 2026 rent.')
+      const card = (await screen.findByRole('heading', { name: 'Reimbursement' })).closest('section')!
       // Laid out as the collection and payout tables, column for column.
       const table = within(card).getByRole('table', { name: 'Reimbursements from the House Kitty' })
       expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
@@ -1278,7 +1277,7 @@ describe('RentMonth', () => {
       renderRent(overview({ cycle: withRefund }), {
         [`DELETE /api/rent/cycle/${MONTH}/payments/rent-oct-reimbursement_1`]: withRefund,
       })
-      const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
+      const card = (await screen.findByRole('heading', { name: 'Reimbursement' })).closest('section')!
       await userEvent.click(within(card).getByRole('row', { name: /Alice/ }))
       const statement = screen.getByRole('dialog', { name: 'Reimbursement Statement' })
       await userEvent.click(within(statement).getByRole('button', { name: 'Delete the ₹10,000.00 reimbursement of 6 Oct 2026' }))

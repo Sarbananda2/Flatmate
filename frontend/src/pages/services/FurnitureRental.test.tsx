@@ -298,8 +298,8 @@ describe('FurnitureRental', () => {
       'Subscription & Deposit',
     ])
     expect(screen.getByRole('tab', { name: /Monthly Settlement/ })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('heading', { name: 'Resident Collection · November 2026' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Provider Payout · Furlenco' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Resident Collection' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Provider Payout' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Rented Items' })).toBeNull()
 
     const expectations: Array<[RegExp, string, string]> = [
@@ -589,7 +589,7 @@ describe('FurnitureRental', () => {
         month: billed({ payout_status: 'partially_disbursed', disbursed_paise: 106667, remaining_disbursement_paise: 113333 }),
       }),
     })
-    const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
+    const panel = (await screen.findByRole('heading', { name: 'Provider Payout' })).closest('section')!
     expect(within(panel).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Provider',
       'Total Bill',
@@ -656,7 +656,7 @@ describe('FurnitureRental', () => {
 
   it('opens the payout statement from the provider row', async () => {
     show(overview({ month: paidByAlice() }))
-    const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
+    const panel = (await screen.findByRole('heading', { name: 'Provider Payout' })).closest('section')!
     expect(within(panel).getByRole('button', { name: 'Pay now to Furlenco' })).toBeDisabled()
     await userEvent.click(within(panel).getByRole('row', { name: /Furlenco/ }))
     const statement = screen.getByRole('dialog', { name: 'Provider Payout Statement' })
@@ -684,7 +684,7 @@ describe('FurnitureRental', () => {
         }),
       }),
     )
-    await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })
+    await screen.findByRole('heading', { name: 'Provider Payout' })
     expect(screen.queryByRole('heading', { name: /Reimbursement/ })).toBeNull()
   })
 
@@ -692,8 +692,8 @@ describe('FurnitureRental', () => {
     show(overview({ month: paidByAlice() }), {
       'POST /api/services/furniture/reimburse-from-kitty': overview({ month: paidByAlice() }),
     })
-    expect(await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Resident Collection · November 2026' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Reimbursement' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Resident Collection' })).toBeInTheDocument()
 
     const shares = screen.getByRole('table', { name: 'Shares for November 2026' })
     // Rent's six columns: who, their share, paid in, still owed, status, actions.
@@ -713,7 +713,7 @@ describe('FurnitureRental', () => {
       'Chris₹566.66₹300.00₹266.66Part paidPay Now',
     )
 
-    const card = screen.getByRole('heading', { name: 'Reimbursement · Alice' }).closest('section')!
+    const card = screen.getByRole('heading', { name: 'Reimbursement' }).closest('section')!
     const owed = within(card).getByRole('table', { name: 'Reimbursements from the House Kitty' })
     expect(within(owed).getByRole('row', { name: /Alice/ })).toHaveTextContent(
       'Alice₹1,633.33₹0.00₹1,633.33UnpaidPay Now',
@@ -740,7 +740,7 @@ describe('FurnitureRental', () => {
 
   it("opens a resident's reimbursement statement from their row", async () => {
     show(overview({ month: paidByAlice() }))
-    const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
+    const card = (await screen.findByRole('heading', { name: 'Reimbursement' })).closest('section')!
     await userEvent.click(within(card).getByRole('row', { name: /Alice/ }))
     const statement = screen.getByRole('dialog', { name: 'Reimbursement Statement' })
     expect(statement).toHaveTextContent('Alice · November 2026')
@@ -857,7 +857,7 @@ describe('FurnitureRental', () => {
       expect(document.body).not.toHaveTextContent(/pool/i)
       await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     }
-    const provider = screen.getByRole('heading', { name: 'Provider Payout · Furlenco' }).closest('section')!
+    const provider = screen.getByRole('heading', { name: 'Provider Payout' }).closest('section')!
     await userEvent.click(within(provider).getByRole('row', { name: /Furlenco/ }))
     expect(screen.getByRole('dialog', { name: 'Provider Payout Statement' })).not.toHaveTextContent(/pool/i)
   })
@@ -896,7 +896,7 @@ describe('FurnitureRental', () => {
         }),
       }),
     )
-    const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
+    const card = (await screen.findByRole('heading', { name: 'Reimbursement' })).closest('section')!
     // Paid back in full: the button stays on the row, switched off.
     expect(within(card).getByRole('row', { name: /Alice/ })).toHaveTextContent(
       'Alice₹1,633.33₹1,633.33₹0.00PaidPay Now',
@@ -922,7 +922,7 @@ describe('FurnitureRental', () => {
 
     it('deletes a payout to the provider from its statement', async () => {
       show(open(), { 'DELETE /api/services/furniture/disbursements/svcdisb-1': open() })
-      const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
+      const panel = (await screen.findByRole('heading', { name: 'Provider Payout' })).closest('section')!
       await userEvent.click(within(panel).getByRole('row', { name: /Furlenco/ }))
       const statement = await screen.findByRole('dialog', { name: 'Provider Payout Statement' })
       await userEvent.click(within(statement).getByRole('button', { name: 'Delete the ₹1,633.33 payout of 5 Nov 2026' }))
@@ -937,7 +937,7 @@ describe('FurnitureRental', () => {
       const owed = { ...OWED_TO_ALICE, reimbursed_so_far_paise: 100000, pending_reimbursement_paise: 63333, reimbursements: [refund] }
       const month = overview({ month: paidByAlice({ transactions_open: true, reimbursement: owed, reimbursements: [owed] }) })
       show(month, { 'DELETE /api/services/furniture/payments/furniture-1-reimbursement_1': month })
-      const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
+      const card = (await screen.findByRole('heading', { name: 'Reimbursement' })).closest('section')!
       expect(within(card).getByRole('row', { name: /Alice/ })).toHaveTextContent('Part paid')
       await userEvent.click(within(card).getByRole('row', { name: /Alice/ }))
       const statement = screen.getByRole('dialog', { name: 'Reimbursement Statement' })
@@ -952,7 +952,7 @@ describe('FurnitureRental', () => {
 
     it('offers no delete once the month is finalized', async () => {
       show(overview({ month: paidByAlice({ transactions_open: false }) }))
-      const panel = (await screen.findByRole('heading', { name: 'Provider Payout · Furlenco' })).closest('section')!
+      const panel = (await screen.findByRole('heading', { name: 'Provider Payout' })).closest('section')!
       await userEvent.click(within(panel).getByRole('row', { name: /Furlenco/ }))
       const statement = await screen.findByRole('dialog', { name: 'Provider Payout Statement' })
       expect(within(statement).queryByRole('button', { name: /Delete/ })).toBeNull()

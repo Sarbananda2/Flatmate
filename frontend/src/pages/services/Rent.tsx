@@ -177,7 +177,6 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                 {(cycle?.reimbursements ?? []).length > 0 && (
                   <KittyReimbursementPanel
                     reimbursements={cycle!.reimbursements!}
-                    billLabel={`${formatMonth(month)} rent`}
                     onReimburse={setReimbursing}
                     onViewStatement={(owed) => setViewingReimbursement(owed.recipient_resident_id)}
                   />
@@ -510,7 +509,7 @@ function PreviewPanel({ month, preview }: { month: string; preview: RentPreview 
   }))
   return (
     <Panel
-      title={`Resident Collection · ${formatMonth(month)}`}
+      title="Resident Collection"
       icon={<Users className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint={
         tiered

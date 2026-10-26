@@ -308,7 +308,6 @@ export function FurnitureRental({ month }: { month: string }) {
                     {reimbursementsOf(data.month).length > 0 && (
                       <KittyReimbursementPanel
                         reimbursements={reimbursementsOf(data.month)}
-                        billLabel={billFor(month)}
                         onReimburse={(owed) => setDialog({ kind: 'reimburse', reimbursement: owed })}
                         onViewStatement={(owed) => setDialog({ kind: 'reimbursement_statement', reimbursement: owed })}
                       />
@@ -1150,7 +1149,7 @@ function ResidentCollectionPanel({
   })
   return (
     <Panel
-      title={`Resident Collection · ${formatMonth(month)}`}
+      title="Resident Collection"
       icon={<Users className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
       hint="What each resident owes for this month's furniture rental, and how much has been collected into the House Kitty."
     >
@@ -1199,13 +1198,9 @@ function ProviderPayoutPanel({
   }))
   return (
     <Panel
-      title={single ? `Provider Payout · ${single}` : 'Provider Payout'}
+      title="Provider Payout"
       icon={<Store className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint={
-        single
-          ? `What is owed to ${single}, and payouts made to them. Select the row for disbursement history.`
-          : 'What each provider is owed for the month, and payouts made to them. Select a row for its disbursement history.'
-      }
+      hint="What each provider is owed for the month, and payouts made to them. Select a row for its disbursement history."
     >
       <ProviderPayoutTable
         caption={single ? `The furniture bill owed to ${single}` : 'The furniture bill owed to each provider'}

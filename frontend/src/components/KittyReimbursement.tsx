@@ -56,27 +56,19 @@ function ReimbursementStatus({ owed }: { owed: KittyReimbursement }) {
 
 export function KittyReimbursementPanel({
   reimbursements,
-  billLabel,
   onReimburse,
   onViewStatement,
 }: {
   /** Everyone the kitty owes for the month: one row each. */
   reimbursements: KittyReimbursement[]
-  /** What was paid for, as a sentence ends: "the November 2026 bill", "November 2026 rent". */
-  billLabel: string
   onReimburse: (reimbursement: KittyReimbursement) => void
   onViewStatement: (reimbursement: KittyReimbursement) => void
 }) {
-  const single = reimbursements.length === 1 ? reimbursements[0].recipient_name : null
   return (
     <Panel
-      title={single ? `Reimbursement · ${single}` : 'Reimbursement'}
+      title="Reimbursement"
       icon={<HandCoins className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint={
-        single
-          ? `${single} paid extra beyond their allotted share for ${billLabel}. The House Kitty reimburses the extra amount out of what the other flatmates pay in. Select the row for reimbursement history.`
-          : `What the House Kitty owes back to residents who paid extra beyond their allotted share for ${billLabel}. Select a row for reimbursement history.`
-      }
+      hint="What the House Kitty owes back to residents who paid extra beyond their allotted share. Select a row for reimbursement history."
     >
       {/* Laid out as the collection and payout tables: what is owed, what has
           been paid back, what is still owed. */}
