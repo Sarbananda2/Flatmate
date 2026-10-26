@@ -407,13 +407,12 @@ describe('FurnitureRental', () => {
     const rented = within(dialog).getByRole('table', { name: 'Items rented from Furlenco' })
     expect(within(rented).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Item',
-      'Category',
       'Paid by',
       'Monthly rent',
       'Status',
     ])
-    expect(within(rented).getByRole('row', { name: /Sofa/ })).toHaveTextContent('SofaLiving roomShared₹1,000.00In the flat')
-    expect(within(rented).getByRole('row', { name: /Queen bed/ })).toHaveTextContent('Queen bedBedroomBob₹500.00In the flat')
+    expect(within(rented).getByRole('row', { name: /Sofa/ })).toHaveTextContent('SofaShared₹1,000.00In the flat')
+    expect(within(rented).getByRole('row', { name: /Queen bed/ })).toHaveTextContent('Queen bedBob₹500.00In the flat')
     expect(within(rented).getByRole('row', { name: /Desk/ })).toHaveTextContent('Awaiting delivery')
 
     // Its actions are there too.
@@ -435,16 +434,67 @@ describe('FurnitureRental', () => {
     const table = await screen.findByRole('table', { name: 'Rented items' })
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Item',
-      'Provider',
-      'Category',
       'Paid by',
       'Monthly rent',
       'Status',
       'Actions',
     ])
-    expect(within(table).getByRole('row', { name: /Sofa/ })).toHaveTextContent('Shared₹1,000.00In the flatSince 1 Sep 2026')
-    expect(within(table).getByRole('row', { name: /Queen bed/ })).toHaveTextContent('Queen bedFurlencoBedroomBob₹500.00')
-    expect(within(table).getByRole('row', { name: /Desk/ })).toHaveTextContent('Awaiting deliveryDue 2 Dec 2026')
+    expect(within(table).getByRole('columnheader', { name: 'Item' })).toHaveClass('text-left')
+    expect(within(table).getByRole('row', { name: /Sofa/ })).toHaveTextContent(
+      'SofaFurlencoShared₹1,000.00In the flat',
+    )
+    expect(within(table).getByRole('row', { name: /Queen bed/ })).toHaveTextContent(
+      'Queen bedFurlencoBob₹500.00In the flat',
+    )
+    // Dates belong to the item's details, not the row.
+    expect(within(table).getByRole('row', { name: /Desk/ })).toHaveTextContent('Awaiting delivery')
+    expect(within(table).getByRole('row', { name: /Desk/ })).not.toHaveTextContent('2 Dec 2026')
+  })
+
+  it("opens an item's details from its row, with its dates and actions", async () => {
+    show(overview(), {}, '/?tab=items')
+    const table = await screen.findByRole('table', { name: 'Rented items' })
+    await userEvent.click(within(table).getByRole('row', { name: /Queen bed/ }))
+    const dialog = screen.getByRole('dialog', { name: 'Queen bed' })
+    expect(dialog).toHaveTextContent('Queen bedFurlenco')
+    expect(dialog).toHaveTextContent('Monthly Rent₹500.00No proration — billed in full')
+    expect(dialog).toHaveTextContent('Paid ByBobPersonal item')
+    expect(dialog).toHaveTextContent('StatusIn the flat')
+    const details = within(dialog).getByLabelText('Item details')
+    expect(details).toHaveTextContent('Rental ProviderFurlenco')
+    expect(details).not.toHaveTextContent('Category')
+    expect(details).toHaveTextContent('Delivery Date1 Sep 2026')
+    expect(details).toHaveTextContent('Return DateStill in the flat')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Edit item' }))
+    expect(screen.queryByRole('dialog', { name: 'Queen bed' })).toBeNull()
+    expect(screen.getByRole('dialog', { name: 'Edit Queen bed' })).toBeInTheDocument()
+  })
+
+  it('opens an item from the keyboard, and returns one from its details', async () => {
+    show(overview(), {}, '/?tab=items')
+    const table = await screen.findByRole('table', { name: 'Rented items' })
+    within(table).getByRole('row', { name: /Desk/ }).focus()
+    await userEvent.keyboard('{Enter}')
+    const desk = screen.getByRole('dialog', { name: 'Desk' })
+    expect(within(desk).getByLabelText('Item details')).toHaveTextContent('Return DateNot delivered yet')
+    await userEvent.click(within(desk).getByRole('button', { name: 'Return item' }))
+    expect(screen.getByRole('dialog', { name: 'Return Desk' })).toBeInTheDocument()
+  })
+
+  it("edits or returns an item from its row's menu, without opening it", async () => {
+    show(overview({ items: [...items, item({ item_id: 'furn-lamp', name: 'Lamp', status: 'returned', return_date: '2026-10-31' })] }), {}, '/?tab=items')
+    const table = await screen.findByRole('table', { name: 'Rented items' })
+    await userEvent.click(within(within(table).getByRole('row', { name: /Sofa/ })).getByRole('button', { name: 'More options' }))
+    expect(screen.getAllByRole('menuitem').map((option) => option.textContent)).toEqual(['Edit item', 'Return item'])
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Edit item' }))
+    expect(screen.getByRole('dialog', { name: 'Edit Sofa' })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Sofa' })).toBeNull()
+    // A returned item can only be edited: its one action is a button of its own.
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Edit Sofa' })).getByRole('button', { name: 'Cancel' }))
+    const lamp = within(table).getByRole('row', { name: /Lamp/ })
+    expect(within(lamp).queryByRole('button', { name: 'More options' })).toBeNull()
+    await userEvent.click(within(lamp).getByRole('button', { name: 'Edit item' }))
+    expect(screen.getByRole('dialog', { name: 'Edit Lamp' })).toBeInTheDocument()
   })
 
   it("shows the month's split before it begins, with no bill to record by hand", async () => {
@@ -493,8 +543,9 @@ describe('FurnitureRental', () => {
     const dialog = screen.getByRole('dialog', { name: 'Add a rented item' })
     const add = within(dialog).getByRole('button', { name: 'Add item' })
     expect(add).toBeDisabled()
+    // The item's category is not asked for: the backend files it as "other".
+    expect(within(dialog).queryByLabelText('Category')).toBeNull()
     await userEvent.type(within(dialog).getByLabelText(/^Item/), 'Study chair')
-    await userEvent.selectOptions(within(dialog).getByLabelText('Category'), 'workstation')
     await userEvent.type(within(dialog).getByLabelText(/Monthly rent/), '199')
     await waitFor(() => expect(within(dialog).getByRole('option', { name: 'Bob' })).toBeInTheDocument())
     await userEvent.selectOptions(within(dialog).getByLabelText('Paid by'), 'bob')
@@ -504,7 +555,6 @@ describe('FurnitureRental', () => {
     expect(sent('POST', '/api/services/furniture/items')!.body).toEqual({
       service_id: 'svc-1',
       name: 'Study chair',
-      category: 'workstation',
       monthly_rent_paise: 19900,
       allocation_scope: 'resident',
       assigned_resident_id: 'bob',
@@ -1001,7 +1051,9 @@ describe('FurnitureRental', () => {
 
   it('records the day an item went back', async () => {
     show(overview(), {}, '/?tab=items')
-    await userEvent.click(await screen.findByRole('button', { name: 'Return Sofa' }))
+    const table = await screen.findByRole('table', { name: 'Rented items' })
+    await userEvent.click(within(within(table).getByRole('row', { name: /Sofa/ })).getByRole('button', { name: 'More options' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Return item' }))
     const dialog = screen.getByRole('dialog', { name: 'Return Sofa' })
     expect(dialog).toHaveTextContent('Nothing is prorated')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Record return' }))

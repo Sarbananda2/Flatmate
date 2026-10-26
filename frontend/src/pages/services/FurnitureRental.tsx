@@ -62,7 +62,6 @@ import { api } from '../../api/client'
 import { useMutation, useResource } from '../../lib/useApi'
 import { formatDate, formatInr, formatMonth, paiseToInput, todayIso } from '../../lib/format'
 import type {
-  FurnitureCategory,
   FurnitureConfig,
   FurnitureDepositStatus,
   FurnitureItem,
@@ -84,14 +83,6 @@ const BASE = '/api/services/furniture'
 const TABLE_HEAD =
   'border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold'
 
-export const CATEGORY_LABELS: Record<FurnitureCategory, string> = {
-  living_room: 'Living room',
-  bedroom: 'Bedroom',
-  appliance: 'Appliance',
-  dining: 'Dining',
-  workstation: 'Workstation',
-  other: 'Other',
-}
 
 const ITEM_STATUS: Record<FurnitureItemStatus, { label: string; tone: Tone }> = {
   active: { label: 'In the flat', tone: 'success' },
@@ -206,6 +197,7 @@ type Dialog =
   | { kind: 'subscription_detail'; entry: FurnitureServiceEntry }
   | { kind: 'add' }
   | { kind: 'edit'; item: FurnitureItem }
+  | { kind: 'item_detail'; item: FurnitureItem }
   | { kind: 'return'; item: FurnitureItem }
   | { kind: 'remove'; item: FurnitureItem }
   | { kind: 'provider_payout'; bill: FurnitureMonthBill; payout: FurnitureProviderPayout }
@@ -318,6 +310,7 @@ export function FurnitureRental({ month }: { month: string }) {
                   <ItemsPanel
                     items={data.items}
                     onAdd={() => setDialog({ kind: 'add' })}
+                    onView={(item) => setDialog({ kind: 'item_detail', item })}
                     onEdit={(item) => setDialog({ kind: 'edit', item })}
                     onReturn={(item) => setDialog({ kind: 'return', item })}
                   />
@@ -375,6 +368,14 @@ export function FurnitureRental({ month }: { month: string }) {
               onClose={() => setDialog(null)}
               onRemove={(item) => setDialog({ kind: 'remove', item })}
               onSaved={(saved) => done(dialog.kind === 'edit' ? 'Item saved' : 'Item added', saved.name)}
+            />
+          )}
+          {dialog?.kind === 'item_detail' && (
+            <ItemDetailModal
+              item={dialog.item}
+              onClose={() => setDialog(null)}
+              onEdit={() => setDialog({ kind: 'edit', item: dialog.item })}
+              onReturn={() => setDialog({ kind: 'return', item: dialog.item })}
             />
           )}
           {dialog?.kind === 'return' && (
@@ -723,12 +724,11 @@ function SubscriptionDetailModal({
             <EmptyBlock title="Nothing rented from this provider yet" />
           ) : (
             <div className="overflow-x-auto min-w-0">
-              <table className="w-full text-xs min-w-[560px] border-collapse">
+              <table className="w-full text-xs min-w-[480px] border-collapse">
                 <caption className="sr-only">Items rented from {config.provider_name}</caption>
                 <thead>
                   <tr className={TABLE_HEAD}>
                     <th scope="col" className="pb-3 pr-3 font-bold text-left">Item</th>
-                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Category</th>
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Paid by</th>
                     <th scope="col" className="pb-3 pr-3 font-bold text-center">Monthly rent</th>
                     <th scope="col" className="pb-3 font-bold text-center">Status</th>
@@ -742,7 +742,6 @@ function SubscriptionDetailModal({
                         <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
                           {item.name}
                         </th>
-                        <td className="py-3 pr-3 text-center">{CATEGORY_LABELS[item.category]}</td>
                         <td className="py-3 pr-3 text-center">
                           {item.allocation_scope === 'common' ? (
                             <Pill tone="accent">Shared</Pill>
@@ -774,47 +773,61 @@ function SubscriptionDetailModal({
 function ItemsPanel({
   items,
   onAdd,
+  onView,
   onEdit,
   onReturn,
 }: {
   items: FurnitureItem[]
   onAdd: () => void
+  onView: (item: FurnitureItem) => void
   onEdit: (item: FurnitureItem) => void
   onReturn: (item: FurnitureItem) => void
 }) {
   return (
     <Panel
       title="Rented Items"
-      hint="Shared items are split between everyone; a person's own items are theirs alone."
+      icon={<Sofa className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint="Shared items are split between everyone; a person's own items are theirs alone. Select an item for full details."
       menuActions={[{ label: 'Add item', icon: Plus, onClick: onAdd }]}
     >
       {items.length === 0 ? (
         <EmptyBlock title="No items yet" body="Add each item on the subscription, with what it costs a month." />
       ) : (
         <div className="overflow-x-auto min-w-0">
-          <table className="w-full text-xs min-w-[800px] border-collapse">
+          <table className="w-full table-fixed text-xs min-w-[560px] border-collapse">
             <caption className="sr-only">Rented items</caption>
             <thead>
               <tr className={TABLE_HEAD}>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Item</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Provider</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Category</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Paid by</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Monthly rent</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Status</th>
-                <th scope="col" className="pb-3 font-bold text-center">Actions</th>
+                <th scope="col" className="w-[40%] pb-3 pr-3 font-bold text-left">Item</th>
+                <th scope="col" className="w-[16%] pb-3 pr-3 font-bold text-center">Paid by</th>
+                <th scope="col" className="w-[16%] pb-3 pr-3 font-bold text-center">Monthly rent</th>
+                <th scope="col" className="w-[16%] pb-3 pr-3 font-bold text-center">Status</th>
+                <th scope="col" className="w-[12%] pb-3 font-bold text-center">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
               {items.map((item) => {
                 const status = ITEM_STATUS[item.status]
                 return (
-                  <tr key={item.item_id} className="align-middle">
-                    <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
-                      {item.name}
+                  // The whole row opens the item (Rule U7); its menu edits or returns it.
+                  <tr
+                    key={item.item_id}
+                    className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
+                    tabIndex={0}
+                    title={`View ${item.name} details`}
+                    onClick={() => onView(item)}
+                    onKeyDown={(event) => {
+                      if (event.target !== event.currentTarget) return
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onView(item)
+                      }
+                    }}
+                  >
+                    <th scope="row" className="py-3 pr-3 text-left font-normal">
+                      <span className="block font-semibold text-[var(--text-primary)] truncate">{item.name}</span>
+                      <span className="block text-[11px] text-[var(--text-tertiary)] truncate">{item.provider_name}</span>
                     </th>
-                    <td className="py-3 pr-3 text-center">{item.provider_name ?? '—'}</td>
-                    <td className="py-3 pr-3 text-center">{CATEGORY_LABELS[item.category]}</td>
                     <td className="py-3 pr-3 text-center">
                       {item.allocation_scope === 'common' ? (
                         <Pill tone="accent">Shared</Pill>
@@ -827,37 +840,20 @@ function ItemsPanel({
                     </td>
                     <td className="py-3 pr-3 text-center whitespace-nowrap">
                       <Pill tone={status.tone}>{status.label}</Pill>
-                      <span className="block mt-1 text-[11px] text-[var(--text-tertiary)] tabular">
-                        {item.status === 'returned'
-                          ? `On ${formatDate(item.return_date)}`
-                          : item.delivery_date
-                            ? `${item.status === 'pending_delivery' ? 'Due' : 'Since'} ${formatDate(item.delivery_date)}`
-                            : ''}
-                      </span>
                     </td>
                     <td className="py-3 text-center whitespace-nowrap">
-                      <span className="inline-flex items-center justify-center gap-2">
-                        <button
-                          type="button"
-                          className={BUTTON_QUIET}
-                          onClick={() => onEdit(item)}
-                          aria-label={`Edit ${item.name}`}
-                        >
-                          <Pencil className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                          Edit
-                        </button>
-                        {item.status !== 'returned' && (
-                          <button
-                            type="button"
-                            className={BUTTON_QUIET}
-                            onClick={() => onReturn(item)}
-                            aria-label={`Return ${item.name}`}
-                          >
-                            <Undo2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                            Return
-                          </button>
-                        )}
-                      </span>
+                      {/* The row's own actions: choosing one does not also open the item. */}
+                      <div className="inline-flex justify-center" onClick={(event) => event.stopPropagation()}>
+                        <CardActions
+                          floating
+                          actions={[
+                            { label: 'Edit item', icon: Pencil, onClick: () => onEdit(item) },
+                            ...(item.status !== 'returned'
+                              ? [{ label: 'Return item', icon: Undo2, onClick: () => onReturn(item) }]
+                              : []),
+                          ]}
+                        />
+                      </div>
                     </td>
                   </tr>
                 )
@@ -867,6 +863,74 @@ function ItemsPanel({
         </div>
       )}
     </Panel>
+  )
+}
+
+/** One rented item: what it costs, who pays for it, and when it came and went. */
+function ItemDetailModal({
+  item,
+  onClose,
+  onEdit,
+  onReturn,
+}: {
+  item: FurnitureItem
+  onClose: () => void
+  onEdit: () => void
+  onReturn: () => void
+}) {
+  const status = ITEM_STATUS[item.status]
+  const shared = item.allocation_scope === 'common'
+  return (
+    <Modal
+      title={item.name}
+      description={item.provider_name ?? 'Rented item'}
+      onClose={onClose}
+      footer={
+        <>
+          {item.status !== 'returned' && (
+            <button type="button" className={BUTTON_SECONDARY} onClick={onReturn}>
+              <Undo2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              Return item
+            </button>
+          )}
+          <button type="button" className={BUTTON_PRIMARY} onClick={onEdit}>
+            <Pencil className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            Edit item
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-5">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <MiniStat
+            label="Monthly Rent"
+            value={<Rupees paise={item.monthly_rent_paise} />}
+            note="No proration — billed in full"
+          />
+          <MiniStat
+            label="Paid By"
+            value={shared ? 'Shared equally' : (item.assigned_resident_name ?? item.assigned_resident_id ?? '—')}
+            note={shared ? 'All participating flatmates' : 'Personal item'}
+          />
+          <MiniStat label="Status" value={<Pill tone={status.tone}>{status.label}</Pill>} />
+        </div>
+        <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm" aria-label="Item details">
+          <DetailFact label="Rental Provider">{item.provider_name ?? '—'}</DetailFact>
+          <DetailFact label="Delivery Date">
+            <span className="tabular">{item.delivery_date ? formatDate(item.delivery_date) : '—'}</span>
+          </DetailFact>
+          <DetailFact label="Return Date">
+            <span className="tabular">
+              {item.return_date
+                ? formatDate(item.return_date)
+                : item.status === 'pending_delivery'
+                  ? 'Not delivered yet'
+                  : 'Still in the flat'}
+            </span>
+          </DetailFact>
+        </dl>
+      </div>
+    </Modal>
   )
 }
 
@@ -1458,7 +1522,6 @@ function ItemDialog({
   // The provider it is rented from.
   const [serviceId, setServiceId] = useState(item?.service_id ?? services[0]?.service.service_id ?? '')
   const [name, setName] = useState(item?.name ?? '')
-  const [category, setCategory] = useState<FurnitureCategory>(item?.category ?? 'living_room')
   const [rent, setRent] = useState(item ? paiseToInput(item.monthly_rent_paise) : '')
   const [rentPaise, setRentPaise] = useState(item?.monthly_rent_paise ?? 0)
   const [rentOk, setRentOk] = useState(Boolean(item))
@@ -1476,7 +1539,6 @@ function ItemDialog({
   const body = {
     service_id: serviceId || null,
     name: name.trim(),
-    category,
     monthly_rent_paise: rentPaise,
     allocation_scope: payer ? 'resident' : 'common',
     assigned_resident_id: payer || null,
@@ -1510,25 +1572,16 @@ function ItemDialog({
     >
       <form id="furniture-item" className="stack" noValidate onSubmit={submitWith(() => valid && void save.run(undefined))}>
         <ErrorNotice error={save.error} />
-        <SelectField
-          label="Rental provider"
-          required
-          value={serviceId}
-          options={services.map((entry) => ({ value: entry.service.service_id, label: entry.config.provider_name }))}
-          onChange={setServiceId}
-          hint="The subscription it is rented on."
-        />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <TextField label="Item" required value={name} onChange={setName} maxLength={200} placeholder="e.g. 3-seater sofa" />
-          <SelectField<FurnitureCategory>
-            label="Category"
-            value={category}
-            options={(Object.keys(CATEGORY_LABELS) as FurnitureCategory[]).map((value) => ({
-              value,
-              label: CATEGORY_LABELS[value],
-            }))}
-            onChange={setCategory}
+          <SelectField
+            label="Rental provider"
+            required
+            value={serviceId}
+            options={services.map((entry) => ({ value: entry.service.service_id, label: entry.config.provider_name }))}
+            onChange={setServiceId}
+            hint="The subscription it is rented on."
           />
+          <TextField label="Item" required value={name} onChange={setName} maxLength={200} placeholder="e.g. 3-seater sofa" />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <MoneyInput

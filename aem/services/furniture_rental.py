@@ -1016,7 +1016,8 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
                                   details={"field": "service_id"})
         service_id = live[0]["service_id"]
     name = require_text(values.get("name"), "name", max_length=200)
-    category = values.get("category")
+    # Not asked for any more: an item sent without one is "other".
+    category = values.get("category") or "other"
     if category not in CATEGORIES:
         raise ValidationError(f"category must be one of {', '.join(CATEGORIES)}.",
                               details={"field": "category", "allowed": list(CATEGORIES)})

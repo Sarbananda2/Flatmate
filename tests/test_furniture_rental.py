@@ -148,6 +148,20 @@ def test_an_invalid_item_is_refused(apartment, payload):
     assert _rows(apartment, "SELECT 1 FROM furniture_rental_item") == []
 
 
+def test_an_item_sent_without_a_category_is_other(apartment, api):
+    _setup(apartment)
+    lamp = furniture.add_item(apartment, APARTMENT, {
+        "name": "Lamp", "monthly_rent_paise": 5_000, "allocation_scope": "common"})
+    assert lamp["category"] == "other"
+    chair = api.post("/api/services/furniture/items", json={
+        "name": "Chair", "monthly_rent_paise": 4_000, "allocation_scope": "common"})
+    assert chair.status_code == 201, chair.text
+    assert chair.json()["category"] == "other"
+    # Editing it leaves the category as it was.
+    assert furniture.update_item(apartment, APARTMENT, lamp["item_id"],
+                                 {"name": "Floor lamp"})["category"] == "other"
+
+
 def test_an_item_is_not_assigned_to_someone_who_has_moved_out(apartment):
     _setup(apartment)
     residents.deactivate_resident(apartment, "chris", active_until="2026-10-31")

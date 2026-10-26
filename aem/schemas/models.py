@@ -1106,7 +1106,8 @@ class FurnitureItemCreate(ApiModel):
         None, max_length=64,
         description="The provider's subscription it is rented on; needed with several.")
     name: str = Field(min_length=1, max_length=200)
-    category: FurnitureCategory
+    category: FurnitureCategory = Field(
+        "other", description="Kept for older clients; the screen no longer asks for it.")
     monthly_rent_paise: int = _money_field("The item's monthly rent.", ge=1)
     allocation_scope: Literal["common", "resident"] = Field(
         description="common: split equally; resident: charged to assigned_resident_id alone.")
