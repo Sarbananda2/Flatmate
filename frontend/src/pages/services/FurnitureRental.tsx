@@ -36,7 +36,7 @@ import {
 } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
 import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
-import { DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
+import { CheckboxField, DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
 import {
   ResidentCollectionTable,
   type CollectionStatus,
@@ -135,6 +135,58 @@ const PAYMENT_MODES: Array<{ value: PaymentMode; label: string }> = [
 ]
 
 /** Nothing left to pay on the share: paid into the kitty, or covered by paying the provider. */
+/** GST on an item priced before it, unless the item has a rate of its own. */
+const GST_RATE_PERCENT = 18
+
+/**
+ * GST at `ratePercent` on a rent quoted before GST, in whole paise, rounded half
+ * up -- as the backend works it out. The rate is taken in hundredths of a
+ * percent so the sum stays in whole numbers.
+ */
+function gstOn(paise: number, ratePercent: number): number {
+  return Math.floor((paise * Math.round(ratePercent * 100) + 5000) / 10000)
+}
+
+/** "18", "12.5": a GST rate as it is written. */
+function rateText(ratePercent: number): string {
+  return String(Number(ratePercent.toFixed(2)))
+}
+
+/** A GST rate as typed: from 0 to 100 percent, to two decimal places at most. */
+function parseGstRate(raw: string): { ok: boolean; percent: number; error?: string } {
+  const text = raw.trim()
+  const percent = Number(text)
+  if (!/^\d{1,3}(\.\d{1,2})?$/.test(text) || percent > 100) {
+    return { ok: false, percent: 0, error: 'Enter a rate from 0 to 100, to two decimal places at most.' }
+  }
+  return { ok: true, percent }
+}
+
+/** Whether an item is billed GST on top of its rent as quoted. */
+function hasGst(item: FurnitureItem): boolean {
+  return item.is_gst_exclusive || item.gst_paise > 0
+}
+
+/** "Base ₹1,000.00 + ₹180.00 GST (18%)": what an item with GST on its rent is billed. */
+function gstBreakdown(item: FurnitureItem): string {
+  const rate = rateText(item.gst_rate_percent ?? GST_RATE_PERCENT)
+  return `Base ${formatInr(item.base_rent_paise)} + ${formatInr(item.gst_paise)} GST (${rate}%)`
+}
+
+/** An item's monthly rent as billed, with the GST in it when it was quoted before GST. */
+function ItemRent({ item }: { item: FurnitureItem }) {
+  return (
+    <>
+      <Rupees paise={item.monthly_rent_paise} />
+      {hasGst(item) && (
+        <span className="block text-[10px] font-medium text-[var(--text-tertiary)] tabular">
+          {gstBreakdown(item)}
+        </span>
+      )}
+    </>
+  )
+}
+
 function isSettled(share: FurnitureShare): boolean {
   return share.status === 'paid' || share.status === 'funded_payout' || share.outstanding_paise <= 0
 }
@@ -848,7 +900,7 @@ function SubscriptionDetailModal({
                           )}
                         </td>
                         <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                          <Rupees paise={item.monthly_rent_paise} />
+                          <ItemRent item={item} />
                         </td>
                         <td className="py-3 text-center whitespace-nowrap">
                           <Pill tone={status.tone}>{status.label}</Pill>
@@ -934,7 +986,7 @@ function ItemsPanel({
                       )}
                     </td>
                     <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                      <Rupees paise={item.monthly_rent_paise} />
+                      <ItemRent item={item} />
                     </td>
                     <td className="py-3 pr-3 text-center whitespace-nowrap">
                       <Pill tone={status.tone}>{status.label}</Pill>
@@ -1003,7 +1055,7 @@ function ItemDetailModal({
           <MiniStat
             label="Monthly Rent"
             value={<Rupees paise={item.monthly_rent_paise} />}
-            note="No proration — billed in full"
+            note={hasGst(item) ? gstBreakdown(item) : 'No proration — billed in full'}
           />
           <MiniStat
             label="Paid By"
@@ -1034,10 +1086,14 @@ function ItemDetailModal({
 
 /* ------------------------------------------------- 3. the month's bill -- */
 
-/** How the month's bill is split: the shared items, and each person's part of them. */
+/**
+ * How the month's bill is split: the shared items, and each person's part of
+ * them -- and, when any item is priced before GST, its total with the GST.
+ */
 function ItemsMetrics({ bill }: { bill: FurnitureMonthBill }) {
+  const gst = bill.total_gst_paise ?? 0
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+    <div className={`grid grid-cols-1 ${gst > 0 ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3 sm:gap-4`}>
       <MiniStat label="Shared items" value={<Rupees paise={bill.common_total_paise} />} note="Split equally" />
       <MiniStat
         label="Each person's part"
@@ -1048,6 +1104,13 @@ function ItemsMetrics({ bill }: { bill: FurnitureMonthBill }) {
             : 'Nobody taking part'
         }
       />
+      {gst > 0 && (
+        <MiniStat
+          label="Gross total"
+          value={<Rupees paise={bill.total_paise} />}
+          note={`Base ${formatInr(bill.subtotal_base_paise ?? bill.total_paise - gst)} + GST ${formatInr(gst)}`}
+        />
+      )}
     </div>
   )
 }
@@ -1453,9 +1516,17 @@ function ItemDialog({
   // The provider it is rented from.
   const [serviceId, setServiceId] = useState(item?.service_id ?? services[0]?.service.service_id ?? '')
   const [name, setName] = useState(item?.name ?? '')
-  const [rent, setRent] = useState(item ? paiseToInput(item.monthly_rent_paise) : '')
-  const [rentPaise, setRentPaise] = useState(item?.monthly_rent_paise ?? 0)
+  // The rent as quoted: before GST for an item priced exclusive of it.
+  const quoted = item ? (item.is_gst_exclusive ? item.base_rent_paise : item.monthly_rent_paise) : 0
+  const [rent, setRent] = useState(item ? paiseToInput(quoted) : '')
+  const [rentPaise, setRentPaise] = useState(quoted)
   const [rentOk, setRentOk] = useState(Boolean(item))
+  // A new item is priced before GST, at 18%, unless the operator says otherwise.
+  const [gstExclusive, setGstExclusive] = useState(item ? item.is_gst_exclusive : true)
+  const [gstRate, setGstRate] = useState(rateText(item?.gst_rate_percent ?? GST_RATE_PERCENT))
+  const rate = parseGstRate(gstRate)
+  const gstPaise = gstExclusive && rate.ok ? gstOn(rentPaise, rate.percent) : 0
+  const grossPaise = rentPaise + gstPaise
   // Who pays: '' for everyone, else the resident the item is for.
   const [payer, setPayer] = useState(item?.assigned_resident_id ?? '')
   const [status, setStatus] = useState<'active' | 'pending_delivery'>(
@@ -1466,11 +1537,15 @@ function ItemDialog({
   const people = (residents.data?.items ?? []).filter(
     (resident) => resident.is_active || resident.resident_id === item?.assigned_resident_id,
   )
-  const valid = Boolean(serviceId) && name.trim().length > 0 && rentOk && rentPaise > 0
+  const valid =
+    Boolean(serviceId) && name.trim().length > 0 && rentOk && rentPaise > 0 && (!gstExclusive || rate.ok)
   const body = {
     service_id: serviceId || null,
     name: name.trim(),
-    monthly_rent_paise: rentPaise,
+    base_rent_paise: rentPaise,
+    monthly_rent_paise: grossPaise,
+    is_gst_exclusive: gstExclusive,
+    gst_rate_percent: rate.ok ? rate.percent : (item?.gst_rate_percent ?? GST_RATE_PERCENT),
     allocation_scope: payer ? 'resident' : 'common',
     assigned_resident_id: payer || null,
     delivery_date: delivery || null,
@@ -1515,16 +1590,37 @@ function ItemDialog({
           <TextField label="Item" required value={name} onChange={setName} maxLength={200} placeholder="e.g. 3-seater sofa" />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <MoneyInput
-            label="Monthly rent"
-            required
-            value={rent}
-            onChange={(raw, parsed) => {
-              setRent(raw)
-              setRentPaise(parsed.paise)
-              setRentOk(parsed.ok)
-            }}
-          />
+          <div className="stack">
+            <MoneyInput
+              label="Monthly rent"
+              required
+              value={rent}
+              onChange={(raw, parsed) => {
+                setRent(raw)
+                setRentPaise(parsed.paise)
+                setRentOk(parsed.ok)
+              }}
+              hint={gstExclusive ? 'As quoted, before GST.' : 'As quoted, GST included if any.'}
+            />
+            <CheckboxField label="Exclusive of GST" checked={gstExclusive} onChange={setGstExclusive} />
+            {gstExclusive && (
+              <TextField
+                label="GST (%)"
+                value={gstRate}
+                onChange={setGstRate}
+                inputMode="decimal"
+                maxLength={6}
+                error={gstRate.trim() && !rate.ok ? rate.error : null}
+                hint="Added to the rent above, rounded to the paisa."
+              />
+            )}
+            {gstExclusive && rate.ok && rentOk && rentPaise > 0 && (
+              <p role="status" className="m-0 text-xs font-medium text-[var(--text-secondary)] tabular">
+                Base: {formatInr(rentPaise)} + GST ({rateText(rate.percent)}%): {formatInr(gstPaise)} = Gross
+                total: {formatInr(grossPaise)}/mo
+              </p>
+            )}
+          </div>
           <SelectField
             label="Paid by"
             value={payer}

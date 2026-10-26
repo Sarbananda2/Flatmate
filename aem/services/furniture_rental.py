@@ -10,6 +10,11 @@ these tables:
   residents taking part, any paise left over going one each in resident order;
 * a **resident's** item (their bed, their desk) is charged to them alone.
 
+An item is priced as the provider quotes it: with GST included, or **before
+GST**, when GST at the item's own rate (18% unless set) is added to it, rounded
+half up to the paisa, and the item is billed the total. Every bill, share and payout is reckoned on what the
+items are billed, GST included.
+
 **Nothing prorates** -- the household's rule for every category. An item counts
 in full for any month it was in the flat: delivered by the month's last day and
 not returned before its first. An item still awaiting delivery is not billed.
@@ -37,6 +42,7 @@ from __future__ import annotations
 import calendar
 import json
 from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Mapping, Sequence
 
 from ..errors import AemError, ConflictError, NotFoundError, ValidationError
@@ -56,6 +62,28 @@ ITEM_STATUSES = ("active", "pending_delivery", "returned")
 #: Statuses of an item still in the flat or on its way: a subscription with
 #: any of these cannot be ended.
 OPEN_STATUSES = ("active", "pending_delivery")
+#: GST on an item priced before it, unless the item has a rate of its own.
+GST_RATE_PERCENT = 18.0
+
+
+def gst_paise(base_rent_paise: int, rate_percent: float = GST_RATE_PERCENT) -> int:
+    """GST at ``rate_percent`` on a rent quoted before GST, in whole paise,
+    rounded half up."""
+    return int((Decimal(base_rent_paise) * Decimal(str(rate_percent)) / Decimal(100))
+               .quantize(Decimal(1), ROUND_HALF_UP))
+
+
+def _gst_rate(value: Any) -> float:
+    """A GST rate: from 0 to 100 percent, to two decimal places at most."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError("gst_rate_percent must be a number.",
+                              details={"field": "gst_rate_percent"})
+    rate = Decimal(str(value))
+    if not rate.is_finite() or rate < 0 or rate > 100 or -rate.as_tuple().exponent > 2:
+        raise ValidationError(
+            "The GST rate must be from 0 to 100 percent, to two decimal places at most.",
+            code="invalid_gst_rate", details={"field": "gst_rate_percent"})
+    return float(rate)
 
 
 # ------------------------------------------------------------------ helpers --
@@ -165,11 +193,18 @@ def _item_in(uow: UnitOfWork, apartment_id: str, item_id: str) -> dict[str, Any]
 
 
 def _public_item(item: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: item.get(key) for key in (
+    """An item as the API gives it: ``monthly_rent_paise`` is what it is billed,
+    GST included, ``base_rent_paise`` the rent as quoted and ``gst_paise`` the
+    GST added to it."""
+    public = {key: item.get(key) for key in (
         "item_id", "service_id", "provider_name", "service_display_name", "name", "category",
-        "monthly_rent_paise", "allocation_scope", "assigned_resident_id",
+        "monthly_rent_paise", "base_rent_paise", "allocation_scope", "assigned_resident_id",
         "assigned_resident_name", "status", "delivery_date", "return_date", "created_at",
         "updated_at")}
+    public["gst_paise"] = item["monthly_rent_paise"] - item["base_rent_paise"]
+    public["is_gst_exclusive"] = bool(item.get("is_gst_exclusive"))
+    public["gst_rate_percent"] = float(item.get("gst_rate_percent", GST_RATE_PERCENT))
+    return public
 
 
 # -------------------------------------------------------- the month's bill --
@@ -232,12 +267,17 @@ def _month_bill(uow: UnitOfWork, apartment_id: str, items: list[dict[str, Any]],
             "total_paise": common_share.get(rid, 0) + own_total,
         })
     private_total = sum(item["monthly_rent_paise"] for item in private)
+    subtotal_base = sum(item["base_rent_paise"] for item in billable)
     return {
         "settlement_month": month,
         "billable_items": [_public_item(item) for item in billable],
         "common_total_paise": common_total,
         "private_total_paise": private_total,
+        # What the items are billed, GST included: the rents as quoted, and the
+        # GST added to those quoted before it.
         "total_paise": common_total + private_total,
+        "subtotal_base_paise": subtotal_base,
+        "total_gst_paise": common_total + private_total - subtotal_base,
         "participant_count": count,
         "participants": participants,
         "base_share_paise": base,
@@ -971,6 +1011,12 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
     An item is rented from one provider: ``service_id`` names its subscription.
     Left out, it stays with the provider it has, or goes to the flat's only
     provider; with several, it must be chosen.
+
+    Its rent is as quoted: ``base_rent_paise``, or ``monthly_rent_paise`` when
+    that is not given. With ``is_gst_exclusive`` it is before GST, and the item is
+    billed it plus GST at ``gst_rate_percent`` -- 18% unless given, or the rate it
+    had (:func:`gst_paise`); otherwise it is billed it as it is. A
+    ``monthly_rent_paise`` sent with ``base_rent_paise`` must be that total.
     """
     service_id = optional_text(values.get("service_id"), "service_id", max_length=64)
     if service_id:
@@ -998,7 +1044,29 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
     if category not in CATEGORIES:
         raise ValidationError(f"category must be one of {', '.join(CATEGORIES)}.",
                               details={"field": "category", "allowed": list(CATEGORIES)})
-    rent = ensure_paise(values.get("monthly_rent_paise"), "monthly_rent_paise", allow_zero=False)
+    exclusive = values.get("is_gst_exclusive")
+    if exclusive is None:
+        exclusive = False
+    if not isinstance(exclusive, (bool, int)) or exclusive not in (0, 1):
+        raise ValidationError("is_gst_exclusive must be true or false.",
+                              details={"field": "is_gst_exclusive"})
+    exclusive = bool(exclusive)
+    rate = values.get("gst_rate_percent")
+    rate = _gst_rate(rate if rate is not None
+                     else (before or {}).get("gst_rate_percent", GST_RATE_PERCENT))
+    quoted = values.get("base_rent_paise")
+    field = "base_rent_paise" if quoted is not None else "monthly_rent_paise"
+    base = ensure_paise(quoted if quoted is not None else values.get("monthly_rent_paise"),
+                        field, allow_zero=False)
+    rent = base + (gst_paise(base, rate) if exclusive else 0)
+    sent = values.get("monthly_rent_paise")
+    if quoted is not None and sent is not None and sent != rent:
+        raise ValidationError(
+            f"The monthly rent of {format_inr(base)}"
+            f"{f' plus {rate:g}% GST' if exclusive else ''} is {format_inr(rent)}, "
+            f"not {format_inr(sent)}.", code="furniture_gst_total_mismatch",
+            details={"field": "monthly_rent_paise", "base_rent_paise": base,
+                     "monthly_rent_paise": rent})
     scope = values.get("allocation_scope")
     if scope not in SCOPES:
         raise ValidationError("allocation_scope must be common or resident.",
@@ -1039,8 +1107,8 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
         raise ValidationError("The return date cannot be before the delivery date.",
                               details={"field": "return_date"})
     return {"service_id": service_id, "name": name, "category": category,
-            "monthly_rent_paise": rent,
-            "allocation_scope": scope, "assigned_resident_id": resident_id if scope == "resident"
+            "monthly_rent_paise": rent, "base_rent_paise": base, "is_gst_exclusive": exclusive,
+            "gst_rate_percent": rate, "allocation_scope": scope, "assigned_resident_id": resident_id if scope == "resident"
             else None, "status": status, "delivery_date": delivery, "return_date": returned}
 
 
@@ -1061,11 +1129,22 @@ def add_item(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
 def update_item(db: Database, apartment_id: str, item_id: str, changes: Mapping[str, Any], *,
                 actor: str = "operator") -> dict[str, Any]:
     """Change an item. Only the fields sent change; making an item common clears
-    its resident, and undoing a return clears its return date."""
+    its resident, and undoing a return clears its return date.
+
+    A rent sent is the rent as quoted (see :func:`_clean_item`). Without one the
+    quoted rent stays, so turning ``is_gst_exclusive`` on adds GST to it, and
+    turning it off bills the item that rent alone."""
     timestamp = now_timestamp()
+    changes = {key: value for key, value in changes.items()
+               if not (key in ("is_gst_exclusive", "gst_rate_percent") and value is None)}
     with db.transaction() as uow:
         before = _item_in(uow, apartment_id, item_id)
         merged = {**before, **changes}
+        merged["monthly_rent_paise"] = changes.get("monthly_rent_paise")
+        merged["base_rent_paise"] = (
+            changes.get("base_rent_paise") if "base_rent_paise" in changes
+            else None if changes.get("monthly_rent_paise") is not None
+            else before["base_rent_paise"])
         if changes.get("allocation_scope") == "common" and "assigned_resident_id" not in changes:
             merged["assigned_resident_id"] = None
         if (changes.get("status") in ("active", "pending_delivery")

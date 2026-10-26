@@ -86,7 +86,7 @@ export function TextField({
   maxLength?: number
   disabled?: boolean
   autoComplete?: string
-  inputMode?: 'numeric' | 'tel' | 'email'
+  inputMode?: 'numeric' | 'decimal' | 'tel' | 'email'
 }) {
   return (
     <Field label={label} hint={hint} error={error} required={required}>

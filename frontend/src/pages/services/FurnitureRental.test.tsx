@@ -27,6 +27,11 @@ const item = (overrides: Record<string, unknown> = {}) => ({
   name: 'Sofa',
   category: 'living_room',
   monthly_rent_paise: 100000,
+  // Priced with GST included unless a test says otherwise.
+  base_rent_paise: (overrides.monthly_rent_paise as number | undefined) ?? 100000,
+  gst_paise: 0,
+  is_gst_exclusive: false,
+  gst_rate_percent: 18,
   allocation_scope: 'common',
   assigned_resident_id: null,
   assigned_resident_name: null,
@@ -556,16 +561,149 @@ describe('FurnitureRental', () => {
     await userEvent.selectOptions(within(dialog).getByLabelText('Paid by'), 'bob')
     await userEvent.click(add)
 
+    // A new item is priced before 18% GST unless the operator says otherwise.
     await waitFor(() => expect(sent('POST', '/api/services/furniture/items')).toBeDefined())
     expect(sent('POST', '/api/services/furniture/items')!.body).toEqual({
       service_id: 'svc-1',
       name: 'Study chair',
-      monthly_rent_paise: 19900,
+      base_rent_paise: 19900,
+      monthly_rent_paise: 23482,
+      is_gst_exclusive: true,
+      gst_rate_percent: 18,
       allocation_scope: 'resident',
       assigned_resident_id: 'bob',
       delivery_date: null,
       status: 'active',
     })
+  })
+
+  it('adds an item priced before GST, its GST worked out at the rate given as it is typed', async () => {
+    show(overview(), {}, '/?tab=items')
+    const panel = (await screen.findByRole('heading', { name: 'Rented Items' })).closest('section')!
+    await userEvent.click(within(panel).getByRole('button', { name: 'Add item' }))
+    const dialog = screen.getByRole('dialog', { name: 'Add a rented item' })
+    // Exclusive of GST, at 18%, unless changed.
+    expect(within(dialog).getByRole('checkbox', { name: 'Exclusive of GST' })).toBeChecked()
+    const rate = within(dialog).getByLabelText('GST (%)')
+    expect(rate).toHaveValue('18')
+    await userEvent.type(within(dialog).getByLabelText(/^Item/), 'Wardrobe')
+    await userEvent.type(within(dialog).getByLabelText(/Monthly rent/), '1000')
+    expect(within(dialog).getByRole('status')).toHaveTextContent(
+      'Base: ₹1,000.00 + GST (18%): ₹180.00 = Gross total: ₹1,180.00/mo',
+    )
+    await userEvent.clear(rate)
+    await userEvent.type(rate, '12')
+    expect(within(dialog).getByRole('status')).toHaveTextContent(
+      'Base: ₹1,000.00 + GST (12%): ₹120.00 = Gross total: ₹1,120.00/mo',
+    )
+    // A rate is from 0 to 100, to two decimal places.
+    await userEvent.clear(rate)
+    await userEvent.type(rate, '12.345')
+    expect(within(dialog).getByText(/Enter a rate from 0 to 100/)).toBeInTheDocument()
+    expect(within(dialog).queryByRole('status')).toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'Add item' })).toBeDisabled()
+    await userEvent.clear(rate)
+    await userEvent.type(rate, '5')
+    expect(within(dialog).getByRole('status')).toHaveTextContent(
+      'Base: ₹1,000.00 + GST (5%): ₹50.00 = Gross total: ₹1,050.00/mo',
+    )
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Add item' }))
+    await waitFor(() => expect(sent('POST', '/api/services/furniture/items')).toBeDefined())
+    expect(sent('POST', '/api/services/furniture/items')!.body).toMatchObject({
+      name: 'Wardrobe',
+      base_rent_paise: 100000,
+      monthly_rent_paise: 105000,
+      is_gst_exclusive: true,
+      gst_rate_percent: 5,
+      allocation_scope: 'common',
+    })
+  })
+
+  it('adds an item with GST already in its rent', async () => {
+    show(overview(), {}, '/?tab=items')
+    const panel = (await screen.findByRole('heading', { name: 'Rented Items' })).closest('section')!
+    await userEvent.click(within(panel).getByRole('button', { name: 'Add item' }))
+    const dialog = screen.getByRole('dialog', { name: 'Add a rented item' })
+    await userEvent.type(within(dialog).getByLabelText(/^Item/), 'Lamp')
+    await userEvent.type(within(dialog).getByLabelText(/Monthly rent/), '250')
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Exclusive of GST' }))
+    expect(within(dialog).queryByLabelText('GST (%)')).toBeNull()
+    expect(within(dialog).queryByRole('status')).toBeNull()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Add item' }))
+    await waitFor(() => expect(sent('POST', '/api/services/furniture/items')).toBeDefined())
+    expect(sent('POST', '/api/services/furniture/items')!.body).toMatchObject({
+      base_rent_paise: 25000,
+      monthly_rent_paise: 25000,
+      is_gst_exclusive: false,
+    })
+  })
+
+  it('edits an item priced before GST from its rent before GST', async () => {
+    const wardrobe = item({
+      item_id: 'furn-sofa',
+      name: 'Wardrobe',
+      monthly_rent_paise: 118000,
+      base_rent_paise: 100000,
+      gst_paise: 18000,
+      is_gst_exclusive: true,
+    })
+    show(overview({ items: [wardrobe] }), {}, '/?tab=items')
+    const table = await screen.findByRole('table', { name: 'Rented items' })
+    // Billed with its GST, which is shown under it.
+    expect(within(table).getByRole('row', { name: /Wardrobe/ })).toHaveTextContent(
+      'WardrobeFurlencoShared₹1,180.00Base ₹1,000.00 + ₹180.00 GST (18%)In the flat',
+    )
+    await userEvent.click(within(within(table).getByRole('row', { name: /Wardrobe/ })).getByRole('button', { name: 'More options' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Edit item' }))
+    const dialog = screen.getByRole('dialog', { name: 'Edit Wardrobe' })
+    expect(within(dialog).getByLabelText(/Monthly rent/)).toHaveValue('1000.00')
+    expect(within(dialog).getByRole('checkbox', { name: 'Exclusive of GST' })).toBeChecked()
+    expect(within(dialog).getByLabelText('GST (%)')).toHaveValue('18')
+    // Turned off, the rent entered is what it is billed.
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Exclusive of GST' }))
+    expect(within(dialog).queryByRole('status')).toBeNull()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(sent('PATCH', '/api/services/furniture/items/furn-sofa')).toBeDefined())
+    expect(sent('PATCH', '/api/services/furniture/items/furn-sofa')!.body).toMatchObject({
+      base_rent_paise: 100000,
+      monthly_rent_paise: 100000,
+      is_gst_exclusive: false,
+    })
+  })
+
+  it("shows an item's GST at its own rate, and the month's gross total with the GST in it", async () => {
+    const wardrobe = item({
+      item_id: 'furn-wardrobe',
+      name: 'Wardrobe',
+      monthly_rent_paise: 112000,
+      base_rent_paise: 100000,
+      gst_paise: 12000,
+      is_gst_exclusive: true,
+      gst_rate_percent: 12,
+    })
+    show(
+      overview({
+        items: [...items, wardrobe],
+        month: bill({ subtotal_base_paise: 320000, total_gst_paise: 12000, total_paise: 332000 }),
+      }),
+      {},
+      '/?tab=items',
+    )
+    const gross = (await screen.findByText('Gross total')).parentElement!
+    expect(gross).toHaveTextContent('Gross total₹3,320.00Base ₹3,200.00 + GST ₹120.00')
+    const table = screen.getByRole('table', { name: 'Rented items' })
+    expect(within(table).getByRole('row', { name: /Wardrobe/ })).toHaveTextContent(
+      '₹1,120.00Base ₹1,000.00 + ₹120.00 GST (12%)',
+    )
+    await userEvent.click(within(table).getByRole('row', { name: /Wardrobe/ }))
+    const dialog = screen.getByRole('dialog', { name: 'Wardrobe' })
+    expect(dialog).toHaveTextContent('Monthly Rent₹1,120.00Base ₹1,000.00 + ₹120.00 GST (12%)')
+  })
+
+  it('shows no gross total when no item carries GST', async () => {
+    show(overview({ month: bill({ subtotal_base_paise: 220000, total_gst_paise: 0 }) }), {}, '/?tab=items')
+    expect(await screen.findByText('Shared items')).toBeInTheDocument()
+    expect(screen.queryByText('Gross total')).toBeNull()
   })
 
   it('sums up the collection and the payout to the provider at the top', async () => {

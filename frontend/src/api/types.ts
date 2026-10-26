@@ -1442,7 +1442,15 @@ export interface FurnitureItem {
   service_display_name?: string
   name: string
   category: FurnitureCategory
+  /** What the item is billed a month, GST included. */
   monthly_rent_paise: number
+  /** The rent as quoted: before GST when `is_gst_exclusive`, otherwise the same as `monthly_rent_paise`. */
+  base_rent_paise: number
+  /** The GST added to a rent quoted before GST, at `gst_rate_percent`; 0 otherwise. */
+  gst_paise: number
+  is_gst_exclusive: boolean
+  /** The item's GST rate, 18 unless set; to two decimal places. */
+  gst_rate_percent: number
   /** common: split equally; resident: charged to assigned_resident_id alone. */
   allocation_scope: 'common' | 'resident'
   assigned_resident_id: string | null
@@ -1566,7 +1574,12 @@ export interface FurnitureMonthBill {
   billable_items: FurnitureItem[]
   common_total_paise: number
   private_total_paise: number
+  /** What the items are billed, GST included: `subtotal_base_paise + total_gst_paise`. */
   total_paise: number
+  /** The items' rents as quoted. */
+  subtotal_base_paise?: number
+  /** The GST added to the items quoted before it. */
+  total_gst_paise?: number
   participant_count: number
   base_share_paise: number
   remainder_paise: number

@@ -1108,7 +1108,17 @@ class FurnitureItemCreate(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     category: FurnitureCategory = Field(
         "other", description="Kept for older clients; the screen no longer asks for it.")
-    monthly_rent_paise: int = _money_field("The item's monthly rent.", ge=1)
+    monthly_rent_paise: int | None = _money_field(
+        "The item's monthly rent, GST included. Without base_rent_paise, the rent as "
+        "quoted: before GST when is_gst_exclusive.", ge=1, default=None)
+    base_rent_paise: int | None = _money_field(
+        "The rent as quoted: before GST when is_gst_exclusive, otherwise the same as "
+        "monthly_rent_paise. Either this or monthly_rent_paise is needed.", ge=1, default=None)
+    is_gst_exclusive: bool = Field(
+        False, description="Quoted before GST: GST at gst_rate_percent is added to it, "
+                           "rounded half up to the paisa.")
+    gst_rate_percent: float = Field(
+        18.0, ge=0, le=100, description="The item's GST rate, to two decimal places.")
     allocation_scope: Literal["common", "resident"] = Field(
         description="common: split equally; resident: charged to assigned_resident_id alone.")
     assigned_resident_id: str | None = Field(None, max_length=64)
@@ -1123,7 +1133,16 @@ class FurnitureItemUpdate(ApiModel):
         None, max_length=64, description="Move it to another provider's subscription.")
     name: str | None = Field(None, min_length=1, max_length=200)
     category: FurnitureCategory | None = None
-    monthly_rent_paise: int | None = _money_field("The item's monthly rent.", ge=1, default=None)
+    monthly_rent_paise: int | None = _money_field(
+        "The item's monthly rent, GST included; without base_rent_paise, the rent as quoted.",
+        ge=1, default=None)
+    base_rent_paise: int | None = _money_field(
+        "The rent as quoted, before GST when is_gst_exclusive.", ge=1, default=None)
+    is_gst_exclusive: bool | None = Field(
+        None, description="Quoted before GST: GST at gst_rate_percent is added to it, "
+                          "rounded half up to the paisa.")
+    gst_rate_percent: float | None = Field(
+        None, ge=0, le=100, description="The item's GST rate, to two decimal places.")
     allocation_scope: Literal["common", "resident"] | None = None
     assigned_resident_id: str | None = Field(None, max_length=64)
     status: Literal["active", "pending_delivery", "returned"] | None = None
