@@ -6,7 +6,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
-import { render, screen, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Pencil, Settings, Trash2, Upload } from 'lucide-react'
 import { CardActions, EditButton, Panel } from './ui'
@@ -113,6 +113,56 @@ describe('CardActions', () => {
       expect(screen.queryByRole('menu')).toBeNull()
       expect(edit).not.toHaveBeenCalled()
       expect(remove).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('floating, for a menu inside something that scrolls', () => {
+    const floating = () => {
+      const edit = vi.fn()
+      render(
+        <div data-testid="scroller" style={{ overflow: 'auto' }}>
+          <CardActions
+            floating
+            actions={[
+              { label: 'Edit item', icon: Pencil, onClick: edit },
+              { label: 'Remove item', icon: Trash2, onClick: vi.fn(), tone: 'danger' },
+            ]}
+          />
+        </div>,
+      )
+      return { edit, trigger: screen.getByRole('button', { name: 'More options' }) }
+    }
+
+    it('lays its menu over the page, out of the scrolling box, and still runs an action', async () => {
+      const { edit, trigger } = floating()
+      await userEvent.click(trigger)
+      const list = screen.getByRole('menu')
+      expect(screen.getByTestId('scroller')).not.toContainElement(list)
+      expect(list.style.position).toBe('fixed')
+      await userEvent.click(within(list).getByRole('menuitem', { name: 'Edit item' }))
+      expect(edit).toHaveBeenCalledOnce()
+      expect(screen.queryByRole('menu')).toBeNull()
+    })
+
+    it('opens upwards when there is no room below its button', async () => {
+      const { trigger } = floating()
+      const height = window.innerHeight
+      trigger.getBoundingClientRect = () =>
+        ({ top: height - 40, bottom: height - 8, right: 300, left: 268 }) as DOMRect
+      await userEvent.click(trigger)
+      const list = screen.getByRole('menu')
+      expect(list.style.bottom).toBe('46px')
+      expect(list.style.top).toBe('')
+    })
+
+    it('closes when the page scrolls, rather than drifting from its button', async () => {
+      const { trigger } = floating()
+      await userEvent.click(trigger)
+      act(() => {
+        window.dispatchEvent(new Event('scroll'))
+      })
+      expect(trigger).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.queryByRole('menu')).toBeNull()
     })
   })
 })

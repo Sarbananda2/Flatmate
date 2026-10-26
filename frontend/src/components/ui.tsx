@@ -5,7 +5,8 @@
  * the two layout guards every new screen needs: text that can shrink is
  * truncated, and icons and pills never shrink.
  */
-import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { Check, Copy, MoreVertical, Pencil } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -414,9 +415,15 @@ const HEADER_TRIGGER =
  * its name as tooltip and accessible name; two or more fold into a "More
  * options" menu, anchored bottom-right, that closes on an outside click or
  * Escape and is worked with the arrow keys, Home and End.
+ *
+ * ``floating`` is for a menu inside something that scrolls, such as a table
+ * row: the menu is laid over the page instead of inside it, so the scrolling
+ * box cannot clip it. It opens upwards when there is no room below, and closes
+ * when the page scrolls or resizes rather than drifting from its button.
  */
-export function CardActions({ actions }: { actions?: CardActionItem[] }) {
+export function CardActions({ actions, floating = false }: { actions?: CardActionItem[]; floating?: boolean }) {
   const [open, setOpen] = useState(false)
+  const [placement, setPlacement] = useState<CSSProperties | undefined>(undefined)
   const wrapper = useRef<HTMLDivElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const menu = useRef<HTMLDivElement>(null)
@@ -436,7 +443,10 @@ export function CardActions({ actions }: { actions?: CardActionItem[] }) {
     // Opening the menu puts the keyboard on its first action.
     items()[0]?.focus()
     const onMouseDown = (event: MouseEvent) => {
-      if (wrapper.current && !wrapper.current.contains(event.target as Node)) setOpen(false)
+      const target = event.target as Node
+      // A floating menu is not inside the wrapper, so it is checked on its own.
+      if (wrapper.current?.contains(target) || menu.current?.contains(target)) return
+      setOpen(false)
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -444,13 +454,33 @@ export function CardActions({ actions }: { actions?: CardActionItem[] }) {
         close(true)
       }
     }
+    const onMove = () => setOpen(false)
     document.addEventListener('mousedown', onMouseDown)
     document.addEventListener('keydown', onKeyDown)
+    if (floating) {
+      window.addEventListener('scroll', onMove, true)
+      window.addEventListener('resize', onMove)
+    }
     return () => {
       document.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('scroll', onMove, true)
+      window.removeEventListener('resize', onMove)
     }
   }, [open])
+
+  /** Where a floating menu goes: under its button, or above it near the bottom of the screen. */
+  const place = () => {
+    const rect = trigger.current?.getBoundingClientRect()
+    if (!rect) return
+    const right = window.innerWidth - rect.right
+    const roomBelow = window.innerHeight - rect.bottom
+    setPlacement(
+      roomBelow < 48 + actions!.length * 36
+        ? { position: 'fixed', right, bottom: window.innerHeight - rect.top + 6 }
+        : { position: 'fixed', right, top: rect.bottom + 6 },
+    )
+  }
 
   if (!actions || actions.length === 0) return null
 
@@ -476,6 +506,9 @@ export function CardActions({ actions }: { actions?: CardActionItem[] }) {
     )
   }
 
+  // A floating menu is laid over the page, outside any box that scrolls.
+  const renderMenu = (list: ReactNode) => (floating ? createPortal(list, document.body) : list)
+
   const onMenuKeyDown = (event: React.KeyboardEvent) => {
     const list = items()
     const at = list.indexOf(document.activeElement as HTMLElement)
@@ -495,7 +528,10 @@ export function CardActions({ actions }: { actions?: CardActionItem[] }) {
       <button
         ref={trigger}
         type="button"
-        onClick={() => setOpen((shown) => !shown)}
+        onClick={() => {
+          if (floating && !open) place()
+          setOpen((shown) => !shown)
+        }}
         title="More options"
         aria-label="More options"
         aria-haspopup="menu"
@@ -505,7 +541,7 @@ export function CardActions({ actions }: { actions?: CardActionItem[] }) {
       >
         <MoreVertical className="w-4 h-4 shrink-0" aria-hidden="true" />
       </button>
-      {open && (
+      {open && renderMenu(
         <div
           ref={menu}
           id={menuId}
@@ -513,7 +549,11 @@ export function CardActions({ actions }: { actions?: CardActionItem[] }) {
           aria-orientation="vertical"
           aria-label="More options"
           onKeyDown={onMenuKeyDown}
-          className="absolute right-0 top-full mt-1.5 w-48 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1.5 shadow-lg z-30 focus:outline-none"
+          style={floating ? placement : undefined}
+          className={clsx(
+            !floating && 'absolute right-0 top-full mt-1.5',
+            'w-48 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1.5 shadow-lg z-30 focus:outline-none',
+          )}
         >
           {actions.map((action) => {
             const Icon = action.icon
@@ -559,7 +599,7 @@ export function CardActions({ actions }: { actions?: CardActionItem[] }) {
               </button>
             )
           })}
-        </div>
+        </div>,
       )}
     </div>
   )
