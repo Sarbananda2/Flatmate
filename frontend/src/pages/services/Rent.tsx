@@ -196,7 +196,6 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
             {reimbursing && (
               <ReimburseDialog
                 month={month}
-                billLabel={`${formatMonth(month)} rent`}
                 reimbursement={reimbursing}
                 submit={(details) =>
                   api.post<RentCycle>(`/api/rent/cycle/${month}/reimburse`, {

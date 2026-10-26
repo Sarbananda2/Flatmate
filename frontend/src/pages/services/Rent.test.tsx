@@ -1153,7 +1153,10 @@ describe('RentMonth', () => {
 
       await userEvent.click(within(alice).getByRole('button', { name: 'Reimburse from Kitty to Alice' }))
       const dialog = screen.getByRole('dialog', { name: 'Reimburse Alice' })
-      expect(dialog).toHaveTextContent('₹15,000.00 from the kitty to Alice, out of what flatmates paid in for October 2026 rent. ₹5,000.00 more is owed once the rest have paid.')
+      expect(dialog).toHaveTextContent('October 2026 · ₹20,000.00 still owed to Alice')
+      expect(dialog).toHaveTextContent('Up to ₹15,000.00 available in the kitty.')
+      // Pre-filled with what the kitty can pay back now.
+      expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('15000.00')
       await userEvent.type(within(dialog).getByLabelText('Reference / UTR'), 'UPI-R2')
       await userEvent.click(within(dialog).getByRole('button', { name: 'Record reimbursement' }))
       await waitFor(() => expect(posted('/reimburse')).toBeDefined())
@@ -1164,6 +1167,28 @@ describe('RentMonth', () => {
         reference: 'UPI-R2',
         note: null,
       })
+    })
+
+    it('pays back part of what the kitty holds, and never more than it holds', async () => {
+      renderRent(overview({ cycle: cycle({ reimbursements: [owedToAlice], reimbursement: owedToAlice }) }), {
+        [`POST /api/rent/cycle/${MONTH}/reimburse`]: cycle(),
+      })
+      await userEvent.click(await screen.findByRole('button', { name: 'Reimburse from Kitty to Alice' }))
+      const dialog = screen.getByRole('dialog', { name: 'Reimburse Alice' })
+      const amount = within(dialog).getByLabelText(/^Amount/)
+      const record = within(dialog).getByRole('button', { name: 'Record reimbursement' })
+      await userEvent.clear(amount)
+      await userEvent.type(amount, '15000.01')
+      expect(dialog).toHaveTextContent('More than the ₹15,000.00 available in the kitty.')
+      expect(record).toBeDisabled()
+      await userEvent.clear(amount)
+      expect(record).toBeDisabled()
+      await userEvent.type(amount, '10000')
+      expect(record).toBeEnabled()
+      await userEvent.click(record)
+      await waitFor(() => expect(posted('/reimburse')).toBeDefined())
+      expect(posted('/reimburse')!.body).toMatchObject({ recipient_resident_id: 'alice', amount_paise: 1000000 })
+      expect(await screen.findByText('₹10,000.00 from the kitty to Alice')).toBeInTheDocument()
     })
 
     it('shows no reimbursement when nobody paid the landlord extra', async () => {

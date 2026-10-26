@@ -13,7 +13,7 @@
  */
 import { type FormEvent, useState } from 'react'
 import { Check, Clock, CreditCard, HandCoins, Trash2 } from 'lucide-react'
-import { DateField, TextField } from './Form'
+import { DateField, MoneyInput, TextField } from './Form'
 import { ErrorNotice, Modal } from './Primitives'
 import {
   Avatar,
@@ -27,7 +27,7 @@ import {
   Rupees,
 } from './ui'
 import type { KittyReimbursement } from '../api/types'
-import { formatDate, formatInr, formatMonth, todayIso } from '../lib/format'
+import { formatDate, formatInr, formatMonth, paiseToInput, todayIso } from '../lib/format'
 import { useMutation } from '../lib/useApi'
 
 const TABLE_HEAD =
@@ -237,15 +237,12 @@ export interface KittyRefundDetails {
 
 export function ReimburseDialog({
   month,
-  billLabel,
   reimbursement,
   submit,
   onClose,
   onDone,
 }: {
   month: string
-  /** As on the panel: "the November 2026 bill", "November 2026 rent". */
-  billLabel: string
   reimbursement: KittyReimbursement
   submit: (details: KittyRefundDetails) => Promise<unknown>
   onClose: () => void
@@ -256,30 +253,36 @@ export function ReimburseDialog({
   const [note, setNote] = useState('')
   const name = reimbursement.recipient_name
   // What the kitty holds for the bill now; the rest waits for the others to pay in.
-  const amount = reimbursement.reimbursable_paise
-  const later = reimbursement.pending_reimbursement_paise - amount
+  const maxAmount = reimbursement.reimbursable_paise
+  // Pre-filled with all of it; a smaller part can be paid back now and the rest later.
+  const [amount, setAmount] = useState(paiseToInput(maxAmount))
+  const [amountPaise, setAmountPaise] = useState(maxAmount)
+  const [amountOk, setAmountOk] = useState(true)
+  const tooMuch = amountOk && amountPaise > maxAmount
+  const amountValid = amountOk && amountPaise > 0 && amountPaise <= maxAmount
+  const valid = amountValid && Boolean(date)
   const save = useMutation(
     () =>
       submit({
-        amount_paise: amount,
+        amount_paise: amountPaise,
         payment_date: date,
         reference: reference.trim() || null,
         note: note.trim() || null,
       }),
-    { onSuccess: () => onDone(amount) },
+    { onSuccess: () => onDone(amountPaise) },
   )
   const formId = `kitty-reimburse-${month}`
   return (
     <Modal
       title={`Reimburse ${name}`}
-      description={`${formatInr(amount)} from the kitty to ${name}, out of what flatmates paid in for ${billLabel}.${later > 0 ? ` ${formatInr(later)} more is owed once the rest have paid.` : ''}`}
+      description={`${formatMonth(month)} · ${formatInr(reimbursement.pending_reimbursement_paise)} still owed to ${name}`}
       onClose={onClose}
       footer={
         <>
           <button type="button" className={BUTTON_SECONDARY} onClick={onClose} disabled={save.pending}>
             Cancel
           </button>
-          <button type="submit" form={formId} className={BUTTON_PRIMARY} disabled={!date || save.pending}>
+          <button type="submit" form={formId} className={BUTTON_PRIMARY} disabled={!valid || save.pending}>
             {save.pending ? 'Saving…' : 'Record reimbursement'}
           </button>
         </>
@@ -291,27 +294,34 @@ export function ReimburseDialog({
         noValidate
         onSubmit={(event: FormEvent) => {
           event.preventDefault()
-          if (date && !save.pending) void save.run(undefined)
+          if (valid && !save.pending) void save.run(undefined)
         }}
       >
         <ErrorNotice error={save.error} />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <DateField label="Paid on" required value={date} onChange={setDate} />
-          <TextField
-            label="Reference / UTR"
-            value={reference}
-            onChange={setReference}
-            maxLength={200}
-            placeholder="e.g. UPI ref or bank UTR"
+          <MoneyInput
+            label="Amount"
+            required
+            value={amount}
+            error={tooMuch ? `More than the ${formatInr(maxAmount)} available in the kitty.` : null}
+            hint={`Up to ${formatInr(maxAmount)} available in the kitty.`}
+            onChange={(raw, parsed) => {
+              setAmount(raw)
+              setAmountPaise(parsed.paise)
+              setAmountOk(parsed.ok)
+            }}
           />
+          <DateField label="Paid on" required value={date} onChange={setDate} />
         </div>
+        <TextField
+          label="Reference / UTR"
+          value={reference}
+          onChange={setReference}
+          maxLength={200}
+          placeholder="e.g. UPI ref or bank UTR"
+        />
         <TextField label="Note" value={note} onChange={setNote} maxLength={500} />
       </form>
     </Modal>
   )
-}
-
-/** "the November 2026 bill" -- how a service's month reads in a sentence. */
-export function billFor(month: string): string {
-  return `the ${formatMonth(month)} bill`
 }

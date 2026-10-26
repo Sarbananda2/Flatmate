@@ -47,7 +47,6 @@ import {
   KittyReimbursementPanel,
   KittyReimbursementStatementModal,
   ReimburseDialog,
-  billFor,
 } from '../../components/KittyReimbursement'
 import {
   PAYOUT_STATUS,
@@ -524,7 +523,6 @@ export function FurnitureRental({ month }: { month: string }) {
           {dialog?.kind === 'reimburse' && (
             <ReimburseDialog
               month={month}
-              billLabel={billFor(month)}
               reimbursement={dialog.reimbursement}
               submit={(details) =>
                 api.post<FurnitureRentalOverview>(`${BASE}/reimburse-from-kitty`, {

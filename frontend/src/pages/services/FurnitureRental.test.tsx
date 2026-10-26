@@ -721,8 +721,10 @@ describe('FurnitureRental', () => {
 
     await userEvent.click(within(card).getByRole('button', { name: 'Reimburse from Kitty to Alice' }))
     const dialog = screen.getByRole('dialog', { name: 'Reimburse Alice' })
-    expect(dialog).toHaveTextContent('₹1,366.67 from the kitty to Alice')
-    expect(dialog).toHaveTextContent('₹266.66 more is owed once the rest have paid.')
+    expect(dialog).toHaveTextContent('November 2026 · ₹1,633.33 still owed to Alice')
+    expect(dialog).toHaveTextContent('Up to ₹1,366.67 available in the kitty.')
+    // Pre-filled with what the kitty can pay back now.
+    expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('1366.67')
     await userEvent.type(within(dialog).getByLabelText('Reference / UTR'), 'UPI-88')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Record reimbursement' }))
 
