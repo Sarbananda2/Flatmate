@@ -1128,12 +1128,31 @@ describe('RentMonth', () => {
       })
       const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
       expect(card).toHaveTextContent('Alice paid extra beyond their allotted share for October 2026 rent.')
-      expect(card).toHaveTextContent('Total paid₹45,000.00Includes ₹15,000.00 allotted share')
-      expect(card).toHaveTextContent('Reimbursed so far₹10,000.00₹20,000.00 still owed')
-      const made = within(card).getByRole('table', { name: 'Reimbursements to Alice' })
-      expect(within(made).getAllByRole('row')[1]).toHaveTextContent('6 Oct 2026₹10,000.00UPI-R1')
+      // Laid out as the collection and payout tables, column for column.
+      const table = within(card).getByRole('table', { name: 'Reimbursements from the House Kitty' })
+      expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+        'Resident',
+        'Extra Paid',
+        'Paid from Kitty',
+        'Still Owed',
+        'Status',
+        'Actions',
+      ])
+      const alice = within(table).getByRole('row', { name: /Alice/ })
+      expect(alice).toHaveTextContent('Alice₹30,000.00₹10,000.00₹20,000.00Part paidPay Now')
 
-      await userEvent.click(within(card).getByRole('button', { name: 'Reimburse ₹15,000.00 from Kitty to Alice' }))
+      // The row opens her reimbursement statement.
+      await userEvent.click(alice)
+      const statement = screen.getByRole('dialog', { name: 'Reimbursement Statement' })
+      expect(statement).toHaveTextContent('Alice · October 2026')
+      expect(statement).toHaveTextContent('Total Paid₹45,000.00Extra Paid')
+      expect(statement).toHaveTextContent('Still Owed₹20,000.00Kitty Cash Available')
+      const made = within(statement).getByRole('table', { name: 'Reimbursements to Alice' })
+      expect(within(made).getAllByRole('row')[1]).toHaveTextContent('6 Oct 2026₹10,000.00UPI-R1')
+      await userEvent.keyboard('{Escape}')
+      expect(screen.queryByRole('dialog', { name: 'Reimbursement Statement' })).toBeNull()
+
+      await userEvent.click(within(alice).getByRole('button', { name: 'Reimburse from Kitty to Alice' }))
       const dialog = screen.getByRole('dialog', { name: 'Reimburse Alice' })
       expect(dialog).toHaveTextContent('₹15,000.00 from the kitty to Alice, out of what flatmates paid in for October 2026 rent. ₹5,000.00 more is owed once the rest have paid.')
       await userEvent.type(within(dialog).getByLabelText('Reference / UTR'), 'UPI-R2')
@@ -1260,7 +1279,9 @@ describe('RentMonth', () => {
         [`DELETE /api/rent/cycle/${MONTH}/payments/rent-oct-reimbursement_1`]: withRefund,
       })
       const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
-      await userEvent.click(within(card).getByRole('button', { name: 'Delete the ₹10,000.00 reimbursement of 6 Oct 2026' }))
+      await userEvent.click(within(card).getByRole('row', { name: /Alice/ }))
+      const statement = screen.getByRole('dialog', { name: 'Reimbursement Statement' })
+      await userEvent.click(within(statement).getByRole('button', { name: 'Delete the ₹10,000.00 reimbursement of 6 Oct 2026' }))
       const confirm = screen.getByRole('dialog', { name: 'Delete this reimbursement?' })
       expect(confirm).toHaveTextContent('₹10,000.00 paid back from the kitty to Alice on 6 Oct 2026.')
       await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))

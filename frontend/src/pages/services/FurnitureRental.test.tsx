@@ -432,6 +432,9 @@ describe('FurnitureRental', () => {
   it('lists each item with who pays for it and where it is', async () => {
     show(overview(), {}, '/?tab=items')
     const table = await screen.findByRole('table', { name: 'Rented items' })
+    // How the month's bill is split sits above the items it is split from.
+    expect(screen.getByText('Shared items').parentElement).toHaveTextContent('₹1,700.00Split equally')
+    expect(screen.getByText('3 taking part · 2 paise over')).toBeInTheDocument()
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Item',
       'Paid by',
@@ -504,7 +507,9 @@ describe('FurnitureRental', () => {
     expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent('Bob₹1,066.67incl. ₹500.00 own———')
     expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Chris₹566.66———')
     expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeDisabled()
-    expect(screen.getByText('3 taking part · 2 paise over')).toBeInTheDocument()
+    // The split itself is on the Rented Items tab; this one is about settling it.
+    expect(screen.queryByText('Shared items')).toBeNull()
+    expect(screen.getByText('Internal Collection')).toBeInTheDocument()
     // An open month bills by itself, and follows its items: there is nothing to record.
     expect(screen.queryByRole('button', { name: /Record November 2026 bill/ })).toBeNull()
     expect(screen.queryByText('Not billed yet.')).toBeNull()
@@ -709,12 +714,12 @@ describe('FurnitureRental', () => {
     )
 
     const card = screen.getByRole('heading', { name: 'Reimbursement · Alice' }).closest('section')!
-    expect(card).toHaveTextContent('Total paid₹2,200.00Includes ₹566.67 allotted share')
-    expect(card).toHaveTextContent('Extra (reimbursable)₹1,633.33To be reimbursed via House Kitty')
-    expect(card).toHaveTextContent('Reimbursed so far₹0.00₹1,633.33 still owed')
-    expect(card).toHaveTextContent('Kitty cash available₹1,366.67Collected from other flatmates')
+    const owed = within(card).getByRole('table', { name: 'Reimbursements from the House Kitty' })
+    expect(within(owed).getByRole('row', { name: /Alice/ })).toHaveTextContent(
+      'Alice₹1,633.33₹0.00₹1,633.33UnpaidPay Now',
+    )
 
-    await userEvent.click(within(card).getByRole('button', { name: 'Reimburse ₹1,366.67 from Kitty to Alice' }))
+    await userEvent.click(within(card).getByRole('button', { name: 'Reimburse from Kitty to Alice' }))
     const dialog = screen.getByRole('dialog', { name: 'Reimburse Alice' })
     expect(dialog).toHaveTextContent('₹1,366.67 from the kitty to Alice')
     expect(dialog).toHaveTextContent('₹266.66 more is owed once the rest have paid.')
@@ -731,6 +736,23 @@ describe('FurnitureRental', () => {
       notes: null,
     })
     expect(await screen.findByText('Reimbursement recorded')).toBeInTheDocument()
+  })
+
+  it("opens a resident's reimbursement statement from their row", async () => {
+    show(overview({ month: paidByAlice() }))
+    const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
+    await userEvent.click(within(card).getByRole('row', { name: /Alice/ }))
+    const statement = screen.getByRole('dialog', { name: 'Reimbursement Statement' })
+    expect(statement).toHaveTextContent('Alice · November 2026')
+    expect(statement).toHaveTextContent('Total Paid₹2,200.00Extra Paid')
+    expect(statement).toHaveTextContent('Extra Paid₹1,633.33Still Owed')
+    expect(statement).toHaveTextContent('Still Owed₹1,633.33Kitty Cash Available')
+    expect(statement).toHaveTextContent('Kitty Cash Available₹1,366.67Reimbursement History')
+    const history = within(statement).getByRole('region', { name: 'Reimbursement history' })
+    expect(history).toHaveTextContent('Unpaid')
+    expect(history).toHaveTextContent('No reimbursements recorded yet for this month.')
+    // Nothing is offered for deleting unless the month is open.
+    expect(within(statement).queryByRole('button', { name: /Delete/ })).toBeNull()
   })
 
   it('keeps each share to its status, with Pay Now for whoever still owes', async () => {
@@ -828,9 +850,9 @@ describe('FurnitureRental', () => {
     show(overview({ month: paidByAlice() }))
     await screen.findByRole('table', { name: 'Shares for November 2026' })
     expect(document.body).toHaveTextContent('Paid into Kitty')
-    expect(document.body).toHaveTextContent('Kitty cash available')
+    expect(document.body).toHaveTextContent('Paid from Kitty')
     expect(document.body).not.toHaveTextContent(/pool/i)
-    for (const open of ['Pay now for Chris', 'Reimburse ₹1,366.67 from Kitty to Alice']) {
+    for (const open of ['Pay now for Chris', 'Reimburse from Kitty to Alice']) {
       await userEvent.click(screen.getByRole('button', { name: open }))
       expect(document.body).not.toHaveTextContent(/pool/i)
       await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
@@ -875,8 +897,11 @@ describe('FurnitureRental', () => {
       }),
     )
     const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
-    expect(card).toHaveTextContent('Alice has been paid back in full.')
-    expect(within(card).queryByRole('button', { name: /Reimburse/ })).toBeNull()
+    // Paid back in full: the button stays on the row, switched off.
+    expect(within(card).getByRole('row', { name: /Alice/ })).toHaveTextContent(
+      'Alice₹1,633.33₹1,633.33₹0.00PaidPay Now',
+    )
+    expect(within(card).getByRole('button', { name: 'Reimburse from Kitty to Alice' })).toBeDisabled()
   })
 
   describe('deleting what was recorded by mistake', () => {
@@ -905,6 +930,24 @@ describe('FurnitureRental', () => {
       expect(confirm).toHaveTextContent('₹1,633.33 paid to Furlenco on 5 Nov 2026 by Alice.')
       await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
       await waitFor(() => expect(deleted()!.path).toBe('/api/services/furniture/disbursements/svcdisb-1'))
+    })
+
+    it('deletes a reimbursement from its statement', async () => {
+      const refund = { payment_id: 'furniture-1-reimbursement_1', amount_paise: 100000, payment_date: '2026-11-09', reference: 'UPI-R1' }
+      const owed = { ...OWED_TO_ALICE, reimbursed_so_far_paise: 100000, pending_reimbursement_paise: 63333, reimbursements: [refund] }
+      const month = overview({ month: paidByAlice({ transactions_open: true, reimbursement: owed, reimbursements: [owed] }) })
+      show(month, { 'DELETE /api/services/furniture/payments/furniture-1-reimbursement_1': month })
+      const card = (await screen.findByRole('heading', { name: 'Reimbursement · Alice' })).closest('section')!
+      expect(within(card).getByRole('row', { name: /Alice/ })).toHaveTextContent('Part paid')
+      await userEvent.click(within(card).getByRole('row', { name: /Alice/ }))
+      const statement = screen.getByRole('dialog', { name: 'Reimbursement Statement' })
+      await userEvent.click(within(statement).getByRole('button', { name: 'Delete the ₹1,000.00 reimbursement of 9 Nov 2026' }))
+      const confirm = screen.getByRole('dialog', { name: 'Delete this reimbursement?' })
+      expect(confirm).toHaveTextContent('₹1,000.00 paid back from the kitty to Alice on 9 Nov 2026.')
+      await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+      await waitFor(() =>
+        expect(deleted()!.path).toBe('/api/services/furniture/payments/furniture-1-reimbursement_1'),
+      )
     })
 
     it('offers no delete once the month is finalized', async () => {

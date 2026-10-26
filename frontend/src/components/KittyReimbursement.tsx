@@ -3,16 +3,29 @@
  * more than their own share of a month's bill -- rent, furniture, any service.
  *
  * Their own share went through the kitty like everyone else's; the extra is
- * owed back to them, out of what the other flatmates pay in. The panel says
- * what they paid, what is owed, what has been paid back and what the kitty
- * holds now; the dialog records one payment back. Each screen says where the
- * payment goes, since rent and services have their own endpoints.
+ * owed back to them, out of what the other flatmates pay in. The panel is a
+ * table laid out column for column as the Resident Collection and Provider
+ * Payout tables: who is owed, the extra they paid, what the kitty has paid
+ * back, what is still owed, the status, and Pay Now. A row opens the
+ * resident's reimbursement statement (Rule U7); the dialog records one payment
+ * back. Each screen says where the payment goes, since rent and services have
+ * their own endpoints.
  */
 import { type FormEvent, useState } from 'react'
-import { Check, HandCoins, Trash2 } from 'lucide-react'
+import { Check, Clock, CreditCard, HandCoins, Trash2 } from 'lucide-react'
 import { DateField, TextField } from './Form'
 import { ErrorNotice, Modal } from './Primitives'
-import { BUTTON_PRIMARY, BUTTON_QUIET, BUTTON_SECONDARY, MiniStat, Panel, Pill, Rupees } from './ui'
+import {
+  Avatar,
+  BUTTON_PRIMARY,
+  BUTTON_QUIET,
+  BUTTON_SECONDARY,
+  EmptyBlock,
+  MiniStat,
+  Panel,
+  Pill,
+  Rupees,
+} from './ui'
 import type { KittyReimbursement } from '../api/types'
 import { formatDate, formatInr, formatMonth, todayIso } from '../lib/format'
 import { useMutation } from '../lib/useApi'
@@ -23,128 +36,202 @@ const TABLE_HEAD =
 /** One payment back from the kitty, as recorded. */
 export type KittyRefund = KittyReimbursement['reimbursements'][number]
 
+/** Paid back in full, in part, or not yet: worded as the collection table words a share. */
+function ReimbursementStatus({ owed }: { owed: KittyReimbursement }) {
+  if (owed.pending_reimbursement_paise === 0) {
+    return (
+      <Pill tone="success">
+        <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
+        Paid
+      </Pill>
+    )
+  }
+  return (
+    <Pill tone="warning">
+      <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
+      {owed.reimbursed_so_far_paise > 0 ? 'Part paid' : 'Unpaid'}
+    </Pill>
+  )
+}
+
 export function KittyReimbursementPanel({
-  reimbursement,
+  reimbursements,
   billLabel,
-  paidTo,
   onReimburse,
-  onDelete,
+  onViewStatement,
 }: {
-  reimbursement: KittyReimbursement
+  /** Everyone the kitty owes for the month: one row each. */
+  reimbursements: KittyReimbursement[]
   /** What was paid for, as a sentence ends: "the November 2026 bill", "November 2026 rent". */
   billLabel: string
-  /** Who they paid: "Furlenco", "the landlord". */
-  paidTo: string
   onReimburse: (reimbursement: KittyReimbursement) => void
+  onViewStatement: (reimbursement: KittyReimbursement) => void
+}) {
+  const single = reimbursements.length === 1 ? reimbursements[0].recipient_name : null
+  return (
+    <Panel
+      title={single ? `Reimbursement · ${single}` : 'Reimbursement'}
+      icon={<HandCoins className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint={
+        single
+          ? `${single} paid extra beyond their allotted share for ${billLabel}. The House Kitty reimburses the extra amount out of what the other flatmates pay in. Select the row for reimbursement history.`
+          : `What the House Kitty owes back to residents who paid extra beyond their allotted share for ${billLabel}. Select a row for reimbursement history.`
+      }
+    >
+      {/* Laid out as the collection and payout tables: what is owed, what has
+          been paid back, what is still owed. */}
+      <div className="overflow-x-auto min-w-0">
+        <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse">
+          <caption className="sr-only">Reimbursements from the House Kitty</caption>
+          <thead>
+            <tr className={TABLE_HEAD}>
+              <th scope="col" className="w-[28%] pb-3 pr-3 font-bold text-left">Resident</th>
+              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Extra Paid</th>
+              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Paid from Kitty</th>
+              <th scope="col" className="w-[14%] pb-3 pr-3 font-bold text-center">Still Owed</th>
+              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Status</th>
+              <th scope="col" className="w-[15%] pb-3 pr-3 font-bold text-center">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+            {reimbursements.map((owed) => {
+              const name = owed.recipient_name
+              return (
+                // The row opens the resident's reimbursement statement; Pay Now does its own thing.
+                <tr
+                  key={owed.recipient_resident_id}
+                  className="align-middle cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
+                  tabIndex={0}
+                  title={`View ${name}'s reimbursement statement`}
+                  onClick={() => onViewStatement(owed)}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      onViewStatement(owed)
+                    }
+                  }}
+                >
+                  <th scope="row" className="py-3 pr-3 text-left font-normal">
+                    <span className="flex items-center gap-2.5 min-w-0">
+                      <Avatar name={name} />
+                      <span className="font-semibold text-[var(--text-primary)] truncate">{name}</span>
+                    </span>
+                  </th>
+                  <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
+                    <Rupees paise={owed.net_reimbursement_owed_paise} />
+                  </td>
+                  <td className="py-3 pr-3 text-center">
+                    <Rupees paise={owed.reimbursed_so_far_paise} />
+                  </td>
+                  <td className="py-3 pr-3 text-center">
+                    <Rupees paise={owed.pending_reimbursement_paise} />
+                  </td>
+                  <td className="py-3 pr-3 text-center whitespace-nowrap">
+                    <ReimbursementStatus owed={owed} />
+                  </td>
+                  <td className="py-3 text-center whitespace-nowrap">
+                    {/* Always there, as on each resident's row; off until the kitty
+                        holds something to pay back, and once it is all paid back. */}
+                    <button
+                      type="button"
+                      className={BUTTON_SECONDARY}
+                      disabled={!owed.can_reimburse}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onReimburse(owed)
+                      }}
+                      aria-label={`Reimburse from Kitty to ${name}`}
+                    >
+                      <CreditCard className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      Pay Now
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  )
+}
+
+/** One resident's reimbursement for the month: what they paid, what is owed back, and each payment back (Rule U7). */
+export function KittyReimbursementStatementModal({
+  month,
+  reimbursement,
+  onDelete,
+  onClose,
+}: {
+  month: string
+  reimbursement: KittyReimbursement
   /** Deletes a payment back recorded by mistake, while the month is open; without it none is offered. */
   onDelete?: (refund: KittyRefund) => void
+  onClose: () => void
 }) {
   const owed = reimbursement
   const name = owed.recipient_name
-  const settled = owed.pending_reimbursement_paise === 0
-  // What of the total they paid was their own share, paid through the kitty.
-  const viaKitty = owed.total_fronted_paise - owed.net_reimbursement_owed_paise
+  const dash = <span className="text-[var(--text-tertiary)]">—</span>
   return (
-    <Panel
-      title={`Reimbursement · ${name}`}
-      icon={<HandCoins className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint={`${name} paid extra beyond their allotted share for ${billLabel}. The House Kitty reimburses the extra amount out of what the other flatmates pay in.`}
-    >
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-        <MiniStat
-          label="Total paid"
-          value={<Rupees paise={owed.total_fronted_paise} />}
-          note={viaKitty > 0 ? `Includes ${formatInr(viaKitty)} allotted share` : `All of it beyond their share, to ${paidTo}`}
-        />
-        <MiniStat
-          label="Extra (reimbursable)"
-          value={<Rupees paise={owed.net_reimbursement_owed_paise} />}
-          note="To be reimbursed via House Kitty"
-        />
-        <MiniStat
-          label="Reimbursed so far"
-          value={<Rupees paise={owed.reimbursed_so_far_paise} />}
-          note={settled ? 'Nothing still owed' : `${formatInr(owed.pending_reimbursement_paise)} still owed`}
-        />
-        <MiniStat
-          label="Kitty cash available"
-          value={<Rupees paise={owed.kitty_cash_available_paise} />}
-          note="Collected from other flatmates"
-        />
-      </div>
-
-      {owed.reimbursements.length > 0 && (
-        <div className="overflow-x-auto min-w-0">
-          <table className="w-full text-left text-xs min-w-[480px] border-collapse">
-            <caption className="sr-only">Reimbursements to {name}</caption>
-            <thead>
-              <tr className={TABLE_HEAD}>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Paid on</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
-                <th scope="col" className="pb-3 pr-3 font-bold text-center">Reference / UTR</th>
-                {onDelete && <th scope="col" className="pb-3 font-bold text-center">Actions</th>}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
-              {owed.reimbursements.map((refund) => (
-                <tr key={refund.payment_id} className="align-middle">
-                  <td className="py-2.5 pr-3 text-center tabular">{formatDate(refund.payment_date)}</td>
-                  <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
-                    <Rupees paise={refund.amount_paise} />
-                  </td>
-                  <td className="py-2.5 pr-3 text-center tabular break-all">
-                    {refund.reference ?? <span className="text-[var(--text-tertiary)]">—</span>}
-                  </td>
-                  {onDelete && (
-                    <td className="py-2.5 text-center">
-                      <button
-                        type="button"
-                        className={BUTTON_QUIET}
-                        onClick={() => onDelete(refund)}
-                        aria-label={`Delete the ${formatInr(refund.amount_paise)} reimbursement of ${formatDate(refund.payment_date)}`}
-                      >
-                        <Trash2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                        Delete
-                      </button>
-                    </td>
-                  )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <Modal title="Reimbursement Statement" description={`${name} · ${formatMonth(month)}`} onClose={onClose}>
+      <div className="stack">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <MiniStat label="Total Paid" value={<Rupees paise={owed.total_fronted_paise} />} />
+          <MiniStat label="Extra Paid" value={<Rupees paise={owed.net_reimbursement_owed_paise} />} />
+          <MiniStat label="Still Owed" value={<Rupees paise={owed.pending_reimbursement_paise} />} />
+          <MiniStat label="Kitty Cash Available" value={<Rupees paise={owed.kitty_cash_available_paise} />} />
         </div>
-      )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        {settled ? (
-          <span className="text-xs text-[var(--text-secondary)]">
-            <Pill tone="success">
-              <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-              Reimbursed
-            </Pill>{' '}
-            {name} has been paid back in full.
-          </span>
-        ) : (
-          <>
-            <span className="text-xs text-[var(--text-secondary)]">
-              {owed.can_reimburse
-                ? `The kitty can pay back ${formatInr(owed.reimbursable_paise)} now.`
-                : `Nothing paid into the kitty for ${billLabel} is waiting to go back yet.`}
-            </span>
-            <button
-              type="button"
-              className={BUTTON_PRIMARY}
-              disabled={!owed.can_reimburse}
-              onClick={() => onReimburse(owed)}
-            >
-              {owed.can_reimburse
-                ? `Reimburse ${formatInr(owed.reimbursable_paise)} from Kitty to ${name}`
-                : `Reimburse from Kitty to ${name}`}
-            </button>
-          </>
-        )}
+        <section aria-label="Reimbursement history" className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="m-0 text-sm font-bold text-[var(--text-primary)]">Reimbursement History</h3>
+            <ReimbursementStatus owed={owed} />
+          </div>
+          {owed.reimbursements.length === 0 ? (
+            <EmptyBlock title="No reimbursements recorded yet for this month." />
+          ) : (
+            <div className="overflow-x-auto min-w-0">
+              <table className="w-full text-left text-xs min-w-[480px] border-collapse">
+                <caption className="sr-only">Reimbursements to {name}</caption>
+                <thead>
+                  <tr className={TABLE_HEAD}>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Paid on</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
+                    <th scope="col" className="pb-3 pr-3 font-bold text-center">Reference / UTR</th>
+                    {onDelete && <th scope="col" className="pb-3 font-bold text-center">Actions</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+                  {owed.reimbursements.map((refund) => (
+                    <tr key={refund.payment_id} className="align-middle">
+                      <td className="py-2.5 pr-3 text-center tabular">{formatDate(refund.payment_date)}</td>
+                      <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
+                        <Rupees paise={refund.amount_paise} />
+                      </td>
+                      <td className="py-2.5 pr-3 text-center tabular break-all">{refund.reference ?? dash}</td>
+                      {onDelete && (
+                        <td className="py-2.5 text-center">
+                          <button
+                            type="button"
+                            className={BUTTON_QUIET}
+                            onClick={() => onDelete(refund)}
+                            aria-label={`Delete the ${formatInr(refund.amount_paise)} reimbursement of ${formatDate(refund.payment_date)}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                            Delete
+                          </button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
       </div>
-    </Panel>
+    </Modal>
   )
 }
 

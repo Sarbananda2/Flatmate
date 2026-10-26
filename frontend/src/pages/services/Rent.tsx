@@ -26,7 +26,11 @@ import {
   type ResidentCollectionItem,
 } from '../../components/ResidentCollectionTable'
 import { DeleteTransactionDialog, type PendingDeletion } from '../../components/DeleteTransactionDialog'
-import { KittyReimbursementPanel, ReimburseDialog } from '../../components/KittyReimbursement'
+import {
+  KittyReimbursementPanel,
+  KittyReimbursementStatementModal,
+  ReimburseDialog,
+} from '../../components/KittyReimbursement'
 import {
   ProviderPayoutStatementModal,
   ProviderPayoutTable,
@@ -100,8 +104,9 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
   // nothing to generate here: the month shows its live shares, or a preview.
   const overview = useResource<RentMonthOverview>(`/api/rent/cycle/${month}`)
   const [dialog, setDialog] = useState<'payout' | null>(null)
-  // Whom the kitty is paying back, when it is.
+  // Whom the kitty is paying back, when it is; whose reimbursement statement is open.
   const [reimbursing, setReimbursing] = useState<KittyReimbursement | null>(null)
+  const [viewingReimbursement, setViewingReimbursement] = useState<string | null>(null)
   // A payment or payout recorded by mistake, about to be deleted.
   const [deleting, setDeleting] = useState<PendingDeletion | null>(null)
   const [payingFor, setPayingFor] = useState<RentParticipant | null>(null)
@@ -169,25 +174,14 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   onViewStatement={() => setViewingLandlordStatement(true)}
                 />
                 {/* Whoever paid the landlord more than their share is paid back from the kitty. */}
-                {(cycle?.reimbursements ?? []).map((reimbursement) => (
+                {(cycle?.reimbursements ?? []).length > 0 && (
                   <KittyReimbursementPanel
-                    key={reimbursement.recipient_resident_id}
-                    reimbursement={reimbursement}
+                    reimbursements={cycle!.reimbursements!}
                     billLabel={`${formatMonth(month)} rent`}
-                    paidTo="the landlord"
                     onReimburse={setReimbursing}
-                    onDelete={
-                      open
-                        ? (refund) =>
-                            deletePayment(
-                              refund.payment_id,
-                              'Delete this reimbursement?',
-                              `${formatInr(refund.amount_paise)} paid back from the kitty to ${reimbursement.recipient_name} on ${formatDate(refund.payment_date)}.`,
-                            )
-                        : undefined
-                    }
+                    onViewStatement={(owed) => setViewingReimbursement(owed.recipient_resident_id)}
                   />
-                ))}
+                )}
                 {/* The contract the rent is charged under, for reference. */}
                 <RentAgreementCard
                   config={config}
@@ -288,6 +282,32 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                 onClose={() => setViewingStatement(null)}
               />
             )}
+            {viewingReimbursement &&
+              (() => {
+                // Read from the month as it now stands, so a deleted reimbursement drops out at once.
+                const owed = (cycle?.reimbursements ?? []).find(
+                  (row) => row.recipient_resident_id === viewingReimbursement,
+                )
+                return (
+                  owed && (
+                    <KittyReimbursementStatementModal
+                      month={month}
+                      reimbursement={owed}
+                      onDelete={
+                        open
+                          ? (refund) =>
+                              deletePayment(
+                                refund.payment_id,
+                                'Delete this reimbursement?',
+                                `${formatInr(refund.amount_paise)} paid back from the kitty to ${owed.recipient_name} on ${formatDate(refund.payment_date)}.`,
+                              )
+                          : undefined
+                      }
+                      onClose={() => setViewingReimbursement(null)}
+                    />
+                  )
+                )
+              })()}
             {deleting && (
               <DeleteTransactionDialog
                 deletion={deleting}

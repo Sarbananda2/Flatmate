@@ -43,7 +43,12 @@ import {
   type ResidentCollectionItem,
 } from '../../components/ResidentCollectionTable'
 import { DeleteTransactionDialog, type PendingDeletion } from '../../components/DeleteTransactionDialog'
-import { KittyReimbursementPanel, ReimburseDialog, billFor } from '../../components/KittyReimbursement'
+import {
+  KittyReimbursementPanel,
+  KittyReimbursementStatementModal,
+  ReimburseDialog,
+  billFor,
+} from '../../components/KittyReimbursement'
 import {
   PAYOUT_STATUS,
   ProviderPayoutStatementModal,
@@ -151,6 +156,11 @@ function billingDate(month: string, day: number): string {
 }
 
 /** Every live provider: from the backend, or, for an older response, the one there was. */
+/** Everyone the kitty owes for the month, one entry each. */
+function reimbursementsOf(bill: FurnitureMonthBill): FurnitureReimbursement[] {
+  return bill.reimbursements ?? (bill.reimbursement ? [bill.reimbursement] : [])
+}
+
 function servicesOf(data: FurnitureRentalOverview): FurnitureServiceEntry[] {
   if (data.services) return data.services
   return data.service && data.config
@@ -202,6 +212,7 @@ type Dialog =
   | { kind: 'provider_payout'; bill: FurnitureMonthBill; payout: FurnitureProviderPayout }
   | { kind: 'payout_statement'; payout: FurnitureProviderPayout }
   | { kind: 'reimburse'; reimbursement: FurnitureReimbursement }
+  | { kind: 'reimbursement_statement'; reimbursement: FurnitureReimbursement }
   | { kind: 'share_detail'; share: FurnitureShare; bill: FurnitureMonthBill }
   | { kind: 'pay_share'; share: FurnitureShare }
 
@@ -293,39 +304,28 @@ export function FurnitureRental({ month }: { month: string }) {
                       onPayout={(payout) => setDialog({ kind: 'provider_payout', bill: data.month!, payout })}
                       onViewStatement={(payout) => setDialog({ kind: 'payout_statement', payout })}
                     />
-                    {(data.month.reimbursements ?? (data.month.reimbursement ? [data.month.reimbursement] : [])).map(
-                      (reimbursement) => (
-                        <KittyReimbursementPanel
-                          key={reimbursement.recipient_resident_id}
-                          reimbursement={reimbursement}
-                          billLabel={billFor(month)}
-                          paidTo={servicesOf(data)
-                            .map((entry) => entry.config.provider_name)
-                            .join(', ')}
-                          onReimburse={(owed) => setDialog({ kind: 'reimburse', reimbursement: owed })}
-                          onDelete={
-                            data.month?.transactions_open
-                              ? (refund) =>
-                                  setDeleting({
-                                    title: 'Delete this reimbursement?',
-                                    what: `${formatInr(refund.amount_paise)} paid back from the kitty to ${reimbursement.recipient_name} on ${formatDate(refund.payment_date)}.`,
-                                    url: `${BASE}/payments/${encodeURIComponent(refund.payment_id)}`,
-                                  })
-                              : undefined
-                          }
-                        />
-                      ),
+                    {/* Whoever paid a provider more than their share is paid back from the kitty. */}
+                    {reimbursementsOf(data.month).length > 0 && (
+                      <KittyReimbursementPanel
+                        reimbursements={reimbursementsOf(data.month)}
+                        billLabel={billFor(month)}
+                        onReimburse={(owed) => setDialog({ kind: 'reimburse', reimbursement: owed })}
+                        onViewStatement={(owed) => setDialog({ kind: 'reimbursement_statement', reimbursement: owed })}
+                      />
                     )}
                   </>
                 )}
                 {tab === 'items' && (
-                  <ItemsPanel
-                    items={data.items}
-                    onAdd={() => setDialog({ kind: 'add' })}
-                    onView={(item) => setDialog({ kind: 'item_detail', item })}
-                    onEdit={(item) => setDialog({ kind: 'edit', item })}
-                    onReturn={(item) => setDialog({ kind: 'return', item })}
-                  />
+                  <>
+                    {data.month && <ItemsMetrics bill={data.month} />}
+                    <ItemsPanel
+                      items={data.items}
+                      onAdd={() => setDialog({ kind: 'add' })}
+                      onView={(item) => setDialog({ kind: 'item_detail', item })}
+                      onEdit={(item) => setDialog({ kind: 'edit', item })}
+                      onReturn={(item) => setDialog({ kind: 'return', item })}
+                    />
+                  </>
                 )}
                 {tab === 'subscription' && (
                   <>
@@ -475,6 +475,32 @@ export function FurnitureRental({ month }: { month: string }) {
               onClose={() => setDialog(null)}
             />
           )}
+          {dialog?.kind === 'reimbursement_statement' &&
+            (() => {
+              // Read from the month as it now stands, so a deleted reimbursement drops out at once.
+              const owed = (data.month ? reimbursementsOf(data.month) : []).find(
+                (row) => row.recipient_resident_id === dialog.reimbursement.recipient_resident_id,
+              )
+              return (
+                owed && (
+                  <KittyReimbursementStatementModal
+                    month={month}
+                    reimbursement={owed}
+                    onDelete={
+                      data.month?.transactions_open
+                        ? (refund) =>
+                            setDeleting({
+                              title: 'Delete this reimbursement?',
+                              what: `${formatInr(refund.amount_paise)} paid back from the kitty to ${owed.recipient_name} on ${formatDate(refund.payment_date)}.`,
+                              url: `${BASE}/payments/${encodeURIComponent(refund.payment_id)}`,
+                            })
+                        : undefined
+                    }
+                    onClose={() => setDialog(null)}
+                  />
+                )
+              )
+            })()}
           {deleting && (
             <DeleteTransactionDialog
               deletion={deleting}
@@ -1011,15 +1037,10 @@ function ItemDetailModal({
 
 /* ------------------------------------------------- 3. the month's bill -- */
 
-/** The month at a glance: the split, what the kitty has collected, and whether the provider is paid. */
-function Metrics({ bill, billingDay }: { bill: FurnitureMonthBill; billingDay: number | null }) {
-  const billed = bill.expense != null
-  const charged = bill.shares.filter((share) => share.total_paise > 0).length
-  const lastPaid = bill.disbursements.length ? bill.disbursements[bill.disbursements.length - 1].disbursed_at : null
-  const due = billingDay ? billingDate(bill.settlement_month, billingDay) : null
-  const payout = PAYOUT_STATUS[bill.payout_status]
+/** How the month's bill is split: the shared items, and each person's part of them. */
+function ItemsMetrics({ bill }: { bill: FurnitureMonthBill }) {
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
       <MiniStat label="Shared items" value={<Rupees paise={bill.common_total_paise} />} note="Split equally" />
       <MiniStat
         label="Each person's part"
@@ -1030,6 +1051,19 @@ function Metrics({ bill, billingDay }: { bill: FurnitureMonthBill; billingDay: n
             : 'Nobody taking part'
         }
       />
+    </div>
+  )
+}
+
+/** The month's settlement at a glance: what the kitty has collected, and whether the provider is paid. */
+function Metrics({ bill, billingDay }: { bill: FurnitureMonthBill; billingDay: number | null }) {
+  const billed = bill.expense != null
+  const charged = bill.shares.filter((share) => share.total_paise > 0).length
+  const lastPaid = bill.disbursements.length ? bill.disbursements[bill.disbursements.length - 1].disbursed_at : null
+  const due = billingDay ? billingDate(bill.settlement_month, billingDay) : null
+  const payout = PAYOUT_STATUS[bill.payout_status]
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
       <MiniStat
         label="Internal Collection"
         value={<Rupees paise={billed ? bill.collected_paise : null} />}
