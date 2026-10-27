@@ -1504,8 +1504,24 @@ function ItemDialog({
   const [gstExclusive, setGstExclusive] = useState(item ? item.is_gst_exclusive : true)
   const [gstRate, setGstRate] = useState(rateText(item?.gst_rate_percent ?? GST_RATE_PERCENT))
   const rate = parseGstRate(gstRate)
-  const gstPaise = gstExclusive && rate.ok ? gstOn(rentPaise, rate.percent) : 0
-  const grossPaise = rentPaise + gstPaise
+  // What it is billed with GST: worked out from the rent and rate, or the
+  // invoice's own total where it rounds its GST another way. An item's saved
+  // total stays until its rent or rate changes.
+  const savedGross = item?.is_gst_exclusive ? item.monthly_rent_paise : null
+  const [gross, setGross] = useState(savedGross === null ? '' : paiseToInput(savedGross))
+  const [grossPaise, setGrossPaise] = useState(savedGross ?? 0)
+  const [grossOk, setGrossOk] = useState(savedGross !== null)
+  const refillGross = (basePaise: number, baseOk: boolean, rateRaw: string) => {
+    const next = parseGstRate(rateRaw)
+    const filled = baseOk && basePaise > 0 && next.ok
+    const paise = filled ? basePaise + gstOn(basePaise, next.percent) : 0
+    setGross(filled ? paiseToInput(paise) : '')
+    setGrossPaise(paise)
+    setGrossOk(filled)
+  }
+  const grossBelowRent = gstExclusive && grossOk && rentOk && grossPaise < rentPaise
+  const billedPaise = gstExclusive ? grossPaise : rentPaise
+  const gstPaise = billedPaise - rentPaise
   // Who pays: '' for everyone, else the resident the item is for.
   const [payer, setPayer] = useState(item?.assigned_resident_id ?? '')
   const [status, setStatus] = useState<'active' | 'pending_delivery'>(
@@ -1517,12 +1533,16 @@ function ItemDialog({
     (resident) => resident.is_active || resident.resident_id === item?.assigned_resident_id,
   )
   const valid =
-    Boolean(serviceId) && name.trim().length > 0 && rentOk && rentPaise > 0 && (!gstExclusive || rate.ok)
+    Boolean(serviceId) &&
+    name.trim().length > 0 &&
+    rentOk &&
+    rentPaise > 0 &&
+    (!gstExclusive || (rate.ok && grossOk && !grossBelowRent))
   const body = {
     service_id: serviceId || null,
     name: name.trim(),
     base_rent_paise: rentPaise,
-    monthly_rent_paise: grossPaise,
+    monthly_rent_paise: billedPaise,
     is_gst_exclusive: gstExclusive,
     gst_rate_percent: rate.ok ? rate.percent : (item?.gst_rate_percent ?? GST_RATE_PERCENT),
     allocation_scope: payer ? 'resident' : 'common',
@@ -1571,32 +1591,57 @@ function ItemDialog({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <div className="stack">
             <MoneyInput
-              label="Monthly rent"
+              label={gstExclusive ? 'Base monthly rent' : 'Monthly rent'}
               required
               value={rent}
               onChange={(raw, parsed) => {
                 setRent(raw)
                 setRentPaise(parsed.paise)
                 setRentOk(parsed.ok)
+                refillGross(parsed.paise, parsed.ok, gstRate)
               }}
               hint={gstExclusive ? 'As quoted, before GST.' : 'As quoted, GST included if any.'}
             />
-            <CheckboxField label="Exclusive of GST" checked={gstExclusive} onChange={setGstExclusive} />
+            <CheckboxField
+              label="Exclusive of GST"
+              checked={gstExclusive}
+              onChange={(checked) => {
+                setGstExclusive(checked)
+                if (checked) refillGross(rentPaise, rentOk, gstRate)
+              }}
+            />
             {gstExclusive && (
-              <TextField
-                label="GST (%)"
-                value={gstRate}
-                onChange={setGstRate}
-                inputMode="decimal"
-                maxLength={6}
-                error={gstRate.trim() && !rate.ok ? rate.error : null}
-                hint="Added to the rent above, rounded to the paisa."
-              />
+              <>
+                <TextField
+                  label="GST (%)"
+                  value={gstRate}
+                  onChange={(raw) => {
+                    setGstRate(raw)
+                    refillGross(rentPaise, rentOk, raw)
+                  }}
+                  inputMode="decimal"
+                  maxLength={6}
+                  error={gstRate.trim() && !rate.ok ? rate.error : null}
+                  hint="Added to the rent above, rounded to the paisa."
+                />
+                <MoneyInput
+                  label="Gross monthly rent (incl. GST)"
+                  required
+                  value={gross}
+                  onChange={(raw, parsed) => {
+                    setGross(raw)
+                    setGrossPaise(parsed.paise)
+                    setGrossOk(parsed.ok)
+                  }}
+                  error={grossBelowRent ? 'Less than the rent before GST.' : null}
+                  hint="Filled in from the rent and rate. Change it to match the invoice to the paisa."
+                />
+              </>
             )}
-            {gstExclusive && rate.ok && rentOk && rentPaise > 0 && (
+            {gstExclusive && rate.ok && rentOk && rentPaise > 0 && grossOk && !grossBelowRent && (
               <p role="status" className="m-0 text-xs font-medium text-[var(--text-secondary)] tabular">
                 Base: {formatInr(rentPaise)} + GST ({rateText(rate.percent)}%): {formatInr(gstPaise)} = Gross
-                total: {formatInr(grossPaise)}/mo
+                total: {formatInr(billedPaise)}/mo
               </p>
             )}
           </div>

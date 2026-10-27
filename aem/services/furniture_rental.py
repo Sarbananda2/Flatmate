@@ -1020,7 +1020,10 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
     that is not given. With ``is_gst_exclusive`` it is before GST, and the item is
     billed it plus GST at ``gst_rate_percent`` -- 18% unless given, or the rate it
     had (:func:`gst_paise`); otherwise it is billed it as it is. A
-    ``monthly_rent_paise`` sent with ``base_rent_paise`` must be that total.
+    ``monthly_rent_paise`` sent with ``base_rent_paise`` is what the item is
+    billed: before GST it may differ from the rent plus GST worked out, to match
+    an invoice that rounds its GST another way, but not be below the rent;
+    otherwise it must be the rent.
     """
     service_id = optional_text(values.get("service_id"), "service_id", max_length=64)
     if service_id:
@@ -1064,7 +1067,16 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
                         field, allow_zero=False)
     rent = base + (gst_paise(base, rate) if exclusive else 0)
     sent = values.get("monthly_rent_paise")
-    if quoted is not None and sent is not None and sent != rent:
+    if exclusive and quoted is not None and sent is not None:
+        # The invoice's own total, its GST rounded as the provider rounds it
+        # (CGST and SGST each, say), when it is not the GST worked out here.
+        rent = ensure_paise(sent, "monthly_rent_paise", allow_zero=False)
+        if rent < base:
+            raise ValidationError(
+                f"The monthly rent with GST cannot be less than the {format_inr(base)} "
+                f"before GST.", code="furniture_gst_total_below_base",
+                details={"field": "monthly_rent_paise", "base_rent_paise": base})
+    elif quoted is not None and sent is not None and sent != rent:
         raise ValidationError(
             f"The monthly rent of {format_inr(base)}"
             f"{f' plus {rate:g}% GST' if exclusive else ''} is {format_inr(rent)}, "
@@ -1137,7 +1149,9 @@ def update_item(db: Database, apartment_id: str, item_id: str, changes: Mapping[
 
     A rent sent is the rent as quoted (see :func:`_clean_item`). Without one the
     quoted rent stays, so turning ``is_gst_exclusive`` on adds GST to it, and
-    turning it off bills the item that rent alone."""
+    turning it off bills the item that rent alone. The total it is billed stays
+    too, any GST rounding of the invoice's kept, until its rent, GST or rate
+    changes."""
     timestamp = now_timestamp()
     changes = {key: value for key, value in changes.items()
                if not (key in ("is_gst_exclusive", "gst_rate_percent") and value is None)}
@@ -1149,6 +1163,12 @@ def update_item(db: Database, apartment_id: str, item_id: str, changes: Mapping[
             changes.get("base_rent_paise") if "base_rent_paise" in changes
             else None if changes.get("monthly_rent_paise") is not None
             else before["base_rent_paise"])
+        if ("base_rent_paise" not in changes and changes.get("monthly_rent_paise") is None
+                and changes.get("is_gst_exclusive", bool(before["is_gst_exclusive"]))
+                == bool(before["is_gst_exclusive"])
+                and changes.get("gst_rate_percent", before["gst_rate_percent"])
+                == before["gst_rate_percent"]):
+            merged["monthly_rent_paise"] = before["monthly_rent_paise"]
         if changes.get("allocation_scope") == "common" and "assigned_resident_id" not in changes:
             merged["assigned_resident_id"] = None
         if (changes.get("status") in ("active", "pending_delivery")
