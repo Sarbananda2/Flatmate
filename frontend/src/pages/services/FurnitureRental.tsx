@@ -167,26 +167,6 @@ function hasGst(item: FurnitureItem): boolean {
   return item.is_gst_exclusive || item.gst_paise > 0
 }
 
-/** "Base ₹1,000.00 + ₹180.00 GST (18%)": what an item with GST on its rent is billed. */
-function gstBreakdown(item: FurnitureItem): string {
-  const rate = rateText(item.gst_rate_percent ?? GST_RATE_PERCENT)
-  return `Base ${formatInr(item.base_rent_paise)} + ${formatInr(item.gst_paise)} GST (${rate}%)`
-}
-
-/** An item's monthly rent as billed, with the GST in it when it was quoted before GST. */
-function ItemRent({ item }: { item: FurnitureItem }) {
-  return (
-    <>
-      <Rupees paise={item.monthly_rent_paise} />
-      {hasGst(item) && (
-        <span className="block text-[10px] font-medium text-[var(--text-tertiary)] tabular">
-          {gstBreakdown(item)}
-        </span>
-      )}
-    </>
-  )
-}
-
 function isSettled(share: FurnitureShare): boolean {
   return share.status === 'paid' || share.status === 'funded_payout' || share.outstanding_paise <= 0
 }
@@ -900,7 +880,7 @@ function SubscriptionDetailModal({
                           )}
                         </td>
                         <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                          <ItemRent item={item} />
+                          <Rupees paise={item.monthly_rent_paise} />
                         </td>
                         <td className="py-3 text-center whitespace-nowrap">
                           <Pill tone={status.tone}>{status.label}</Pill>
@@ -986,7 +966,7 @@ function ItemsPanel({
                       )}
                     </td>
                     <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                      <ItemRent item={item} />
+                      <Rupees paise={item.monthly_rent_paise} />
                     </td>
                     <td className="py-3 pr-3 text-center whitespace-nowrap">
                       <Pill tone={status.tone}>{status.label}</Pill>
@@ -1052,11 +1032,7 @@ function ItemDetailModal({
     >
       <div className="space-y-5">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <MiniStat
-            label="Monthly Rent"
-            value={<Rupees paise={item.monthly_rent_paise} />}
-            note={hasGst(item) ? gstBreakdown(item) : 'No proration — billed in full'}
-          />
+          <MiniStat label="Gross Monthly Rent" value={<Rupees paise={item.monthly_rent_paise} />} />
           <MiniStat
             label="Paid By"
             value={shared ? 'Shared equally' : (item.assigned_resident_name ?? item.assigned_resident_id ?? '—')}
@@ -1065,6 +1041,15 @@ function ItemDetailModal({
           <MiniStat label="Status" value={<Pill tone={status.tone}>{status.label}</Pill>} />
         </div>
         <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm" aria-label="Item details">
+          <DetailFact label="Base Rent">
+            <span className="tabular">{formatInr(item.base_rent_paise)}</span>
+          </DetailFact>
+          <DetailFact label={`GST (${rateText(item.gst_rate_percent ?? GST_RATE_PERCENT)}%)`}>
+            <span className="tabular">{hasGst(item) ? formatInr(item.gst_paise) : 'Included in base rent'}</span>
+          </DetailFact>
+          <DetailFact label="Gross Monthly Rent">
+            <span className="tabular font-semibold">{formatInr(item.monthly_rent_paise)}</span>
+          </DetailFact>
           <DetailFact label="Rental Provider">{item.provider_name ?? '—'}</DetailFact>
           <DetailFact label="Delivery Date">
             <span className="tabular">{item.delivery_date ? formatDate(item.delivery_date) : '—'}</span>
@@ -1194,12 +1179,6 @@ function ResidentCollectionPanel({
       subtitle: share.taking_part ? undefined : 'Not taking part',
       subtitleTone: share.taking_part ? undefined : 'warning',
       sharePaise: share.total_paise,
-      shareNote:
-        share.private_paise > 0 ? (
-          <>
-            incl. <Rupees paise={share.private_paise} /> own
-          </>
-        ) : undefined,
       paidIntoKittyPaise: billed ? share.settled_paise : null,
       stillOwedPaise: billed ? share.outstanding_paise : null,
       status,

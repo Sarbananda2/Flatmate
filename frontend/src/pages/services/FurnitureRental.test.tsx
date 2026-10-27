@@ -465,10 +465,14 @@ describe('FurnitureRental', () => {
     await userEvent.click(within(table).getByRole('row', { name: /Queen bed/ }))
     const dialog = screen.getByRole('dialog', { name: 'Queen bed' })
     expect(dialog).toHaveTextContent('Queen bedFurlenco')
-    expect(dialog).toHaveTextContent('Monthly Rent₹500.00No proration — billed in full')
+    expect(dialog).toHaveTextContent('Gross Monthly Rent₹500.00Paid By')
     expect(dialog).toHaveTextContent('Paid ByBobPersonal item')
     expect(dialog).toHaveTextContent('StatusIn the flat')
     const details = within(dialog).getByLabelText('Item details')
+    // Priced with its GST in it: the base is the whole rent.
+    expect(details).toHaveTextContent('Base Rent₹500.00')
+    expect(details).toHaveTextContent('GST (18%)Included in base rent')
+    expect(details).toHaveTextContent('Gross Monthly Rent₹500.00')
     expect(details).toHaveTextContent('Rental ProviderFurlenco')
     expect(details).not.toHaveTextContent('Category')
     expect(details).toHaveTextContent('Delivery Date1 Sep 2026')
@@ -509,7 +513,9 @@ describe('FurnitureRental', () => {
     show(overview({ month: bill({ bill_state: 'upcoming', can_generate: false }) }))
     const shares = await screen.findByRole('table', { name: 'Shares for November 2026' })
     // Before the month bills there is nothing to pay in yet.
-    expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent('Bob₹1,066.67incl. ₹500.00 own———')
+    // A share with a person's own items in it is one figure; what is in it is in the statement.
+    expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent('Bob₹1,066.67———')
+    expect(within(shares).getByRole('row', { name: /Bob/ })).not.toHaveTextContent('own')
     expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Chris₹566.66———')
     expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeDisabled()
     // The split itself is on the Rented Items tab; this one is about settling it.
@@ -649,9 +655,8 @@ describe('FurnitureRental', () => {
     })
     show(overview({ items: [wardrobe] }), {}, '/?tab=items')
     const table = await screen.findByRole('table', { name: 'Rented items' })
-    // Billed with its GST, which is shown under it.
     expect(within(table).getByRole('row', { name: /Wardrobe/ })).toHaveTextContent(
-      'WardrobeFurlencoShared₹1,180.00Base ₹1,000.00 + ₹180.00 GST (18%)In the flat',
+      'WardrobeFurlencoShared₹1,180.00In the flat',
     )
     await userEvent.click(within(within(table).getByRole('row', { name: /Wardrobe/ })).getByRole('button', { name: 'More options' }))
     await userEvent.click(screen.getByRole('menuitem', { name: 'Edit item' }))
@@ -692,12 +697,61 @@ describe('FurnitureRental', () => {
     const gross = (await screen.findByText('Gross total')).parentElement!
     expect(gross).toHaveTextContent('Gross total₹3,320.00Base ₹3,200.00 + GST ₹120.00')
     const table = screen.getByRole('table', { name: 'Rented items' })
-    expect(within(table).getByRole('row', { name: /Wardrobe/ })).toHaveTextContent(
-      '₹1,120.00Base ₹1,000.00 + ₹120.00 GST (12%)',
-    )
-    await userEvent.click(within(table).getByRole('row', { name: /Wardrobe/ }))
+    const row = within(table).getByRole('row', { name: /Wardrobe/ })
+    expect(row).toHaveTextContent('WardrobeFurlencoShared₹1,120.00In the flat')
+    expect(row).not.toHaveTextContent('GST')
+    await userEvent.click(row)
+    const details = within(screen.getByRole('dialog', { name: 'Wardrobe' })).getByLabelText('Item details')
+    expect(details).toHaveTextContent('Base Rent₹1,000.00')
+    expect(details).toHaveTextContent('GST (12%)₹120.00')
+    expect(details).toHaveTextContent('Gross Monthly Rent₹1,120.00')
+  })
+
+  it("shows only an item's gross rent in its row, and the whole of it in its details", async () => {
+    const wardrobe = item({
+      item_id: 'furn-wardrobe',
+      name: 'Wardrobe',
+      monthly_rent_paise: 118000,
+      base_rent_paise: 100000,
+      gst_paise: 18000,
+      is_gst_exclusive: true,
+    })
+    show(overview({ items: [...items, wardrobe] }), {}, '/?tab=items')
+    const table = await screen.findByRole('table', { name: 'Rented items' })
+    const row = within(table).getByRole('row', { name: /Wardrobe/ })
+    // One line: what it is billed, nothing under it.
+    expect(within(row).getAllByRole('cell')[1]).toHaveTextContent(/^₹1,180\.00$/)
+    expect(row).not.toHaveTextContent('Base')
+    expect(row).not.toHaveTextContent('GST')
+
+    await userEvent.click(row)
     const dialog = screen.getByRole('dialog', { name: 'Wardrobe' })
-    expect(dialog).toHaveTextContent('Monthly Rent₹1,120.00Base ₹1,000.00 + ₹120.00 GST (12%)')
+    expect(dialog).toHaveTextContent('Gross Monthly Rent₹1,180.00Paid By')
+    expect(dialog).toHaveTextContent('Paid ByShared equallyAll participating flatmates')
+    const details = within(dialog).getByLabelText('Item details')
+    expect(details).toHaveTextContent(
+      'Base Rent₹1,000.00GST (18%)₹180.00Gross Monthly Rent₹1,180.00Rental ProviderFurlenco' +
+        'Delivery Date1 Sep 2026Return DateStill in the flat',
+    )
+  })
+
+  it("shows only an item's gross rent in its subscription's list", async () => {
+    const wardrobe = item({
+      item_id: 'furn-wardrobe',
+      name: 'Wardrobe',
+      monthly_rent_paise: 118000,
+      base_rent_paise: 100000,
+      gst_paise: 18000,
+      is_gst_exclusive: true,
+    })
+    show(overview({ items: [...items, wardrobe] }), {}, '/?tab=subscription')
+    await userEvent.click((await screen.findByRole('heading', { name: 'Furlenco' })).closest('article')!)
+    const rented = within(screen.getByRole('dialog', { name: 'Furlenco Subscription' })).getByRole('table', {
+      name: 'Items rented from Furlenco',
+    })
+    const row = within(rented).getByRole('row', { name: /Wardrobe/ })
+    expect(row).toHaveTextContent('WardrobeShared₹1,180.00In the flat')
+    expect(row).not.toHaveTextContent('GST')
   })
 
   it('shows no gross total when no item carries GST', async () => {
@@ -845,7 +899,7 @@ describe('FurnitureRental', () => {
     ])
     expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent('Alice₹566.67₹566.67₹0.00PaidPay Now')
     expect(within(shares).getByRole('row', { name: /Bob/ })).toHaveTextContent(
-      'Bob₹1,066.67incl. ₹500.00 own₹1,066.67₹0.00PaidPay Now',
+      'Bob₹1,066.67₹1,066.67₹0.00PaidPay Now',
     )
     expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent(
       'Chris₹566.66₹300.00₹266.66Part paidPay Now',
