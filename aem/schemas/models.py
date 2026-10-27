@@ -1112,8 +1112,14 @@ class FurnitureItemCreate(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     category: FurnitureCategory = Field(
         "other", description="Kept for older clients; the screen no longer asks for it.")
-    monthly_rent_paise: int = _money_field(
-        "The item's monthly rent as quoted, before GST: the month's bill adds GST.", ge=1)
+    quantity: int = Field(1, ge=1, description="How many of it are rented, all alike.")
+    monthly_rent_paise: int | None = _money_field(
+        "The monthly rent for all of them, as quoted, before GST: the month's bill adds GST. "
+        "It divides evenly between them. This or unit_monthly_rent_paise is needed.",
+        ge=1, default=None)
+    unit_monthly_rent_paise: int | None = _money_field(
+        "The monthly rent for one of them, before GST; the item bills it times quantity.",
+        ge=1, default=None)
     allocation_scope: Literal["common", "resident"] = Field(
         description="common: split equally; resident: charged to assigned_resident_id alone.")
     assigned_resident_id: str | None = Field(None, max_length=64)
@@ -1128,8 +1134,12 @@ class FurnitureItemUpdate(ApiModel):
         None, max_length=64, description="Move it to another provider's subscription.")
     name: str | None = Field(None, min_length=1, max_length=200)
     category: FurnitureCategory | None = None
+    quantity: int | None = Field(
+        None, ge=1, description="How many of it are rented. Changed alone, each keeps its rent.")
     monthly_rent_paise: int | None = _money_field(
-        "The item's monthly rent as quoted, before GST.", ge=1, default=None)
+        "The monthly rent for all of them, as quoted, before GST.", ge=1, default=None)
+    unit_monthly_rent_paise: int | None = _money_field(
+        "The monthly rent for one of them, before GST.", ge=1, default=None)
     allocation_scope: Literal["common", "resident"] | None = None
     assigned_resident_id: str | None = Field(None, max_length=64)
     status: Literal["active", "pending_delivery", "returned"] | None = None

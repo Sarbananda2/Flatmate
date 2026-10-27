@@ -167,6 +167,26 @@ function parseGstRate(raw: string): { ok: boolean; percent: number; error?: stri
   return { ok: true, percent }
 }
 
+/** A quantity as typed: a whole number, 1 or more; null otherwise. */
+function parseQuantity(raw: string): number | null {
+  const text = raw.trim()
+  return /^\d{1,4}$/.test(text) && Number(text) >= 1 ? Number(text) : null
+}
+
+/** An item's monthly rent, and for several alike, what each one costs. */
+function ItemRent({ item }: { item: FurnitureItem }) {
+  return (
+    <>
+      <Rupees paise={item.monthly_rent_paise} />
+      {item.quantity > 1 && (
+        <span className="block text-[10px] font-medium text-[var(--text-tertiary)] tabular">
+          {item.quantity} × {formatInr(item.unit_monthly_rent_paise)}
+        </span>
+      )}
+    </>
+  )
+}
+
 /** Nothing left to pay on the share: paid into the kitty, or covered by paying the provider. */
 function isSettled(share: FurnitureShare): boolean {
   return share.status === 'paid' || share.status === 'funded_payout' || share.outstanding_paise <= 0
@@ -900,6 +920,11 @@ function SubscriptionDetailModal({
                       <tr key={item.item_id} className="align-middle">
                         <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
                           {item.name}
+                          {item.quantity > 1 && (
+                            <span className="block text-[11px] font-normal text-[var(--text-tertiary)]">
+                              Qty {item.quantity}
+                            </span>
+                          )}
                         </th>
                         <td className="py-3 pr-3 text-center">
                           {item.allocation_scope === 'common' ? (
@@ -909,7 +934,7 @@ function SubscriptionDetailModal({
                           )}
                         </td>
                         <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                          <Rupees paise={item.monthly_rent_paise} />
+                          <ItemRent item={item} />
                         </td>
                         <td className="py-3 text-center whitespace-nowrap">
                           <Pill tone={status.tone}>{status.label}</Pill>
@@ -985,7 +1010,10 @@ function ItemsPanel({
                   >
                     <th scope="row" className="py-3 pr-3 text-left font-normal">
                       <span className="block font-semibold text-[var(--text-primary)] truncate">{item.name}</span>
-                      <span className="block text-[11px] text-[var(--text-tertiary)] truncate">{item.provider_name}</span>
+                      <span className="block text-[11px] text-[var(--text-tertiary)] truncate">
+                        {item.provider_name}
+                        {item.quantity > 1 && ` · Qty ${item.quantity}`}
+                      </span>
                     </th>
                     <td className="py-3 pr-3 text-center">
                       {item.allocation_scope === 'common' ? (
@@ -995,7 +1023,7 @@ function ItemsPanel({
                       )}
                     </td>
                     <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                      <Rupees paise={item.monthly_rent_paise} />
+                      <ItemRent item={item} />
                     </td>
                     <td className="py-3 pr-3 text-center whitespace-nowrap">
                       <Pill tone={status.tone}>{status.label}</Pill>
@@ -1061,7 +1089,15 @@ function ItemDetailModal({
     >
       <div className="space-y-5">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <MiniStat label="Monthly Rent" value={<Rupees paise={item.monthly_rent_paise} />} note="Before GST" />
+          <MiniStat
+            label="Monthly Rent"
+            value={<Rupees paise={item.monthly_rent_paise} />}
+            note={
+              item.quantity > 1
+                ? `${item.quantity} × ${formatInr(item.unit_monthly_rent_paise)} · Before GST`
+                : 'Before GST'
+            }
+          />
           <MiniStat
             label="Paid By"
             value={shared ? 'Shared equally' : (item.assigned_resident_name ?? item.assigned_resident_id ?? '—')}
@@ -1070,6 +1106,16 @@ function ItemDetailModal({
           <MiniStat label="Status" value={<Pill tone={status.tone}>{status.label}</Pill>} />
         </div>
         <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm" aria-label="Item details">
+          {item.quantity > 1 && (
+            <>
+              <DetailFact label="Quantity">
+                <span className="tabular">{item.quantity}</span>
+              </DetailFact>
+              <DetailFact label="Unit Rent">
+                <span className="tabular">{formatInr(item.unit_monthly_rent_paise)}</span>
+              </DetailFact>
+            </>
+          )}
           <DetailFact label="Rental Provider">{item.provider_name ?? '—'}</DetailFact>
           <DetailFact label="Delivery Date">
             <span className="tabular">{item.delivery_date ? formatDate(item.delivery_date) : '—'}</span>
@@ -1559,9 +1605,12 @@ function ItemDialog({
   // The provider it is rented from.
   const [serviceId, setServiceId] = useState(item?.service_id ?? services[0]?.service.service_id ?? '')
   const [name, setName] = useState(item?.name ?? '')
-  // The rent as quoted, before GST: the month's bill adds GST.
-  const [rent, setRent] = useState(item ? paiseToInput(item.monthly_rent_paise) : '')
-  const [rentPaise, setRentPaise] = useState(item?.monthly_rent_paise ?? 0)
+  // How many alike, and the rent for one as quoted, before GST: the month's bill adds GST.
+  const [quantityRaw, setQuantityRaw] = useState(String(item?.quantity ?? 1))
+  const quantity = parseQuantity(quantityRaw)
+  const unitStart = item ? (item.unit_monthly_rent_paise ?? Math.floor(item.monthly_rent_paise / (item.quantity || 1))) : 0
+  const [rent, setRent] = useState(item ? paiseToInput(unitStart) : '')
+  const [rentPaise, setRentPaise] = useState(unitStart)
   const [rentOk, setRentOk] = useState(Boolean(item))
   // Who pays: '' for everyone, else the resident the item is for.
   const [payer, setPayer] = useState(item?.assigned_resident_id ?? '')
@@ -1573,11 +1622,12 @@ function ItemDialog({
   const people = (residents.data?.items ?? []).filter(
     (resident) => resident.is_active || resident.resident_id === item?.assigned_resident_id,
   )
-  const valid = Boolean(serviceId) && name.trim().length > 0 && rentOk && rentPaise > 0
+  const valid = Boolean(serviceId) && name.trim().length > 0 && rentOk && rentPaise > 0 && quantity !== null
   const body = {
     service_id: serviceId || null,
     name: name.trim(),
-    monthly_rent_paise: rentPaise,
+    quantity: quantity ?? 1,
+    monthly_rent_paise: rentPaise * (quantity ?? 1),
     allocation_scope: payer ? 'resident' : 'common',
     assigned_resident_id: payer || null,
     delivery_date: delivery || null,
@@ -1622,8 +1672,20 @@ function ItemDialog({
           <TextField label="Item" required value={name} onChange={setName} maxLength={200} placeholder="e.g. 3-seater sofa" />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+          <TextField
+            label="Quantity"
+            required
+            type="number"
+            min={1}
+            step={1}
+            inputMode="numeric"
+            value={quantityRaw}
+            onChange={setQuantityRaw}
+            error={quantityRaw.trim() && quantity === null ? 'Enter a whole number, 1 or more.' : null}
+            hint="How many alike, rented together."
+          />
           <MoneyInput
-            label="Monthly rent"
+            label="Monthly rent per item"
             required
             value={rent}
             onChange={(raw, parsed) => {
@@ -1631,8 +1693,15 @@ function ItemDialog({
               setRentPaise(parsed.paise)
               setRentOk(parsed.ok)
             }}
-            hint="As quoted, before GST."
+            hint="For one, as quoted, before GST."
           />
+        </div>
+        {quantity !== null && quantity > 1 && rentOk && rentPaise > 0 && (
+          <p role="status" className="m-0 text-xs font-medium text-[var(--text-secondary)] tabular">
+            {quantity} items × {formatInr(rentPaise)} = {formatInr(rentPaise * quantity)}/mo total
+          </p>
+        )}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <SelectField
             label="Paid by"
             value={payer}

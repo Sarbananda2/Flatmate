@@ -211,12 +211,16 @@ def _item_in(uow: UnitOfWork, apartment_id: str, item_id: str) -> dict[str, Any]
 
 def _public_item(item: Mapping[str, Any]) -> dict[str, Any]:
     """An item as the API gives it: ``monthly_rent_paise`` is its rent before
-    GST, which the month's bill adds."""
-    return {key: item.get(key) for key in (
+    GST, which the month's bill adds, for all ``quantity`` of it, and
+    ``unit_monthly_rent_paise`` the rent for one."""
+    public = {key: item.get(key) for key in (
         "item_id", "service_id", "provider_name", "service_display_name", "name", "category",
         "monthly_rent_paise", "allocation_scope", "assigned_resident_id",
         "assigned_resident_name", "status", "delivery_date", "return_date", "created_at",
         "updated_at")}
+    public["quantity"] = item.get("quantity") or 1
+    public["unit_monthly_rent_paise"] = item["monthly_rent_paise"] // public["quantity"]
+    return public
 
 
 # -------------------------------------------------------- the month's bill --
@@ -345,17 +349,23 @@ def _month_bill(uow: UnitOfWork, apartment_id: str, items: list[dict[str, Any]],
     }
 
 
+def _item_note(item: Mapping[str, Any]) -> str:
+    """"Sofa ₹638.70", or "Mattress (×3) ₹1,500.00" for several alike."""
+    quantity = item.get("quantity") or 1
+    count = f" (×{quantity})" if quantity > 1 else ""
+    return f"{item['name']}{count} {format_inr(item['monthly_rent_paise'])}"
+
+
 def _bill_notes(bill: Mapping[str, Any]) -> str:
     """The items behind a month's bill, in words, kept on the expense for the record."""
-    common = [f"{item['name']} {format_inr(item['monthly_rent_paise'])}"
-              for item in bill["billable_items"] if item["allocation_scope"] == "common"]
+    common = [_item_note(item) for item in bill["billable_items"]
+              if item["allocation_scope"] == "common"]
     parts = [f"Common: {', '.join(common)}"] if common else []
     for row in bill["shares"]:
         own = [item for item in bill["billable_items"]
                if item["assigned_resident_id"] == row["resident_id"]]
         if own:
-            parts.append(f"{row['display_name']}: " + ", ".join(
-                f"{item['name']} {format_inr(item['monthly_rent_paise'])}" for item in own))
+            parts.append(f"{row['display_name']}: " + ", ".join(_item_note(item) for item in own))
     parts.append(f"GST {bill['gst_rate_percent']:g}%: {format_inr(bill['calculated_gst_paise'])}")
     if bill["charged_total_override_paise"] is not None:
         parts.append(f"Charged {format_inr(bill['total_paise'])} as invoiced")
@@ -1158,8 +1168,11 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
     Left out, it stays with the provider it has, or goes to the flat's only
     provider; with several, it must be chosen.
 
-    Its rent, ``monthly_rent_paise``, is as quoted: before GST, which the
-    month's bill adds.
+    Its rent is as quoted: before GST, which the month's bill adds. An item
+    may be several alike (``quantity``, 1 unless given): ``monthly_rent_paise``
+    is the rent for all of them, and ``unit_monthly_rent_paise`` the rent for
+    one. Either may be given -- both, if they agree. A rent for all of them
+    divides evenly between them, so the rent for one is always whole.
     """
     service_id = optional_text(values.get("service_id"), "service_id", max_length=64)
     if service_id:
@@ -1187,8 +1200,29 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
     if category not in CATEGORIES:
         raise ValidationError(f"category must be one of {', '.join(CATEGORIES)}.",
                               details={"field": "category", "allowed": list(CATEGORIES)})
-    rent = ensure_paise(values.get("monthly_rent_paise"), "monthly_rent_paise",
-                        allow_zero=False)
+    quantity = values.get("quantity")
+    quantity = 1 if quantity is None else quantity
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
+        raise ValidationError("quantity must be a whole number, 1 or more.",
+                              details={"field": "quantity"})
+    unit = values.get("unit_monthly_rent_paise")
+    if unit is not None:
+        unit = ensure_paise(unit, "unit_monthly_rent_paise", allow_zero=False)
+        sent = values.get("monthly_rent_paise")
+        if sent is not None and sent != unit * quantity:
+            raise ValidationError(
+                f"{quantity} at {format_inr(unit)} each is {format_inr(unit * quantity)} a "
+                f"month, not {format_inr(sent)}.", code="furniture_rent_quantity_mismatch",
+                details={"field": "monthly_rent_paise", "monthly_rent_paise": unit * quantity})
+        rent = unit * quantity
+    else:
+        rent = ensure_paise(values.get("monthly_rent_paise"), "monthly_rent_paise",
+                            allow_zero=False)
+        if rent % quantity:
+            raise ValidationError(
+                f"{format_inr(rent)} does not divide evenly between {quantity}: give the rent "
+                "for one instead.", code="furniture_rent_not_divisible",
+                details={"field": "monthly_rent_paise", "quantity": quantity})
     scope = values.get("allocation_scope")
     if scope not in SCOPES:
         raise ValidationError("allocation_scope must be common or resident.",
@@ -1229,7 +1263,7 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
         raise ValidationError("The return date cannot be before the delivery date.",
                               details={"field": "return_date"})
     return {"service_id": service_id, "name": name, "category": category,
-            "monthly_rent_paise": rent, "allocation_scope": scope,
+            "monthly_rent_paise": rent, "quantity": quantity, "allocation_scope": scope,
             "assigned_resident_id": resident_id if scope == "resident" else None,
             "status": status, "delivery_date": delivery, "return_date": returned}
 
@@ -1253,11 +1287,21 @@ def update_item(db: Database, apartment_id: str, item_id: str, changes: Mapping[
     """Change an item. Only the fields sent change; making an item common clears
     its resident, and undoing a return clears its return date.
 
-    A rent sent is the rent as quoted, before GST (see :func:`_clean_item`)."""
+    A rent sent is the rent as quoted, before GST (see :func:`_clean_item`).
+    A quantity changed without one keeps each item's rent: three at ₹500.00
+    made two are ₹1,000.00."""
     timestamp = now_timestamp()
+    changes = {key: value for key, value in changes.items()
+               if not (key == "quantity" and value is None)}
     with db.transaction() as uow:
         before = _item_in(uow, apartment_id, item_id)
         merged = {**before, **changes}
+        if changes.get("monthly_rent_paise") is None:
+            # The rent for one, as sent or as it was; the rent for all follows.
+            merged["monthly_rent_paise"] = None
+            if merged.get("unit_monthly_rent_paise") is None:
+                merged["unit_monthly_rent_paise"] = (before["monthly_rent_paise"]
+                                                     // (before.get("quantity") or 1))
         if changes.get("allocation_scope") == "common" and "assigned_resident_id" not in changes:
             merged["assigned_resident_id"] = None
         if (changes.get("status") in ("active", "pending_delivery")

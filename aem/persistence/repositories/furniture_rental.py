@@ -7,8 +7,9 @@ from .base import Repository
 
 #: Item columns a caller may change. Anything else is refused, so no
 #: caller-supplied name ever reaches the SQL.
-ITEM_COLUMNS = ("service_id", "name", "category", "monthly_rent_paise", "allocation_scope",
-                "assigned_resident_id", "status", "delivery_date", "return_date")
+ITEM_COLUMNS = ("service_id", "name", "category", "monthly_rent_paise", "quantity",
+                "allocation_scope", "assigned_resident_id", "status", "delivery_date",
+                "return_date")
 
 #: An item with the resident it is for and the provider it is rented from.
 ITEM_SELECT = """SELECT i.*, r.display_name AS assigned_resident_name,
@@ -143,13 +144,14 @@ class FurnitureRentalRepository(Repository):
                     category: str, monthly_rent_paise: int, allocation_scope: str,
                     assigned_resident_id: str | None, status: str,
                     delivery_date: str | None, return_date: str | None,
-                    created_at: str) -> None:
+                    created_at: str, quantity: int = 1) -> None:
         self._s.execute(
             """INSERT INTO furniture_rental_item (item_id, service_id, apartment_id, name,
-                   category, monthly_rent_paise, allocation_scope, assigned_resident_id, status,
-                   delivery_date, return_date, created_at, updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            (item_id, service_id, apartment_id, name, category, monthly_rent_paise,
+                   category, monthly_rent_paise, quantity, allocation_scope,
+                   assigned_resident_id, status, delivery_date, return_date, created_at,
+                   updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (item_id, service_id, apartment_id, name, category, monthly_rent_paise, quantity,
              allocation_scope, assigned_resident_id, status, delivery_date, return_date,
              created_at, created_at))
 

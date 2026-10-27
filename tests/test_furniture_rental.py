@@ -1252,6 +1252,91 @@ def test_a_month_gone_by_keeps_its_bill_payouts_and_shares_as_prices_change(apar
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
+# -------------------------------------------------------------- quantity --
+#
+# An item may be several alike: its rent is for all of them, and divides
+# evenly into the rent for one.
+
+def test_an_item_may_be_several_alike_billed_together(apartment):
+    _setup(apartment, provider_name="Furlenco", billing_day_of_month=5)
+    mattresses = furniture.add_item(apartment, APARTMENT, {
+        "name": "Premium Queen Foam Mattress", "quantity": 3, "unit_monthly_rent_paise": 50_000,
+        "allocation_scope": "common", "delivery_date": "2026-09-01"})
+    assert (mattresses["quantity"], mattresses["unit_monthly_rent_paise"],
+            mattresses["monthly_rent_paise"]) == (3, 50_000, 150_000)
+    # Or given as the rent for all of them.
+    chairs = furniture.add_item(apartment, APARTMENT, {
+        "name": "Dining chair", "quantity": 4, "monthly_rent_paise": 40_000,
+        "allocation_scope": "common", "delivery_date": "2026-09-01"})
+    assert (chairs["quantity"], chairs["unit_monthly_rent_paise"]) == (4, 10_000)
+    # An item on its own is one.
+    lamp = _item(apartment, "Lamp", 20_000, delivery_date="2026-09-01")
+    assert (lamp["quantity"], lamp["unit_monthly_rent_paise"]) == (1, 20_000)
+
+    furniture.generate_month(apartment, APARTMENT, MONTH)
+    month = _month(apartment)
+    assert month["total_paise"] == 210_000
+    assert "Premium Queen Foam Mattress (×3) ₹1,500.00" in month["expense"]["notes"]
+    assert "Dining chair (×4) ₹400.00" in month["expense"]["notes"]
+    assert "Lamp ₹200.00" in month["expense"]["notes"]
+
+    # Two now: each is still ₹500, and the bill follows.
+    mattress_id = mattresses["item_id"]
+    fewer = furniture.update_item(apartment, APARTMENT, mattress_id, {"quantity": 2})
+    assert (fewer["quantity"], fewer["unit_monthly_rent_paise"],
+            fewer["monthly_rent_paise"]) == (2, 50_000, 100_000)
+    assert _month(apartment)["total_paise"] == 160_000
+    # A new rent for one, or for all of them.
+    assert furniture.update_item(apartment, APARTMENT, mattress_id, {
+        "unit_monthly_rent_paise": 45_087})["monthly_rent_paise"] == 90_174
+    assert furniture.update_item(apartment, APARTMENT, mattress_id, {
+        "monthly_rent_paise": 120_000, "quantity": 3})["unit_monthly_rent_paise"] == 40_000
+    # Anything else leaves both be.
+    renamed = furniture.update_item(apartment, APARTMENT, mattress_id, {"name": "Mattress"})
+    assert (renamed["quantity"], renamed["unit_monthly_rent_paise"],
+            renamed["monthly_rent_paise"]) == (3, 40_000, 120_000)
+    assert _month(apartment)["total_paise"] == 180_000
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+@pytest.mark.parametrize(("payload", "code"), [
+    ({"quantity": 0, "monthly_rent_paise": 30_000}, None),
+    ({"quantity": True, "monthly_rent_paise": 30_000}, None),
+    ({"quantity": 3, "monthly_rent_paise": 100_000}, "furniture_rent_not_divisible"),
+    ({"quantity": 3, "unit_monthly_rent_paise": 50_000, "monthly_rent_paise": 140_000},
+     "furniture_rent_quantity_mismatch"),
+])
+def test_a_quantity_is_whole_and_its_rents_agree(apartment, payload, code):
+    _setup(apartment)
+    with pytest.raises(ValidationError) as refused:
+        furniture.add_item(apartment, APARTMENT, {"name": "Chair", "allocation_scope": "common",
+                                                  **payload})
+    assert code is None or refused.value.code == code
+    both = furniture.add_item(apartment, APARTMENT, {
+        "name": "Chair", "allocation_scope": "common", "quantity": 3,
+        "unit_monthly_rent_paise": 50_000, "monthly_rent_paise": 150_000})
+    assert both["monthly_rent_paise"] == 150_000
+
+
+def test_quantity_over_http(api):
+    base = "/api/services/furniture"
+    api.post(f"{base}/setup", params={"month": MONTH}, json={"provider_name": "Furlenco"})
+    added = api.post(f"{base}/items", json={
+        "name": "Mattress", "quantity": 3, "unit_monthly_rent_paise": 50_000,
+        "allocation_scope": "common"})
+    assert added.status_code == 201, added.text
+    body = added.json()
+    assert (body["quantity"], body["unit_monthly_rent_paise"], body["monthly_rent_paise"]) == (
+        3, 50_000, 150_000)
+    url = f"{base}/items/{body['item_id']}"
+    fewer = api.patch(url, json={"quantity": 2}).json()
+    assert (fewer["quantity"], fewer["monthly_rent_paise"]) == (2, 100_000)
+    assert api.patch(url, json={"quantity": 0}).status_code == 422
+    assert api.post(f"{base}/items", json={
+        "name": "Chair", "quantity": 3, "monthly_rent_paise": 100_000,
+        "allocation_scope": "common"}).status_code == 422
+
+
 # ----------------------------------------------------------- retirement --
 
 def test_the_subscription_ends_only_once_everything_has_gone_back(rented):

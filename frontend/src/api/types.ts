@@ -1444,8 +1444,12 @@ export interface FurnitureItem {
   service_display_name?: string
   name: string
   category: FurnitureCategory
-  /** The item's monthly rent as quoted, before GST: the month's bill adds GST. */
+  /** The monthly rent for all `quantity` of it, as quoted, before GST: the month's bill adds GST. */
   monthly_rent_paise: number
+  /** How many of it are rented, all alike; 1 for an item on its own. */
+  quantity: number
+  /** The monthly rent for one of it: `monthly_rent_paise / quantity`, always whole. */
+  unit_monthly_rent_paise: number
   /** common: split equally; resident: charged to assigned_resident_id alone. */
   allocation_scope: 'common' | 'resident'
   assigned_resident_id: string | null

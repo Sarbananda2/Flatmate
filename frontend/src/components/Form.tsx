@@ -74,6 +74,8 @@ export function TextField({
   disabled,
   autoComplete,
   inputMode,
+  min,
+  step,
 }: {
   label: ReactNode
   value: string
@@ -82,11 +84,14 @@ export function TextField({
   error?: string | null
   required?: boolean
   placeholder?: string
-  type?: 'text' | 'search' | 'email' | 'tel' | 'date' | 'month' | 'password'
+  type?: 'text' | 'search' | 'email' | 'tel' | 'date' | 'month' | 'password' | 'number'
   maxLength?: number
   disabled?: boolean
   autoComplete?: string
   inputMode?: 'numeric' | 'decimal' | 'tel' | 'email'
+  /** For a number: the least it may be, and the step it moves by. */
+  min?: number
+  step?: number
 }) {
   return (
     <Field label={label} hint={hint} error={error} required={required}>
@@ -100,6 +105,8 @@ export function TextField({
           disabled={disabled}
           autoComplete={autoComplete}
           inputMode={inputMode}
+          min={min}
+          step={step}
           aria-describedby={describedBy}
           aria-invalid={invalid || undefined}
           required={required}

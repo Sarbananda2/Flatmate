@@ -26,8 +26,10 @@ const item = (overrides: Record<string, unknown> = {}) => ({
   service_display_name: 'Furniture rental',
   name: 'Sofa',
   category: 'living_room',
-  // Its rent as quoted, before GST: the month's bill adds GST.
+  // Its rent as quoted, before GST: the month's bill adds GST. One of it unless a test says otherwise.
   monthly_rent_paise: 100000,
+  quantity: 1,
+  unit_monthly_rent_paise: (overrides.monthly_rent_paise as number | undefined) ?? 100000,
   allocation_scope: 'common',
   assigned_resident_id: null,
   assigned_resident_name: null,
@@ -576,6 +578,7 @@ describe('FurnitureRental', () => {
     expect(sent('POST', '/api/services/furniture/items')!.body).toEqual({
       service_id: 'svc-1',
       name: 'Study chair',
+      quantity: 1,
       monthly_rent_paise: 19900,
       allocation_scope: 'resident',
       assigned_resident_id: 'bob',
@@ -590,7 +593,7 @@ describe('FurnitureRental', () => {
     await userEvent.click(within(panel).getByRole('button', { name: 'Add item' }))
     const dialog = screen.getByRole('dialog', { name: 'Add a rented item' })
     expect(within(dialog).getByLabelText(/^Monthly rent/)).toBeInTheDocument()
-    expect(within(dialog).getByText('As quoted, before GST.')).toBeInTheDocument()
+    expect(within(dialog).getByText('For one, as quoted, before GST.')).toBeInTheDocument()
     expect(within(dialog).queryByRole('checkbox', { name: 'Exclusive of GST' })).toBeNull()
     expect(within(dialog).queryByLabelText('GST (%)')).toBeNull()
     expect(within(dialog).queryByLabelText(/^Gross monthly rent/)).toBeNull()
@@ -630,6 +633,103 @@ describe('FurnitureRental', () => {
       name: 'Items rented from Furlenco',
     })
     expect(within(rented).getByRole('row', { name: /Sofa/ })).toHaveTextContent('SofaShared₹638.70In the flat')
+  })
+
+  describe('several of an item alike', () => {
+    const mattresses = item({
+      item_id: 'furn-sofa',
+      name: 'Premium Queen Foam Mattress',
+      monthly_rent_paise: 150000,
+      quantity: 3,
+      unit_monthly_rent_paise: 50000,
+    })
+
+    it('adds several alike from the rent for one', async () => {
+      show(overview(), {}, '/?tab=items')
+      const panel = (await screen.findByRole('heading', { name: 'Rented Items' })).closest('section')!
+      await userEvent.click(within(panel).getByRole('button', { name: 'Add item' }))
+      const dialog = screen.getByRole('dialog', { name: 'Add a rented item' })
+      const quantity = within(dialog).getByLabelText(/^Quantity/)
+      expect(quantity).toHaveValue(1)
+      expect(quantity).toHaveAttribute('min', '1')
+      expect(quantity).toHaveAttribute('step', '1')
+      await userEvent.type(within(dialog).getByLabelText(/^Item/), 'Premium Queen Foam Mattress')
+      await userEvent.type(within(dialog).getByLabelText(/^Monthly rent per item/), '500')
+      // One alone needs no sum.
+      expect(within(dialog).queryByRole('status')).toBeNull()
+      await userEvent.clear(quantity)
+      await userEvent.type(quantity, '3')
+      expect(within(dialog).getByRole('status')).toHaveTextContent('3 items × ₹500.00 = ₹1,500.00/mo total')
+      // A quantity is a whole number, 1 or more.
+      await userEvent.clear(quantity)
+      await userEvent.type(quantity, '0')
+      expect(within(dialog).getByText('Enter a whole number, 1 or more.')).toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Add item' })).toBeDisabled()
+      await userEvent.clear(quantity)
+      await userEvent.type(quantity, '3')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add item' }))
+      await waitFor(() => expect(sent('POST', '/api/services/furniture/items')).toBeDefined())
+      expect(sent('POST', '/api/services/furniture/items')!.body).toMatchObject({
+        name: 'Premium Queen Foam Mattress',
+        quantity: 3,
+        monthly_rent_paise: 150000,
+      })
+    })
+
+    it('edits how many there are, each keeping its rent', async () => {
+      show(overview({ items: [mattresses] }), {}, '/?tab=items')
+      const table = await screen.findByRole('table', { name: 'Rented items' })
+      await userEvent.click(within(within(table).getByRole('row', { name: /Mattress/ })).getByRole('button', { name: 'More options' }))
+      await userEvent.click(screen.getByRole('menuitem', { name: 'Edit item' }))
+      const dialog = screen.getByRole('dialog', { name: 'Edit Premium Queen Foam Mattress' })
+      const quantity = within(dialog).getByLabelText(/^Quantity/)
+      expect(quantity).toHaveValue(3)
+      expect(within(dialog).getByLabelText(/^Monthly rent per item/)).toHaveValue('500.00')
+      expect(within(dialog).getByRole('status')).toHaveTextContent('3 items × ₹500.00 = ₹1,500.00/mo total')
+      await userEvent.clear(quantity)
+      await userEvent.type(quantity, '2')
+      expect(within(dialog).getByRole('status')).toHaveTextContent('2 items × ₹500.00 = ₹1,000.00/mo total')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(sent('PATCH', '/api/services/furniture/items/furn-sofa')).toBeDefined())
+      expect(sent('PATCH', '/api/services/furniture/items/furn-sofa')!.body).toMatchObject({
+        quantity: 2,
+        monthly_rent_paise: 100000,
+      })
+    })
+
+    it('shows how many there are, and what each costs, in the rows and the details', async () => {
+      const { unmount } = show(overview({ items: [mattresses] }), {}, '/?tab=items')
+      const table = await screen.findByRole('table', { name: 'Rented items' })
+      const row = within(table).getByRole('row', { name: /Mattress/ })
+      expect(row).toHaveTextContent('Premium Queen Foam MattressFurlenco · Qty 3Shared₹1,500.003 × ₹500.00In the flat')
+      await userEvent.click(row)
+      const dialog = screen.getByRole('dialog', { name: 'Premium Queen Foam Mattress' })
+      expect(dialog).toHaveTextContent('Monthly Rent₹1,500.003 × ₹500.00 · Before GST')
+      const details = within(dialog).getByLabelText('Item details')
+      expect(details).toHaveTextContent('Quantity3')
+      expect(details).toHaveTextContent('Unit Rent₹500.00')
+      unmount()
+      stub?.restore()
+
+      show(overview({ items: [mattresses] }), {}, '/?tab=subscription')
+      await userEvent.click((await screen.findByRole('heading', { name: 'Furlenco' })).closest('article')!)
+      const rented = within(screen.getByRole('dialog', { name: 'Furlenco Subscription' })).getByRole('table', {
+        name: 'Items rented from Furlenco',
+      })
+      expect(within(rented).getByRole('row', { name: /Mattress/ })).toHaveTextContent(
+        'Premium Queen Foam MattressQty 3Shared₹1,500.003 × ₹500.00In the flat',
+      )
+    })
+
+    it('shows an item on its own without a quantity', async () => {
+      show(overview(), {}, '/?tab=items')
+      const table = await screen.findByRole('table', { name: 'Rented items' })
+      expect(within(table).getByRole('row', { name: /Sofa/ })).not.toHaveTextContent('Qty')
+      await userEvent.click(within(table).getByRole('row', { name: /Sofa/ }))
+      expect(within(screen.getByRole('dialog', { name: 'Sofa' })).getByLabelText('Item details')).not.toHaveTextContent(
+        'Quantity',
+      )
+    })
   })
 
   describe('GST on the month\'s bill', () => {
