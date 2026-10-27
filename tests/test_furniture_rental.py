@@ -623,14 +623,10 @@ def test_a_payout_is_kept_for_good(billed):
         payments.reverse_payment(billed, advance, reason="Wrong resident")
     assert reversal.value.code == "service_funding_payment"
     # Only a payout's amount may change, while the month is open, as a resident's
-    # payout is split again; never more than the bill.
-    with connect(billed, as_owner=True) as conn:
-        with pytest.raises(DatabaseRefusal):
-            conn.execute("UPDATE service_disbursement SET disbursement_reference = 'edited'")
-        with pytest.raises(DatabaseRefusal) as over:
-            conn.execute("UPDATE service_disbursement SET amount_paise = 220001")
-        assert "overpaid_service" in str(over.value)
-    # Even written directly, tranches cannot add up to more than the bill.
+    # payout is split again -- beyond a bill that has gone down, if need be.
+    with connect(billed, as_owner=True) as conn, pytest.raises(DatabaseRefusal):
+        conn.execute("UPDATE service_disbursement SET disbursement_reference = 'edited'")
+    # Even written directly, a new tranche cannot take them beyond the bill.
     service_id = furniture.get_overview(billed, APARTMENT, MONTH)["service"]["service_id"]
     with connect(billed) as conn, pytest.raises(DatabaseRefusal) as overpaid:
         conn.execute(
@@ -1037,27 +1033,34 @@ def test_the_monthly_bill_is_live_and_tops_up_when_items_or_providers_are_added(
     assert [(r["recipient_resident_id"], r["net_reimbursement_owed_paise"],
              r["reimbursable_paise"]) for r in month["reimbursements"]] == [
         ("alice", 10_000, 10_000)]
-    # No provider is handed money back by the bill going down, though.
+    # Or below what a provider was paid: the kitty's payout comes down to what
+    # Rentomojo is now owed, and what it paid beyond is the kitty's to pay back.
     _payout(apartment, service_id=rentomojo_id, amount_paise=40_000)
-    with pytest.raises(ConflictError) as below_paid_out:
-        furniture.update_item(apartment, APARTMENT, fridge["item_id"],
-                              {"monthly_rent_paise": 30_000})
-    assert below_paid_out.value.code == "furniture_provider_below_disbursed"
-    assert len(furniture.get_overview(apartment, APARTMENT, MONTH)["items"]) == 2
-    assert _month(apartment)["total_paise"] == 140_000
+    furniture.update_item(apartment, APARTMENT, fridge["item_id"], {"monthly_rent_paise": 30_000})
+    month = _month(apartment)
+    assert month["total_paise"] == 80_000
+    assert _payouts(month) == {"Furlenco": (50_000, 50_000, "pending"),
+                               "Rentomojo": (30_000, 0, "disbursed")}
+    assert [(r["recipient_resident_id"], r["net_reimbursement_owed_paise"],
+             r["reimbursable_paise"]) for r in month["reimbursements"]] == [
+        ("alice", 30_000, 10_000)]
     assert validation.validate(apartment, APARTMENT)["issues"] == []
     assert sum(_net(apartment).values()) == 0
 
-    # The month over, its bill is kept as it stood; December bills by itself.
+    # The month over, its bill is kept as it stood -- what each provider was owed
+    # included, though a lamp delivered in it is billed from December.
     november["now"] = "2026-12-05T09:00:00+05:30"
     _item(apartment, "Lamp", 10_000, service_id=furlenco_id, delivery_date="2026-11-20")
     month = _month(apartment)
-    assert (month["bill_state"], month["total_paise"]) == ("frozen", 140_000)
+    assert (month["bill_state"], month["total_paise"], month["subtotal_base_paise"]) == (
+        "frozen", 80_000, 80_000)
+    assert _payouts(month) == {"Furlenco": (50_000, 50_000, "pending"),
+                               "Rentomojo": (30_000, 0, "disbursed")}
     december = _month(apartment, "2026-12")
-    assert (december["bill_state"], december["total_paise"]) == ("live", 150_000)
+    assert (december["bill_state"], december["total_paise"]) == ("live", 90_000)
     assert [(row["settlement_period"], row["amount_paise"]) for row in _rows(
         apartment, "SELECT * FROM expense_instance ORDER BY settlement_period")] == [
-        (MONTH, 140_000), ("2026-12", 150_000)]
+        (MONTH, 80_000), ("2026-12", 90_000)]
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
@@ -1101,6 +1104,130 @@ def test_a_live_bill_goes_with_its_last_item_unless_paid_and_freezes_with_its_st
         _item(apartment, "Desk", 20_000, scope="resident", resident="chris")
     assert blocked.value.code == "furniture_bill_blocked"
     assert _month(apartment, "2026-12")["total_paise"] == 220_000
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+# ------------------------------------------- a bill gone down after it was paid --
+#
+# Furlenco quoted the wardrobe at ₹2,234.80 before GST -- ₹2,637.06 a month with
+# it -- but it was entered at ₹3,000, and paid at that.
+
+WARDROBE_BEFORE_GST = {"base_rent_paise": 223_480, "is_gst_exclusive": True}
+
+
+def _wardrobe(db, **extra):
+    return _item(db, "Wardrobe", 300_000, delivery_date="2026-09-01", **extra)
+
+
+def test_an_item_cheaper_after_a_resident_paid_the_provider_is_owed_back_to_them(apartment,
+                                                                                november):
+    _setup(apartment, provider_name="Furlenco", billing_day_of_month=5)
+    wardrobe = _wardrobe(apartment)
+    # Alice paid Furlenco the ₹3,000 herself: her ₹1,000 share through the kitty,
+    # and ₹2,000 beyond it.
+    _advance(apartment, amount_paise=300_000)
+    assert _split(apartment) == [("pool", 100_000), ("resident_advance", 200_000)]
+
+    furniture.update_item(apartment, APARTMENT, wardrobe["item_id"], WARDROBE_BEFORE_GST)
+    month = _month(apartment)
+    assert (month["bill_state"], month["total_paise"]) == ("live", 263_706)
+    # Her payout is kept whole: ₹879.02 of it is her share now, and ₹2,120.98 --
+    # the ₹120.98 her share went down by, more -- is owed back to her.
+    assert _split(apartment) == [("pool", 87_902), ("resident_advance", 212_098)]
+    assert _standing(apartment) == {"alice": (87_902, 87_902, 0, "paid"),
+                                    "bob": (87_902, 0, 87_902, "unpaid"),
+                                    "chris": (87_902, 0, 87_902, "unpaid")}
+    assert _owed(apartment) == [("alice", 212_098, 212_098, False)]
+    assert _payouts(month) == {"Furlenco": (263_706, 0, "disbursed")}
+
+    # The kitty pays her back what Bob and Chris pay in. The ₹362.94 Furlenco
+    # holds beyond the bill is still owed to her.
+    _pay_in(apartment, "bob", 87_902)
+    _pay_in(apartment, "chris", 87_902)
+    furniture.reimburse_from_kitty(apartment, APARTMENT, MONTH, "alice", amount_paise=175_804,
+                                   payment_date="2026-11-12")
+    assert _owed(apartment) == [("alice", 212_098, 36_294, False)]
+    # December, not yet begun, is billed at the new price as well.
+    december = _month(apartment, "2026-12")
+    assert (december["bill_state"], december["total_paise"]) == ("upcoming", 263_706)
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+    assert sum(_net(apartment).values()) == 0
+
+
+def test_an_item_cheaper_after_the_kitty_paid_the_provider_is_owed_back_to_all(apartment,
+                                                                              november):
+    _setup(apartment, provider_name="Furlenco", billing_day_of_month=5)
+    wardrobe = _wardrobe(apartment)
+    for resident in ("alice", "bob", "chris"):
+        _pay_in(apartment, resident, 100_000)
+    _payout(apartment)
+
+    furniture.update_item(apartment, APARTMENT, wardrobe["item_id"], WARDROBE_BEFORE_GST)
+    month = _month(apartment)
+    # The kitty's payout comes down to the ₹2,637.06 Furlenco is now owed, so the
+    # ₹362.94 it paid beyond is there to give each of them their ₹120.98 back.
+    assert _split(apartment) == [("pool", 263_706)]
+    assert _payouts(month) == {"Furlenco": (263_706, 0, "disbursed")}
+    assert set(_standing(apartment).values()) == {(87_902, 87_902, 0, "paid")}
+    assert [(row["recipient_resident_id"], row["net_reimbursement_owed_paise"],
+             row["kitty_cash_available_paise"], row["reimbursable_paise"])
+            for row in month["reimbursements"]] == [("alice", 12_098, 36_294, 12_098),
+                                                    ("bob", 12_098, 36_294, 12_098),
+                                                    ("chris", 12_098, 36_294, 12_098)]
+    assert [row["action"] for row in _rows(
+        apartment, "SELECT action FROM audit_log WHERE entity_type = 'service_disbursement'")] == [
+        "resize"]
+    for resident in ("alice", "bob", "chris"):
+        furniture.reimburse_from_kitty(apartment, APARTMENT, MONTH, resident,
+                                       amount_paise=12_098, payment_date="2026-11-12")
+    assert [row[2] for row in _owed(apartment)] == [0, 0, 0]
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+    assert set(_net(apartment).values()) == {0}
+
+
+def test_a_month_gone_by_keeps_its_bill_payouts_and_shares_as_prices_change(apartment,
+                                                                           november):
+    november["now"] = "2026-10-10T09:00:00+05:30"
+    furlenco_id = _setup(apartment, provider_name="Furlenco",
+                         billing_day_of_month=5)["service"]["service_id"]
+    wardrobe = _wardrobe(apartment, service_id=furlenco_id)
+    rentomojo_id = furniture.setup_furniture_rental(
+        apartment, APARTMENT, {"provider_name": "Rentomojo", "create_new": True},
+        settlement_month="2026-10")["services"][1]["service"]["service_id"]
+    fridge = _item(apartment, "Fridge", 90_000, service_id=rentomojo_id, category="appliance",
+                   delivery_date="2026-09-01")
+    # October: Alice paid Furlenco the ₹3,000 herself, and the kitty paid
+    # Rentomojo out of what Bob paid in.
+    furniture.record_provider_payout(
+        apartment, APARTMENT, "2026-10", disbursement_mode="resident_advance",
+        funding_resident_id="alice", service_id=furlenco_id, reference="UTR-OCT-1",
+        disbursed_date="2026-10-05")
+    furniture.record_furniture_payment(apartment, APARTMENT, "2026-10", "bob",
+                                       amount_paise=130_000, payment_date="2026-10-08")
+    furniture.record_provider_payout(
+        apartment, APARTMENT, "2026-10", disbursement_mode="pool", service_id=rentomojo_id,
+        reference="UTR-OCT-2", disbursed_date="2026-10-09")
+
+    november["now"] = "2026-11-10T09:00:00+05:30"
+    october = _month(apartment, "2026-10")
+    assert (october["bill_state"], october["total_paise"]) == ("frozen", 390_000)
+    furniture.update_item(apartment, APARTMENT, wardrobe["item_id"], WARDROBE_BEFORE_GST)
+    furniture.update_item(apartment, APARTMENT, fridge["item_id"], {"monthly_rent_paise": 60_000})
+
+    # October reads as it was billed and paid, its items' new prices aside.
+    after = _month(apartment, "2026-10")
+    assert {key: value for key, value in after.items() if key != "billable_items"} == {
+        key: value for key, value in october.items() if key != "billable_items"}
+    assert (after["subtotal_base_paise"], after["total_gst_paise"]) == (390_000, 0)
+    assert _payouts(after) == {"Furlenco": (300_000, 0, "disbursed"),
+                               "Rentomojo": (90_000, 0, "disbursed")}
+    # November, and December ahead, bill the new prices.
+    month = _month(apartment)
+    assert (month["bill_state"], month["total_paise"], month["subtotal_base_paise"],
+            month["total_gst_paise"]) == ("live", 323_706, 283_480, 40_226)
+    assert _payouts(month) == {"Furlenco": (263_706, 263_706, "pending"),
+                               "Rentomojo": (60_000, 60_000, "pending")}
+    assert _month(apartment, "2026-12")["total_paise"] == 323_706
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 

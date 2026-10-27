@@ -118,9 +118,12 @@ def validate_apartment(uow: UnitOfWork, apartment_id: str) -> list[dict[str, Any
                          "resident_id": row["resident_id"]},
                 suggested_action="Reverse the payment that over-settled this charge."))
 
-    # 7. Linked advances must not exceed the expense they fund.
+    # 7. Linked advances must not exceed the expense they fund. A resident's
+    #    payout to the landlord or a provider stays whole when its month's bill
+    #    goes down, so what of it is beyond their share may then be more than the
+    #    bill: only the advances that are no such payout are held to it.
     for row in uow.validation.expenses_with_linked_advances(apartment_id):
-        if row["linked_paise"] > row["amount_paise"]:
+        if row["linked_paise"] - row["tranche_paise"] > row["amount_paise"]:
             issues.append(_issue(
                 "advance_exceeds_expense", SEVERITY_ERROR,
                 f"Provider advances linked to '{row['description']}' total more than the "

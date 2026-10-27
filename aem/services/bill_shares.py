@@ -16,10 +16,13 @@ have paid:
   through the kitty, and the extra the kitty owes them (see
   ``resident_payouts``); what they paid into the kitty settles their share first.
 
+A bill may go below what the landlord or a provider has been paid. Each
+resident's own payout stays whole, as above; the kitty's own payouts come down
+to what the payee is now owed, newest first, so what the kitty paid beyond it
+is there to pay the residents back.
+
 A change is refused when the kitty has already paid a resident back more than
-it would then owe them (``reimbursement_exceeds_new_extra``). Nothing here
-refuses a bill below what the landlord or provider has been paid: the rent and
-furniture modules do.
+it would then owe them (``reimbursement_exceeds_new_extra``).
 
 :func:`reimbursements` is what the kitty owes back to each resident for a bill:
 everything they paid towards it -- into the kitty, and to the landlord or
@@ -43,6 +46,13 @@ _REIMBURSEMENT = "-reimbursement_"
 #: The IDs a resident's advance and its tranche are given, as when first recorded.
 _ADVANCE_PREFIX = {"rent": "rent-advance", "service": "furniture-payout"}
 _TRANCHE_PREFIX = {"rent": "rentdisb", "service": "svcdisb"}
+_TRANCHE_ENTITY = {"rent": "rent_disbursement", "service": "service_disbursement"}
+
+
+def _paid_to(scope: Scope, tranche: Mapping[str, Any]) -> str:
+    """Whom a payout went to: the month's rent cycle -- the landlord -- or the
+    provider's service."""
+    return tranche["cycle_id"] if scope == "rent" else tranche["service_id"]
 
 
 def _refunds(uow: UnitOfWork, expense_id: str) -> list[dict[str, Any]]:
@@ -155,15 +165,18 @@ class Rebalance:
     expense_id: str
     apartment_id: str
     residents: list[_Resident]
+    #: The kitty's own payouts beyond what their payee is now owed, and what to keep of each.
+    kitty_trims: list[tuple[dict[str, Any], int]] = field(default_factory=list)
     problem: AemError | None = None
 
 
 def plan(uow: UnitOfWork, *, scope: Scope, apartment_id: str, expense_id: str,
          shares: Mapping[str, int], charged: Sequence[str],
-         tranches: Sequence[Mapping[str, Any]], names: Mapping[str, str],
-         what: str) -> Rebalance:
+         tranches: Sequence[Mapping[str, Any]], owed: Mapping[str, int],
+         names: Mapping[str, str], what: str) -> Rebalance:
     """Work out how the bill's payments follow ``shares`` (resident -> new share);
-    ``charged`` are the residents the bill charges now.
+    ``charged`` are the residents the bill charges now, and ``owed`` what each
+    payee is now owed (see :func:`_paid_to`).
 
     Each payment into the kitty that settles a charge on the bill and is not for
     any other bill is first named as being for this one, so what it paid
@@ -173,7 +186,7 @@ def plan(uow: UnitOfWork, *, scope: Scope, apartment_id: str, expense_id: str,
     uow.payments.link_kitty_payments_to_bill(expense_id)
     active = {row["payment_id"]: row
               for row in uow.payments.active_payments(apartment_id)}
-    groups, _ = group_payouts(scope, tranches, active)
+    groups, kitty_payouts = group_payouts(scope, tranches, active)
     in_payouts = {group["share_payment_id"] for group in groups}
     applications = uow.payments.bill_applications(expense_id)
     kitty = [row for row in uow.payments.kitty_payments_for_bill(expense_id)
@@ -246,6 +259,21 @@ def plan(uow: UnitOfWork, *, scope: Scope, apartment_id: str, expense_id: str,
             still_open -= payout.to_share
             resident.payouts.append(payout)
         rebalance.residents.append(resident)
+
+    # A payee paid beyond what it is now owed: the kitty's own payouts to it come
+    # down, newest first, as far as they go. A resident's own payout stays whole.
+    paid: dict[str, int] = {}
+    for row in tranches:
+        paid[_paid_to(scope, row)] = paid.get(_paid_to(scope, row), 0) + row["amount_paise"]
+    for to, amount in sorted(paid.items()):
+        beyond = amount - owed.get(to, 0)
+        for tranche in sorted((t for t in kitty_payouts if _paid_to(scope, t) == to),
+                              key=lambda t: (t["disbursed_at"], t["seq"]), reverse=True):
+            if beyond <= 0:
+                break
+            take = min(beyond, tranche["amount_paise"])
+            rebalance.kitty_trims.append((tranche, tranche["amount_paise"] - take))
+            beyond -= take
     return rebalance
 
 
@@ -256,13 +284,18 @@ def apply(uow: UnitOfWork, rebalance: Rebalance, *, set_charge: Callable[[str, i
     writing each resident's charge (deleting it at zero).
 
     Everything taken off a charge or a payout goes first, then the charges are
-    set, then everything added: a charge is never settled beyond its amount,
-    nor the landlord or provider paid beyond the bill, at any step.
+    set, then everything added: a charge is never settled beyond its amount at
+    any step. The payouts may add up to more than a bill gone down -- what the
+    residents paid the landlord or provider themselves -- so the transaction
+    names the bill while they are split again (migration 0028).
     ``payee(group)`` names whom a new advance was paid to.
     """
     if rebalance.problem is not None:
         raise rebalance.problem
     expense_id = rebalance.expense_id
+    uow.expenses.rebalancing_payouts(expense_id)
+    for tranche, keep in rebalance.kitty_trims:
+        _trim_kitty_payout(uow, rebalance, tranche, keep, actor)
     allocation = {row["resident_id"]: row["allocation_id"]
                   for row in uow.rent.allocations_for_expense(expense_id)}
     for resident in rebalance.residents:
@@ -301,6 +334,7 @@ def apply(uow: UnitOfWork, rebalance: Rebalance, *, set_charge: Callable[[str, i
                     _resize_advance(uow, rebalance, payout, payout.to_advance, actor)
         for payment_id, amount in resident.top_ups:
             _apply(uow, payment_id, allocation[rid], amount, timestamp)
+    uow.expenses.rebalancing_payouts(None)
 
     audit.record(
         uow, entity_type="expense", entity_id=expense_id, action="rebalance", actor=actor,
@@ -354,6 +388,22 @@ def _add_tranche(uow: UnitOfWork, scope: Scope, like: Mapping[str, Any], **field
     else:
         uow.furniture.insert_service_disbursement(service_id=like["service_id"],
                                                   expense_id=like["expense_id"], **common)
+
+
+def _trim_kitty_payout(uow: UnitOfWork, rebalance: Rebalance, tranche: Mapping[str, Any],
+                       keep: int, actor: str) -> None:
+    """The kitty's own payout at ``keep`` -- gone at zero -- the bill having gone
+    below what it paid."""
+    if keep:
+        _set_tranche(uow, rebalance.scope, tranche["disbursement_id"], keep)
+    else:
+        _drop_tranche(uow, rebalance.scope, tranche["disbursement_id"])
+    audit.record(uow, entity_type=_TRANCHE_ENTITY[rebalance.scope],
+                 entity_id=tranche["disbursement_id"], action="resize" if keep else "delete",
+                 actor=actor, apartment_id=rebalance.apartment_id,
+                 reason="The bill went below what the House Kitty had paid towards it",
+                 old_value={"amount_paise": tranche["amount_paise"]},
+                 new_value={"expense_id": rebalance.expense_id, "amount_paise": keep})
 
 
 def _audit_payment(uow: UnitOfWork, rebalance: Rebalance, payment_id: str, action: str,

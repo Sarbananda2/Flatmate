@@ -54,7 +54,7 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Mapping, Sequence
 
-from ..errors import AemError, ConflictError, NotFoundError, ValidationError
+from ..errors import ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, format_inr, paise_in_words
 from ..periods import month_label, normalize_month, parse_iso_date
@@ -894,16 +894,17 @@ def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
 #
 # A month's rent is charged as soon as the month begins, and follows the lease --
 # its rent, its agreement model, and under a room-tiered model the rooms' base
-# rents -- for as long as the month is open. It freezes for good when the month
-# is over, when its statement is finalized, or once the landlord has been paid in
-# full: that is the month's snapshot. A future month is only a preview until it
-# begins, and a month before the lease was set up is charged only by hand.
+# rents -- for as long as the month is open, however much has been paid. It
+# freezes for good when the month is over or its statement is finalized: that is
+# the month's snapshot. A future month is only a preview until it begins, and a
+# month before the lease was set up is charged only by hand.
 #
 # Who a month charges is settled when it is charged: a resident who moves in
 # later starts with the next month, and one who moves out keeps their share of
 # the months they were in. Changes follow the charges in place, so payments
-# applied to them stay with them, and nobody is paid back -- and the landlord
-# never handed money back -- by a month going down: such a change is refused.
+# applied to them stay with them. A month going down -- even below what the
+# landlord was paid -- leaves what each resident paid beyond their new share
+# owed back to them (see :mod:`aem.services.bill_shares`).
 
 def _today() -> str:
     return now_timestamp()[:10]
@@ -999,19 +1000,6 @@ def _follow_lease(uow: UnitOfWork, apartment_id: str, settlement_month: str, *,
 
     month_name = month_label(settlement_month)
     tranches = uow.rent.disbursements_for_cycle(cycle["cycle_id"])
-    disbursed = sum(t["amount_paise"] for t in tranches)
-    problem: AemError | None = None
-    if disbursed > total:
-        problem = ConflictError(
-            f"The landlord has already been paid {format_inr(disbursed)} for {month_name}, "
-            f"more than the new monthly rent ({format_inr(total)}).",
-            code="rent_below_disbursed",
-            details={"disbursed_paise": disbursed, "total_rent_paise": total})
-    if problem is not None:
-        if check_reduction_guards:
-            raise problem
-        return cycle, str(problem)
-
     method = "equal" if mode == "equal" else "custom"
     due = f"{settlement_month}-{config['due_day_of_month']:02d}"
     new_basis = _rent_basis(split, mode, participants, excluded,
@@ -1026,11 +1014,14 @@ def _follow_lease(uow: UnitOfWork, apartment_id: str, settlement_month: str, *,
         return cycle, None
 
     # What each resident paid, into the kitty or to the landlord, follows their
-    # new share; refused if the kitty has paid someone back more than it would owe.
+    # new share, and the kitty's own payouts come down to a rent gone below what
+    # it paid the landlord; refused if the kitty has paid someone back more than
+    # it would owe.
     rebalance = bill_shares.plan(
         uow, scope="rent", apartment_id=apartment_id, expense_id=cycle["expense_id"],
         shares=shares, charged=list(current), tranches=tranches,
-        names=_names(uow, apartment_id), what=f"{month_name} rent")
+        owed={cycle["cycle_id"]: total}, names=_names(uow, apartment_id),
+        what=f"{month_name} rent")
     if rebalance.problem is not None:
         if check_reduction_guards:
             raise rebalance.problem
@@ -1061,6 +1052,7 @@ def _follow_lease(uow: UnitOfWork, apartment_id: str, settlement_month: str, *,
         share_note=f"Rent for {month_name}",
         advance_note=f"Extra paid for rent for {month_name} to be reimbursed via House Kitty",
         timestamp=timestamp, actor=actor)
+    disbursed = sum(t["amount_paise"] for t in uow.rent.disbursements_for_cycle(cycle["cycle_id"]))
     status = ("disbursed" if disbursed >= total
               else "partially_disbursed" if disbursed else "pending")
     uow.rent.update_cycle_totals(cycle["cycle_id"], total_rent_paise=total,
@@ -1089,11 +1081,11 @@ def _sync_live_rent_cycle(
     up to date with the lease; returns the cycle as it then stands, if there is one.
 
     A frozen month (see :func:`_cycle_state`) is returned as it is. What each
-    resident paid -- into the kitty, or to the landlord -- follows their new share
-    (see :mod:`aem.services.bill_shares`). A change that would take the rent below
-    what the landlord has been paid (``rent_below_disbursed``), or leave the kitty
-    having paid a resident back more than it then owes them
-    (``reimbursement_exceeds_new_extra``), is refused with
+    resident paid -- into the kitty, or to the landlord -- follows their new share,
+    and a rent gone below what the kitty paid the landlord takes the kitty's own
+    payouts down with it (see :mod:`aem.services.bill_shares`). A change that would
+    leave the kitty having paid a resident back more than it then owes them
+    (``reimbursement_exceeds_new_extra``) is refused with
     ``check_reduction_guards`` and otherwise leaves the month as it was. So does a
     split that cannot be made as things stand, such as room rents that do not add
     up to the lease rent.
@@ -1115,9 +1107,11 @@ def _splits_by_room(uow: UnitOfWork, apartment_id: str, month: str,
 
 def sync_open_rent_cycles(uow: UnitOfWork, apartment_id: str, *, timestamp: str | None = None,
                           actor: str = "operator", rooms_changed: bool = False) -> None:
-    """After the lease or the rooms change, bring every open month up to date --
-    refusing the change if it would take a month below what has been paid.
-    ``rooms_changed`` limits it to the months charged by room."""
+    """After the lease or the rooms change, bring every open month up to date:
+    this month and any later one charged already, while its statement is a
+    draft. A month gone by keeps its rent as it stood. The change is refused if
+    the kitty has already paid a resident back more than a month would then owe
+    them. ``rooms_changed`` limits it to the months charged by room."""
     config = _config_row(uow, apartment_id)
     if config is None:
         return

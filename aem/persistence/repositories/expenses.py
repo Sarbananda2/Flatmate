@@ -21,6 +21,13 @@ class ExpensesRepository(Repository):
         return self._s.fetch_one("SELECT * FROM expense_instance WHERE expense_id = %s",
                                  (expense_id,))
 
+    def rebalancing_payouts(self, expense_id: str | None) -> None:
+        """Name the bill whose payouts this transaction is splitting again, which
+        may then add up to more than a bill gone down (migration 0028); ``None``
+        when it is done."""
+        self._s.scalar("SELECT set_config('aem.rebalancing_bill', %s, true)",
+                       (expense_id or "",))
+
     # -- lookups on neighbouring tables -------------------------------------
 
     def definition_period_rule(self, expense_definition_id: str) -> dict[str, Any] | None:

@@ -403,12 +403,16 @@ def _funding(uow: UnitOfWork, apartment_id: str, expense: Mapping[str, Any]) -> 
 
 def _provider_totals(billable_items: Sequence[Mapping[str, Any]],
                      expense: Mapping[str, Any] | None,
-                     service_ids: Sequence[str]) -> dict[str, int]:
-    """What each provider bills for the month: its items in the flat. With one
+                     service_ids: Sequence[str],
+                     recorded: Mapping[str, int] | None = None) -> dict[str, int]:
+    """What each provider bills for the month: its items in the flat, or what
+    they came to when the bill was ``recorded`` (kept with its charges). With one
     provider billing, it is owed the whole recorded bill."""
     totals: dict[str, int] = {}
     for item in billable_items:
         totals[item["service_id"]] = totals.get(item["service_id"], 0) + item["monthly_rent_paise"]
+    if expense is not None and recorded:
+        totals = dict(recorded)
     if expense is not None and len(totals) <= 1:
         billing = next(iter(totals), None) or next(iter(service_ids), None)
         if billing:
@@ -419,12 +423,14 @@ def _provider_totals(billable_items: Sequence[Mapping[str, Any]],
 def _provider_payouts(uow: UnitOfWork, apartment_id: str, bill: Mapping[str, Any],
                       expense: Mapping[str, Any] | None,
                       services: Sequence[Mapping[str, Any]],
-                      tranches: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+                      tranches: Sequence[Mapping[str, Any]],
+                      recorded: Mapping[str, int] | None = None) -> list[dict[str, Any]]:
     """What each provider is owed for the month, and what has been paid them.
 
     One row for each live subscription, and for a retired one with items
     billed this month or paid towards this bill. A provider is 'pending' until paid anything, 'partially_disbursed'
-    while some is still owed, and 'disbursed' once paid in full.
+    while some is still owed, and 'disbursed' once paid in full. ``recorded``
+    is what each was owed when the bill was recorded (see :func:`_provider_totals`).
     """
     providers = [(service, uow.furniture.config(service["service_id"])) for service in services]
     known = {service["service_id"] for service in services}
@@ -436,7 +442,7 @@ def _provider_payouts(uow: UnitOfWork, apartment_id: str, bill: Mapping[str, Any
                 providers.append((retired, uow.furniture.config(service_id)))
                 known.add(service_id)
     totals = _provider_totals(bill["billable_items"], expense,
-                              [service["service_id"] for service, _ in providers])
+                              [service["service_id"] for service, _ in providers], recorded)
     rows = []
     for service, config in providers:
         service_id = service["service_id"]
@@ -470,7 +476,8 @@ FUNDING_FIELDS = ("collected_paise", "collected_count", "payout_status", "disbur
 
 def _attach_funding(uow: UnitOfWork, apartment_id: str, bill: dict[str, Any],
                     expense: Mapping[str, Any] | None,
-                    services: Sequence[Mapping[str, Any]]) -> None:
+                    services: Sequence[Mapping[str, Any]],
+                    recorded_totals: Mapping[str, int] | None = None) -> None:
     """Add to the month's bill who has paid their share, the payouts to each
     provider, and the reimbursements. Before the bill is recorded nobody owes
     anything yet.
@@ -479,6 +486,7 @@ def _attach_funding(uow: UnitOfWork, apartment_id: str, bill: dict[str, Any],
     and ``paid_paise`` that plus what paying the provider covered of it. Its
     ``payments`` are the payments into the kitty that settled its charge,
     oldest first, each with what it put towards the charge.
+    ``recorded_totals`` is what each provider was owed as the bill was recorded.
     """
     if expense is None:
         for share in bill["shares"]:
@@ -509,7 +517,7 @@ def _attach_funding(uow: UnitOfWork, apartment_id: str, bill: dict[str, Any],
             payments=funding["paid_in"].get(rid, []))
     bill.update({key: funding[key] for key in FUNDING_FIELDS})
     bill["provider_payouts"] = _provider_payouts(uow, apartment_id, bill, expense, services,
-                                                 funding["tranches"])
+                                                 funding["tranches"], recorded_totals)
 
 
 # ------------------------------------------------------------ the live bill --
@@ -531,10 +539,16 @@ def _bill_is_live(month: str, statement: Mapping[str, Any] | None) -> bool:
 
 
 def _bill_basis(bill: Mapping[str, Any], excluded: Sequence[str]) -> dict[str, Any]:
-    """Kept with each charge: what the bill is made of, and who is on it."""
+    """Kept with each charge: what the bill is made of, and who is on it -- so a
+    month gone by reads as it was billed, whatever its items cost since."""
     return {"method": "custom", "source": SERVICE_TYPE,
             "common_total_paise": bill["common_total_paise"],
             "private_total_paise": bill["private_total_paise"],
+            "subtotal_base_paise": bill["subtotal_base_paise"],
+            "total_gst_paise": bill["total_gst_paise"],
+            "provider_totals_paise": _provider_totals(bill["billable_items"], None, []),
+            "private_paise": {row["resident_id"]: row["private_paise"]
+                              for row in bill["shares"] if row["private_paise"]},
             "participants": list(bill["participants"]),
             "excluded_resident_ids": sorted(excluded)}
 
@@ -593,9 +607,9 @@ def _record_bill(uow: UnitOfWork, apartment_id: str, month: str, bill: Mapping[s
 def _sync_problem(uow: UnitOfWork, expense: Mapping[str, Any], bill: Mapping[str, Any],
                   allocations: Sequence[Mapping[str, Any]]) -> AemError | None:
     """Why the recorded bill cannot follow its items as they now stand, if it cannot:
-    no provider is handed back money by a bill going down, and a bill paid
-    towards stays. A resident's share may go below what they paid: the rest is
-    owed back to them (see :mod:`aem.services.bill_shares`)."""
+    a bill paid towards stays. It may go below what a resident paid, or what a
+    provider was paid: what was paid beyond is owed back (see
+    :mod:`aem.services.bill_shares`)."""
     month = bill["settlement_month"]
     paid = sum(row["settled_paise"] for row in allocations)
     tranches = uow.furniture.service_disbursements(expense["expense_id"])
@@ -612,30 +626,6 @@ def _sync_problem(uow: UnitOfWork, expense: Mapping[str, Any], bill: Mapping[str
     if bill["blocked_reason"]:
         return ValidationError(bill["blocked_reason"], code="furniture_bill_blocked",
                                details={"settlement_month": month})
-    totals: dict[str, int] = {}
-    for item in bill["billable_items"]:
-        totals[item["service_id"]] = totals.get(item["service_id"], 0) + item["monthly_rent_paise"]
-    paid_out: dict[str, int] = {}
-    for tranche in tranches:
-        paid_out[tranche["service_id"]] = (paid_out.get(tranche["service_id"], 0)
-                                           + tranche["amount_paise"])
-    for service_id, amount in sorted(paid_out.items()):
-        if amount > totals.get(service_id, 0):
-            provider = next((t["provider_name"] for t in tranches
-                             if t["service_id"] == service_id), "The provider")
-            return ConflictError(
-                f"{provider} has already been paid {format_inr(amount)} for "
-                f"{month_label(month)}, more than this would leave it owed "
-                f"({format_inr(totals.get(service_id, 0))}).",
-                code="furniture_provider_below_disbursed",
-                details={"service_id": service_id, "disbursed_paise": amount,
-                         "total_paise": totals.get(service_id, 0)})
-    if advances > bill["total_paise"]:
-        return ConflictError(
-            f"Residents have already paid the providers {format_inr(advances)} for "
-            f"{month_label(month)}, more than this would leave the bill at "
-            f"({format_inr(bill['total_paise'])}).", code="furniture_provider_below_disbursed",
-            details={"advanced_paise": advances, "total_paise": bill["total_paise"]})
     return None
 
 
@@ -647,13 +637,16 @@ def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
     with the items; returns the bill as it then stands, if there is one.
 
     A frozen bill (see :func:`_bill_is_live`) is returned as it is. A bill that
-    would go below what a provider was paid, or leave the kitty having paid a
-    resident back more than it then owes them, is refused with
-    ``check_reduction_guards``, and otherwise left as it was. A bill left with
-    nothing to bill, and nothing paid towards it, is removed.
+    would leave the kitty having paid a resident back more than it then owes
+    them is refused with ``check_reduction_guards``, and otherwise left as it
+    was. A bill left with nothing to bill, and nothing paid towards it, is
+    removed.
 
     Charges are changed in place, and what each resident paid -- into the kitty,
-    or to a provider -- follows their new share (see :mod:`aem.services.bill_shares`).
+    or to a provider -- follows their new share. A bill may go below what a
+    provider was paid: the kitty's own payouts to it come down to what it is now
+    owed, and whatever was paid beyond is owed back to the residents (see
+    :mod:`aem.services.bill_shares`).
     """
     timestamp = timestamp or now_timestamp()
     services = _live_services(uow, apartment_id)
@@ -716,6 +709,7 @@ def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
         uow, scope="service", apartment_id=apartment_id, expense_id=expense["expense_id"],
         shares=shares, charged=list(current),
         tranches=uow.furniture.service_disbursements(expense["expense_id"]),
+        owed=new_basis["provider_totals_paise"],
         names={row["resident_id"]: row["display_name"]
                for row in list_residents(uow, apartment_id)},
         what=f"the {month_name} furniture bill")
@@ -760,8 +754,10 @@ def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
 
 def _sync_open_months(uow: UnitOfWork, apartment_id: str, *, timestamp: str,
                       actor: str = "operator") -> None:
-    """After an item changes, bring every live month's bill up to date with it --
-    refusing the change if it would leave a bill below what has been paid."""
+    """After an item changes, bring every live month's bill up to date with it:
+    this month's and any later one's, while its statement is a draft. A month
+    gone by keeps its bill as it stood. The change is refused if the kitty has
+    already paid a resident back more than a bill would then owe them."""
     definition_id = _definition_id(uow, apartment_id)
     months = {_current_month()}
     if definition_id:
@@ -838,11 +834,15 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
                        basis.get("excluded_resident_ids"),
                        include_resident_ids=basis.get("participants"))
     if expense is not None:
-        bill.update(total_paise=expense["amount_paise"],
-                    common_total_paise=basis.get("common_total_paise",
-                                                 bill["common_total_paise"]),
-                    private_total_paise=basis.get("private_total_paise",
-                                                  bill["private_total_paise"]))
+        bill.update({key: basis.get(key, bill[key]) for key in (
+            "common_total_paise", "private_total_paise", "subtotal_base_paise",
+            "total_gst_paise")}, total_paise=expense["amount_paise"])
+        if bill["participant_count"]:
+            bill["base_share_paise"], bill["remainder_paise"] = divmod(
+                bill["common_total_paise"], bill["participant_count"])
+        if "private_paise" in basis:
+            for share in bill["shares"]:
+                share["private_paise"] = basis["private_paise"].get(share["resident_id"], 0)
     bill["expense"] = expense
     bill["statement_status"] = statement["status"] if statement else None
     bill["can_generate"] = (expense is None and bill["blocked_reason"] is None
@@ -853,8 +853,12 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
                           else "upcoming" if month > _current_month() else "not_billed")
     # Whether a payment or payout recorded by mistake can still be deleted.
     bill["transactions_open"] = deletions.month_is_open(uow, apartment_id, month)
-    _attach_funding(uow, apartment_id, bill, expense, services)
-    billing_dates = [entry["next_billing_date"] for entry in entries if entry["next_billing_date"]]
+    _attach_funding(uow, apartment_id, bill, expense, services,
+                    basis.get("provider_totals_paise"))
+    if expense is not None and "private_paise" in basis:
+        for share in bill["shares"]:
+            share["common_share_paise"] = share["total_paise"] - share["private_paise"]
+    billing_dates =[entry["next_billing_date"] for entry in entries if entry["next_billing_date"]]
     return {
         "service": entries[0]["service"],
         "config": entries[0]["config"],
@@ -1360,7 +1364,9 @@ def record_provider_payout(db: Database, apartment_id: str, settlement_month: st
         services = _live_services(uow, apartment_id)
         billable = [item for item in uow.furniture.items_for_apartment(
                         apartment_id, include_retired=True) if is_billable(item, month)]
-        totals = _provider_totals(billable, expense, [svc["service_id"] for svc in services])
+        recorded = _stored_basis(uow.furniture.allocations_for_expense(expense["expense_id"]))
+        totals = _provider_totals(billable, expense, [svc["service_id"] for svc in services],
+                                  recorded.get("provider_totals_paise"))
         if service_id:
             service = _service_in(uow, apartment_id, service_id, live=False)
         else:
