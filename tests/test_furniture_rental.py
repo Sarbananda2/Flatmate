@@ -48,6 +48,9 @@ def _rows(db, sql, params=()):
 
 
 def _setup(db, **payload):
+    """Set up (or update) the subscription. Its bills carry no GST unless a test
+    gives a rate: what a test is about reads more plainly in round figures."""
+    payload.setdefault("gst_rate_percent", 0)
     return furniture.setup_furniture_rental(db, APARTMENT, payload, settlement_month=MONTH)
 
 
@@ -674,7 +677,20 @@ def test_migration_0023_turns_each_furniture_advance_into_a_tranche(database_fac
     for resident_id, name in RESIDENTS:
         residents.create_resident(db, apartment_id=APARTMENT, resident_id=resident_id,
                                   display_name=name, active_from="2026-08-01")
-    definition = _setup(db)["config"]["expense_definition_id"]
+    # The subscription as schema 22 kept it.
+    definition = definitions.create_expense_definition(
+        db, apartment_id=APARTMENT, definition_id="furniture-rental", name="Furniture rental",
+        category="Housing", period_rule="current_month", is_recurring=False,
+        recurrence="none")["expense_definition_id"]
+    with connect(db) as conn:
+        conn.execute("""INSERT INTO household_service (service_id, apartment_id, service_type,
+                            display_name, provider_name, created_at, updated_at)
+                        VALUES ('svc-1', %s, 'furniture_rental', 'Furniture rental', 'Furlenco',
+                                '2026-09-01', '2026-09-01')""", (APARTMENT,))
+        conn.execute("""INSERT INTO furniture_rental_config (service_id, apartment_id,
+                            provider_name, expense_definition_id, updated_at)
+                        VALUES ('svc-1', %s, 'Furlenco', %s, '2026-09-01')""",
+                     (APARTMENT, definition))
     expenses.create_expense(db, apartment_id=APARTMENT, expense_id="furniture-nov",
                             description="Furniture rental for November 2026",
                             amount_paise=150_000, expense_date="2026-11-01",
@@ -1112,23 +1128,25 @@ def test_a_live_bill_goes_with_its_last_item_unless_paid_and_freezes_with_its_st
 # Furlenco quoted the wardrobe at ₹2,234.80 before GST -- ₹2,637.06 a month with
 # it -- but it was entered at ₹3,000, and paid at that.
 
-WARDROBE_BEFORE_GST = {"base_rent_paise": 223_480, "is_gst_exclusive": True}
+#: The wardrobe's rent before GST, cut from ₹2,542.37 (₹3,000.00 with 18% GST) to
+#: ₹2,234.80 (₹2,637.06).
+WARDROBE_CHEAPER = {"monthly_rent_paise": 223_480}
 
 
 def _wardrobe(db, **extra):
-    return _item(db, "Wardrobe", 300_000, delivery_date="2026-09-01", **extra)
+    return _item(db, "Wardrobe", 254_237, delivery_date="2026-09-01", **extra)
 
 
 def test_an_item_cheaper_after_a_resident_paid_the_provider_is_owed_back_to_them(apartment,
                                                                                 november):
-    _setup(apartment, provider_name="Furlenco", billing_day_of_month=5)
+    _setup(apartment, provider_name="Furlenco", billing_day_of_month=5, gst_rate_percent=18)
     wardrobe = _wardrobe(apartment)
     # Alice paid Furlenco the ₹3,000 herself: her ₹1,000 share through the kitty,
     # and ₹2,000 beyond it.
     _advance(apartment, amount_paise=300_000)
     assert _split(apartment) == [("pool", 100_000), ("resident_advance", 200_000)]
 
-    furniture.update_item(apartment, APARTMENT, wardrobe["item_id"], WARDROBE_BEFORE_GST)
+    furniture.update_item(apartment, APARTMENT, wardrobe["item_id"], WARDROBE_CHEAPER)
     month = _month(apartment)
     assert (month["bill_state"], month["total_paise"]) == ("live", 263_706)
     # Her payout is kept whole: ₹879.02 of it is her share now, and ₹2,120.98 --
@@ -1156,13 +1174,13 @@ def test_an_item_cheaper_after_a_resident_paid_the_provider_is_owed_back_to_them
 
 def test_an_item_cheaper_after_the_kitty_paid_the_provider_is_owed_back_to_all(apartment,
                                                                               november):
-    _setup(apartment, provider_name="Furlenco", billing_day_of_month=5)
+    _setup(apartment, provider_name="Furlenco", billing_day_of_month=5, gst_rate_percent=18)
     wardrobe = _wardrobe(apartment)
     for resident in ("alice", "bob", "chris"):
         _pay_in(apartment, resident, 100_000)
     _payout(apartment)
 
-    furniture.update_item(apartment, APARTMENT, wardrobe["item_id"], WARDROBE_BEFORE_GST)
+    furniture.update_item(apartment, APARTMENT, wardrobe["item_id"], WARDROBE_CHEAPER)
     month = _month(apartment)
     # The kitty's payout comes down to the ₹2,637.06 Furlenco is now owed, so the
     # ₹362.94 it paid beyond is there to give each of them their ₹120.98 back.
@@ -1188,8 +1206,8 @@ def test_an_item_cheaper_after_the_kitty_paid_the_provider_is_owed_back_to_all(a
 def test_a_month_gone_by_keeps_its_bill_payouts_and_shares_as_prices_change(apartment,
                                                                            november):
     november["now"] = "2026-10-10T09:00:00+05:30"
-    furlenco_id = _setup(apartment, provider_name="Furlenco",
-                         billing_day_of_month=5)["service"]["service_id"]
+    furlenco_id = _setup(apartment, provider_name="Furlenco", billing_day_of_month=5,
+                         gst_rate_percent=18)["service"]["service_id"]
     wardrobe = _wardrobe(apartment, service_id=furlenco_id)
     rentomojo_id = furniture.setup_furniture_rental(
         apartment, APARTMENT, {"provider_name": "Rentomojo", "create_new": True},
@@ -1210,24 +1228,27 @@ def test_a_month_gone_by_keeps_its_bill_payouts_and_shares_as_prices_change(apar
 
     november["now"] = "2026-11-10T09:00:00+05:30"
     october = _month(apartment, "2026-10")
-    assert (october["bill_state"], october["total_paise"]) == ("frozen", 390_000)
-    furniture.update_item(apartment, APARTMENT, wardrobe["item_id"], WARDROBE_BEFORE_GST)
+    # ₹2,542.37 and ₹900.00 before 18% GST: ₹3,442.37 and ₹619.63, ₹4,062.00 --
+    # ₹3,000.00 of it Furlenco's and ₹1,062.00 Rentomojo's.
+    assert (october["bill_state"], october["total_paise"]) == ("frozen", 406_200)
+    furniture.update_item(apartment, APARTMENT, wardrobe["item_id"], WARDROBE_CHEAPER)
     furniture.update_item(apartment, APARTMENT, fridge["item_id"], {"monthly_rent_paise": 60_000})
 
     # October reads as it was billed and paid, its items' new prices aside.
     after = _month(apartment, "2026-10")
     assert {key: value for key, value in after.items() if key != "billable_items"} == {
         key: value for key, value in october.items() if key != "billable_items"}
-    assert (after["subtotal_base_paise"], after["total_gst_paise"]) == (390_000, 0)
+    assert (after["subtotal_base_paise"], after["gst_rate_percent"],
+            after["total_gst_paise"]) == (344_237, 18.0, 61_963)
     assert _payouts(after) == {"Furlenco": (300_000, 0, "disbursed"),
-                               "Rentomojo": (90_000, 0, "disbursed")}
+                               "Rentomojo": (106_200, 0, "disbursed")}
     # November, and December ahead, bill the new prices.
     month = _month(apartment)
     assert (month["bill_state"], month["total_paise"], month["subtotal_base_paise"],
-            month["total_gst_paise"]) == ("live", 323_706, 283_480, 40_226)
+            month["total_gst_paise"]) == ("live", 334_506, 283_480, 51_026)
     assert _payouts(month) == {"Furlenco": (263_706, 263_706, "pending"),
-                               "Rentomojo": (60_000, 60_000, "pending")}
-    assert _month(apartment, "2026-12")["total_paise"] == 323_706
+                               "Rentomojo": (70_800, 70_800, "pending")}
+    assert _month(apartment, "2026-12")["total_paise"] == 334_506
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
@@ -1290,7 +1311,8 @@ def test_furniture_rental_over_http(api):
     assert api.get(base, params={"month": MONTH}).json()["service"] is None
 
     setup = api.post(f"{base}/setup", params={"month": MONTH}, json={
-        "provider_name": "Furlenco", "billing_day_of_month": 5, "deposit_paid_paise": 500_000})
+        "provider_name": "Furlenco", "billing_day_of_month": 5, "deposit_paid_paise": 500_000,
+        "gst_rate_percent": 0})
     assert setup.status_code == 200, setup.text
     sofa = api.post(f"{base}/items", json={
         "name": "Sofa", "category": "living_room", "monthly_rent_paise": 120_000,
@@ -1320,7 +1342,8 @@ def test_furniture_rental_over_http(api):
 
 def test_paying_the_bill_over_http(api):
     base = "/api/services/furniture"
-    api.post(f"{base}/setup", params={"month": MONTH}, json={"provider_name": "Furlenco"})
+    api.post(f"{base}/setup", params={"month": MONTH},
+             json={"provider_name": "Furlenco", "gst_rate_percent": 0})
     api.post(f"{base}/items", json={"name": "Sofa", "category": "living_room",
                                     "monthly_rent_paise": 90_000, "allocation_scope": "common"})
     payout = {"settlement_month": MONTH, "disbursement_mode": "pool", "reference": "UTR-1",
@@ -1369,11 +1392,13 @@ def test_paying_the_bill_over_http(api):
     assert reimbursed.json()["month"]["reimbursement"]["pending_reimbursement_paise"] == 0
 
 
-# ------------------------------------------------- items priced before GST --
+# ------------------------------------------------------- GST on the bill --
 #
-# An item quoted before GST is billed that plus GST at its own rate -- 18%
-# unless set -- rounded half up to the paisa; every bill, share and payout is
-# reckoned on the total.
+# An item's rent is before GST. The month's bill adds GST at its rate -- the
+# subscription's, 18% unless set -- on the items' subtotal, rounded half up to
+# the paisa, or is the invoice's own total where that rounds its GST another
+# way. The total is shared to the paisa; an open month follows its rate and
+# total as it follows its items, and a month gone by never changes.
 
 def test_gst_is_18_percent_unless_set_rounded_half_up_to_the_paisa():
     assert furniture.GST_RATE_PERCENT == 18
@@ -1385,188 +1410,228 @@ def test_gst_is_18_percent_unless_set_rounded_half_up_to_the_paisa():
     assert furniture.gst_paise(1_001, 12.34) == 124
 
 
-def test_an_item_priced_before_gst_is_billed_with_18_percent_gst(apartment):
-    _setup(apartment, provider_name="Furlenco", billing_day_of_month=5)
-    wardrobe = furniture.add_item(apartment, APARTMENT, {
-        "name": "Wardrobe", "base_rent_paise": 100_000, "is_gst_exclusive": True,
-        "allocation_scope": "common", "delivery_date": "2026-09-01"})
-    assert (wardrobe["base_rent_paise"], wardrobe["gst_paise"], wardrobe["monthly_rent_paise"],
-            wardrobe["is_gst_exclusive"], wardrobe["gst_rate_percent"]) == (
-        100_000, 18_000, 118_000, True, 18.0)
-    # The rent alone, as every item had before, is billed as it is.
-    lamp = _item(apartment, "Lamp", 20_000, delivery_date="2026-09-01")
-    assert (lamp["base_rent_paise"], lamp["gst_paise"], lamp["is_gst_exclusive"]) == (
-        20_000, 0, False)
+def test_a_total_is_shared_in_proportion_to_the_paisa():
+    assert furniture._apportion(100, [1, 1, 1]) == [34, 33, 33]
+    assert furniture._apportion(263_705, [63_870, 159_609]) == [75_367, 188_338]
+    assert furniture._apportion(10, [0, 5, 0]) == [0, 10, 0]
+    assert furniture._apportion(7, [0, 0]) == [0, 0]
 
-    furniture.generate_month(apartment, APARTMENT, MONTH)
-    month = _month(apartment)
-    assert (month["subtotal_base_paise"], month["total_gst_paise"], month["total_paise"]) == (
-        120_000, 18_000, 138_000)
-    assert month["expense"]["amount_paise"] == 138_000
-    # ₹1,380 between three, GST included: ₹460 each.
-    assert {row["resident_id"]: row["total_paise"] for row in month["shares"]} == {
-        "alice": 46_000, "bob": 46_000, "chris": 46_000}
-    assert sum(row["total_paise"] for row in month["shares"]) == 138_000
 
-    # A total sent with the rent before GST is never below that rent ...
-    with pytest.raises(ValidationError) as below:
-        furniture.add_item(apartment, APARTMENT, {
-            "name": "Desk", "base_rent_paise": 10_000, "monthly_rent_paise": 9_999,
-            "is_gst_exclusive": True, "allocation_scope": "common"})
-    assert below.value.code == "furniture_gst_total_below_base"
-    # ... and with no GST on top, it is that rent.
-    with pytest.raises(ValidationError) as mismatch:
-        furniture.add_item(apartment, APARTMENT, {
-            "name": "Desk", "base_rent_paise": 10_000, "monthly_rent_paise": 11_800,
-            "allocation_scope": "common"})
-    assert mismatch.value.code == "furniture_gst_total_mismatch"
-    desk = furniture.add_item(apartment, APARTMENT, {
-        "name": "Desk", "base_rent_paise": 10_000, "monthly_rent_paise": 11_800,
-        "is_gst_exclusive": True, "allocation_scope": "common"})
-    assert desk["monthly_rent_paise"] == 11_800
+SOFA, DINING_TABLE = 63_870, 159_609
+
+
+def _gst_month(db, november, **setup):
+    """Furlenco at the subscription's GST rate -- 18% unless set -- with a ₹638.70
+    sofa and a ₹1,596.09 dining table, before GST, shared by all three."""
+    furniture.setup_furniture_rental(db, APARTMENT, {"provider_name": "Furlenco",
+                                                     "billing_day_of_month": 5, **setup},
+                                     settlement_month=MONTH)
+    _item(db, "Sofa", SOFA, delivery_date="2026-09-01")
+    _item(db, "Dining table", DINING_TABLE, category="dining", delivery_date="2026-09-01")
+    return _month(db)
+
+
+def _gst(month):
+    return (month["subtotal_base_paise"], month["gst_rate_percent"],
+            month["calculated_gst_paise"], month["calculated_total_paise"],
+            month["charged_total_override_paise"], month["total_gst_paise"],
+            month["total_paise"])
+
+
+def _billing(db, rate=18, charged=None, month=MONTH):
+    return furniture.set_month_billing(db, APARTMENT, month, gst_rate_percent=rate,
+                                       charged_total_paise=charged)["month"]
+
+
+def test_a_months_bill_adds_gst_on_its_items_subtotal(apartment, november):
+    month = _gst_month(apartment, november)
+    overview = furniture.get_overview(apartment, APARTMENT, MONTH)
+    assert overview["config"]["gst_rate_percent"] == 18.0
+    # An item is its rent before GST, and nothing more.
+    sofa = next(item for item in overview["items"] if item["name"] == "Sofa")
+    assert sofa["monthly_rent_paise"] == SOFA
+    assert not {"base_rent_paise", "gst_paise", "is_gst_exclusive",
+                "gst_rate_percent"} & set(sofa)
+
+    # ₹638.70 + ₹1,596.09 = ₹2,234.79; 18% GST on it is ₹402.26: ₹2,637.05.
+    assert month["bill_state"] == "live"
+    assert _gst(month) == (223_479, 18.0, 40_226, 263_705, None, 40_226, 263_705)
+    assert month["expense"]["amount_paise"] == 263_705
+    assert [(row["resident_id"], row["total_paise"]) for row in month["shares"]] == [
+        ("alice", 87_902), ("bob", 87_902), ("chris", 87_901)]
+    assert _payouts(month) == {"Furlenco": (263_705, 263_705, "pending")}
+    assert "GST 18%: ₹402.26" in month["expense"]["notes"]
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
-def test_an_items_total_may_be_an_invoices_with_its_gst_rounded_otherwise(apartment):
-    _setup(apartment, provider_name="Furlenco", billing_day_of_month=5)
-    # ₹638.70 before 18% GST is ₹753.67 worked out whole, but ₹753.66 on an
-    # invoice charging 9% CGST and 9% SGST rounded apart: ₹57.48 each.
-    assert furniture.gst_paise(63_870) == 11_497
-    chair = furniture.add_item(apartment, APARTMENT, {
-        "name": "Chair", "base_rent_paise": 63_870, "monthly_rent_paise": 75_366,
-        "is_gst_exclusive": True, "gst_rate_percent": 18, "allocation_scope": "common",
-        "delivery_date": "2026-09-01"})
-    assert (chair["base_rent_paise"], chair["gst_paise"], chair["monthly_rent_paise"]) == (
-        63_870, 11_496, 75_366)
-    # Changing anything else keeps it.
-    chair_id = chair["item_id"]
-    assert furniture.update_item(apartment, APARTMENT, chair_id, {"name": "Study chair"})[
-        "monthly_rent_paise"] == 75_366
-    furniture.generate_month(apartment, APARTMENT, MONTH)
+def test_each_share_of_a_bill_with_gst_adds_up_to_it_to_the_paisa(apartment, november):
+    _setup(apartment, provider_name="Furlenco", gst_rate_percent=18)
+    _item(apartment, "Sofa", 100_001, delivery_date="2026-09-01")
+    _item(apartment, "Fridge", 70_000, category="appliance", delivery_date="2026-09-01")
+    _item(apartment, "Queen bed", 50_000, scope="resident", resident="bob",
+          category="bedroom", delivery_date="2026-09-01")
     month = _month(apartment)
+    # ₹2,200.01 before GST, ₹396.00 GST on it: ₹2,596.01.
     assert (month["subtotal_base_paise"], month["total_gst_paise"], month["total_paise"]) == (
-        63_870, 11_496, 75_366)
-    assert month["expense"]["amount_paise"] == 75_366
-
-    # A rent before GST sent alone has its GST worked out again, as does a new rate ...
-    rent = furniture.update_item(apartment, APARTMENT, chair_id, {"base_rent_paise": 63_870})
-    assert (rent["gst_paise"], rent["monthly_rent_paise"]) == (11_497, 75_367)
-    assert _month(apartment)["total_paise"] == 75_367
-    furniture.update_item(apartment, APARTMENT, chair_id, {"monthly_rent_paise": 75_366,
-                                                           "base_rent_paise": 63_870})
-    at_12 = furniture.update_item(apartment, APARTMENT, chair_id, {"gst_rate_percent": 12})
-    assert (at_12["gst_paise"], at_12["monthly_rent_paise"]) == (7_664, 71_534)
-    # ... and an update with both takes the invoice's total again.
-    updated = furniture.update_item(apartment, APARTMENT, chair_id, {
-        "base_rent_paise": 63_870, "monthly_rent_paise": 75_366, "is_gst_exclusive": True,
-        "gst_rate_percent": 18})
-    assert (updated["base_rent_paise"], updated["gst_paise"], updated["monthly_rent_paise"],
-            updated["gst_rate_percent"]) == (63_870, 11_496, 75_366, 18.0)
-    assert _month(apartment)["total_paise"] == 75_366
-    with pytest.raises(ValidationError) as below:
-        furniture.update_item(apartment, APARTMENT, chair_id, {
-            "base_rent_paise": 63_870, "monthly_rent_paise": 63_869})
-    assert below.value.code == "furniture_gst_total_below_base"
+        220_001, 39_600, 259_601)
+    # The shared items' part of it is split equally; Bob's bed's part is his.
+    assert (month["common_total_paise"], month["private_total_paise"]) == (200_601, 59_000)
+    assert [(row["resident_id"], row["common_share_paise"], row["private_paise"],
+             row["total_paise"]) for row in month["shares"]] == [
+        ("alice", 66_867, 0, 66_867), ("bob", 66_867, 59_000, 125_867),
+        ("chris", 66_867, 0, 66_867)]
+    assert sum(row["total_paise"] for row in month["shares"]) == month["total_paise"]
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
-def test_a_wardrobe_before_gst_splits_its_total_between_the_residents(apartment):
-    _setup(apartment, provider_name="Furlenco", billing_day_of_month=5)
-    furniture.add_item(apartment, APARTMENT, {
-        "name": "Wardrobe", "monthly_rent_paise": 100_000, "is_gst_exclusive": True,
-        "allocation_scope": "common", "delivery_date": "2026-09-01"})
-    furniture.generate_month(apartment, APARTMENT, MONTH)
-    month = _month(apartment)
-    assert month["total_paise"] == 118_000
-    assert [row["total_paise"] for row in month["shares"]] == [39_334, 39_333, 39_333]
+def test_an_open_month_charged_its_invoices_total_rebalances_what_was_paid(apartment,
+                                                                           november):
+    _gst_month(apartment, november)
+    _pay_in(apartment, "alice", 87_902)
+    _pay_in(apartment, "bob", 50_000)
+
+    # Furlenco's invoice, its GST rounded its own way, comes to ₹2,637.00: each
+    # share is ₹879.00, and the 2 paise Alice paid beyond hers are owed back.
+    month = _billing(apartment, charged=263_700)
+    assert _gst(month) == (223_479, 18.0, 40_226, 263_705, 263_700, 40_221, 263_700)
+    assert month["expense"]["amount_paise"] == 263_700
+    assert _standing(apartment) == {"alice": (87_900, 87_900, 0, "paid"),
+                                    "bob": (87_900, 50_000, 37_900, "partial"),
+                                    "chris": (87_900, 0, 87_900, "unpaid")}
+    assert [row[:2] for row in _owed(apartment)] == [("alice", 2)]
+    assert _payouts(month) == {"Furlenco": (263_700, 263_700, "pending")}
+
+    # Or to ₹2,637.06: ₹879.02 each, which Alice has paid in full.
+    month = _billing(apartment, charged=263_706)
+    assert (month["total_paise"], month["total_gst_paise"]) == (263_706, 40_227)
+    assert _standing(apartment) == {"alice": (87_902, 87_902, 0, "paid"),
+                                    "bob": (87_902, 50_000, 37_902, "partial"),
+                                    "chris": (87_902, 0, 87_902, "unpaid")}
+    assert _owed(apartment) == []
+    # The total worked out again, by sending it or by sending none.
+    assert _billing(apartment, charged=263_705)["charged_total_override_paise"] is None
+    _billing(apartment, charged=263_706)
+    assert _billing(apartment)["total_paise"] == 263_705
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+    assert sum(_net(apartment).values()) == 0
 
 
-def test_an_items_gst_rate_is_its_own_and_follows_the_bill(billed):
-    sofa = _item_id(billed, "Sofa")
-    # The sofa's ₹1,000 before 12% GST: ₹1,120.
-    at_12 = furniture.update_item(billed, APARTMENT, sofa, {"is_gst_exclusive": True,
-                                                            "gst_rate_percent": 12})
-    assert (at_12["gst_rate_percent"], at_12["gst_paise"], at_12["monthly_rent_paise"]) == (
-        12.0, 12_000, 112_000)
-    month = _month(billed)
-    assert (month["subtotal_base_paise"], month["total_gst_paise"], month["total_paise"]) == (
-        220_000, 12_000, 232_000)
-    # Down to 5%: ₹1,050, and the bill and its shares follow.
-    at_5 = furniture.update_item(billed, APARTMENT, sofa, {"gst_rate_percent": 5})
-    assert (at_5["gst_paise"], at_5["monthly_rent_paise"]) == (5_000, 105_000)
-    assert _month(billed)["total_paise"] == 225_000
-    assert _standing(billed)["alice"][0] == 58_334
-    # The rate stays with the item when only its rent changes.
-    rent = furniture.update_item(billed, APARTMENT, sofa, {"base_rent_paise": 200_000})
-    assert (rent["gst_rate_percent"], rent["monthly_rent_paise"]) == (5.0, 210_000)
+def test_an_open_months_gst_rate_rebalances_it_and_bills_the_months_after(apartment,
+                                                                          november):
+    _gst_month(apartment, november)
+    _pay_in(apartment, "alice", 87_902)
+    _pay_in(apartment, "bob", 50_000)
+
+    # At 12%, ₹268.17 GST: ₹2,502.96, ₹834.32 each. Alice paid ₹44.70 beyond hers.
+    month = _billing(apartment, rate=12)
+    assert _gst(month) == (223_479, 12.0, 26_817, 250_296, None, 26_817, 250_296)
+    assert _standing(apartment) == {"alice": (83_432, 83_432, 0, "paid"),
+                                    "bob": (83_432, 50_000, 33_432, "partial"),
+                                    "chris": (83_432, 0, 83_432, "unpaid")}
+    assert [row[:2] for row in _owed(apartment)] == [("alice", 4_470)]
+    # The subscription bills at 12% from now on, December too.
+    overview = furniture.get_overview(apartment, APARTMENT, "2026-12")
+    assert overview["config"]["gst_rate_percent"] == 12.0
+    assert (overview["month"]["bill_state"], overview["month"]["gst_rate_percent"],
+            overview["month"]["total_paise"]) == ("upcoming", 12.0, 250_296)
+
     # A rate is from 0 to 100 percent, to two decimal places.
     for bad in (-1, 100.5, 12.345):
         with pytest.raises(ValidationError) as refused:
-            furniture.update_item(billed, APARTMENT, sofa, {"gst_rate_percent": bad})
+            _billing(apartment, rate=bad)
         assert refused.value.code == "invalid_gst_rate"
-    assert furniture.update_item(billed, APARTMENT, sofa, {"gst_rate_percent": 12.5})[
-        "monthly_rent_paise"] == 225_000
-    assert validation.validate(billed, APARTMENT)["issues"] == []
+    assert _billing(apartment, rate=0)["total_paise"] == 223_479
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+    assert sum(_net(apartment).values()) == 0
 
 
-def test_turning_gst_on_after_a_share_is_paid_leaves_it_part_paid(billed):
-    _pay_in(billed, "alice", 56_667)
-    sofa = _item_id(billed, "Sofa")
-    # The sofa's ₹1,000 is now before GST: ₹1,180, and Alice's share ₹626.67.
-    updated = furniture.update_item(billed, APARTMENT, sofa, {"is_gst_exclusive": True})
-    assert (updated["base_rent_paise"], updated["monthly_rent_paise"]) == (100_000, 118_000)
-    assert _month(billed)["total_paise"] == 238_000
-    assert _standing(billed)["alice"] == (62_667, 56_667, 6_000, "partial")
-    assert _owed(billed) == []
-    _pay_in(billed, "alice", 6_000)
-    assert _standing(billed)["alice"] == (62_667, 62_667, 0, "paid")
-    assert validation.validate(billed, APARTMENT)["issues"] == []
-    assert sum(_net(billed).values()) == 0
+def test_a_charged_total_stands_only_while_the_items_come_to_what_they_did(apartment,
+                                                                           november):
+    _gst_month(apartment, november)
+    sofa = _item_id(apartment, "Sofa")
+    assert _billing(apartment, charged=263_700)["total_paise"] == 263_700
+    # Anything else about an item leaves it be ...
+    furniture.update_item(apartment, APARTMENT, sofa, {"name": "Three-seater sofa"})
+    assert _month(apartment)["total_paise"] == 263_700
+    # ... but a new rent bills the month afresh, as worked out.
+    furniture.update_item(apartment, APARTMENT, sofa, {"monthly_rent_paise": 70_000})
+    month = _month(apartment)
+    assert _gst(month) == (229_609, 18.0, 41_330, 270_939, None, 41_330, 270_939)
+
+    # Never below the items' rents, nor with GST of more than them.
+    for charged, code in ((229_608, "furniture_charged_total_below_subtotal"),
+                          (459_219, "furniture_charged_total_too_high")):
+        with pytest.raises(ValidationError) as refused:
+            _billing(apartment, charged=charged)
+        assert refused.value.code == code
+    assert _billing(apartment, charged=459_218)["total_paise"] == 459_218
+    # A month not billed yet takes the rate alone.
+    with pytest.raises(ConflictError) as refused:
+        _billing(apartment, charged=300_000, month="2026-12")
+    assert refused.value.code == "furniture_bill_not_recorded"
+    assert _billing(apartment, rate=5, month="2026-12")["gst_rate_percent"] == 5.0
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
-def test_turning_gst_off_after_a_share_is_paid_owes_the_difference_back(billed):
-    sofa = _item_id(billed, "Sofa")
-    furniture.update_item(billed, APARTMENT, sofa, {"is_gst_exclusive": True})
-    _pay_in(billed, "alice", 62_667)
-    assert _standing(billed)["alice"] == (62_667, 62_667, 0, "paid")
-    # GST off again: the sofa is its ₹1,000 alone, and the ₹60 she paid towards
-    # its GST is hers to have back from the kitty.
-    updated = furniture.update_item(billed, APARTMENT, sofa, {"is_gst_exclusive": False})
-    assert (updated["monthly_rent_paise"], updated["gst_paise"]) == (100_000, 0)
-    assert _standing(billed)["alice"] == (56_667, 56_667, 0, "paid")
-    assert _owed(billed) == [("alice", 6_000, 6_000, True)]
-    assert payments.unapplied_credits(billed, APARTMENT) == []
-    # A new rent sent with GST still on is the rent before GST.
-    furniture.update_item(billed, APARTMENT, sofa, {"is_gst_exclusive": True,
-                                                     "monthly_rent_paise": 50_000})
-    assert furniture.update_item(billed, APARTMENT, sofa, {"name": "Sofa"})[
-        "monthly_rent_paise"] == 59_000
-    assert validation.validate(billed, APARTMENT)["issues"] == []
-    assert sum(_net(billed).values()) == 0
+def test_a_month_gone_by_keeps_its_gst_and_total(apartment, november):
+    _gst_month(apartment, november)
+    _billing(apartment, charged=263_706)
+    _pay_in(apartment, "alice", 87_902)
+
+    november["now"] = "2026-12-03T09:00:00+05:30"
+    before = _month(apartment)
+    assert (before["bill_state"], _gst(before)) == (
+        "frozen", (223_479, 18.0, 40_226, 263_705, 263_706, 40_227, 263_706))
+    with pytest.raises(ConflictError) as refused:
+        _billing(apartment, rate=12)
+    assert refused.value.code == "furniture_bill_frozen"
+    # December's rate and the items' rents change; November reads as it was billed.
+    _billing(apartment, rate=12, month="2026-12")
+    furniture.update_item(apartment, APARTMENT, _item_id(apartment, "Sofa"),
+                          {"monthly_rent_paise": 70_000})
+    assert _month(apartment) == {**before, "billable_items": _month(apartment)["billable_items"]}
+    december = _month(apartment, "2026-12")
+    assert _gst(december) == (229_609, 12.0, 27_553, 257_162, None, 27_553, 257_162)
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
-def test_gst_on_items_over_http(api):
+def test_a_bill_recorded_before_gst_on_the_bill_reads_as_it_was_billed():
+    # Its items' rents had any GST in them: no rate, and no GST of its own.
+    totals = furniture._recorded_totals(
+        {"common_total_paise": 170_000, "private_total_paise": 50_000}, {"amount_paise": 220_000})
+    assert (totals["subtotal_base_paise"], totals["gst_rate_percent"], totals["total_gst_paise"],
+            totals["calculated_total_paise"], totals["charged_total_override_paise"],
+            totals["total_paise"]) == (220_000, None, 0, 220_000, None, 220_000)
+
+
+def test_gst_on_the_bill_over_http(api):
     base = "/api/services/furniture"
-    api.post(f"{base}/setup", params={"month": MONTH}, json={"provider_name": "Furlenco"})
-    wardrobe = api.post(f"{base}/items", json={
-        "name": "Wardrobe", "base_rent_paise": 100_000, "monthly_rent_paise": 118_000,
-        "is_gst_exclusive": True, "allocation_scope": "common"})
-    assert wardrobe.status_code == 201, wardrobe.text
-    body = wardrobe.json()
-    assert (body["base_rent_paise"], body["gst_paise"], body["monthly_rent_paise"],
-            body["is_gst_exclusive"]) == (100_000, 18_000, 118_000, True)
-    url = f"{base}/items/{body['item_id']}"
-    assert api.patch(url, json={"base_rent_paise": 100_000, "monthly_rent_paise": 99_999,
-                                "is_gst_exclusive": True}).status_code == 422
-    # An invoice's total a paisa off the GST worked out is taken as it is.
-    rounded = api.patch(url, json={"base_rent_paise": 100_000, "monthly_rent_paise": 117_999,
-                                   "is_gst_exclusive": True}).json()
-    assert (rounded["gst_paise"], rounded["monthly_rent_paise"]) == (17_999, 117_999)
-    at_5 = api.patch(url, json={"gst_rate_percent": 5}).json()
-    assert (at_5["gst_rate_percent"], at_5["monthly_rent_paise"]) == (5.0, 105_000)
-    assert api.patch(url, json={"gst_rate_percent": 101}).status_code == 422
-    off = api.patch(url, json={"is_gst_exclusive": False}).json()
-    assert (off["monthly_rent_paise"], off["gst_paise"], off["is_gst_exclusive"]) == (
-        100_000, 0, False)
-    assert api.post(f"{base}/items", json={
-        "name": "Lamp", "allocation_scope": "common"}).status_code == 422
+    setup = api.post(f"{base}/setup", params={"month": MONTH}, json={"provider_name": "Furlenco"})
+    assert setup.json()["config"]["gst_rate_percent"] == 18.0
+    sofa = api.post(f"{base}/items", json={"name": "Sofa", "monthly_rent_paise": SOFA,
+                                           "allocation_scope": "common"})
+    assert sofa.status_code == 201, sofa.text
+    api.post(f"{base}/items", json={"name": "Dining table", "monthly_rent_paise": DINING_TABLE,
+                                    "allocation_scope": "common"})
+    # GST is the bill's, not an item's.
+    for extra in ({"base_rent_paise": SOFA}, {"is_gst_exclusive": True},
+                  {"gst_rate_percent": 18}):
+        assert api.post(f"{base}/items", json={
+            "name": "Lamp", "monthly_rent_paise": 10_000, "allocation_scope": "common",
+            **extra}).status_code == 422, extra
+    assert api.post(f"{base}/generate-cycle", json={"settlement_month": MONTH}).status_code == 201
+
+    url = f"{base}/month/{MONTH}/billing"
+    charged = api.post(url, json={"gst_rate_percent": 18, "charged_total_paise": 263_706})
+    assert charged.status_code == 200, charged.text
+    month = charged.json()["month"]
+    assert (month["total_paise"], month["calculated_total_paise"],
+            month["charged_total_override_paise"]) == (263_706, 263_705, 263_706)
+    cleared = api.post(url, json={"gst_rate_percent": 12, "charged_total_paise": None}).json()
+    assert (cleared["month"]["total_paise"], cleared["config"]["gst_rate_percent"]) == (
+        250_296, 12.0)
+    assert api.post(url, json={"gst_rate_percent": 101}).status_code == 422
+    assert api.post(url, json={"gst_rate_percent": 18,
+                               "charged_total_paise": 1_000}).status_code == 422
+    assert api.post(f"{base}/month/2026-13/billing",
+                    json={"gst_rate_percent": 18}).status_code == 422

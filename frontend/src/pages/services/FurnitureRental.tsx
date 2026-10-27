@@ -6,7 +6,9 @@
  * the residents taking part and a resident's own items are charged to them;
  * nothing is prorated, so an item in the flat at any point in a month counts in
  * full. Each month's bill is one ordinary expense, which follows the items while
- * the month is open and is kept as it stands once the month closes.
+ * the month is open and is kept as it stands once the month closes. An item's
+ * rent is before GST: the bill adds GST at its rate on the items together, or is
+ * the invoice's own total where that rounds its GST another way.
  *
  * The month is paid in the same two steps as rent:
  * flatmates pay their shares into the House Kitty, and the provider is paid the
@@ -25,6 +27,7 @@ import {
   Check,
   Clock,
   Pencil,
+  Percent,
   Plus,
   Receipt,
   ShieldCheck,
@@ -36,7 +39,7 @@ import {
 } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
 import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
-import { CheckboxField, DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
+import { DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
 import {
   ResidentCollectionTable,
   type CollectionStatus,
@@ -134,12 +137,14 @@ const PAYMENT_MODES: Array<{ value: PaymentMode; label: string }> = [
   { value: 'other', label: 'Other' },
 ]
 
-/** Nothing left to pay on the share: paid into the kitty, or covered by paying the provider. */
-/** GST on an item priced before it, unless the item has a rate of its own. */
+/** GST on a month's bill, unless the subscription has a rate of its own. */
 const GST_RATE_PERCENT = 18
 
+/** The GST slider's range: India's GST slabs run up to 28%; a rate above it is typed. */
+const GST_SLIDER_MAX = 28
+
 /**
- * GST at `ratePercent` on a rent quoted before GST, in whole paise, rounded half
+ * GST at `ratePercent` on rents quoted before GST, in whole paise, rounded half
  * up -- as the backend works it out. The rate is taken in hundredths of a
  * percent so the sum stays in whole numbers.
  */
@@ -162,11 +167,7 @@ function parseGstRate(raw: string): { ok: boolean; percent: number; error?: stri
   return { ok: true, percent }
 }
 
-/** Whether an item is billed GST on top of its rent as quoted. */
-function hasGst(item: FurnitureItem): boolean {
-  return item.is_gst_exclusive || item.gst_paise > 0
-}
-
+/** Nothing left to pay on the share: paid into the kitty, or covered by paying the provider. */
 function isSettled(share: FurnitureShare): boolean {
   return share.status === 'paid' || share.status === 'funded_payout' || share.outstanding_paise <= 0
 }
@@ -246,6 +247,7 @@ type Dialog =
   | { kind: 'reimbursement_statement'; reimbursement: FurnitureReimbursement }
   | { kind: 'share_detail'; share: FurnitureShare; bill: FurnitureMonthBill }
   | { kind: 'pay_share'; share: FurnitureShare }
+  | { kind: 'bill_gst'; bill: FurnitureMonthBill }
 
 export default function FurnitureRentalPage() {
   const { month } = useApp()
@@ -322,6 +324,11 @@ export function FurnitureRental({ month }: { month: string }) {
                 {tab === 'settlement' && data.month && (
                   <>
                     <Metrics bill={data.month} billingDay={data.service.billing_day_of_month} />
+                    <BillSummaryPanel
+                      month={month}
+                      bill={data.month}
+                      onConfigure={() => setDialog({ kind: 'bill_gst', bill: data.month! })}
+                    />
                     {/* The month's two steps, in order: collect from residents, then pay the provider. */}
                     <ResidentCollectionPanel
                       month={month}
@@ -347,7 +354,16 @@ export function FurnitureRental({ month }: { month: string }) {
                 )}
                 {tab === 'items' && (
                   <>
-                    {data.month && <ItemsMetrics bill={data.month} />}
+                    {data.month && (
+                      <>
+                        <ItemsMetrics bill={data.month} />
+                        <BillSummaryPanel
+                          month={month}
+                          bill={data.month}
+                          onConfigure={() => setDialog({ kind: 'bill_gst', bill: data.month! })}
+                        />
+                      </>
+                    )}
                     <ItemsPanel
                       items={data.items}
                       onAdd={() => setDialog({ kind: 'add' })}
@@ -549,6 +565,19 @@ export function FurnitureRental({ month }: { month: string }) {
               onClose={() => setDialog(null)}
               onDone={(amount) =>
                 done('Payment recorded', `${formatInr(amount)} from ${dialog.share.display_name} into the House Kitty`)
+              }
+            />
+          )}
+          {dialog?.kind === 'bill_gst' && (
+            <BillGstModal
+              month={month}
+              bill={dialog.bill}
+              onClose={() => setDialog(null)}
+              onSaved={(updated) =>
+                done(
+                  'Bill updated',
+                  `${formatMonth(month)} bills ${formatInr(updated.month?.total_paise ?? dialog.bill.total_paise)}, GST included.`,
+                )
               }
             />
           )}
@@ -1032,7 +1061,7 @@ function ItemDetailModal({
     >
       <div className="space-y-5">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <MiniStat label="Gross Monthly Rent" value={<Rupees paise={item.monthly_rent_paise} />} />
+          <MiniStat label="Monthly Rent" value={<Rupees paise={item.monthly_rent_paise} />} note="Before GST" />
           <MiniStat
             label="Paid By"
             value={shared ? 'Shared equally' : (item.assigned_resident_name ?? item.assigned_resident_id ?? '—')}
@@ -1041,15 +1070,6 @@ function ItemDetailModal({
           <MiniStat label="Status" value={<Pill tone={status.tone}>{status.label}</Pill>} />
         </div>
         <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm" aria-label="Item details">
-          <DetailFact label="Base Rent">
-            <span className="tabular">{formatInr(item.base_rent_paise)}</span>
-          </DetailFact>
-          <DetailFact label={`GST (${rateText(item.gst_rate_percent ?? GST_RATE_PERCENT)}%)`}>
-            <span className="tabular">{hasGst(item) ? formatInr(item.gst_paise) : 'Included in base rent'}</span>
-          </DetailFact>
-          <DetailFact label="Gross Monthly Rent">
-            <span className="tabular font-semibold">{formatInr(item.monthly_rent_paise)}</span>
-          </DetailFact>
           <DetailFact label="Rental Provider">{item.provider_name ?? '—'}</DetailFact>
           <DetailFact label="Delivery Date">
             <span className="tabular">{item.delivery_date ? formatDate(item.delivery_date) : '—'}</span>
@@ -1071,15 +1091,15 @@ function ItemDetailModal({
 
 /* ------------------------------------------------- 3. the month's bill -- */
 
-/**
- * How the month's bill is split: the shared items, and each person's part of
- * them -- and, when any item is priced before GST, its total with the GST.
- */
+/** How the month's bill is split: the shared items' part of it, and each person's part of that. */
 function ItemsMetrics({ bill }: { bill: FurnitureMonthBill }) {
-  const gst = bill.total_gst_paise ?? 0
   return (
-    <div className={`grid grid-cols-1 ${gst > 0 ? 'sm:grid-cols-3' : 'sm:grid-cols-2'} gap-3 sm:gap-4`}>
-      <MiniStat label="Shared items" value={<Rupees paise={bill.common_total_paise} />} note="Split equally" />
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+      <MiniStat
+        label="Shared items"
+        value={<Rupees paise={bill.common_total_paise} />}
+        note="Split equally · GST included"
+      />
       <MiniStat
         label="Each person's part"
         value={<Rupees paise={bill.participant_count ? bill.base_share_paise : null} />}
@@ -1089,14 +1109,58 @@ function ItemsMetrics({ bill }: { bill: FurnitureMonthBill }) {
             : 'Nobody taking part'
         }
       />
-      {gst > 0 && (
-        <MiniStat
-          label="Gross total"
-          value={<Rupees paise={bill.total_paise} />}
-          note={`Base ${formatInr(bill.subtotal_base_paise ?? bill.total_paise - gst)} + GST ${formatInr(gst)}`}
-        />
-      )}
     </div>
+  )
+}
+
+/** Whether the month's GST and total can still change: it is open, or not begun. */
+function billIsOpen(bill: FurnitureMonthBill): boolean {
+  if (bill.bill_state === 'live' || bill.bill_state === 'upcoming') return true
+  return bill.bill_state === 'not_billed' && bill.settlement_month >= todayIso().slice(0, 7)
+}
+
+/**
+ * The month's bill: the items' rents before GST, the GST the bill adds on them,
+ * and what it comes to -- the invoice's own total where one was set. While the
+ * month is open its GST rate and total can be set.
+ */
+function BillSummaryPanel({
+  month,
+  bill,
+  onConfigure,
+}: {
+  month: string
+  bill: FurnitureMonthBill
+  onConfigure: () => void
+}) {
+  const overridden = bill.charged_total_override_paise != null
+  return (
+    <Panel
+      title="Monthly Bill"
+      icon={<Receipt className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint={
+        billIsOpen(bill)
+          ? "GST is added to the items' rents on the bill, as the provider's invoice adds it."
+          : `${formatMonth(month)} is closed: it reads as it was billed.`
+      }
+      menuActions={
+        billIsOpen(bill) ? [{ label: 'Configure GST & Total', icon: Percent, onClick: onConfigure }] : undefined
+      }
+    >
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <MiniStat label="Items Subtotal" value={<Rupees paise={bill.subtotal_base_paise} />} note="Rents before GST" />
+        <MiniStat
+          label={bill.gst_rate_percent == null ? 'GST' : `GST (${rateText(bill.gst_rate_percent)}%)`}
+          value={<Rupees paise={bill.total_gst_paise} />}
+          note={overridden ? 'As invoiced' : bill.gst_rate_percent == null ? 'In the items’ rents' : undefined}
+        />
+        <MiniStat
+          label="Gross Bill Total"
+          value={<Rupees paise={bill.total_paise} />}
+          note={overridden ? `Calculated: ${formatInr(bill.calculated_total_paise)}` : 'GST included'}
+        />
+      </div>
+    </Panel>
   )
 }
 
@@ -1495,33 +1559,10 @@ function ItemDialog({
   // The provider it is rented from.
   const [serviceId, setServiceId] = useState(item?.service_id ?? services[0]?.service.service_id ?? '')
   const [name, setName] = useState(item?.name ?? '')
-  // The rent as quoted: before GST for an item priced exclusive of it.
-  const quoted = item ? (item.is_gst_exclusive ? item.base_rent_paise : item.monthly_rent_paise) : 0
-  const [rent, setRent] = useState(item ? paiseToInput(quoted) : '')
-  const [rentPaise, setRentPaise] = useState(quoted)
+  // The rent as quoted, before GST: the month's bill adds GST.
+  const [rent, setRent] = useState(item ? paiseToInput(item.monthly_rent_paise) : '')
+  const [rentPaise, setRentPaise] = useState(item?.monthly_rent_paise ?? 0)
   const [rentOk, setRentOk] = useState(Boolean(item))
-  // A new item is priced before GST, at 18%, unless the operator says otherwise.
-  const [gstExclusive, setGstExclusive] = useState(item ? item.is_gst_exclusive : true)
-  const [gstRate, setGstRate] = useState(rateText(item?.gst_rate_percent ?? GST_RATE_PERCENT))
-  const rate = parseGstRate(gstRate)
-  // What it is billed with GST: worked out from the rent and rate, or the
-  // invoice's own total where it rounds its GST another way. An item's saved
-  // total stays until its rent or rate changes.
-  const savedGross = item?.is_gst_exclusive ? item.monthly_rent_paise : null
-  const [gross, setGross] = useState(savedGross === null ? '' : paiseToInput(savedGross))
-  const [grossPaise, setGrossPaise] = useState(savedGross ?? 0)
-  const [grossOk, setGrossOk] = useState(savedGross !== null)
-  const refillGross = (basePaise: number, baseOk: boolean, rateRaw: string) => {
-    const next = parseGstRate(rateRaw)
-    const filled = baseOk && basePaise > 0 && next.ok
-    const paise = filled ? basePaise + gstOn(basePaise, next.percent) : 0
-    setGross(filled ? paiseToInput(paise) : '')
-    setGrossPaise(paise)
-    setGrossOk(filled)
-  }
-  const grossBelowRent = gstExclusive && grossOk && rentOk && grossPaise < rentPaise
-  const billedPaise = gstExclusive ? grossPaise : rentPaise
-  const gstPaise = billedPaise - rentPaise
   // Who pays: '' for everyone, else the resident the item is for.
   const [payer, setPayer] = useState(item?.assigned_resident_id ?? '')
   const [status, setStatus] = useState<'active' | 'pending_delivery'>(
@@ -1532,19 +1573,11 @@ function ItemDialog({
   const people = (residents.data?.items ?? []).filter(
     (resident) => resident.is_active || resident.resident_id === item?.assigned_resident_id,
   )
-  const valid =
-    Boolean(serviceId) &&
-    name.trim().length > 0 &&
-    rentOk &&
-    rentPaise > 0 &&
-    (!gstExclusive || (rate.ok && grossOk && !grossBelowRent))
+  const valid = Boolean(serviceId) && name.trim().length > 0 && rentOk && rentPaise > 0
   const body = {
     service_id: serviceId || null,
     name: name.trim(),
-    base_rent_paise: rentPaise,
-    monthly_rent_paise: billedPaise,
-    is_gst_exclusive: gstExclusive,
-    gst_rate_percent: rate.ok ? rate.percent : (item?.gst_rate_percent ?? GST_RATE_PERCENT),
+    monthly_rent_paise: rentPaise,
     allocation_scope: payer ? 'resident' : 'common',
     assigned_resident_id: payer || null,
     delivery_date: delivery || null,
@@ -1589,62 +1622,17 @@ function ItemDialog({
           <TextField label="Item" required value={name} onChange={setName} maxLength={200} placeholder="e.g. 3-seater sofa" />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <div className="stack">
-            <MoneyInput
-              label={gstExclusive ? 'Base monthly rent' : 'Monthly rent'}
-              required
-              value={rent}
-              onChange={(raw, parsed) => {
-                setRent(raw)
-                setRentPaise(parsed.paise)
-                setRentOk(parsed.ok)
-                refillGross(parsed.paise, parsed.ok, gstRate)
-              }}
-              hint={gstExclusive ? 'As quoted, before GST.' : 'As quoted, GST included if any.'}
-            />
-            <CheckboxField
-              label="Exclusive of GST"
-              checked={gstExclusive}
-              onChange={(checked) => {
-                setGstExclusive(checked)
-                if (checked) refillGross(rentPaise, rentOk, gstRate)
-              }}
-            />
-            {gstExclusive && (
-              <>
-                <TextField
-                  label="GST (%)"
-                  value={gstRate}
-                  onChange={(raw) => {
-                    setGstRate(raw)
-                    refillGross(rentPaise, rentOk, raw)
-                  }}
-                  inputMode="decimal"
-                  maxLength={6}
-                  error={gstRate.trim() && !rate.ok ? rate.error : null}
-                  hint="Added to the rent above, rounded to the paisa."
-                />
-                <MoneyInput
-                  label="Gross monthly rent (incl. GST)"
-                  required
-                  value={gross}
-                  onChange={(raw, parsed) => {
-                    setGross(raw)
-                    setGrossPaise(parsed.paise)
-                    setGrossOk(parsed.ok)
-                  }}
-                  error={grossBelowRent ? 'Less than the rent before GST.' : null}
-                  hint="Filled in from the rent and rate. Change it to match the invoice to the paisa."
-                />
-              </>
-            )}
-            {gstExclusive && rate.ok && rentOk && rentPaise > 0 && grossOk && !grossBelowRent && (
-              <p role="status" className="m-0 text-xs font-medium text-[var(--text-secondary)] tabular">
-                Base: {formatInr(rentPaise)} + GST ({rateText(rate.percent)}%): {formatInr(gstPaise)} = Gross
-                total: {formatInr(billedPaise)}/mo
-              </p>
-            )}
-          </div>
+          <MoneyInput
+            label="Monthly rent"
+            required
+            value={rent}
+            onChange={(raw, parsed) => {
+              setRent(raw)
+              setRentPaise(parsed.paise)
+              setRentOk(parsed.ok)
+            }}
+            hint="As quoted, before GST."
+          />
           <SelectField
             label="Paid by"
             value={payer}
@@ -1742,6 +1730,152 @@ function RemoveDialog({ item, onClose, onRemoved }: { item: FurnitureItem; onClo
 }
 
 type PayoutSource = 'pool' | 'resident_advance'
+
+/**
+ * An open month's GST and total: the rate the bill adds on the items' rents
+ * and, where the provider's invoice rounds its GST another way, the total it
+ * actually charges. The total follows the rate until it is set by hand.
+ */
+function BillGstModal({
+  month,
+  bill,
+  onClose,
+  onSaved,
+}: {
+  month: string
+  bill: FurnitureMonthBill
+  onClose: () => void
+  onSaved: (updated: FurnitureRentalOverview) => void
+}) {
+  const subtotal = bill.subtotal_base_paise
+  // A month not billed yet takes only the rate: there is no invoice to match.
+  const recorded = bill.expense != null
+  const [rateRaw, setRateRaw] = useState(rateText(bill.gst_rate_percent ?? GST_RATE_PERCENT))
+  const rate = parseGstRate(rateRaw)
+  const calculatedGst = rate.ok ? gstOn(subtotal, rate.percent) : 0
+  const calculated = subtotal + calculatedGst
+  const [overridden, setOverridden] = useState(bill.charged_total_override_paise != null)
+  const startingTotal = bill.charged_total_override_paise ?? calculated
+  const [charged, setCharged] = useState(paiseToInput(startingTotal))
+  const [chargedPaise, setChargedPaise] = useState(startingTotal)
+  const [chargedOk, setChargedOk] = useState(true)
+  const follow = (total: number) => {
+    setCharged(paiseToInput(total))
+    setChargedPaise(total)
+    setChargedOk(true)
+  }
+  const changeRate = (raw: string) => {
+    setRateRaw(raw)
+    const next = parseGstRate(raw)
+    if (!overridden && next.ok) follow(subtotal + gstOn(subtotal, next.percent))
+  }
+  const chargedError =
+    !recorded || !overridden || !chargedOk
+      ? null
+      : chargedPaise < subtotal
+        ? `Less than the items' ${formatInr(subtotal)} before GST.`
+        : chargedPaise > 2 * subtotal
+          ? `More GST than the items' ${formatInr(subtotal)} before it.`
+          : null
+  const valid = rate.ok && (!recorded || !overridden || (chargedOk && chargedError === null))
+  const save = useMutation(
+    () =>
+      api.post<FurnitureRentalOverview>(`${BASE}/month/${encodeURIComponent(month)}/billing`, {
+        gst_rate_percent: rate.percent,
+        charged_total_paise: recorded && overridden && chargedPaise !== calculated ? chargedPaise : null,
+      }),
+    { onSuccess: onSaved },
+  )
+  const sliderValue = rate.ok ? Math.min(Math.round(rate.percent), GST_SLIDER_MAX) : 0
+
+  return (
+    <Modal
+      title="Configure GST & Total"
+      description={`${formatMonth(month)} furniture bill: GST on the items' rents, and the total the invoice charges.`}
+      onClose={onClose}
+      footer={<DialogFooter onClose={onClose} pending={save.pending} disabled={!valid} label="Save" form="furniture-bill-gst" />}
+    >
+      <form id="furniture-bill-gst" className="stack" noValidate onSubmit={submitWith(() => valid && void save.run(undefined))}>
+        <ErrorNotice error={save.error} />
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_7rem] gap-4 items-start">
+          <div className="space-y-1 pt-1">
+            <input
+              type="range"
+              min={0}
+              max={GST_SLIDER_MAX}
+              step={1}
+              value={sliderValue}
+              onChange={(event) => changeRate(event.target.value)}
+              aria-label="GST rate"
+              aria-valuetext={`${sliderValue}%`}
+              className="w-full accent-[var(--accent)]"
+            />
+            <div className="flex justify-between text-[10px] font-medium text-[var(--text-tertiary)] tabular" aria-hidden="true">
+              <span>0%</span>
+              <span>{GST_SLIDER_MAX}%</span>
+            </div>
+          </div>
+          <TextField
+            label="GST (%)"
+            value={rateRaw}
+            onChange={changeRate}
+            inputMode="decimal"
+            maxLength={6}
+            error={rateRaw.trim() && !rate.ok ? rate.error : null}
+          />
+        </div>
+        <dl className="m-0 grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm" aria-label="Calculated bill">
+          <DetailFact label="Items Subtotal">
+            <span className="tabular">{formatInr(subtotal)}</span>
+          </DetailFact>
+          <DetailFact label={rate.ok ? `Calculated GST (${rateText(rate.percent)}%)` : 'Calculated GST'}>
+            <span className="tabular">{rate.ok ? formatInr(calculatedGst) : '—'}</span>
+          </DetailFact>
+          <DetailFact label="Calculated Total">
+            <span className="tabular font-semibold">{rate.ok ? formatInr(calculated) : '—'}</span>
+          </DetailFact>
+        </dl>
+        {recorded ? (
+          <div className="stack">
+            <MoneyInput
+              label="Actual Charged Total"
+              required
+              value={charged}
+              onChange={(raw, parsed) => {
+                setCharged(raw)
+                setChargedPaise(parsed.paise)
+                setChargedOk(parsed.ok)
+                setOverridden(true)
+              }}
+              error={chargedError}
+              hint={
+                overridden
+                  ? 'As the invoice charges it, GST included. Shares follow it.'
+                  : 'Follows the rate. Change it to match the invoice to the paisa.'
+              }
+            />
+            {overridden && (
+              <button
+                type="button"
+                className={`${BUTTON_QUIET} self-start`}
+                onClick={() => {
+                  setOverridden(false)
+                  if (rate.ok) follow(calculated)
+                }}
+              >
+                Reset to calculated
+              </button>
+            )}
+          </div>
+        ) : (
+          <p className="m-0 text-xs text-[var(--text-secondary)]">
+            The total can be matched to the invoice once the month is billed.
+          </p>
+        )}
+      </form>
+    </Modal>
+  )
+}
 
 function ProviderPayoutModal({
   month,

@@ -7,8 +7,7 @@ from .base import Repository
 
 #: Item columns a caller may change. Anything else is refused, so no
 #: caller-supplied name ever reaches the SQL.
-ITEM_COLUMNS = ("service_id", "name", "category", "monthly_rent_paise", "base_rent_paise",
-                "is_gst_exclusive", "gst_rate_percent", "allocation_scope",
+ITEM_COLUMNS = ("service_id", "name", "category", "monthly_rent_paise", "allocation_scope",
                 "assigned_resident_id", "status", "delivery_date", "return_date")
 
 #: An item with the resident it is for and the provider it is rented from.
@@ -24,7 +23,7 @@ ITEM_SELECT = """SELECT i.*, r.display_name AS assigned_resident_name,
 #: Subscription columns a caller may change.
 CONFIG_COLUMNS = ("provider_name", "customer_id", "subscription_reference",
                   "deposit_paid_paise", "deposit_refunded_paise", "deposit_status",
-                  "expense_definition_id", "notes")
+                  "expense_definition_id", "notes", "gst_rate_percent")
 
 
 class FurnitureRentalRepository(Repository):
@@ -141,21 +140,18 @@ class FurnitureRentalRepository(Repository):
         return self._s.fetch_one(f"{ITEM_SELECT} WHERE i.item_id=%s", (item_id,))
 
     def insert_item(self, *, item_id: str, service_id: str, apartment_id: str, name: str,
-                    category: str, monthly_rent_paise: int, base_rent_paise: int,
-                    is_gst_exclusive: bool, gst_rate_percent: float, allocation_scope: str,
+                    category: str, monthly_rent_paise: int, allocation_scope: str,
                     assigned_resident_id: str | None, status: str,
                     delivery_date: str | None, return_date: str | None,
                     created_at: str) -> None:
         self._s.execute(
             """INSERT INTO furniture_rental_item (item_id, service_id, apartment_id, name,
-                   category, monthly_rent_paise, base_rent_paise, is_gst_exclusive,
-                   gst_rate_percent, allocation_scope, assigned_resident_id, status,
+                   category, monthly_rent_paise, allocation_scope, assigned_resident_id, status,
                    delivery_date, return_date, created_at, updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (item_id, service_id, apartment_id, name, category, monthly_rent_paise,
-             base_rent_paise, is_gst_exclusive, gst_rate_percent, allocation_scope,
-             assigned_resident_id, status, delivery_date, return_date, created_at,
-             created_at))
+             allocation_scope, assigned_resident_id, status, delivery_date, return_date,
+             created_at, created_at))
 
     def update_item(self, item_id: str, *, updated_at: str, **values: Any) -> None:
         columns = [column for column in ITEM_COLUMNS if column in values]

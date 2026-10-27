@@ -1431,6 +1431,8 @@ export interface FurnitureConfig {
   /** The expense definition each month's bill is recorded under. */
   expense_definition_id: string | null
   notes: string | null
+  /** The GST rate each month's bill starts at, 18 unless set; a month already billed keeps its own. */
+  gst_rate_percent: number
   updated_at: string
 }
 
@@ -1442,15 +1444,8 @@ export interface FurnitureItem {
   service_display_name?: string
   name: string
   category: FurnitureCategory
-  /** What the item is billed a month, GST included. */
+  /** The item's monthly rent as quoted, before GST: the month's bill adds GST. */
   monthly_rent_paise: number
-  /** The rent as quoted: before GST when `is_gst_exclusive`, otherwise the same as `monthly_rent_paise`. */
-  base_rent_paise: number
-  /** The GST added to a rent quoted before GST, at `gst_rate_percent`; 0 otherwise. */
-  gst_paise: number
-  is_gst_exclusive: boolean
-  /** The item's GST rate, 18 unless set; to two decimal places. */
-  gst_rate_percent: number
   /** common: split equally; resident: charged to assigned_resident_id alone. */
   allocation_scope: 'common' | 'resident'
   assigned_resident_id: string | null
@@ -1572,14 +1567,26 @@ export type FurnitureReimbursement = KittyReimbursement
 export interface FurnitureMonthBill {
   settlement_month: string
   billable_items: FurnitureItem[]
+  /** The shared items' part of the bill, GST included: split equally. */
   common_total_paise: number
+  /** The residents' own items' part of the bill, GST included. */
   private_total_paise: number
-  /** What the items are billed, GST included: `subtotal_base_paise + total_gst_paise`. */
+  /** The shared items' and the residents' own items' rents, before GST. */
+  common_base_paise: number
+  private_base_paise: number
+  /** The items' rents before GST. */
+  subtotal_base_paise: number
+  /** The bill's GST rate; null for a month billed before GST was charged on the bill. */
+  gst_rate_percent: number | null
+  /** GST at the rate on the subtotal, rounded half up to the paisa, and the total that makes. */
+  calculated_gst_paise: number
+  calculated_total_paise: number
+  /** The invoice's own total, where it rounds its GST another way; null bills the total worked out. */
+  charged_total_override_paise: number | null
+  /** The bill's GST: `total_paise - subtotal_base_paise`. */
+  total_gst_paise: number
+  /** What the month bills, GST included. */
   total_paise: number
-  /** The items' rents as quoted. */
-  subtotal_base_paise?: number
-  /** The GST added to the items quoted before it. */
-  total_gst_paise?: number
   participant_count: number
   base_share_paise: number
   remainder_paise: number

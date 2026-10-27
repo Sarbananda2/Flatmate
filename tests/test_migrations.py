@@ -342,6 +342,16 @@ def _data_changing_text(sql: str) -> str:
     return re.sub(r"\w+truncate\w*|truncate\w+", "", text)
 
 
+#: The exceptions to forward-only, each held to exactly what it may drop.
+ALLOWED_DROPS = {
+    # 0029 retires 0027's per-item GST for GST on the month's bill: each item
+    # keeps its rent before GST, and its own GST flag and rate go.
+    "postgresql furniture_bill_level_gst": (
+        "drop column base_rent_paise, drop column is_gst_exclusive, "
+        "drop column gst_rate_percent",),
+}
+
+
 def test_no_migration_drops_data(tmp_path):
     """A forward-only policy, checked mechanically against the migration text."""
     forbidden = ("drop table", "drop column", "truncate", "delete from")
@@ -350,6 +360,9 @@ def test_no_migration_drops_data(tmp_path):
               for m in postgres_migrations.discover()]
     assert len(texts) > len(discover()) >= legacy_migrations.FINAL_VERSION
     for name, lowered in texts:
+        for allowed in ALLOWED_DROPS.get(name, ()):
+            assert allowed in lowered, f"{name} no longer drops what it is allowed to"
+            lowered = lowered.replace(allowed, "")
         for phrase in forbidden:
             assert phrase not in lowered, f"{name} contains {phrase!r}"
 

@@ -10,10 +10,13 @@ these tables:
   residents taking part, any paise left over going one each in resident order;
 * a **resident's** item (their bed, their desk) is charged to them alone.
 
-An item is priced as the provider quotes it: with GST included, or **before
-GST**, when GST at the item's own rate (18% unless set) is added to it, rounded
-half up to the paisa, and the item is billed the total. Every bill, share and payout is reckoned on what the
-items are billed, GST included.
+An item is priced **before GST**, as the provider quotes it. GST is charged on
+the month's bill, as the provider's invoice charges it: at the bill's rate (the
+subscription's, 18% unless set) on the subtotal of the items billed, rounded
+half up to the paisa. A month still open may instead be set to the invoice's
+own total, where that rounds its GST another way. The total is shared as the
+items are, in whole paise that add up to it, and every share and payout is
+reckoned on it, GST included.
 
 **Nothing prorates** -- the household's rule for every category. An item counts
 in full for any month it was in the flat: delivered by the month's last day and
@@ -62,15 +65,29 @@ ITEM_STATUSES = ("active", "pending_delivery", "returned")
 #: Statuses of an item still in the flat or on its way: a subscription with
 #: any of these cannot be ended.
 OPEN_STATUSES = ("active", "pending_delivery")
-#: GST on an item priced before it, unless the item has a rate of its own.
+#: GST on a month's bill, unless the subscription has a rate of its own.
 GST_RATE_PERCENT = 18.0
 
 
 def gst_paise(base_rent_paise: int, rate_percent: float = GST_RATE_PERCENT) -> int:
-    """GST at ``rate_percent`` on a rent quoted before GST, in whole paise,
+    """GST at ``rate_percent`` on rents quoted before GST, in whole paise,
     rounded half up."""
     return int((Decimal(base_rent_paise) * Decimal(str(rate_percent)) / Decimal(100))
                .quantize(Decimal(1), ROUND_HALF_UP))
+
+
+def _apportion(total: int, weights: Sequence[int]) -> list[int]:
+    """`total` split in proportion to `weights`, in whole paise that add up to
+    it: each its whole part, and the paise left over one each to those with the
+    largest remainders, the first of equals first."""
+    whole = sum(weights)
+    if not whole:
+        return [0] * len(weights)
+    parts = [total * weight // whole for weight in weights]
+    order = sorted(range(len(weights)), key=lambda index: (-(total * weights[index] % whole), index))
+    for index in order[:total - sum(parts)]:
+        parts[index] += 1
+    return parts
 
 
 def _gst_rate(value: Any) -> float:
@@ -174,7 +191,7 @@ def _public_config(config: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return {key: config[key] for key in (
         "provider_name", "customer_id", "subscription_reference", "deposit_paid_paise",
         "deposit_refunded_paise", "deposit_status", "expense_definition_id", "notes",
-        "updated_at")} if config else None
+        "gst_rate_percent", "updated_at")} if config else None
 
 
 def _definition_id(uow: UnitOfWork, apartment_id: str) -> str | None:
@@ -193,30 +210,52 @@ def _item_in(uow: UnitOfWork, apartment_id: str, item_id: str) -> dict[str, Any]
 
 
 def _public_item(item: Mapping[str, Any]) -> dict[str, Any]:
-    """An item as the API gives it: ``monthly_rent_paise`` is what it is billed,
-    GST included, ``base_rent_paise`` the rent as quoted and ``gst_paise`` the
-    GST added to it."""
-    public = {key: item.get(key) for key in (
+    """An item as the API gives it: ``monthly_rent_paise`` is its rent before
+    GST, which the month's bill adds."""
+    return {key: item.get(key) for key in (
         "item_id", "service_id", "provider_name", "service_display_name", "name", "category",
-        "monthly_rent_paise", "base_rent_paise", "allocation_scope", "assigned_resident_id",
+        "monthly_rent_paise", "allocation_scope", "assigned_resident_id",
         "assigned_resident_name", "status", "delivery_date", "return_date", "created_at",
         "updated_at")}
-    public["gst_paise"] = item["monthly_rent_paise"] - item["base_rent_paise"]
-    public["is_gst_exclusive"] = bool(item.get("is_gst_exclusive"))
-    public["gst_rate_percent"] = float(item.get("gst_rate_percent", GST_RATE_PERCENT))
-    return public
 
 
 # -------------------------------------------------------- the month's bill --
 
+def _provider_split(billable_items: Sequence[Mapping[str, Any]], rate_percent: float,
+                    total: int) -> dict[str, int]:
+    """What each provider bills of `total`: its items' rents plus GST at
+    `rate_percent` on them, as its own invoice would add it -- or, where those do
+    not come to `total` (rounded on the whole, or set to an invoice's total),
+    `total` shared in proportion to their rents (:func:`_apportion`)."""
+    subtotals: dict[str, int] = {}
+    for item in billable_items:
+        subtotals[item["service_id"]] = (subtotals.get(item["service_id"], 0)
+                                         + item["monthly_rent_paise"])
+    gross = [subtotal + gst_paise(subtotal, rate_percent) for subtotal in subtotals.values()]
+    if sum(gross) != total:
+        gross = _apportion(total, list(subtotals.values()))
+    return dict(zip(subtotals, gross))
+
+
 def _month_bill(uow: UnitOfWork, apartment_id: str, items: list[dict[str, Any]], month: str,
                 excluded_resident_ids: Sequence[str] | None = None, *,
-                include_resident_ids: Sequence[str] | None = None) -> dict[str, Any]:
+                include_resident_ids: Sequence[str] | None = None,
+                gst_rate_percent: float = GST_RATE_PERCENT,
+                charged_total_override_paise: int | None = None) -> dict[str, Any]:
     """What `month` would bill, and to whom. Nothing is written.
 
     The active residents take part, less those excluded. ``include_resident_ids``
     keeps residents already on the month's bill taking part after they move out:
     nothing prorates, so a month they were in is theirs in full.
+
+    The items' rents are before GST. The bill adds GST at ``gst_rate_percent``
+    on their subtotal, rounded half up to the paisa; with
+    ``charged_total_override_paise`` it is that total instead -- the provider's
+    invoice, its GST rounded its own way. The total is shared as the items are:
+    between the shared items and each resident's own in proportion to their
+    rents, in whole paise that add up to it (:func:`_apportion`), and the shared
+    part equally between the residents taking part, any paise left over going
+    one each in resident order.
     """
     residents = list_residents(uow, apartment_id)
     names = {row["resident_id"]: row["display_name"] for row in residents}
@@ -232,21 +271,33 @@ def _month_bill(uow: UnitOfWork, apartment_id: str, items: list[dict[str, Any]],
     billable = [item for item in items if is_billable(item, month)]
     common = [item for item in billable if item["allocation_scope"] == "common"]
     private = [item for item in billable if item["allocation_scope"] == "resident"]
-    common_total = sum(item["monthly_rent_paise"] for item in common)
+    private_by: dict[str, list[dict[str, Any]]] = {}
+    for item in private:
+        private_by.setdefault(item["assigned_resident_id"], []).append(item)
+    owners = sorted(private_by)
+    own_base = {rid: sum(item["monthly_rent_paise"] for item in private_by[rid])
+                for rid in owners}
+    common_base = sum(item["monthly_rent_paise"] for item in common)
+    private_base = sum(own_base.values())
+    subtotal = common_base + private_base
+    calculated_gst = gst_paise(subtotal, gst_rate_percent)
+    override = charged_total_override_paise if subtotal > 0 else None
+    total = subtotal + calculated_gst if override is None else override
+
+    # The total, GST included, between the shared items and each resident's own.
+    common_total, *own_totals = _apportion(total, [common_base,
+                                                   *(own_base[rid] for rid in owners)])
+    own_total = dict(zip(owners, own_totals))
     count = len(participants)
     base, remainder = divmod(common_total, count) if count else (0, 0)
     # The paise that do not divide go one each, in resident order.
     common_share = {rid: base + (1 if index < remainder else 0)
                     for index, rid in enumerate(participants)}
 
-    private_by: dict[str, list[dict[str, Any]]] = {}
-    for item in private:
-        private_by.setdefault(item["assigned_resident_id"], []).append(item)
-
     blocked: str | None = None
     if not billable:
         blocked = f"No rented items were in the flat in {month_label(month)}, so there is nothing to bill."
-    elif common_total and not count:
+    elif common_base and not count:
         blocked = "Nobody is taking part, so the common items cannot be shared."
     else:
         outside = sorted(rid for rid in private_by if rid not in participants)
@@ -256,28 +307,33 @@ def _month_bill(uow: UnitOfWork, apartment_id: str, items: list[dict[str, Any]],
 
     shares = []
     for rid in sorted(set(participants) | set(private_by), key=lambda r: (names.get(r, r), r)):
-        own = private_by.get(rid, [])
-        own_total = sum(item["monthly_rent_paise"] for item in own)
         shares.append({
             "resident_id": rid, "display_name": names.get(rid, rid),
             "taking_part": rid in participants,
             "common_share_paise": common_share.get(rid, 0),
-            "private_paise": own_total,
-            "private_items": [item["name"] for item in own],
-            "total_paise": common_share.get(rid, 0) + own_total,
+            # Their own items, GST included.
+            "private_paise": own_total.get(rid, 0),
+            "private_items": [item["name"] for item in private_by.get(rid, [])],
+            "total_paise": common_share.get(rid, 0) + own_total.get(rid, 0),
         })
-    private_total = sum(item["monthly_rent_paise"] for item in private)
-    subtotal_base = sum(item["base_rent_paise"] for item in billable)
     return {
         "settlement_month": month,
         "billable_items": [_public_item(item) for item in billable],
+        # The items' rents before GST, and the bill's GST on them.
+        "common_base_paise": common_base,
+        "private_base_paise": private_base,
+        "subtotal_base_paise": subtotal,
+        "gst_rate_percent": gst_rate_percent,
+        "calculated_gst_paise": calculated_gst,
+        "calculated_total_paise": subtotal + calculated_gst,
+        "charged_total_override_paise": override,
+        # What the month bills, GST included, and how it falls between the
+        # shared items and each resident's own, and between the providers.
+        "total_gst_paise": total - subtotal,
+        "total_paise": total,
         "common_total_paise": common_total,
-        "private_total_paise": private_total,
-        # What the items are billed, GST included: the rents as quoted, and the
-        # GST added to those quoted before it.
-        "total_paise": common_total + private_total,
-        "subtotal_base_paise": subtotal_base,
-        "total_gst_paise": common_total + private_total - subtotal_base,
+        "private_total_paise": sum(own_totals),
+        "provider_totals_paise": _provider_split(billable, gst_rate_percent, total),
         "participant_count": count,
         "participants": participants,
         "base_share_paise": base,
@@ -300,6 +356,9 @@ def _bill_notes(bill: Mapping[str, Any]) -> str:
         if own:
             parts.append(f"{row['display_name']}: " + ", ".join(
                 f"{item['name']} {format_inr(item['monthly_rent_paise'])}" for item in own))
+    parts.append(f"GST {bill['gst_rate_percent']:g}%: {format_inr(bill['calculated_gst_paise'])}")
+    if bill["charged_total_override_paise"] is not None:
+        parts.append(f"Charged {format_inr(bill['total_paise'])} as invoiced")
     return " · ".join(parts)[:2000]
 
 
@@ -401,16 +460,15 @@ def _funding(uow: UnitOfWork, apartment_id: str, expense: Mapping[str, Any]) -> 
     return result
 
 
-def _provider_totals(billable_items: Sequence[Mapping[str, Any]],
+def _provider_totals(item_totals: Mapping[str, int],
                      expense: Mapping[str, Any] | None,
                      service_ids: Sequence[str],
                      recorded: Mapping[str, int] | None = None) -> dict[str, int]:
-    """What each provider bills for the month: its items in the flat, or what
-    they came to when the bill was ``recorded`` (kept with its charges). With one
-    provider billing, it is owed the whole recorded bill."""
-    totals: dict[str, int] = {}
-    for item in billable_items:
-        totals[item["service_id"]] = totals.get(item["service_id"], 0) + item["monthly_rent_paise"]
+    """What each provider bills for the month: its items in the flat with their
+    GST (``item_totals``, see :func:`_provider_split`), or what they came to when
+    the bill was ``recorded`` (kept with its charges). With one provider
+    billing, it is owed the whole recorded bill."""
+    totals = dict(item_totals)
     if expense is not None and recorded:
         totals = dict(recorded)
     if expense is not None and len(totals) <= 1:
@@ -441,7 +499,7 @@ def _provider_payouts(uow: UnitOfWork, apartment_id: str, bill: Mapping[str, Any
             if retired is not None:
                 providers.append((retired, uow.furniture.config(service_id)))
                 known.add(service_id)
-    totals = _provider_totals(bill["billable_items"], expense,
+    totals = _provider_totals(bill["provider_totals_paise"], expense,
                               [service["service_id"] for service, _ in providers], recorded)
     rows = []
     for service, config in providers:
@@ -538,19 +596,94 @@ def _bill_is_live(month: str, statement: Mapping[str, Any] | None) -> bool:
     return month >= _current_month() and (statement is None or statement["status"] == "draft")
 
 
+#: The totals a recorded bill keeps, so a month gone by reads as it was billed.
+RECORDED_TOTALS = ("common_total_paise", "private_total_paise", "common_base_paise",
+                   "private_base_paise", "subtotal_base_paise", "gst_rate_percent",
+                   "calculated_gst_paise", "calculated_total_paise",
+                   "charged_total_override_paise", "total_gst_paise")
+
+
 def _bill_basis(bill: Mapping[str, Any], excluded: Sequence[str]) -> dict[str, Any]:
-    """Kept with each charge: what the bill is made of, and who is on it -- so a
-    month gone by reads as it was billed, whatever its items cost since."""
+    """Kept with each charge: what the bill is made of, its GST rate and any
+    total charged as invoiced, and who is on it -- so a month gone by reads as it
+    was billed, whatever its items cost since."""
     return {"method": "custom", "source": SERVICE_TYPE,
-            "common_total_paise": bill["common_total_paise"],
-            "private_total_paise": bill["private_total_paise"],
-            "subtotal_base_paise": bill["subtotal_base_paise"],
-            "total_gst_paise": bill["total_gst_paise"],
-            "provider_totals_paise": _provider_totals(bill["billable_items"], None, []),
+            **{key: bill[key] for key in RECORDED_TOTALS},
+            "provider_totals_paise": dict(bill["provider_totals_paise"]),
             "private_paise": {row["resident_id"]: row["private_paise"]
                               for row in bill["shares"] if row["private_paise"]},
             "participants": list(bill["participants"]),
             "excluded_resident_ids": sorted(excluded)}
+
+
+def _recorded_totals(basis: Mapping[str, Any], expense: Mapping[str, Any]) -> dict[str, Any]:
+    """A recorded bill's totals as it was billed (see :func:`_bill_basis`).
+
+    A bill recorded before GST was charged on the bill as a whole has no rate of
+    its own (``gst_rate_percent`` is null): its items' rents had any GST in them,
+    or, for a while, GST each of their own."""
+    total = expense["amount_paise"]
+    common = basis.get("common_total_paise", total - basis.get("private_total_paise", 0))
+    private = basis.get("private_total_paise", total - common)
+    subtotal = basis.get("subtotal_base_paise", common + private)
+    gst = basis.get("total_gst_paise", total - subtotal)
+    return {"common_total_paise": common, "private_total_paise": private,
+            "common_base_paise": basis.get("common_base_paise", common),
+            "private_base_paise": basis.get("private_base_paise", private),
+            "subtotal_base_paise": subtotal, "total_gst_paise": gst,
+            "gst_rate_percent": basis.get("gst_rate_percent"),
+            "calculated_gst_paise": basis.get("calculated_gst_paise", gst),
+            "calculated_total_paise": basis.get("calculated_total_paise", total),
+            "charged_total_override_paise": basis.get("charged_total_override_paise"),
+            "total_paise": total}
+
+
+def _default_gst_rate(uow: UnitOfWork, apartment_id: str) -> float:
+    """The GST rate a month's bill starts at: the flat's subscriptions'."""
+    for service in _live_services(uow, apartment_id):
+        config = uow.furniture.config(service["service_id"])
+        if config is not None:
+            return float(config["gst_rate_percent"])
+    return GST_RATE_PERCENT
+
+
+class _Keep:
+    """Leave a month's charged total as it was set."""
+
+
+KEEP = _Keep()
+
+
+def _priced_bill(uow: UnitOfWork, apartment_id: str, month: str, basis: Mapping[str, Any], *,
+                 excluded: Sequence[str] | None = None, gst_rate_percent: float | None = None,
+                 charged_total_paise: int | None | _Keep = KEEP) -> dict[str, Any]:
+    """`month`'s bill from its items as they stand (see :func:`_month_bill`).
+
+    It is billed at ``gst_rate_percent`` if given; otherwise at the rate it was
+    recorded at (``basis``), or, not yet recorded, the subscription's. A total
+    charged as invoiced is ``charged_total_paise`` if given (null clears it);
+    otherwise the one it was recorded with, so long as its items still come to
+    what they did when it was set -- an item added, changed or gone since bills
+    the month afresh.
+    """
+    rate = (gst_rate_percent if gst_rate_percent is not None
+            else basis.get("gst_rate_percent") if basis.get("gst_rate_percent") is not None
+            else _default_gst_rate(uow, apartment_id))
+    items = uow.furniture.items_for_apartment(apartment_id, include_retired=True)
+    excluded = list(excluded) if excluded is not None else basis.get("excluded_resident_ids", [])
+    include = basis.get("participants", [])
+    bill = _month_bill(uow, apartment_id, items, month, excluded, include_resident_ids=include,
+                       gst_rate_percent=rate)
+    if isinstance(charged_total_paise, _Keep):
+        override = basis.get("charged_total_override_paise")
+        if basis.get("subtotal_base_paise") != bill["subtotal_base_paise"]:
+            override = None
+    else:
+        override = charged_total_paise
+    if override is None:
+        return bill
+    return _month_bill(uow, apartment_id, items, month, excluded, include_resident_ids=include,
+                       gst_rate_percent=rate, charged_total_override_paise=override)
 
 
 def _stored_basis(allocations: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -599,6 +732,9 @@ def _record_bill(uow: UnitOfWork, apartment_id: str, month: str, bill: Mapping[s
                  action="generate", actor=actor, apartment_id=apartment_id,
                  new_value={"settlement_month": month, "expense_id": expense_id,
                             "total_paise": bill["total_paise"],
+                            "subtotal_base_paise": bill["subtotal_base_paise"],
+                            "gst_rate_percent": bill["gst_rate_percent"],
+                            "total_gst_paise": bill["total_gst_paise"],
                             "common_total_paise": bill["common_total_paise"],
                             "private_total_paise": bill["private_total_paise"]})
     return expense_id
@@ -631,10 +767,14 @@ def _sync_problem(uow: UnitOfWork, expense: Mapping[str, Any], bill: Mapping[str
 
 def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
                           excluded_resident_ids: Sequence[str] | None = None,
+                          gst_rate_percent: float | None = None,
+                          charged_total_paise: int | None | _Keep = KEEP,
                           check_reduction_guards: bool = True, timestamp: str | None = None,
                           actor: str = "operator") -> dict[str, Any] | None:
     """Record `month`'s bill if it is due, or bring the recorded one up to date
-    with the items; returns the bill as it then stands, if there is one.
+    with the items -- at ``gst_rate_percent`` and ``charged_total_paise`` when
+    they are given (see :func:`_priced_bill`); returns the bill as it then
+    stands, if there is one.
 
     A frozen bill (see :func:`_bill_is_live`) is returned as it is. A bill that
     would leave the kitty having paid a resident back more than it then owes
@@ -664,9 +804,9 @@ def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
     basis = _stored_basis(allocations)
     excluded = (list(excluded_resident_ids) if excluded_resident_ids is not None
                 else basis.get("excluded_resident_ids", []))
-    bill = _month_bill(uow, apartment_id,
-                       uow.furniture.items_for_apartment(apartment_id, include_retired=True),
-                       month, excluded, include_resident_ids=basis.get("participants", []))
+    bill = _priced_bill(uow, apartment_id, month, basis, excluded=excluded,
+                        gst_rate_percent=gst_rate_percent,
+                        charged_total_paise=charged_total_paise)
     if expense is None:
         if bill["blocked_reason"] or not bill["billable_items"]:
             return None
@@ -807,8 +947,6 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
                 "monthly_total_paise": 0, "active_item_count": 0, "next_billing_date": None,
                 "deposit_held_paise": 0}
     items = uow.furniture.items_for_apartment(apartment_id)
-    # A subscription ended this month still bills what was in the flat in it.
-    billed_items = uow.furniture.items_for_apartment(apartment_id, include_retired=True)
     entries = []
     for service in services:
         config = uow.furniture.config(service["service_id"])
@@ -830,13 +968,11 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
     # as recorded: a frozen month keeps its snapshot whatever the items say since.
     basis = (_stored_basis(uow.furniture.allocations_for_expense(expense["expense_id"]))
              if expense else {})
-    bill = _month_bill(uow, apartment_id, billed_items, month,
-                       basis.get("excluded_resident_ids"),
-                       include_resident_ids=basis.get("participants"))
+    bill = _priced_bill(uow, apartment_id, month, basis)
     if expense is not None:
-        bill.update({key: basis.get(key, bill[key]) for key in (
-            "common_total_paise", "private_total_paise", "subtotal_base_paise",
-            "total_gst_paise")}, total_paise=expense["amount_paise"])
+        bill.update(_recorded_totals(basis, expense))
+        if "provider_totals_paise" in basis:
+            bill["provider_totals_paise"] = dict(basis["provider_totals_paise"])
         if bill["participant_count"]:
             bill["base_share_paise"], bill["remainder_paise"] = divmod(
                 bill["common_total_paise"], bill["participant_count"])
@@ -890,7 +1026,10 @@ def _clean_setup(payload: Mapping[str, Any], before: Mapping[str, Any] | None) -
                             or not 1 <= day <= 31):
         raise ValidationError("billing_day_of_month must be a day from 1 to 31.",
                               details={"field": "billing_day_of_month"})
+    rate = merged.get("gst_rate_percent")
     return {
+        # The GST rate a month's bill starts at; an open month's is set on it.
+        "gst_rate_percent": _gst_rate(GST_RATE_PERCENT if rate is None else rate),
         "display_name": display_name, "provider_name": provider, "billing_day_of_month": day,
         "customer_id": optional_text(merged.get("customer_id"), "customer_id", max_length=100),
         "subscription_reference": optional_text(merged.get("subscription_reference"),
@@ -909,7 +1048,9 @@ def setup_furniture_rental(db: Database, apartment_id: str, payload: Mapping[str
     A flat may rent from several providers at once. ``service_id`` names the
     subscription to update; ``create_new`` adds another provider; with neither,
     the flat's first subscription is updated, or one is set up if it has none.
-    Only the fields sent are changed.
+    Only the fields sent are changed. ``gst_rate_percent`` is the GST rate each
+    month's bill starts at, 18% unless set; a month already billed keeps its own
+    (see :func:`set_month_billing`).
 
     Every provider's items are billed together, each month as one expense under
     the household's "Furniture rental" definition when it has one; otherwise a
@@ -950,7 +1091,8 @@ def setup_furniture_rental(db: Database, apartment_id: str, payload: Mapping[str
                       ("display_name", "provider_name", "billing_day_of_month")}
     config_fields = {key: cleaned[key] for key in
                      ("provider_name", "customer_id", "subscription_reference",
-                      "deposit_paid_paise", "deposit_refunded_paise", "deposit_status", "notes")}
+                      "deposit_paid_paise", "deposit_refunded_paise", "deposit_status", "notes",
+                      "gst_rate_percent")}
     with db.transaction() as uow:
         service = _service_in(uow, apartment_id, service["service_id"]) if service else None
         if service is None:
@@ -1016,14 +1158,8 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
     Left out, it stays with the provider it has, or goes to the flat's only
     provider; with several, it must be chosen.
 
-    Its rent is as quoted: ``base_rent_paise``, or ``monthly_rent_paise`` when
-    that is not given. With ``is_gst_exclusive`` it is before GST, and the item is
-    billed it plus GST at ``gst_rate_percent`` -- 18% unless given, or the rate it
-    had (:func:`gst_paise`); otherwise it is billed it as it is. A
-    ``monthly_rent_paise`` sent with ``base_rent_paise`` is what the item is
-    billed: before GST it may differ from the rent plus GST worked out, to match
-    an invoice that rounds its GST another way, but not be below the rent;
-    otherwise it must be the rent.
+    Its rent, ``monthly_rent_paise``, is as quoted: before GST, which the
+    month's bill adds.
     """
     service_id = optional_text(values.get("service_id"), "service_id", max_length=64)
     if service_id:
@@ -1051,38 +1187,8 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
     if category not in CATEGORIES:
         raise ValidationError(f"category must be one of {', '.join(CATEGORIES)}.",
                               details={"field": "category", "allowed": list(CATEGORIES)})
-    exclusive = values.get("is_gst_exclusive")
-    if exclusive is None:
-        exclusive = False
-    if not isinstance(exclusive, (bool, int)) or exclusive not in (0, 1):
-        raise ValidationError("is_gst_exclusive must be true or false.",
-                              details={"field": "is_gst_exclusive"})
-    exclusive = bool(exclusive)
-    rate = values.get("gst_rate_percent")
-    rate = _gst_rate(rate if rate is not None
-                     else (before or {}).get("gst_rate_percent", GST_RATE_PERCENT))
-    quoted = values.get("base_rent_paise")
-    field = "base_rent_paise" if quoted is not None else "monthly_rent_paise"
-    base = ensure_paise(quoted if quoted is not None else values.get("monthly_rent_paise"),
-                        field, allow_zero=False)
-    rent = base + (gst_paise(base, rate) if exclusive else 0)
-    sent = values.get("monthly_rent_paise")
-    if exclusive and quoted is not None and sent is not None:
-        # The invoice's own total, its GST rounded as the provider rounds it
-        # (CGST and SGST each, say), when it is not the GST worked out here.
-        rent = ensure_paise(sent, "monthly_rent_paise", allow_zero=False)
-        if rent < base:
-            raise ValidationError(
-                f"The monthly rent with GST cannot be less than the {format_inr(base)} "
-                f"before GST.", code="furniture_gst_total_below_base",
-                details={"field": "monthly_rent_paise", "base_rent_paise": base})
-    elif quoted is not None and sent is not None and sent != rent:
-        raise ValidationError(
-            f"The monthly rent of {format_inr(base)}"
-            f"{f' plus {rate:g}% GST' if exclusive else ''} is {format_inr(rent)}, "
-            f"not {format_inr(sent)}.", code="furniture_gst_total_mismatch",
-            details={"field": "monthly_rent_paise", "base_rent_paise": base,
-                     "monthly_rent_paise": rent})
+    rent = ensure_paise(values.get("monthly_rent_paise"), "monthly_rent_paise",
+                        allow_zero=False)
     scope = values.get("allocation_scope")
     if scope not in SCOPES:
         raise ValidationError("allocation_scope must be common or resident.",
@@ -1123,9 +1229,9 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
         raise ValidationError("The return date cannot be before the delivery date.",
                               details={"field": "return_date"})
     return {"service_id": service_id, "name": name, "category": category,
-            "monthly_rent_paise": rent, "base_rent_paise": base, "is_gst_exclusive": exclusive,
-            "gst_rate_percent": rate, "allocation_scope": scope, "assigned_resident_id": resident_id if scope == "resident"
-            else None, "status": status, "delivery_date": delivery, "return_date": returned}
+            "monthly_rent_paise": rent, "allocation_scope": scope,
+            "assigned_resident_id": resident_id if scope == "resident" else None,
+            "status": status, "delivery_date": delivery, "return_date": returned}
 
 
 def add_item(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
@@ -1147,28 +1253,11 @@ def update_item(db: Database, apartment_id: str, item_id: str, changes: Mapping[
     """Change an item. Only the fields sent change; making an item common clears
     its resident, and undoing a return clears its return date.
 
-    A rent sent is the rent as quoted (see :func:`_clean_item`). Without one the
-    quoted rent stays, so turning ``is_gst_exclusive`` on adds GST to it, and
-    turning it off bills the item that rent alone. The total it is billed stays
-    too, any GST rounding of the invoice's kept, until its rent, GST or rate
-    changes."""
+    A rent sent is the rent as quoted, before GST (see :func:`_clean_item`)."""
     timestamp = now_timestamp()
-    changes = {key: value for key, value in changes.items()
-               if not (key in ("is_gst_exclusive", "gst_rate_percent") and value is None)}
     with db.transaction() as uow:
         before = _item_in(uow, apartment_id, item_id)
         merged = {**before, **changes}
-        merged["monthly_rent_paise"] = changes.get("monthly_rent_paise")
-        merged["base_rent_paise"] = (
-            changes.get("base_rent_paise") if "base_rent_paise" in changes
-            else None if changes.get("monthly_rent_paise") is not None
-            else before["base_rent_paise"])
-        if ("base_rent_paise" not in changes and changes.get("monthly_rent_paise") is None
-                and changes.get("is_gst_exclusive", bool(before["is_gst_exclusive"]))
-                == bool(before["is_gst_exclusive"])
-                and changes.get("gst_rate_percent", before["gst_rate_percent"])
-                == before["gst_rate_percent"]):
-            merged["monthly_rent_paise"] = before["monthly_rent_paise"]
         if changes.get("allocation_scope") == "common" and "assigned_resident_id" not in changes:
             merged["assigned_resident_id"] = None
         if (changes.get("status") in ("active", "pending_delivery")
@@ -1235,14 +1324,85 @@ def generate_month(db: Database, apartment_id: str, settlement_month: str,
                 f"Furniture rental for {month_label(month)} is already recorded as an expense.",
                 code="furniture_bill_exists", details={"expense_id": recorded[0]["expense_id"]})
         excluded = sorted({str(rid) for rid in (excluded_resident_ids or [])})
-        bill = _month_bill(uow, apartment_id,
-                           uow.furniture.items_for_apartment(apartment_id, include_retired=True),
-                           month, excluded)
+        bill = _priced_bill(uow, apartment_id, month, {}, excluded=excluded)
         if bill["blocked_reason"]:
             raise ValidationError(bill["blocked_reason"], code="furniture_bill_blocked",
                                   details={"settlement_month": month})
         _record_bill(uow, apartment_id, month, bill, excluded, services, definition_id,
                      statement, timestamp, actor)
+        return _overview(uow, apartment_id, month)
+
+
+def set_month_billing(db: Database, apartment_id: str, settlement_month: str, *,
+                      gst_rate_percent: float, charged_total_paise: int | None = None,
+                      actor: str = "operator") -> dict[str, Any]:
+    """Set the GST rate an open month's bill is charged at, and the total it is
+    charged where the provider's invoice comes to another, its GST rounded its
+    own way.
+
+    The rate becomes the subscriptions' too, for the months after. A
+    ``charged_total_paise`` of null, or of the total worked out at the rate,
+    bills the month as worked out; any other is the month's total -- never below
+    its items' rents, nor with GST of more than them -- for as long as its items
+    come to what they do now. The shares follow, and what residents have paid
+    moves with them (see :func:`_sync_live_month_bill`). A month gone by, or
+    with its statement finalized, never changes, and a month not yet billed
+    takes only the rate.
+    """
+    month = normalize_month(settlement_month, "settlement_month")
+    rate = _gst_rate(gst_rate_percent)
+    if charged_total_paise is not None:
+        charged_total_paise = ensure_paise(charged_total_paise, "charged_total_paise",
+                                           allow_zero=False)
+    timestamp = now_timestamp()
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        _require_live(uow, apartment_id)
+        statement = uow.furniture.statement_for_month(apartment_id, month)
+        if not _bill_is_live(month, statement):
+            raise ConflictError(
+                f"The {month_label(month)} furniture bill is closed, so its GST and total "
+                "can no longer change.", code="furniture_bill_frozen",
+                details={"settlement_month": month})
+        expense = _recorded_bill(uow, apartment_id,
+                                 {"expense_definition_id": _definition_id(uow, apartment_id)},
+                                 month)
+        basis = (_stored_basis(uow.furniture.allocations_for_expense(expense["expense_id"]))
+                 if expense else {})
+        worked_out = _priced_bill(uow, apartment_id, month, basis, gst_rate_percent=rate,
+                                  charged_total_paise=None)
+        if charged_total_paise == worked_out["calculated_total_paise"]:
+            charged_total_paise = None
+        if charged_total_paise is not None:
+            subtotal = worked_out["subtotal_base_paise"]
+            if expense is None:
+                raise ConflictError(
+                    f"The {month_label(month)} furniture bill is not recorded yet, so it has "
+                    "no total to set.", code="furniture_bill_not_recorded",
+                    details={"settlement_month": month})
+            if charged_total_paise < subtotal:
+                raise ValidationError(
+                    f"The total charged cannot be less than the items' {format_inr(subtotal)} "
+                    "before GST.", code="furniture_charged_total_below_subtotal",
+                    details={"field": "charged_total_paise", "subtotal_base_paise": subtotal})
+            if charged_total_paise > 2 * subtotal:
+                raise ValidationError(
+                    f"The total charged cannot carry more GST than the items' "
+                    f"{format_inr(subtotal)} before it.", code="furniture_charged_total_too_high",
+                    details={"field": "charged_total_paise", "subtotal_base_paise": subtotal})
+        for service in _live_services(uow, apartment_id):
+            config = uow.furniture.config(service["service_id"])
+            if config is not None and float(config["gst_rate_percent"]) != rate:
+                uow.furniture.update_config(service["service_id"], updated_at=timestamp,
+                                            gst_rate_percent=rate)
+                audit.record(uow, entity_type="household_service",
+                             entity_id=service["service_id"], action="update", actor=actor,
+                             apartment_id=apartment_id,
+                             old_value={"gst_rate_percent": config["gst_rate_percent"]},
+                             new_value={"gst_rate_percent": rate})
+        _sync_live_month_bill(uow, apartment_id, month, gst_rate_percent=rate,
+                              charged_total_paise=charged_total_paise, timestamp=timestamp,
+                              actor=actor)
         return _overview(uow, apartment_id, month)
 
 
@@ -1385,8 +1545,12 @@ def record_provider_payout(db: Database, apartment_id: str, settlement_month: st
         billable = [item for item in uow.furniture.items_for_apartment(
                         apartment_id, include_retired=True) if is_billable(item, month)]
         recorded = _stored_basis(uow.furniture.allocations_for_expense(expense["expense_id"]))
-        totals = _provider_totals(billable, expense, [svc["service_id"] for svc in services],
-                                  recorded.get("provider_totals_paise"))
+        rate = recorded.get("gst_rate_percent")
+        totals = _provider_totals(
+            _provider_split(billable, _default_gst_rate(uow, apartment_id) if rate is None
+                            else rate, expense["amount_paise"]),
+            expense, [svc["service_id"] for svc in services],
+            recorded.get("provider_totals_paise"))
         if service_id:
             service = _service_in(uow, apartment_id, service_id, live=False)
         else:

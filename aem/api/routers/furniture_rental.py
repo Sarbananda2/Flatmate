@@ -8,6 +8,7 @@ from fastapi import APIRouter, Path, Query, Response
 from ...errors import AemError
 from ...schemas import (
     MONTH_PATTERN,
+    FurnitureBillingRequest,
     FurnitureDisburseRequest,
     FurnitureGenerateRequest,
     FurnitureItemCreate,
@@ -26,6 +27,7 @@ Month = Annotated[str, Query(pattern=MONTH_PATTERN, description="YYYY-MM")]
 OptionalMonth = Annotated[str | None, Query(pattern=MONTH_PATTERN,
                                             description="YYYY-MM; the current month if left out")]
 ItemId = Annotated[str, Path(min_length=1, max_length=64)]
+SettlementMonth = Annotated[str, Path(pattern=MONTH_PATTERN, description="YYYY-MM")]
 
 
 @router.get("", summary="The furniture rental subscription and a month's bill")
@@ -94,6 +96,23 @@ def generate_cycle(payload: FurnitureGenerateRequest, db: Db, apartment_id: Apar
         return furniture_rental.generate_month(
             db, apartment_id, payload.settlement_month, payload.excluded_resident_ids,
             actor=settings.operator_name)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.post("/month/{settlement_month}/billing",
+             summary="Set an open month's GST rate, and the total its invoice charges")
+def set_month_billing(payload: FurnitureBillingRequest, db: Db, apartment_id: ApartmentId,
+                      settings: AppSettings, settlement_month: SettlementMonth) -> dict[str, Any]:
+    """GST is added to the items' rents on the month's bill. The rate becomes the
+    subscriptions' rate for the months after too. ``charged_total_paise`` is the
+    invoice's total where its GST is rounded another way; null bills the month
+    as worked out. The shares, and what residents have paid towards them,
+    follow. A month gone by never changes. Returns the month's overview."""
+    try:
+        return furniture_rental.set_month_billing(
+            db, apartment_id, settlement_month, gst_rate_percent=payload.gst_rate_percent,
+            charged_total_paise=payload.charged_total_paise, actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
 

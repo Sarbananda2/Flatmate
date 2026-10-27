@@ -1098,6 +1098,10 @@ class FurnitureSetupRequest(ApiModel):
     deposit_refunded_paise: int | None = _money_field(
         "What the provider has refunded of it; never more than was paid.", default=None)
     billing_day_of_month: int | None = Field(None, ge=1, le=31)
+    gst_rate_percent: float | None = Field(
+        None, ge=0, le=100,
+        description="The GST rate each month's bill starts at, to two decimal places; 18% "
+                    "unless set. A month already billed keeps its own.")
     notes: str | None = Field(None, max_length=2000)
 
 
@@ -1108,17 +1112,8 @@ class FurnitureItemCreate(ApiModel):
     name: str = Field(min_length=1, max_length=200)
     category: FurnitureCategory = Field(
         "other", description="Kept for older clients; the screen no longer asks for it.")
-    monthly_rent_paise: int | None = _money_field(
-        "The item's monthly rent, GST included. Without base_rent_paise, the rent as "
-        "quoted: before GST when is_gst_exclusive.", ge=1, default=None)
-    base_rent_paise: int | None = _money_field(
-        "The rent as quoted: before GST when is_gst_exclusive, otherwise the same as "
-        "monthly_rent_paise. Either this or monthly_rent_paise is needed.", ge=1, default=None)
-    is_gst_exclusive: bool = Field(
-        False, description="Quoted before GST: GST at gst_rate_percent is added to it, "
-                           "rounded half up to the paisa.")
-    gst_rate_percent: float = Field(
-        18.0, ge=0, le=100, description="The item's GST rate, to two decimal places.")
+    monthly_rent_paise: int = _money_field(
+        "The item's monthly rent as quoted, before GST: the month's bill adds GST.", ge=1)
     allocation_scope: Literal["common", "resident"] = Field(
         description="common: split equally; resident: charged to assigned_resident_id alone.")
     assigned_resident_id: str | None = Field(None, max_length=64)
@@ -1134,15 +1129,7 @@ class FurnitureItemUpdate(ApiModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     category: FurnitureCategory | None = None
     monthly_rent_paise: int | None = _money_field(
-        "The item's monthly rent, GST included; without base_rent_paise, the rent as quoted.",
-        ge=1, default=None)
-    base_rent_paise: int | None = _money_field(
-        "The rent as quoted, before GST when is_gst_exclusive.", ge=1, default=None)
-    is_gst_exclusive: bool | None = Field(
-        None, description="Quoted before GST: GST at gst_rate_percent is added to it, "
-                          "rounded half up to the paisa.")
-    gst_rate_percent: float | None = Field(
-        None, ge=0, le=100, description="The item's GST rate, to two decimal places.")
+        "The item's monthly rent as quoted, before GST.", ge=1, default=None)
     allocation_scope: Literal["common", "resident"] | None = None
     assigned_resident_id: str | None = Field(None, max_length=64)
     status: Literal["active", "pending_delivery", "returned"] | None = None
@@ -1155,6 +1142,18 @@ class FurnitureGenerateRequest(ApiModel):
     excluded_resident_ids: list[str] = Field(
         default_factory=list,
         description="Active residents who do not share the common items this month.")
+
+
+class FurnitureBillingRequest(ApiModel):
+    """An open month's GST rate, and the total it is charged where the provider's
+    invoice comes to another."""
+    gst_rate_percent: float = Field(
+        18.0, ge=0, le=100,
+        description="GST on the items' rents, to two decimal places; the subscriptions' rate "
+                    "for the months after too.")
+    charged_total_paise: int | None = _money_field(
+        "The invoice's total, GST included. Null, or the total worked out at the rate, "
+        "bills the month as worked out.", ge=1, default=None)
 
 
 class FurniturePaymentCreate(ApiModel):
@@ -1248,7 +1247,8 @@ __all__ = [
     "ResidentMonthlyStatementItem",
     "DepositConfigUpdate", "DepositSlotFundingRequest", "DepositSlotInitRequest",
     "DepositSlotItem", "DepositSlotVacateRequest",
-    "FurnitureCategory", "FurnitureDisburseRequest", "FurnitureGenerateRequest",
+    "FurnitureBillingRequest", "FurnitureCategory", "FurnitureDisburseRequest",
+    "FurnitureGenerateRequest",
     "FurnitureItemCreate",
     "FurnitureItemUpdate", "FurniturePaymentCreate", "FurniturePayoutRequest",
     "FurnitureReimburseRequest",
