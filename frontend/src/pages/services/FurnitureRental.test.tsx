@@ -372,15 +372,14 @@ describe('FurnitureRental', () => {
     })
   })
 
-  it('sums up every subscription and deposit across the household', async () => {
+  it('starts the subscription tab with the subscriptions, with no summary above them', async () => {
     show(overview(), {}, '/?tab=subscription')
     await screen.findByRole('heading', { name: 'Rental Subscriptions' })
-    const stat = (label: string) => screen.getByText(label).parentElement!
-    expect(stat('Active Providers')).toHaveTextContent('Active Providers1Furlenco')
-    // In the flat now: the sofa, the fridge and Bob's bed. The desk is not delivered yet.
-    expect(stat('Monthly Commitment')).toHaveTextContent('₹2,200.003 items (2 shared · 1 own)')
-    expect(stat('Total Deposit Held')).toHaveTextContent('₹5,000.00₹5,000.00 paid across 1 provider')
-    expect(stat('Next Billing Date')).toHaveTextContent('5 Dec 2026Furlenco · Day 5 each month')
+    // Each provider's card has its own totals, deposit and billing day.
+    expect(within(screen.getByRole('tabpanel')).getAllByRole('heading')[0]).toHaveTextContent('Rental Subscriptions')
+    for (const label of ['Active Providers', 'Monthly Commitment', 'Total Deposit Held', 'Next Billing Date']) {
+      expect(screen.queryByText(label)).toBeNull()
+    }
   })
 
   it('shows each subscription as a card, with its actions in one menu', async () => {
@@ -445,9 +444,11 @@ describe('FurnitureRental', () => {
   it('lists each item with who pays for it and where it is', async () => {
     show(overview(), {}, '/?tab=items')
     const table = await screen.findByRole('table', { name: 'Rented items' })
-    // How the month's bill is split sits above the items it is split from.
-    expect(screen.getByText('Shared items').parentElement).toHaveTextContent('₹1,700.00Split equally')
-    expect(screen.getByText('3 taking part · 2 paise over')).toBeInTheDocument()
+    // The month's bill sits above the items it bills, with nothing before it.
+    expect(within(screen.getByRole('tabpanel')).getAllByRole('heading').map((heading) => heading.textContent)).toEqual([
+      'Monthly Bill',
+      'Rented Items',
+    ])
     expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
       'Item',
       'Paid by',
@@ -524,9 +525,8 @@ describe('FurnitureRental', () => {
     expect(within(shares).getByRole('row', { name: /Bob/ })).not.toHaveTextContent('own')
     expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Chris₹566.66———')
     expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeDisabled()
-    // The split itself is on the Rented Items tab; this one is about settling it.
-    expect(screen.queryByText('Shared items')).toBeNull()
-    expect(screen.getByText('Internal Collection')).toBeInTheDocument()
+    // The bill itself is on the Rented Items tab; this one is about settling it.
+    expect(screen.queryByRole('heading', { name: 'Monthly Bill' })).toBeNull()
     // An open month bills by itself, and follows its items: there is nothing to record.
     expect(screen.queryByRole('button', { name: /Record November 2026 bill/ })).toBeNull()
     expect(screen.queryByText('Not billed yet.')).toBeNull()
@@ -757,7 +757,7 @@ describe('FurnitureRental', () => {
 
     it("shows the bill's subtotal, its GST and its gross total with the items, not the settlement", async () => {
       const { unmount } = show(overview({ month: withGst() }))
-      expect(await screen.findByText('Internal Collection')).toBeInTheDocument()
+      expect(await screen.findByRole('heading', { name: 'Resident Collection' })).toBeInTheDocument()
       expect(screen.queryByRole('heading', { name: 'Monthly Bill' })).toBeNull()
       unmount()
       stub?.restore()
@@ -906,18 +906,16 @@ describe('FurnitureRental', () => {
     })
   })
 
-  it('sums up the collection and the payout to the provider at the top', async () => {
-    const { unmount } = show(overview({ month: billed() }))
-    expect(await screen.findByText('Internal Collection')).toBeInTheDocument()
-    expect(document.body).toHaveTextContent('0 of 3 covered · 0.0%')
-    expect(document.body).toHaveTextContent('Provider PayoutUnpaidDue 5 Nov 2026')
-    unmount()
-    stub?.restore()
-
+  it('starts the settlement with the collection from residents, with no summary above it', async () => {
     show(overview({ month: paidByAlice() }))
-    expect(await screen.findByText('Internal Collection')).toBeInTheDocument()
-    expect(document.body).toHaveTextContent('Internal Collection₹1,933.342 of 3 covered · 87.9%')
-    expect(document.body).toHaveTextContent('Provider PayoutPaidPaid 5 Nov 2026')
+    const panel = await screen.findByRole('tabpanel')
+    // The two steps in order: collect from residents, then pay the provider.
+    expect(within(panel).getAllByRole('heading').map((heading) => heading.textContent)).toEqual(
+      expect.arrayContaining(['Resident Collection', 'Provider Payout']),
+    )
+    expect(within(panel).getAllByRole('heading')[0]).toHaveTextContent('Resident Collection')
+    expect(screen.queryByText('Internal Collection')).toBeNull()
+    expect(screen.queryByText(/covered · /)).toBeNull()
   })
 
   it('pays the provider from the House Kitty, what it has collected so far', async () => {
@@ -1432,10 +1430,6 @@ describe('FurnitureRental', () => {
       const rentomojoCard = within(panel).getByRole('heading', { name: 'Furniture rental · Rentomojo' }).closest('article')!
       expect(rentomojoCard).toHaveTextContent('Monthly total₹500.00')
       expect(rentomojoCard).toHaveTextContent('Deposit held₹2,000.00')
-      expect(screen.getByText('Active Providers').parentElement).toHaveTextContent('2Furlenco, Rentomojo')
-      expect(screen.getByText('Total Deposit Held').parentElement).toHaveTextContent(
-        '₹7,000.00 paid across 2 providers',
-      )
 
       // Each card has its own menu; adding a provider is the + in the panel's header.
       expect(within(rentomojoCard).getByRole('button', { name: 'More options' })).toBeInTheDocument()

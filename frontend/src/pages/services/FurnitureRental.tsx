@@ -55,7 +55,6 @@ import {
   ReimburseDialog,
 } from '../../components/KittyReimbursement'
 import {
-  PAYOUT_STATUS,
   ProviderPayoutStatementModal,
   ProviderPayoutTable,
   type ProviderPayoutItem,
@@ -163,21 +162,6 @@ function parseQuantity(raw: string): number | null {
 /** Nothing left to pay on the share: paid into the kitty, or covered by paying the provider. */
 function isSettled(share: FurnitureShare): boolean {
   return share.status === 'paid' || share.status === 'funded_payout' || share.outstanding_paise <= 0
-}
-
-/** A share of the whole to one decimal place, for display only. */
-function percent(part: number, whole: number): string {
-  if (whole <= 0) return '0.0%'
-  const tenths = Math.round((part * 1000) / whole)
-  // Rounding must never make an incomplete collection read as complete.
-  return `${((part < whole ? Math.min(tenths, 999) : tenths) / 10).toFixed(1)}%`
-}
-
-/** The provider's billing day in `month`, pulled back to the month's last day. */
-function billingDate(month: string, day: number): string {
-  const [year, mon] = month.split('-').map(Number)
-  const last = new Date(Date.UTC(year, mon, 0)).getUTCDate()
-  return `${month}-${String(Math.min(day, last)).padStart(2, '0')}`
 }
 
 /** Every live provider: from the backend, or, for an older response, the one there was. */
@@ -318,7 +302,6 @@ export function FurnitureRental({ month }: { month: string }) {
               >
                 {tab === 'settlement' && data.month && (
                   <>
-                    <Metrics bill={data.month} billingDay={data.service.billing_day_of_month} />
                     {/* The month's two steps, in order: collect from residents, then pay the provider. */}
                     <ResidentCollectionPanel
                       month={month}
@@ -346,7 +329,6 @@ export function FurnitureRental({ month }: { month: string }) {
                   <>
                     {data.month && (
                       <>
-                        <ItemsMetrics bill={data.month} />
                         <BillSummaryPanel
                           month={month}
                           bill={data.month}
@@ -365,7 +347,6 @@ export function FurnitureRental({ month }: { month: string }) {
                 )}
                 {tab === 'subscription' && (
                   <>
-                    <SubscriptionMetrics data={data} services={servicesOf(data)} />
                     <SubscriptionsPanel
                       services={servicesOf(data)}
                       onAdd={() => setDialog({ kind: 'setup', entry: null, adding: true })}
@@ -634,62 +615,6 @@ export function FurnitureRental({ month }: { month: string }) {
 }
 
 /* ----------------------------------------------------- 1. the subscription -- */
-
-/** The household's furniture rental at a glance, across every provider. */
-function SubscriptionMetrics({
-  data,
-  services,
-}: {
-  data: FurnitureRentalOverview
-  services: FurnitureServiceEntry[]
-}) {
-  // What is in the flat now: the items the monthly total is made of.
-  const inFlat = data.items.filter((item) => item.status === 'active')
-  const sharedCount = inFlat.filter((item) => item.allocation_scope === 'common').length
-  const ownCount = inFlat.length - sharedCount
-  const depositPaid = services.reduce((sum, entry) => sum + entry.config.deposit_paid_paise, 0)
-  const depositRefunded = services.reduce((sum, entry) => sum + entry.config.deposit_refunded_paise, 0)
-  // The provider that bills soonest.
-  const nextUp = services
-    .filter((entry) => entry.next_billing_date)
-    .sort((a, b) => a.next_billing_date!.localeCompare(b.next_billing_date!))[0]
-  return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-      <MiniStat
-        label="Active Providers"
-        value={services.length}
-        note={services.map((entry) => entry.config.provider_name).join(', ')}
-      />
-      <MiniStat
-        label="Monthly Commitment"
-        value={<Rupees paise={data.monthly_total_paise} />}
-        note={
-          data.active_item_count === 0
-            ? 'No active items in the flat'
-            : `${data.active_item_count} item${data.active_item_count === 1 ? '' : 's'} (${sharedCount} shared · ${ownCount} own)`
-        }
-      />
-      <MiniStat
-        label="Total Deposit Held"
-        value={<Rupees paise={data.deposit_held_paise} />}
-        note={
-          depositRefunded > 0
-            ? `${formatInr(depositPaid)} paid · ${formatInr(depositRefunded)} refunded`
-            : `${formatInr(depositPaid)} paid across ${services.length === 1 ? '1 provider' : `${services.length} providers`}`
-        }
-      />
-      <MiniStat
-        label="Next Billing Date"
-        value={<span className="tabular">{data.next_billing_date ? formatDate(data.next_billing_date) : '—'}</span>}
-        note={
-          nextUp?.service.billing_day_of_month
-            ? `${nextUp.config.provider_name} · Day ${nextUp.service.billing_day_of_month} each month`
-            : 'No billing day set'
-        }
-      />
-    </div>
-  )
-}
 
 function subscriptionReference(config: FurnitureConfig): string {
   return [config.customer_id && `Customer ${config.customer_id}`, config.subscription_reference]
@@ -1146,28 +1071,6 @@ function ItemDetailModal({
 
 /* ------------------------------------------------- 3. the month's bill -- */
 
-/** How the month's bill is split: the shared items' part of it, and each person's part of that. */
-function ItemsMetrics({ bill }: { bill: FurnitureMonthBill }) {
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-      <MiniStat
-        label="Shared items"
-        value={<Rupees paise={bill.common_total_paise} />}
-        note="Split equally · GST included"
-      />
-      <MiniStat
-        label="Each person's part"
-        value={<Rupees paise={bill.participant_count ? bill.base_share_paise : null} />}
-        note={
-          bill.participant_count
-            ? `${bill.participant_count} taking part${bill.remainder_paise ? ` · ${bill.remainder_paise} paise over` : ''}`
-            : 'Nobody taking part'
-        }
-      />
-    </div>
-  )
-}
-
 /** Whether the month's GST and total can still change: it is open, or not begun. */
 function billIsOpen(bill: FurnitureMonthBill): boolean {
   if (bill.bill_state === 'live' || bill.bill_state === 'upcoming') return true
@@ -1216,54 +1119,6 @@ function BillSummaryPanel({
         />
       </div>
     </Panel>
-  )
-}
-
-/** The month's settlement at a glance: what the kitty has collected, and whether the provider is paid. */
-function Metrics({ bill, billingDay }: { bill: FurnitureMonthBill; billingDay: number | null }) {
-  const billed = bill.expense != null
-  const charged = bill.shares.filter((share) => share.total_paise > 0).length
-  const lastPaid = bill.disbursements.length ? bill.disbursements[bill.disbursements.length - 1].disbursed_at : null
-  const due = billingDay ? billingDate(bill.settlement_month, billingDay) : null
-  const payout = PAYOUT_STATUS[bill.payout_status]
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-      <MiniStat
-        label="Internal Collection"
-        value={<Rupees paise={billed ? bill.collected_paise : null} />}
-        note={
-          billed
-            ? `${bill.collected_count} of ${charged} covered · ${percent(bill.collected_paise, bill.expense!.amount_paise)}`
-            : 'Starts once the bill is recorded'
-        }
-      />
-      <MiniStat
-        label="Provider Payout"
-        value={
-          billed ? (
-            <Pill tone={payout.tone}>
-              {bill.payout_status === 'disbursed' ? (
-                <Check className="w-3 h-3 shrink-0" aria-hidden="true" />
-              ) : (
-                <Clock className="w-3 h-3 shrink-0" aria-hidden="true" />
-              )}
-              {payout.label}
-            </Pill>
-          ) : (
-            <span className="text-[var(--text-tertiary)]">—</span>
-          )
-        }
-        note={
-          bill.payout_status === 'disbursed' && lastPaid
-            ? `Paid ${formatDate(lastPaid)}`
-            : bill.payout_status === 'partially_disbursed'
-              ? `${formatInr(bill.remaining_disbursement_paise)} still to pay`
-              : due
-                ? `Due ${formatDate(due)}`
-                : 'No billing day set'
-        }
-      />
-    </div>
   )
 }
 
