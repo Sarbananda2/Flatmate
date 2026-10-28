@@ -701,13 +701,15 @@ describe('FurnitureRental', () => {
       const { unmount } = show(overview({ items: [mattresses] }), {}, '/?tab=items')
       const table = await screen.findByRole('table', { name: 'Rented items' })
       const row = within(table).getByRole('row', { name: /Mattress/ })
-      expect(row).toHaveTextContent('Premium Queen Foam MattressFurlenco · Qty 3Shared₹1,500.003 × ₹500.00In the flat')
+      // One line for the rent: what each costs is in the details.
+      expect(row).toHaveTextContent('Premium Queen Foam MattressFurlenco · Qty 3Shared₹1,500.00In the flat')
       await userEvent.click(row)
       const dialog = screen.getByRole('dialog', { name: 'Premium Queen Foam Mattress' })
       expect(dialog).toHaveTextContent('Monthly Rent₹1,500.003 × ₹500.00 · Before GST')
       const details = within(dialog).getByLabelText('Item details')
       expect(details).toHaveTextContent('Quantity3')
       expect(details).toHaveTextContent('Unit Rent₹500.00')
+      expect(details).toHaveTextContent('Total Monthly Rent₹1,500.00')
       unmount()
       stub?.restore()
 
@@ -717,7 +719,7 @@ describe('FurnitureRental', () => {
         name: 'Items rented from Furlenco',
       })
       expect(within(rented).getByRole('row', { name: /Mattress/ })).toHaveTextContent(
-        'Premium Queen Foam MattressQty 3Shared₹1,500.003 × ₹500.00In the flat',
+        'Premium Queen Foam MattressQty 3Shared₹1,500.00In the flat',
       )
     })
 

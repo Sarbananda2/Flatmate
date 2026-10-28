@@ -173,20 +173,6 @@ function parseQuantity(raw: string): number | null {
   return /^\d{1,4}$/.test(text) && Number(text) >= 1 ? Number(text) : null
 }
 
-/** An item's monthly rent, and for several alike, what each one costs. */
-function ItemRent({ item }: { item: FurnitureItem }) {
-  return (
-    <>
-      <Rupees paise={item.monthly_rent_paise} />
-      {item.quantity > 1 && (
-        <span className="block text-[10px] font-medium text-[var(--text-tertiary)] tabular">
-          {item.quantity} × {formatInr(item.unit_monthly_rent_paise)}
-        </span>
-      )}
-    </>
-  )
-}
-
 /** Nothing left to pay on the share: paid into the kitty, or covered by paying the provider. */
 function isSettled(share: FurnitureShare): boolean {
   return share.status === 'paid' || share.status === 'funded_payout' || share.outstanding_paise <= 0
@@ -934,7 +920,7 @@ function SubscriptionDetailModal({
                           )}
                         </td>
                         <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                          <ItemRent item={item} />
+                          <Rupees paise={item.monthly_rent_paise} />
                         </td>
                         <td className="py-3 text-center whitespace-nowrap">
                           <Pill tone={status.tone}>{status.label}</Pill>
@@ -1023,7 +1009,7 @@ function ItemsPanel({
                       )}
                     </td>
                     <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
-                      <ItemRent item={item} />
+                      <Rupees paise={item.monthly_rent_paise} />
                     </td>
                     <td className="py-3 pr-3 text-center whitespace-nowrap">
                       <Pill tone={status.tone}>{status.label}</Pill>
@@ -1113,6 +1099,9 @@ function ItemDetailModal({
               </DetailFact>
               <DetailFact label="Unit Rent">
                 <span className="tabular">{formatInr(item.unit_monthly_rent_paise)}</span>
+              </DetailFact>
+              <DetailFact label="Total Monthly Rent">
+                <span className="tabular font-semibold">{formatInr(item.monthly_rent_paise)}</span>
               </DetailFact>
             </>
           )}
