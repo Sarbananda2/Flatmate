@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { Layout } from './components/Layout'
 import { ErrorState, LoadingState } from './components/Primitives'
@@ -11,6 +12,7 @@ import DefinitionsPage from './pages/Definitions'
 import ElectricityPage from './pages/services/Electricity'
 import FurnitureRentalPage from './pages/services/FurnitureRental'
 import HousingHubPage from './pages/housing/HousingHub'
+import LandingPage from './pages/LandingPage'
 import ExpensesPage from './pages/Expenses'
 import PaymentsPage from './pages/Payments'
 import ReconciliationPage from './pages/Reconciliation'
@@ -37,12 +39,20 @@ export default function App() {
 }
 
 /**
- * Nothing of the household is shown until someone is signed in. A new
- * installation asks for the household admin first; after that, a login.
+ * Nothing of the household is shown until someone is signed in. A visitor
+ * lands on flatmate.dev's front page; a new installation asks for the
+ * household admin first, and after that, a login. The front page is at
+ * /landing for anyone signed in too.
  */
 function AuthGate() {
   const { user, setupRequired, loading, error, retry } = useAuth()
   const location = useLocation()
+  // Whether someone was signed in during this visit: when they log out, or
+  // their session lapses, the front door is the login again, not the front page.
+  const [hadSession, setHadSession] = useState(false)
+  useEffect(() => {
+    if (user) setHadSession(true)
+  }, [user])
 
   if (loading) {
     return (
@@ -60,8 +70,13 @@ function AuthGate() {
   }
   if (!user) {
     const entry = setupRequired ? '/signup' : '/login'
+    const signInFirst = (
+      <Navigate to={entry} replace state={{ from: location.pathname + location.search }} />
+    )
     return (
       <Routes>
+        <Route path="/" element={hadSession ? signInFirst : <LandingPage />} />
+        <Route path="/landing" element={<LandingPage />} />
         <Route
           path="/signup"
           element={setupRequired ? <SignupAdminPage /> : <Navigate to="/login" replace />}
@@ -71,19 +86,12 @@ function AuthGate() {
           element={setupRequired ? <Navigate to="/signup" replace /> : <LoginPage />}
         />
         {/* Anywhere else: sign in first, then come back here. */}
-        <Route
-          path="*"
-          element={
-            <Navigate
-              to={entry}
-              replace
-              state={{ from: location.pathname + location.search }}
-            />
-          }
-        />
+        <Route path="*" element={signInFirst} />
       </Routes>
     )
   }
+  // The front page stands on its own, outside the household's frame.
+  if (location.pathname === '/landing') return <LandingPage />
   return <SignedInApp />
 }
 

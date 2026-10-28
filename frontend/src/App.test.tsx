@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from './App'
 import { installFetchStub, type Recorded } from './test/server'
@@ -78,6 +78,73 @@ const location = () => screen.getByLabelText('location').textContent
 const posted = (path: string) =>
   stub!.calls.find((call) => call.method === 'POST' && call.path === path)
 
+describe('the front page', () => {
+  const headline = () => screen.findByRole('heading', { level: 1, name: 'The financial OS for modern flatmates.' })
+
+  it('greets a visitor at / and at /landing, with the way in', async () => {
+    for (const path of ['/', '/landing']) {
+      renderApp(path, { '/api/auth/status': SIGNED_OUT })
+      expect(await headline()).toBeInTheDocument()
+      expect(location()).toBe(path)
+      const nav = screen.getByRole('navigation', { name: 'flatmate.dev' })
+      expect(within(nav).getByRole('link', { name: 'Sign In' })).toHaveAttribute('href', '/login')
+      expect(within(nav).getByRole('link', { name: 'Launch Workspace' })).toHaveAttribute('href', '/signup')
+      expect(screen.getByRole('link', { name: /Open Live Demo/ })).toHaveAttribute('href', '/login')
+      expect(screen.getByRole('link', { name: 'Set Up Your Flat (Free)' })).toHaveAttribute('href', '/signup')
+      // Nothing of the household is asked for.
+      expect(stub!.calls.some((call) => call.path === '/api/apartments')).toBe(false)
+      cleanup()
+      stub?.restore()
+    }
+  })
+
+  it('shows what a flat runs on, and how it compares', async () => {
+    renderApp('/', { '/api/auth/status': SIGNED_OUT })
+    await headline()
+    expect(screen.getByRole('navigation', { name: 'flatmate.dev' })).toHaveTextContent(
+      'FeaturesThe House KittyRent HubCompare',
+    )
+    const month = screen.getByRole('figure', { name: 'An example month in flatmate.dev' })
+    expect(month).toHaveTextContent('October 2026')
+    expect(month).toHaveTextContent('House Kitty Balance₹48,250.00')
+    expect(month).toHaveTextContent('3 of 3 flatmates covered · 100%')
+    expect(month).toHaveTextContent('Furlenco₹2,637.05Disbursed')
+    expect(screen.getByRole('heading', { name: 'Why Splitwise breaks for apartments' })).toBeInTheDocument()
+    for (const module of [
+      'Master Lease & Rent Hub',
+      'Furniture & Appliance Subscriptions',
+      'Electricity & Sub-meters',
+      'Bank-Grade House Kitty Passbook',
+    ]) {
+      expect(screen.getByRole('heading', { name: module })).toBeInTheDocument()
+    }
+    const table = screen.getByRole('table', { name: 'flatmate.dev compared with Splitwise and Google Sheets' })
+    expect(within(table).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Feature',
+      'flatmate.dev',
+      'Splitwise',
+      'Google Sheets',
+    ])
+    expect(screen.getByText('100% integer paise arithmetic')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Ready to end month-end calculation drama?' })).toBeInTheDocument()
+  })
+
+  it('takes a new installation from the front page to the household admin', async () => {
+    renderApp('/', { '/api/auth/status': NEW_INSTALL })
+    await headline()
+    await userEvent.click(screen.getByRole('link', { name: 'Set Up Your Flat (Free)' }))
+    expect(await screen.findByRole('heading', { name: 'Create your Household Admin Account' })).toBeInTheDocument()
+    expect(location()).toBe('/signup')
+  })
+
+  it('stays at /landing for someone signed in, outside the household, with the way back', async () => {
+    renderApp('/landing', { '/api/auth/status': SIGNED_IN })
+    expect(await headline()).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Signed in' })).toBeNull()
+    expect(screen.getAllByRole('link', { name: 'Launch Workspace' })[0]).toHaveAttribute('href', '/')
+  })
+})
+
 describe('a new installation', () => {
   it('asks for the household admin before anything else', async () => {
     renderApp('/payments', { '/api/auth/status': NEW_INSTALL })
@@ -93,7 +160,7 @@ describe('a new installation', () => {
   })
 
   it('checks the details before sending them', async () => {
-    renderApp('/', { '/api/auth/status': NEW_INSTALL })
+    renderApp('/signup', { '/api/auth/status': NEW_INSTALL })
     const create = await screen.findByRole('button', { name: 'Create account' })
     await userEvent.click(create)
     expect(screen.getByText('Enter your full name.')).toBeInTheDocument()
@@ -110,7 +177,7 @@ describe('a new installation', () => {
   })
 
   it('signs the new admin in and opens the guided setup', async () => {
-    renderApp('/', {
+    renderApp('/signup', {
       '/api/auth/status': NEW_INSTALL,
       'POST /api/auth/signup': { user: ADMIN },
       '/api/setup/state': SETUP_FROM_SCRATCH,
@@ -134,7 +201,7 @@ describe('a new installation', () => {
 
   it('shows what the server says when it refuses', async () => {
     renderApp(
-      '/',
+      '/signup',
       { '/api/auth/status': NEW_INSTALL },
       {
         'POST /api/auth/signup': {
@@ -179,7 +246,7 @@ describe('an existing household', () => {
 
   it('keeps the login page when the password is wrong, and says so', async () => {
     renderApp(
-      '/',
+      '/login',
       { '/api/auth/status': SIGNED_OUT },
       {
         'POST /api/auth/login': {
