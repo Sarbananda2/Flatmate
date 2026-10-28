@@ -38,6 +38,13 @@ Rules this module holds to (see ``docs/ACCOUNTING_RULES.md``):
   in resident-ID order, and to the resident who paid the landlord last.
 * **The shares always sum to the rent exactly.**
 
+**GST and the invoice's total.** An open month's rent may carry GST, at a rate
+of its own (none unless set), on the lease rent, rounded half up to the paisa;
+or be set to the total the landlord's invoice actually charges. The month is
+split on the lease rent as its agreement says, then scaled to that total to the
+paisa (:func:`aem.money.apportion_paise`). A total set by hand stands while the
+lease rent is what it was set on.
+
 If the month's rent already exists as an expense -- because the recurring
 generator created it -- the cycle adopts that expense rather than creating a
 second one.
@@ -56,7 +63,14 @@ from typing import Any, Mapping, Sequence
 
 from ..errors import ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
-from ..money import ensure_paise, format_inr, paise_in_words
+from ..money import (
+    apportion_paise,
+    ensure_paise,
+    format_inr,
+    gst_paise,
+    gst_rate,
+    paise_in_words,
+)
 from ..periods import month_label, normalize_month, parse_iso_date
 from ..persistence import Database, UnitOfWork
 from . import audit, bill_shares, definitions, deletions, expenses, names, payments
@@ -616,9 +630,15 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
 
     Each participant's ``payments`` are the payments that settled their
     charge, oldest first, each with what it put towards the charge.
+
+    The month's bill -- the lease rent (``subtotal_base_paise``), its GST rate
+    and GST, and any total charged as invoiced -- is as it was charged (see
+    :func:`_rent_billing`); a month charged before it carried GST bills its
+    rent as it is.
     """
     expense = get_expense(uow, cycle["expense_id"])
     charges = _charges(uow, cycle["expense_id"])
+    basis = _stored_basis(uow.rent.allocations_for_expense(cycle["expense_id"]))
     payments_by_resident: dict[str, list[dict[str, Any]]] = {}
     for payment in uow.rent.payments_for_rent_expense(cycle["expense_id"]):
         resident_id = payment.pop("resident_id")
@@ -645,6 +665,11 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
             "payments": payments_by_resident.get(charge["resident_id"], []),
             "receipt_available": False})  # HRA receipt feature disabled (see DEBT-001)
     total = expense["amount_paise"]
+    billing = (_rent_billing(basis["subtotal_base_paise"], float(basis.get("gst_rate_percent") or 0.0),
+                             basis.get("charged_total_override_paise"))
+               if "subtotal_base_paise" in basis else _legacy_billing(total))
+    billing["total_paise"] = total
+    billing["total_gst_paise"] = total - billing["subtotal_base_paise"]
     disbursed_paise = sum(t["amount_paise"] for t in tranches)
     remaining = (0 if cycle["disbursement_status"] == "disbursed"
                  else max(0, total - disbursed_paise))
@@ -675,6 +700,9 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
                      if config else expense["due_date"]),
         "charge_due_date": expense["due_date"],
         "total_rent_paise": total,
+        **{key: billing[key] for key in (
+            "subtotal_base_paise", "gst_rate_percent", "calculated_gst_paise",
+            "calculated_total_paise", "charged_total_override_paise", "total_gst_paise")},
         "participant_count": count,
         # Rent is only ever split equally or by room here: a rent expense
         # with its own amounts per resident came from a room-tiered month.
@@ -706,7 +734,8 @@ def _summarize(uow: UnitOfWork, cycle: dict[str, Any],
         "funding_payment_id": (advances[0]["funding_payment_id"] if len(advances) == 1
                                else None),
         "lease_rent_paise": lease_rent,
-        "matches_lease_rent": lease_rent is None or lease_rent == total,
+        # The rent before its GST is the lease's.
+        "matches_lease_rent": lease_rent is None or lease_rent == billing["subtotal_base_paise"],
         # 'live' while the month follows the lease; 'frozen' once it is its snapshot.
         "cycle_state": _cycle_state(cycle, cycle["settlement_month"],
                                     _statement_row(uow, cycle["apartment_id"],
@@ -811,6 +840,12 @@ def _room_tiered(uow: UnitOfWork, apartment_id: str, chosen: Sequence[str], tota
             "room_total_paise": room_total, "lease_rent_paise": total, "shares": shares}
 
 
+def _preview_billing(total: int) -> dict[str, Any]:
+    """A month not charged yet, as a bill: its rent as it is. GST, or the
+    invoice's own total, is set once the month is charged."""
+    return {key: value for key, value in _legacy_billing(total).items() if key != "total_paise"}
+
+
 def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
              config: dict[str, Any], excluded_resident_ids: Sequence[str] | None,
              split_mode: str | None = None) -> dict[str, Any]:
@@ -834,7 +869,8 @@ def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
         return {
             **base, "mode": "adopt", "existing_expense_id": expense["expense_id"],
             "existing_expense_description": expense["description"],
-            "total_rent_paise": total, "participant_count": count,
+            "total_rent_paise": total, **_preview_billing(total),
+            "participant_count": count,
             "base_share_paise": total // count if count else 0,
             "remainder_paise": total % count if count else 0,
             "participants": [{"resident_id": c["resident_id"], "display_name": c["display_name"],
@@ -875,7 +911,8 @@ def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
     return {
         **base, "mode": "create", "existing_expense_id": None,
         "existing_expense_description": None,
-        "total_rent_paise": total, "participant_count": count,
+        "total_rent_paise": total, **_preview_billing(total),
+        "participant_count": count,
         "base_share_paise": total // count if count else 0,
         "remainder_paise": total % count if count else 0,
         "participants": [{"resident_id": rid, "display_name": names.get(rid, rid),
@@ -905,6 +942,13 @@ def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
 # applied to them stay with them. A month going down -- even below what the
 # landlord was paid -- leaves what each resident paid beyond their new share
 # owed back to them (see :mod:`aem.services.bill_shares`).
+
+class _Keep:
+    """Leave a month's charged total as it was set."""
+
+
+KEEP = _Keep()
+
 
 def _today() -> str:
     return now_timestamp()[:10]
@@ -942,11 +986,19 @@ def _cycle_state(cycle: Mapping[str, Any] | None, month: str,
 
 def _follow_lease(uow: UnitOfWork, apartment_id: str, settlement_month: str, *,
                   excluded_resident_ids: Sequence[str] | None = None,
-                  split_mode: str | None = None, check_reduction_guards: bool = True,
+                  split_mode: str | None = None,
+                  gst_rate_percent: float | None = None,
+                  charged_total_paise: int | None | _Keep = KEEP,
+                  check_reduction_guards: bool = True,
                   timestamp: str | None = None,
                   actor: str = "operator") -> tuple[dict[str, Any] | None, str | None]:
     """:func:`_sync_live_rent_cycle`, also saying why the month could not follow
-    the lease as it stands, when it could not."""
+    the lease as it stands, when it could not.
+
+    The month is billed at ``gst_rate_percent`` and ``charged_total_paise`` when
+    they are given (null clears the charged total); otherwise at the rate it
+    was charged at, and the total it was set to while the lease rent is what it
+    was when that was set."""
     timestamp = timestamp or now_timestamp()
     config = _config_row(uow, apartment_id)
     statement = _statement_row(uow, apartment_id, settlement_month)
@@ -989,21 +1041,33 @@ def _follow_lease(uow: UnitOfWork, apartment_id: str, settlement_month: str, *,
     excluded = sorted(set(excluded_resident_ids or basis.get("excluded_resident_ids") or []))
     override = split_mode or basis.get("split_mode_override")
     mode = _split_mode(override or config["rent_split_mode"])
-    total = _rent_for_month(uow, config, settlement_month)
-    split = _split(uow, apartment_id, participants, total, mode,
+    subtotal = _rent_for_month(uow, config, settlement_month)
+    split = _split(uow, apartment_id, participants, subtotal, mode,
                    payer_resident_id=expense["payer_resident_id"])
     if split["problem"]:
         # Kept as it was, never refused: a room-tiered change takes several saves
         # (the lease rent, then each room), and the first ones cannot add up yet.
         return cycle, split["problem"]
-    shares = split["shares"]
+    rate = (gst_rate_percent if gst_rate_percent is not None
+            else float(basis.get("gst_rate_percent") or 0.0))
+    if isinstance(charged_total_paise, _Keep):
+        charged = basis.get("charged_total_override_paise")
+        if basis.get("subtotal_base_paise") != subtotal:
+            charged = None
+    else:
+        charged = charged_total_paise
+    billing = _rent_billing(subtotal, rate, charged)
+    total = billing["total_paise"]
+    # Split on the lease rent as the agreement says, then brought to the bill.
+    shares = _scaled(split["shares"], total)
 
     month_name = month_label(settlement_month)
     tranches = uow.rent.disbursements_for_cycle(cycle["cycle_id"])
     method = "equal" if mode == "equal" else "custom"
     due = f"{settlement_month}-{config['due_day_of_month']:02d}"
     new_basis = _rent_basis(split, mode, participants, excluded,
-                            override if override != config["rent_split_mode"] else None)
+                            override if override != config["rent_split_mode"] else None,
+                            billing)
     current = {row["resident_id"]: row for row in allocations}
     if (expense["amount_paise"] == total and expense.get("allocation_method") == method
             and expense.get("provider_name") == config["landlord_name"]
@@ -1062,6 +1126,8 @@ def _follow_lease(uow: UnitOfWork, apartment_id: str, settlement_month: str, *,
                  old_value={"total_rent_paise": expense["amount_paise"],
                             "shares": {rid: row["amount_paise"] for rid, row in current.items()}},
                  new_value={"total_rent_paise": total, "split_mode": mode, "shares": shares,
+                            "gst_rate_percent": billing["gst_rate_percent"],
+                            "charged_total_override_paise": charged,
                             "disbursement_status": status})
     return _cycle_row(uow, apartment_id, settlement_month), None
 
@@ -1175,6 +1241,81 @@ def rent_month_overview(db: Database, apartment_id: str, settlement_month: str, 
         }
 
 
+def configure_rent_billing(db: Database, apartment_id: str, settlement_month: str, *,
+                           gst_rate_percent: float = 0.0, charged_total_paise: int | None = None,
+                           actor: str = "operator") -> dict[str, Any]:
+    """Set the GST an open month's rent carries, and the total it is charged
+    where the landlord's invoice comes to another.
+
+    GST is at ``gst_rate_percent`` on the lease rent, rounded half up to the
+    paisa: none unless set, as rent on a residential lease carries none. A
+    ``charged_total_paise`` of null, or of the total worked out at the rate,
+    bills the month as worked out; any other is the month's total -- never below
+    the lease rent, nor with GST of more than it -- while the lease rent is what
+    it is now. The shares follow, split as the agreement says and brought to the
+    total to the paisa, and what residents have paid moves with them. A month
+    gone by, or with its statement finalized, never changes; a month not charged
+    yet has no bill to set. Returns the month as :func:`rent_month_overview`
+    gives it.
+    """
+    settlement_month = normalize_month(settlement_month, "settlement_month")
+    rate = gst_rate(gst_rate_percent)
+    if charged_total_paise is not None:
+        charged_total_paise = ensure_paise(charged_total_paise, "charged_total_paise",
+                                           allow_zero=False)
+    timestamp = now_timestamp()
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        config = _config_row(uow, apartment_id)
+        if config is None:
+            raise ConflictError("Set up the lease before setting the rent's GST.",
+                                code="rent_not_configured")
+        cycle = _sync_live_rent_cycle(uow, apartment_id, settlement_month,
+                                      check_reduction_guards=False, timestamp=timestamp,
+                                      actor=actor)
+        if cycle is None:
+            raise NotFoundError(
+                f"Rent for {month_label(settlement_month)} is not charged yet, so it has no "
+                "bill to set.", code="rent_cycle_not_found",
+                details={"settlement_month": settlement_month})
+        statement = _statement_row(uow, apartment_id, settlement_month)
+        if _cycle_state(cycle, settlement_month, statement) == "frozen":
+            raise ConflictError(
+                f"{month_label(settlement_month)} rent is closed, so its GST and total can no "
+                "longer change.", code="rent_cycle_frozen",
+                details={"settlement_month": settlement_month})
+        subtotal = _rent_for_month(uow, config, settlement_month)
+        if charged_total_paise == subtotal + gst_paise(subtotal, rate):
+            charged_total_paise = None
+        if charged_total_paise is not None and charged_total_paise < subtotal:
+            raise ValidationError(
+                f"The total charged cannot be less than the {format_inr(subtotal)} lease rent.",
+                code="rent_charged_total_below_rent",
+                details={"field": "charged_total_paise", "subtotal_base_paise": subtotal})
+        if charged_total_paise is not None and charged_total_paise > 2 * subtotal:
+            raise ValidationError(
+                f"The total charged cannot carry more GST than the {format_inr(subtotal)} "
+                "lease rent.", code="rent_charged_total_too_high",
+                details={"field": "charged_total_paise", "subtotal_base_paise": subtotal})
+        cycle, blocked = _follow_lease(uow, apartment_id, settlement_month,
+                                       gst_rate_percent=rate,
+                                       charged_total_paise=charged_total_paise,
+                                       check_reduction_guards=True, timestamp=timestamp,
+                                       actor=actor)
+        if blocked:
+            raise ConflictError(blocked, code="rent_cycle_blocked",
+                                details={"settlement_month": settlement_month})
+        basis = _stored_basis(uow.rent.allocations_for_expense(cycle["expense_id"]))
+        if (basis.get("gst_rate_percent") != rate
+                or basis.get("charged_total_override_paise") != charged_total_paise):
+            # Its split was set by hand on the expense itself, which it keeps.
+            raise ConflictError(
+                f"{month_label(settlement_month)} rent is split by hand on its expense, so its "
+                "GST and total are set there.", code="rent_cycle_not_managed",
+                details={"settlement_month": settlement_month})
+    return rent_month_overview(db, apartment_id, settlement_month)
+
+
 def _split(uow: UnitOfWork, apartment_id: str, participants: Sequence[str], total: int,
            split_mode: str, *, payer_resident_id: str | None = None) -> dict[str, Any]:
     """How `total` is divided between `participants` under `split_mode`: the
@@ -1200,13 +1341,43 @@ def _split(uow: UnitOfWork, apartment_id: str, participants: Sequence[str], tota
             "basis": dict(plan.basis), "problem": None}
 
 
+def _rent_billing(subtotal: int, rate: float, override: int | None) -> dict[str, Any]:
+    """The month's rent as a bill: the lease rent, GST at ``rate`` on it, and
+    what it comes to -- the invoice's own total, ``override``, when one is set."""
+    gst = gst_paise(subtotal, rate)
+    total = subtotal + gst if override is None else override
+    return {"subtotal_base_paise": subtotal, "gst_rate_percent": float(rate),
+            "calculated_gst_paise": gst, "calculated_total_paise": subtotal + gst,
+            "charged_total_override_paise": override, "total_gst_paise": total - subtotal,
+            "total_paise": total}
+
+
+def _legacy_billing(total: int) -> dict[str, Any]:
+    """What a month charged before it carried GST bills: its rent as it is."""
+    return _rent_billing(total, 0.0, None)
+
+
+def _scaled(shares: Mapping[str, int], total: int) -> dict[str, int]:
+    """Each share brought to `total` in proportion, to the paisa: the month split
+    on the lease rent, then charged its GST, or the invoice's total."""
+    if sum(shares.values()) == total:
+        return dict(shares)
+    order = sorted(shares)
+    parts = apportion_paise(total, [shares[rid] for rid in order])
+    return {rid: part for rid, part in zip(order, parts) if part}
+
+
 def _rent_basis(split: Mapping[str, Any], split_mode: str, participants: Sequence[str],
-                excluded: Sequence[str], override: str | None) -> dict[str, Any]:
-    """Kept with each charge: how the month is split, who is on it, and whether
-    the split was chosen for this month rather than taken from the lease."""
+                excluded: Sequence[str], override: str | None,
+                billing: Mapping[str, Any]) -> dict[str, Any]:
+    """Kept with each charge: how the month is split, who is on it, whether the
+    split was chosen for this month rather than taken from the lease, and its
+    bill -- its GST rate and any total charged as invoiced -- so a month gone by
+    reads as it was charged."""
     return {**split["basis"], "source": "rent", "split_mode": split_mode,
             "participants": sorted(participants), "excluded_resident_ids": sorted(excluded),
-            "split_mode_override": override}
+            "split_mode_override": override,
+            **{key: value for key, value in billing.items() if key != "total_paise"}}
 
 
 def _stored_basis(allocations: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1283,7 +1454,8 @@ def _record_cycle(uow: UnitOfWork, apartment_id: str, settlement_month: str,
             allocation_method=split["method"],
             allocations_paise={rid: split["shares"].get(rid, 0)
                                for rid in resident_ids(uow, apartment_id)},
-            allocation_basis=_rent_basis(split, split_mode, chosen, excluded, override),
+            allocation_basis=_rent_basis(split, split_mode, chosen, excluded, override,
+                                         _legacy_billing(total)),
             provider_name=config["landlord_name"],
             expense_definition_id=config["expense_definition_id"],
             statement_id=statement["statement_id"] if statement else None,

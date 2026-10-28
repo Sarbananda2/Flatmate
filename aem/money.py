@@ -6,8 +6,8 @@ monetary result without an exact integer conversion.
 """
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
-from typing import Any
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any, Sequence
 
 from .errors import ValidationError
 
@@ -30,6 +30,39 @@ def ensure_paise(value: Any, label: str, *, allow_negative: bool = False,
     if not allow_zero and value == 0:
         raise ValidationError(f"{label} must not be zero.", details={"field": label})
     return value
+
+
+def gst_paise(base_paise: int, rate_percent: float) -> int:
+    """GST at ``rate_percent`` on an amount before GST, in whole paise, rounded
+    half up."""
+    return int((Decimal(base_paise) * Decimal(str(rate_percent)) / Decimal(100))
+               .quantize(Decimal(1), ROUND_HALF_UP))
+
+
+def gst_rate(value: Any, label: str = "gst_rate_percent") -> float:
+    """A GST rate: from 0 to 100 percent, to two decimal places at most."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError(f"{label} must be a number.", details={"field": label})
+    rate = Decimal(str(value))
+    if not rate.is_finite() or rate < 0 or rate > 100 or -rate.as_tuple().exponent > 2:
+        raise ValidationError(
+            "The GST rate must be from 0 to 100 percent, to two decimal places at most.",
+            code="invalid_gst_rate", details={"field": label})
+    return float(rate)
+
+
+def apportion_paise(total: int, weights: Sequence[int]) -> list[int]:
+    """`total` split in proportion to `weights`, in whole paise that add up to
+    it: each its whole part, and the paise left over one each to those with the
+    largest remainders, the first of equals first."""
+    whole = sum(weights)
+    if not whole:
+        return [0] * len(weights)
+    parts = [total * weight // whole for weight in weights]
+    order = sorted(range(len(weights)), key=lambda index: (-(total * weights[index] % whole), index))
+    for index in order[:total - sum(parts)]:
+        parts[index] += 1
+    return parts
 
 
 def rupees_to_paise(value: Any, label: str = "amount") -> int:

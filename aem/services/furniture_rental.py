@@ -45,11 +45,11 @@ from __future__ import annotations
 import calendar
 import json
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Mapping, Sequence
 
 from ..errors import AemError, ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
+from .. import money
 from ..money import ensure_paise, format_inr
 from ..periods import month_end, normalize_month, parse_iso_date
 from ..persistence import Database, UnitOfWork
@@ -72,35 +72,13 @@ GST_RATE_PERCENT = 18.0
 def gst_paise(base_rent_paise: int, rate_percent: float = GST_RATE_PERCENT) -> int:
     """GST at ``rate_percent`` on rents quoted before GST, in whole paise,
     rounded half up."""
-    return int((Decimal(base_rent_paise) * Decimal(str(rate_percent)) / Decimal(100))
-               .quantize(Decimal(1), ROUND_HALF_UP))
+    return money.gst_paise(base_rent_paise, rate_percent)
 
 
-def _apportion(total: int, weights: Sequence[int]) -> list[int]:
-    """`total` split in proportion to `weights`, in whole paise that add up to
-    it: each its whole part, and the paise left over one each to those with the
-    largest remainders, the first of equals first."""
-    whole = sum(weights)
-    if not whole:
-        return [0] * len(weights)
-    parts = [total * weight // whole for weight in weights]
-    order = sorted(range(len(weights)), key=lambda index: (-(total * weights[index] % whole), index))
-    for index in order[:total - sum(parts)]:
-        parts[index] += 1
-    return parts
-
-
-def _gst_rate(value: Any) -> float:
-    """A GST rate: from 0 to 100 percent, to two decimal places at most."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValidationError("gst_rate_percent must be a number.",
-                              details={"field": "gst_rate_percent"})
-    rate = Decimal(str(value))
-    if not rate.is_finite() or rate < 0 or rate > 100 or -rate.as_tuple().exponent > 2:
-        raise ValidationError(
-            "The GST rate must be from 0 to 100 percent, to two decimal places at most.",
-            code="invalid_gst_rate", details={"field": "gst_rate_percent"})
-    return float(rate)
+#: `total` shared in proportion to weights, to the paisa (see :func:`aem.money.apportion_paise`).
+_apportion = money.apportion_paise
+#: A GST rate, from 0 to 100 percent to two decimal places (see :func:`aem.money.gst_rate`).
+_gst_rate = money.gst_rate
 
 
 # ------------------------------------------------------------------ helpers --

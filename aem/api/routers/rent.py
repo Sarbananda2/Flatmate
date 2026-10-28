@@ -10,6 +10,7 @@ from ...errors import AemError
 from ...schemas import (
     MONTH_PATTERN,
     LandlordReceiptUpload,
+    RentBillingRequest,
     RentDisburseRequest,
     RentGenerateRequest,
     RentLeaseConfigSave,
@@ -117,6 +118,23 @@ def generate_cycle(payload: RentGenerateRequest, db: Db, apartment_id: Apartment
         return rent.generate_monthly_rent_cycle(
             db, apartment_id, settlement_month, payload.excluded_resident_ids,
             actor=settings.operator_name, split_mode=payload.split_mode)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
+@router.post("/cycle/{settlement_month}/billing",
+             summary="Set an open month's GST on its rent, and the total its invoice charges")
+def configure_billing(payload: RentBillingRequest, db: Db, apartment_id: ApartmentId,
+                      settings: AppSettings, settlement_month: SettlementMonth) -> dict[str, Any]:
+    """GST at ``gst_rate_percent`` on the lease rent, none unless set;
+    ``charged_total_paise`` is the invoice's total where it rounds its GST
+    another way, and null bills the month as worked out. The shares, and what
+    residents have paid towards them, follow. A month gone by never changes.
+    Returns the month as ``GET /cycle/{settlement_month}`` gives it."""
+    try:
+        return rent.configure_rent_billing(
+            db, apartment_id, settlement_month, gst_rate_percent=payload.gst_rate_percent,
+            charged_total_paise=payload.charged_total_paise, actor=settings.operator_name)
     except AemError as exc:
         raise to_http(exc) from exc
 

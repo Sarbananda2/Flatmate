@@ -2542,3 +2542,127 @@ def test_wrong_rent_transactions_are_deleted_over_http(api):
     assert gone.json()["collected_paise"] == 0
     missing = api.delete(f"/api/rent/cycle/{MONTH}/payments/{payment_id}")
     assert (missing.status_code, missing.json()["error"]["code"]) == (404, "payment_not_found")
+
+
+# ------------------------------------------------------- GST on the rent --
+#
+# An open month's rent may carry GST at a rate of its own, none unless set, on
+# the lease rent; or be set to the total the landlord's invoice charges. It is
+# split as the agreement says, then brought to the total to the paisa, and what
+# residents have paid moves with it. A month gone by keeps its bill.
+
+def _billing(db, rate=0.0, charged=None, month=MONTH):
+    return rent.configure_rent_billing(db, APARTMENT, month, gst_rate_percent=rate,
+                                       charged_total_paise=charged)["cycle"]
+
+
+def _bill(cycle):
+    return (cycle["subtotal_base_paise"], cycle["gst_rate_percent"],
+            cycle["calculated_gst_paise"], cycle["calculated_total_paise"],
+            cycle["charged_total_override_paise"], cycle["total_gst_paise"],
+            cycle["total_rent_paise"])
+
+
+def test_rent_carries_no_gst_unless_a_month_is_given_one(apartment, clock):
+    _lease(apartment)
+    cycle = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
+    assert _bill(cycle) == (4_500_000, 0.0, 0, 4_500_000, None, 0, 4_500_000)
+    preview = rent.rent_month_overview(apartment, APARTMENT, "2026-12")["preview"]
+    assert (preview["subtotal_base_paise"], preview["gst_rate_percent"],
+            preview["total_gst_paise"]) == (4_500_000, 0.0, 0)
+
+
+def test_an_open_months_gst_and_invoice_total_rebalance_its_shares(apartment, clock):
+    _lease(apartment)
+    _pay(apartment, "alice", 1_500_000)
+    _pay(apartment, "bob", 1_000_000)
+
+    # 18% on ₹45,000 is ₹8,100: ₹53,100, ₹17,700 each, and what each paid stays theirs.
+    cycle = _billing(apartment, rate=18)
+    assert _bill(cycle) == (4_500_000, 18.0, 810_000, 5_310_000, None, 810_000, 5_310_000)
+    assert (cycle["matches_lease_rent"], cycle["base_share_paise"]) == (True, 1_770_000)
+    assert _row(cycle, "alice") == (1_770_000, 1_500_000, 270_000, "partial")
+    assert _row(cycle, "bob") == (1_770_000, 1_000_000, 770_000, "partial")
+    expense = _rows(apartment, "SELECT amount_paise FROM expense_instance WHERE expense_id=%s",
+                    (cycle["expense_id"],))[0]
+    charges = _rows(apartment, "SELECT SUM(amount_paise) AS total FROM allocation "
+                               "WHERE expense_id=%s", (cycle["expense_id"],))[0]
+    assert (expense["amount_paise"], charges["total"]) == (5_310_000, 5_310_000)
+
+    # The invoice's total a paisa over, its GST rounded its own way: the paisa
+    # goes to the first share, and the shares still add up to it.
+    cycle = _billing(apartment, rate=18, charged=5_310_001)
+    assert _bill(cycle) == (4_500_000, 18.0, 810_000, 5_310_000, 5_310_001, 810_001, 5_310_001)
+    assert _shares(cycle) == {"alice": 1_770_001, "bob": 1_770_000, "chris": 1_770_000}
+    # The total worked out, sent or left out, clears it.
+    assert _billing(apartment, rate=18, charged=5_310_000)["charged_total_override_paise"] is None
+    _billing(apartment, rate=18, charged=5_310_001)
+    assert _billing(apartment, rate=18)["total_rent_paise"] == 5_310_000
+
+    # No GST again: Alice has paid her share in full.
+    cycle = _billing(apartment)
+    assert (cycle["total_rent_paise"], _row(cycle, "alice")) == (
+        4_500_000, (1_500_000, 1_500_000, 0, "paid"))
+    for rate, charged, code in ((18, 4_499_999, "rent_charged_total_below_rent"),
+                                (18, 9_000_001, "rent_charged_total_too_high"),
+                                (100.5, None, "invalid_gst_rate")):
+        with pytest.raises(ValidationError) as refused:
+            _billing(apartment, rate=rate, charged=charged)
+        assert refused.value.code == code
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+    assert sum(_positions(apartment).values()) == 0
+
+
+def test_a_rent_split_by_room_carries_its_gst_in_proportion(apartment, clock):
+    _lease(apartment)
+    _rooms(apartment, {"alice": 2_000_000, "bob": 1_500_000, "chris": 1_000_000})
+    rent.save_lease_config(apartment, APARTMENT, {"rent_split_mode": "room_tiered"})
+    cycle = _billing(apartment, rate=18)
+    assert cycle["total_rent_paise"] == 5_310_000
+    assert _shares(cycle) == {"alice": 2_360_000, "bob": 1_770_000, "chris": 1_180_000}
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+def test_a_charged_total_lasts_while_the_lease_rent_does_and_a_month_gone_by_keeps_its_bill(
+        apartment, clock):
+    _lease(apartment)
+    _billing(apartment, rate=18, charged=5_310_001)
+    # Anything else about the lease leaves it be...
+    _lease(apartment, landlord_phone="+91 98765 00000")
+    assert rent.get_rent_cycle(apartment, APARTMENT, MONTH)["total_rent_paise"] == 5_310_001
+    # ...but a new rent bills the month afresh, at its rate.
+    _lease(apartment, monthly_rent_paise=4_800_000)
+    cycle = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
+    assert _bill(cycle) == (4_800_000, 18.0, 864_000, 5_664_000, None, 864_000, 5_664_000)
+
+    # December: November is its snapshot, and December carries no GST of its own.
+    clock["now"] = "2026-12-03T09:00:00+05:30"
+    with pytest.raises(ConflictError) as refused:
+        _billing(apartment, rate=12)
+    assert refused.value.code == "rent_cycle_frozen"
+    november = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
+    assert (november["cycle_state"], _bill(november)) == (
+        "frozen", (4_800_000, 18.0, 864_000, 5_664_000, None, 864_000, 5_664_000))
+    assert rent.get_rent_cycle(apartment, APARTMENT, "2026-12")["total_rent_paise"] == 4_800_000
+    # A month not charged yet has no bill to set.
+    with pytest.raises(NotFoundError) as missing:
+        _billing(apartment, rate=18, month="2027-01")
+    assert missing.value.code == "rent_cycle_not_found"
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+def test_rent_gst_over_http(apartment, api, clock):
+    _lease(apartment)
+    url = f"/api/rent/cycle/{MONTH}/billing"
+    taxed = api.post(url, json={"gst_rate_percent": 18})
+    assert taxed.status_code == 200, taxed.text
+    cycle = taxed.json()["cycle"]
+    assert (cycle["total_rent_paise"], cycle["gst_rate_percent"], cycle["total_gst_paise"]) == (
+        5_310_000, 18.0, 810_000)
+    charged = api.post(url, json={"gst_rate_percent": 18, "charged_total_paise": 5_310_001})
+    assert charged.json()["cycle"]["charged_total_override_paise"] == 5_310_001
+    cleared = api.post(url, json={})
+    assert cleared.json()["cycle"]["total_rent_paise"] == 4_500_000
+    assert api.post(url, json={"gst_rate_percent": 101}).status_code == 422
+    assert api.post(url, json={"charged_total_paise": 1_000}).status_code == 422
+    assert api.post("/api/rent/cycle/2026-13/billing", json={}).status_code == 422

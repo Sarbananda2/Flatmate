@@ -883,6 +883,16 @@ class LandlordReceiptUpload(ApiModel):
     content_base64: str = Field(min_length=1, description="The file, base64-encoded. 5 MB limit.")
 
 
+class RentBillingRequest(ApiModel):
+    """An open month's GST on its rent, and the total the landlord's invoice charges."""
+    gst_rate_percent: float = Field(
+        0.0, ge=0, le=100,
+        description="GST on the lease rent, to two decimal places; none unless set.")
+    charged_total_paise: int | None = _money_field(
+        "The invoice's total, GST included. Null, or the total worked out at the rate, "
+        "bills the month as worked out.", ge=1, default=None)
+
+
 class RentDisburseRequest(ApiModel):
     disbursement_mode: Literal["pool", "resident_advance"]
     funding_resident_id: str | None = Field(
@@ -1248,7 +1258,7 @@ __all__ = [
     "ExpenseCreate", "ExpenseKind", "ExpenseUpdate", "HealthResponse", "MONTH_PATTERN",
     "PassthroughModel", "PaymentCreate", "PaymentKind", "PaymentReverse", "PeerSettlementCreate", "PeriodRule",
     "PlannableMethod", "Recurrence", "RecurringGenerateRequest", "RecurringLine",
-    "LandlordReceiptUpload", "RentDisburseRequest", "RentGenerateRequest",
+    "LandlordReceiptUpload", "RentBillingRequest", "RentDisburseRequest", "RentGenerateRequest",
     "ExitClearanceExecuteRequest", "ExitClearancePreview", "ExitClearanceResponse",
     "FlatmateStatementList", "ResidentMonthlyPaymentItem", "ResidentMonthlyStatement",
     "DepositSlotLinkRoomRequest", "RoomAssignRequest", "RoomCreate", "RoomResponse", "RoomUpdate", "RoomVacateRequest",
