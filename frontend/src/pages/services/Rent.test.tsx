@@ -178,10 +178,34 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+/** The household's security deposit: ₹90,000 on the lease, ₹60,000 of it paid in. */
+const deposits = {
+  is_lease_configured: true,
+  master_deposit_paise: 9000000,
+  funding_mode: 'direct_to_landlord',
+  primary_signatory_id: null,
+  primary_signatory_name: null,
+  primary_signatory_upi_id: null,
+  signatory_capital_exposure_paise: null,
+  reimbursements_received_paise: 0,
+  retained_deductions_paise: 0,
+  total_slots_count: 3,
+  vacant_slots_count: 0,
+  total_target_paise: 9000000,
+  total_funded_paise: 6000000,
+  unfunded_gap_paise: 3000000,
+  is_balanced: true,
+  unassigned_residents: [],
+  proposal: [],
+  slots: [],
+}
+
+/** The rent page at `path` -- `/?tab=agreement` opens on that tab. */
 function renderRent(
   payload: Record<string, unknown>,
   routes: Record<string, unknown> = {},
   apartment: Apartment | null = null,
+  path = '/',
 ) {
   stub = installFetchStub({
     routes: {
@@ -195,7 +219,7 @@ function renderRent(
     } as never,
   })
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <ToastProvider>
         <RentMonth month={MONTH} apartment={apartment} />
       </ToastProvider>
@@ -216,6 +240,54 @@ const landlordRow = () =>
   })[0]
 
 describe('RentMonth', () => {
+  it('opens on the monthly settlement and keeps each tab to its own part', async () => {
+    renderRent(overview(), { '/api/rent/deposits': deposits, '/api/property/contacts': { items: [] } })
+    const tabs = await screen.findByRole('tablist', { name: 'Rent' })
+    expect(within(tabs).getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'Monthly Settlement',
+      'Agreement & Rooms',
+      'Lease & Deposit',
+    ])
+    expect(within(tabs).getByRole('tab', { name: 'Monthly Settlement' })).toHaveAttribute('aria-selected', 'true')
+    // Collecting the shares and paying the landlord, and nothing else.
+    expect(screen.getByRole('table', { name: 'Rent shares and collection' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Pay now to landlord' })).toBeInTheDocument()
+    expect(stat('Internal Collection')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Rental agreement')).toBeNull()
+    expect(screen.queryByLabelText('Tenancy terms')).toBeNull()
+
+    await userEvent.click(within(tabs).getByRole('tab', { name: 'Agreement & Rooms' }))
+    expect(screen.getByLabelText('Rental agreement')).toHaveTextContent('Single Master Lease (Equal Split)')
+    expect(screen.queryByRole('table', { name: 'Rent shares and collection' })).toBeNull()
+
+    await userEvent.click(within(tabs).getByRole('tab', { name: 'Lease & Deposit' }))
+    expect(within(tabs).getByRole('tab', { name: 'Lease & Deposit' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByLabelText('Tenancy terms')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Rental agreement')).toBeNull()
+  })
+
+  it('shows the lease, its landlord and its deposit on their tab', async () => {
+    renderRent(
+      overview(),
+      { '/api/rent/deposits': deposits, '/api/property/contacts': { items: [] } },
+      null,
+      '/?tab=lease',
+    )
+    const terms = await screen.findByLabelText('Tenancy terms')
+    expect(terms).toHaveTextContent('₹45,000.00')
+    expect(terms).toHaveTextContent('Due on the 5th of every month')
+    const landlord = screen.getByLabelText('Landlord profile')
+    expect(landlord).toHaveTextContent('NameRajesh Kumar Sharma')
+    expect(landlord).toHaveTextContent('PANABCPS1234K')
+    const deposit = await screen.findByLabelText('Security deposit')
+    expect(deposit).toHaveTextContent('Lease Deposit₹90,000.00As agreed on the lease')
+    expect(deposit).toHaveTextContent('Paid In₹60,000.00of ₹90,000.00 across 3 slots')
+    expect(deposit).toHaveTextContent('Still to Fund₹30,000.00Awaiting flatmates')
+    expect(screen.getByRole('link', { name: 'Manage deposits' })).toHaveAttribute('href', '/housing?tab=deposits')
+    // Nothing of the month's settlement here.
+    expect(screen.queryByRole('table', { name: 'Rent shares and collection' })).toBeNull()
+  })
+
   it('shows the rent, the equal share, and what has been collected', async () => {
     renderRent(overview())
     // The period bar names the month, so the title does not repeat it; and the
@@ -725,7 +797,7 @@ describe('RentMonth', () => {
   })
 
   it('shows the rental agreement read-only, with no inputs on the page', async () => {
-    renderRent(overview({ cycle: null, preview }))
+    renderRent(overview({ cycle: null, preview }), {}, null, '/?tab=agreement')
     const agreement = await screen.findByLabelText('Rental agreement')
     expect(agreement).toHaveTextContent('Single Master Lease (Equal Split)')
     expect(agreement).toHaveTextContent('Equal share among 3 participants (₹15,000.00/resident)')
@@ -737,9 +809,12 @@ describe('RentMonth', () => {
   })
 
   it('changes the agreement model in a dialog that saves only that', async () => {
-    renderRent(overview({ cycle: null, preview: tieredPreview }), {
-      'POST /api/rent/config': { ...config, rent_split_mode: 'room_tiered' },
-    })
+    renderRent(
+      overview({ cycle: null, preview: tieredPreview }),
+      { 'POST /api/rent/config': { ...config, rent_split_mode: 'room_tiered' } },
+      null,
+      '/?tab=agreement',
+    )
     await userEvent.click(await screen.findByRole('button', { name: 'Edit agreement model' }))
     const dialog = screen.getByRole('dialog')
     // The dialog keeps the name of the card it edits.
@@ -760,7 +835,7 @@ describe('RentMonth', () => {
   })
 
   it('cancels a model change without saving', async () => {
-    renderRent(overview({ cycle: null, preview }))
+    renderRent(overview({ cycle: null, preview }), {}, null, '/?tab=agreement')
     await userEvent.click(await screen.findByRole('button', { name: 'Edit agreement model' }))
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('dialog')).toBeNull()
@@ -768,27 +843,32 @@ describe('RentMonth', () => {
   })
 
   it('says why a room-tiered model cannot charge the month yet', async () => {
-    renderRent(
-      overview({
-        config: { ...config, rent_split_mode: 'room_tiered' },
-        cycle: null,
-        preview: {
-          ...preview,
-          split_mode: 'room_tiered',
-          can_generate: false,
-          blocked_reason: 'The sum of room rents (₹40,000.00) does not equal the monthly lease rent (₹45,000.00).',
-          room_tiered: {
-            ...preview.room_tiered,
-            blocked_reason:
-              'The sum of room rents (₹40,000.00) does not equal the monthly lease rent (₹45,000.00).',
-          },
+    const blocked = overview({
+      config: { ...config, rent_split_mode: 'room_tiered' },
+      cycle: null,
+      preview: {
+        ...preview,
+        split_mode: 'room_tiered',
+        can_generate: false,
+        blocked_reason: 'The sum of room rents (₹40,000.00) does not equal the monthly lease rent (₹45,000.00).',
+        room_tiered: {
+          ...preview.room_tiered,
+          blocked_reason:
+            'The sum of room rents (₹40,000.00) does not equal the monthly lease rent (₹45,000.00).',
         },
-      }),
-    )
+      },
+    })
+    const { unmount } = renderRent(blocked, {}, null, '/?tab=agreement')
     const agreement = await screen.findByLabelText('Rental agreement')
     expect(agreement).toHaveTextContent('Room-Tiered Fixed Pricing')
     expect(agreement).toHaveTextContent("Each resident pays their room's base rent.")
     expect(agreement).toHaveTextContent('does not equal the monthly lease rent')
+    unmount()
+    stub?.restore()
+
+    // The month's split says it too, where the shares are.
+    renderRent(blocked)
+    await screen.findByRole('table', { name: 'Rent shares for October 2026' })
     expect(screen.getAllByRole('status').map((notice) => notice.textContent)).toContain(
       'The sum of room rents (₹40,000.00) does not equal the monthly lease rent (₹45,000.00).',
     )

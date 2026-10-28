@@ -5,19 +5,29 @@
  * have paid into the pool against their rent share, and whether the landlord
  * has been paid. Every figure comes from the backend; nothing here divides
  * money.
+ *
+ * Three tabs, as Furniture Rental has them: the month's settlement, the
+ * agreement that divides the rent, and the lease with its landlord and
+ * deposit. The open tab is kept in the address (`?tab=agreement`), so a link
+ * or a reload lands on it.
  */
 import { useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Building2,
   Check,
   Clock,
+  Layers,
+  Receipt,
   Settings,
+  ShieldCheck,
   Trash2,
   Users,
 } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
 import { RentAgreementCard } from './RentAgreement'
+import { LandlordProfileCard, TenancyTermsCard } from './RentConfig'
+import { useDepositSummary } from './SecurityDeposits'
 import { AsyncSection, Callout, Modal } from '../../components/Primitives'
 import {
   ResidentCollectionTable,
@@ -65,6 +75,15 @@ import type {
   RentPreview,
 } from '../../api/types'
 
+/** The page's tabs, as Furniture Rental has them: the open one is kept in the address (`?tab=lease`). */
+export const RENT_TABS = [
+  { value: 'settlement', label: 'Monthly Settlement', icon: Receipt },
+  { value: 'agreement', label: 'Agreement & Rooms', icon: Layers },
+  { value: 'lease', label: 'Lease & Deposit', icon: Building2 },
+] as const
+
+export type RentTab = (typeof RENT_TABS)[number]['value']
+
 const TABLE_HEAD =
   'border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold'
 
@@ -110,6 +129,9 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
   const [payingFor, setPayingFor] = useState<RentParticipant | null>(null)
   const [viewingStatement, setViewingStatement] = useState<RentParticipant | null>(null)
   const [viewingLandlordStatement, setViewingLandlordStatement] = useState(false)
+  const [params, setParams] = useSearchParams()
+  const requested = params.get('tab')
+  const tab: RentTab = RENT_TABS.some((entry) => entry.value === requested) ? (requested as RentTab) : 'settlement'
   // The month as the last payment or payout left it, for what its toast says.
   const saved = useRef<RentCycle | null>(null)
 
@@ -145,51 +167,77 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
               </Panel>
             ) : (
               <>
-                <LeaseNoticeBanner
-                  config={config}
-                  participantCount={(cycle ?? preview)?.participant_count ?? 0}
-                  onChanged={(message, detail) => {
-                    toast.success(message, detail)
-                    overview.reload()
-                  }}
-                />
-                <Metrics config={config} cycle={cycle} preview={preview} month={month} />
-                {/* The month's two steps, in order: collect from residents, then
-                    pay the landlord. */}
-                {cycle ? (
-                  <CyclePanel
-                    cycle={cycle}
-                    config={config}
-                    blockedReason={data.live_blocked_reason ?? null}
-                    onPay={setPayingFor}
-                    onViewStatement={setViewingStatement}
-                  />
-                ) : (
-                  preview && <PreviewPanel month={month} preview={preview} />
-                )}
-                <LandlordPanel
-                  config={config}
-                  cycle={cycle}
-                  onPayout={() => setDialog('payout')}
-                  onViewStatement={() => setViewingLandlordStatement(true)}
-                />
-                {/* Whoever paid the landlord more than their share is paid back from the kitty. */}
-                {(cycle?.reimbursements ?? []).length > 0 && (
-                  <KittyReimbursementPanel
-                    reimbursements={cycle!.reimbursements!}
-                    onReimburse={setReimbursing}
-                    onViewStatement={(owed) => setViewingReimbursement(owed.recipient_resident_id)}
-                  />
-                )}
-                {/* The contract the rent is charged under, for reference. */}
-                <RentAgreementCard
-                  config={config}
-                  cycle={cycle}
-                  preview={preview}
-                  roomTiered={data.room_tiered ?? preview?.room_tiered ?? null}
-                  month={month}
-                  onSaved={overview.reload}
-                />
+                <div className="tabs" role="tablist" aria-label="Rent">
+                  {RENT_TABS.map(({ value, label, icon: Icon }) => (
+                    <button
+                      key={value}
+                      id={`rent-tab-${value}`}
+                      type="button"
+                      role="tab"
+                      className="tab"
+                      aria-selected={tab === value}
+                      aria-controls={`rent-panel-${value}`}
+                      onClick={() => setParams(value === 'settlement' ? {} : { tab: value }, { replace: true })}
+                    >
+                      <Icon className="w-3.5 h-3.5 shrink-0 inline-block mr-1.5 align-[-2px]" aria-hidden="true" />
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div role="tabpanel" id={`rent-panel-${tab}`} aria-labelledby={`rent-tab-${tab}`} className="space-y-4">
+                  {tab === 'settlement' && (
+                    <>
+                      <LeaseNoticeBanner
+                        config={config}
+                        participantCount={(cycle ?? preview)?.participant_count ?? 0}
+                        onChanged={(message, detail) => {
+                          toast.success(message, detail)
+                          overview.reload()
+                        }}
+                      />
+                      <Metrics config={config} cycle={cycle} preview={preview} month={month} />
+                      {/* The month's two steps, in order: collect from residents, then
+                          pay the landlord. */}
+                      {cycle ? (
+                        <CyclePanel
+                          cycle={cycle}
+                          config={config}
+                          blockedReason={data.live_blocked_reason ?? null}
+                          onPay={setPayingFor}
+                          onViewStatement={setViewingStatement}
+                        />
+                      ) : (
+                        preview && <PreviewPanel month={month} preview={preview} />
+                      )}
+                      <LandlordPanel
+                        config={config}
+                        cycle={cycle}
+                        onPayout={() => setDialog('payout')}
+                        onViewStatement={() => setViewingLandlordStatement(true)}
+                      />
+                      {/* Whoever paid the landlord more than their share is paid back from the kitty. */}
+                      {(cycle?.reimbursements ?? []).length > 0 && (
+                        <KittyReimbursementPanel
+                          reimbursements={cycle!.reimbursements!}
+                          onReimburse={setReimbursing}
+                          onViewStatement={(owed) => setViewingReimbursement(owed.recipient_resident_id)}
+                        />
+                      )}
+                    </>
+                  )}
+                  {/* How the rent is divided: equally, or by each room's base rent. */}
+                  {tab === 'agreement' && (
+                    <RentAgreementCard
+                      config={config}
+                      cycle={cycle}
+                      preview={preview}
+                      roomTiered={data.room_tiered ?? preview?.room_tiered ?? null}
+                      month={month}
+                      onSaved={overview.reload}
+                    />
+                  )}
+                  {tab === 'lease' && <LeasePanels config={config} onSaved={overview.reload} />}
+                </div>
               </>
             )}
 
@@ -411,6 +459,63 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
         )
       }}
     </AsyncSection>
+  )
+}
+
+/* ------------------------------------------------------------- the lease -- */
+
+/**
+ * The lease the rent is charged under: its terms, who the landlord is, and the
+ * security deposit held against it. The terms are edited on Housing, where the
+ * lease is kept; the landlord's details on their contact.
+ */
+function LeasePanels({ config, onSaved }: { config: RentLeaseConfig; onSaved: () => void }) {
+  const navigate = useNavigate()
+  return (
+    <>
+      <TenancyTermsCard config={config} onEdit={() => navigate('/housing?tab=lease')} />
+      <LandlordProfileCard config={config} onSaved={onSaved} />
+      <DepositSummaryPanel />
+    </>
+  )
+}
+
+/** The lease's security deposit: what it is, what flatmates have paid towards it, and what is still to come. */
+function DepositSummaryPanel() {
+  const deposits = useDepositSummary()
+  return (
+    <Panel
+      title="Security Deposit"
+      icon={<ShieldCheck className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint="Held by the landlord against the lease; each flatmate's part, and every refund, is kept under Housing."
+      actions={
+        <Link to="/housing?tab=deposits" className={BUTTON_QUIET}>
+          Manage deposits
+        </Link>
+      }
+    >
+      <AsyncSection resource={deposits} loadingLabel="Loading the deposit…">
+        {(summary) => (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3" aria-label="Security deposit">
+            <MiniStat
+              label="Lease Deposit"
+              value={<Rupees paise={summary.master_deposit_paise} />}
+              note={summary.master_deposit_paise == null ? 'Not entered on the lease' : 'As agreed on the lease'}
+            />
+            <MiniStat
+              label="Paid In"
+              value={<Rupees paise={summary.total_funded_paise} />}
+              note={`of ${formatInr(summary.total_target_paise)} across ${summary.total_slots_count} slot${summary.total_slots_count === 1 ? '' : 's'}`}
+            />
+            <MiniStat
+              label="Still to Fund"
+              value={<Rupees paise={summary.unfunded_gap_paise} />}
+              note={summary.unfunded_gap_paise > 0 ? 'Awaiting flatmates' : 'Fully funded'}
+            />
+          </div>
+        )}
+      </AsyncSection>
+    </Panel>
   )
 }
 
