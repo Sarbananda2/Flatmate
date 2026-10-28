@@ -755,30 +755,34 @@ describe('FurnitureRental', () => {
       })
     const configure = 'POST /api/services/furniture/month/2026-11/billing'
 
-    it("shows the bill's subtotal, its GST and its gross total on both tabs", async () => {
+    it("shows the bill's subtotal, its GST and its gross total with the items, not the settlement", async () => {
       const { unmount } = show(overview({ month: withGst() }))
+      expect(await screen.findByText('Internal Collection')).toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: 'Monthly Bill' })).toBeNull()
+      unmount()
+      stub?.restore()
+
+      show(overview({ month: withGst() }), {}, '/?tab=items')
       const panel = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
       expect(panel).toHaveTextContent('Items Subtotal₹2,234.79Rents before GST')
       expect(panel).toHaveTextContent('GST (18%)₹402.26')
       expect(panel).toHaveTextContent('Gross Bill Total₹2,637.05GST included')
       expect(within(panel).getByRole('button', { name: 'Configure GST & Total' })).toBeInTheDocument()
-      unmount()
-      stub?.restore()
-
-      show(overview({ month: withGst() }), {}, '/?tab=items')
-      const items = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
-      expect(items).toHaveTextContent('Gross Bill Total₹2,637.05')
     })
 
     it("notes the calculated total when the bill is charged the invoice's own", async () => {
-      show(overview({ month: withGst({ charged_total_override_paise: 263706, total_gst_paise: 40227, total_paise: 263706 }) }))
+      show(
+        overview({ month: withGst({ charged_total_override_paise: 263706, total_gst_paise: 40227, total_paise: 263706 }) }),
+        {},
+        '/?tab=items',
+      )
       const panel = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
       expect(panel).toHaveTextContent('GST (18%)₹402.27As invoiced')
       expect(panel).toHaveTextContent('Gross Bill Total₹2,637.06Calculated: ₹2,637.05')
     })
 
     it('sets the GST rate by slider or by hand, and the total follows it', async () => {
-      show(overview({ month: withGst() }), { [configure]: overview({ month: withGst() }) })
+      show(overview({ month: withGst() }), { [configure]: overview({ month: withGst() }) }, '/?tab=items')
       const panel = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
       await userEvent.click(within(panel).getByRole('button', { name: 'Configure GST & Total' }))
       const dialog = screen.getByRole('dialog', { name: 'Configure GST & Total' })
@@ -822,7 +826,7 @@ describe('FurnitureRental', () => {
     })
 
     it("takes the invoice's own total to the paisa, until reset to the calculated one", async () => {
-      show(overview({ month: withGst() }), { [configure]: overview({ month: withGst() }) })
+      show(overview({ month: withGst() }), { [configure]: overview({ month: withGst() }) }, '/?tab=items')
       const panel = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
       await userEvent.click(within(panel).getByRole('button', { name: 'Configure GST & Total' }))
       const dialog = screen.getByRole('dialog', { name: 'Configure GST & Total' })
@@ -853,7 +857,7 @@ describe('FurnitureRental', () => {
 
     it('opens on the total the month was charged, and clears it back to the calculated one', async () => {
       const charged = withGst({ charged_total_override_paise: 263706, total_gst_paise: 40227, total_paise: 263706 })
-      show(overview({ month: charged }), { [configure]: overview({ month: withGst() }) })
+      show(overview({ month: charged }), { [configure]: overview({ month: withGst() }) }, '/?tab=items')
       const panel = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
       await userEvent.click(within(panel).getByRole('button', { name: 'Configure GST & Total' }))
       const dialog = screen.getByRole('dialog', { name: 'Configure GST & Total' })
@@ -868,9 +872,11 @@ describe('FurnitureRental', () => {
     })
 
     it('takes only the rate for a month not billed yet', async () => {
-      show(overview({ month: withGst({ bill_state: 'upcoming', expense: null }) }), {
-        [configure]: overview({ month: withGst() }),
-      })
+      show(
+        overview({ month: withGst({ bill_state: 'upcoming', expense: null }) }),
+        { [configure]: overview({ month: withGst() }) },
+        '/?tab=items',
+      )
       const panel = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
       await userEvent.click(within(panel).getByRole('button', { name: 'Configure GST & Total' }))
       const dialog = screen.getByRole('dialog', { name: 'Configure GST & Total' })
@@ -886,14 +892,14 @@ describe('FurnitureRental', () => {
     })
 
     it('keeps a month gone by as it was billed, with nothing to configure', async () => {
-      show(overview({ month: withGst({ bill_state: 'frozen' }) }))
+      show(overview({ month: withGst({ bill_state: 'frozen' }) }), {}, '/?tab=items')
       const panel = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
       expect(panel).toHaveTextContent('November 2026 is closed')
       expect(within(panel).queryByRole('button', { name: 'Configure GST & Total' })).toBeNull()
     })
 
     it('shows a month billed before GST was on the bill without a rate', async () => {
-      show(overview({ month: billed({ bill_state: 'frozen', gst_rate_percent: null }) }))
+      show(overview({ month: billed({ bill_state: 'frozen', gst_rate_percent: null }) }), {}, '/?tab=items')
       const panel = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
       expect(panel).toHaveTextContent('GST₹0.00')
       expect(panel).not.toHaveTextContent('GST (')

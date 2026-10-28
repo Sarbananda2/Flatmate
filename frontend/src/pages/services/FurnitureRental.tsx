@@ -330,11 +330,6 @@ export function FurnitureRental({ month }: { month: string }) {
                 {tab === 'settlement' && data.month && (
                   <>
                     <Metrics bill={data.month} billingDay={data.service.billing_day_of_month} />
-                    <BillSummaryPanel
-                      month={month}
-                      bill={data.month}
-                      onConfigure={() => setDialog({ kind: 'bill_gst', bill: data.month! })}
-                    />
                     {/* The month's two steps, in order: collect from residents, then pay the provider. */}
                     <ResidentCollectionPanel
                       month={month}
