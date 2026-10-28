@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { RentMonth } from './Rent'
 import type { Apartment } from '../../api/types'
@@ -230,9 +230,6 @@ function renderRent(
 const posted = (suffix: string) =>
   stub!.calls.find((call) => call.method === 'POST' && call.path.endsWith(suffix))
 
-/** A summary card at the top of the page, by its label. */
-const stat = (label: string) => screen.getByText(label).parentElement!
-
 /** The landlord's row in the landlord panel's summary table. */
 const landlordRow = () =>
   within(screen.getByRole('table', { name: 'Rent owed to the landlord' })).getAllByRole('row', {
@@ -252,7 +249,9 @@ describe('RentMonth', () => {
     // Collecting the shares and paying the landlord, and nothing else.
     expect(screen.getByRole('table', { name: 'Rent shares and collection' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Pay now to landlord' })).toBeInTheDocument()
-    expect(stat('Internal Collection')).toBeInTheDocument()
+    // Straight to the residents' collection, with no summary above it.
+    expect(within(screen.getByRole('tabpanel')).getAllByRole('heading')[0]).toHaveTextContent('Resident Collection')
+    expect(screen.queryByText('Internal Collection')).toBeNull()
     expect(screen.queryByLabelText('Rental agreement')).toBeNull()
     expect(screen.queryByLabelText('Tenancy terms')).toBeNull()
 
@@ -288,7 +287,7 @@ describe('RentMonth', () => {
     expect(screen.queryByRole('table', { name: 'Rent shares and collection' })).toBeNull()
   })
 
-  it('shows the rent, the equal share, and what has been collected', async () => {
+  it('shows each equal share and what has been collected towards it', async () => {
     renderRent(overview())
     // The period bar names the month, so the title does not repeat it; and the
     // month's state is read from the tables, with no pills above them.
@@ -299,13 +298,6 @@ describe('RentMonth', () => {
     expect(
       screen.queryByText(/Payout Pending|Disbursed to Landlord|Partially Disbursed|^Term:/),
     ).not.toBeInTheDocument()
-    expect(stat('Contract Rent')).toHaveTextContent('₹45,000.00')
-    expect(stat('Equal Share (1/3)')).toHaveTextContent('₹15,000.00')
-    expect(stat('Internal Collection')).toHaveTextContent('₹30,000.00')
-    expect(stat('Internal Collection')).toHaveTextContent('2 of 3 covered · 66.7%')
-    expect(stat('Landlord Due Date')).toHaveTextContent('5 Oct 2026')
-    expect(stat('Landlord Due Date')).toHaveTextContent('Rajesh Kumar Sharma')
-
     const table = screen.getByRole('table', { name: 'Rent shares and collection' })
     const chris = within(table).getByRole('row', { name: /Chris/ })
     expect(chris).toHaveTextContent('₹15,000.00')
@@ -531,7 +523,12 @@ describe('RentMonth', () => {
       reference: 'UPI-778',
       note: null,
     })
-    expect(await screen.findByText('3 of 3 covered · 100.0%')).toBeInTheDocument()
+    // The month as the payment left it: Chris's share is paid.
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('table', { name: 'Rent shares and collection' })).getByRole('row', { name: /Chris/ }),
+      ).not.toHaveTextContent('Unpaid'),
+    )
     // Everyone has paid, so every row's payment button is off.
     for (const button of within(
       screen.getByRole('table', { name: 'Rent shares and collection' }),
@@ -808,6 +805,127 @@ describe('RentMonth', () => {
     expect(screen.queryByRole('radio', { name: 'Room-Tiered' })).toBeNull()
   })
 
+  it('opens the agreement tab on the bill, then each part of the rent', async () => {
+    renderRent(overview({ cycle: null, preview }), {}, null, '/?tab=agreement')
+    // Rent carries no GST: the bill is the rent.
+    const bill = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
+    expect(within(screen.getByRole('tabpanel')).getAllByRole('heading')[0]).toHaveTextContent('Monthly Bill')
+    expect(bill).toHaveTextContent('Rent Subtotal₹45,000.00For October 2026')
+    expect(bill).toHaveTextContent('Tax / GST (0%)₹0.00Exempt')
+    expect(bill).toHaveTextContent('Gross Rent Total₹45,000.00No GST')
+    // Each flatmate's equal part, one share each.
+    const shares = screen.getByRole('table', { name: 'Rent by tenancy share' })
+    expect(within(shares).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Tenancy',
+      'Paid by',
+      'Monthly rent',
+      'Status',
+    ])
+    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Share 3 of 3Chris₹15,000.00Active')
+  })
+
+  it("sets an open month's GST and total from its rent bill", async () => {
+    const live = cycle({ cycle_state: 'live' })
+    const taxed = cycle({
+      cycle_state: 'live',
+      total_rent_paise: 5310000,
+      subtotal_base_paise: 4500000,
+      gst_rate_percent: 18,
+      calculated_gst_paise: 810000,
+      calculated_total_paise: 5310000,
+      charged_total_override_paise: null,
+      total_gst_paise: 810000,
+    })
+    renderRent(
+      overview({ cycle: live }),
+      { [`POST /api/rent/cycle/${MONTH}/billing`]: overview({ cycle: taxed }) },
+      null,
+      '/?tab=agreement',
+    )
+    const bill = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
+    expect(bill).toHaveTextContent('Tax / GST (0%)₹0.00Exempt')
+    await userEvent.click(within(bill).getByRole('button', { name: 'Configure GST & Total' }))
+    const dialog = screen.getByRole('dialog', { name: 'Configure Rent GST & Total' })
+    // No GST on rent unless the month is given a rate.
+    expect(within(dialog).getByLabelText('GST (%)')).toHaveValue('0')
+    const calculated = within(dialog).getByLabelText('Calculated bill')
+    expect(calculated).toHaveTextContent('Rent Subtotal₹45,000.00Calculated GST (0%)₹0.00Calculated Total₹45,000.00')
+    const charged = within(dialog).getByLabelText(/^Actual Charged Total/)
+    expect(charged).toHaveValue('45000.00')
+    // 18% by the slider: ₹8,100 GST, ₹53,100 -- and the total follows.
+    fireEvent.change(within(dialog).getByRole('slider', { name: 'GST rate' }), { target: { value: '18' } })
+    expect(calculated).toHaveTextContent('Calculated GST (18%)₹8,100.00Calculated Total₹53,100.00')
+    expect(charged).toHaveValue('53100.00')
+    // Never below the lease rent.
+    await userEvent.clear(charged)
+    await userEvent.type(charged, '40000')
+    expect(within(dialog).getByText("Less than the lease rent's ₹45,000.00 before GST.")).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Reset to calculated' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(posted('/billing')).toBeDefined())
+    expect(posted('/billing')!.body).toEqual({ gst_rate_percent: 18, charged_total_paise: null })
+    expect(await screen.findByText('Rent bill updated')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'Configure Rent GST & Total' })).toBeNull()
+  })
+
+  it("shows a month's GST, and the invoice's own total, on its bill", async () => {
+    renderRent(
+      overview({
+        cycle: cycle({
+          cycle_state: 'live',
+          total_rent_paise: 5310001,
+          subtotal_base_paise: 4500000,
+          gst_rate_percent: 18,
+          calculated_gst_paise: 810000,
+          calculated_total_paise: 5310000,
+          charged_total_override_paise: 5310001,
+          total_gst_paise: 810001,
+        }),
+      }),
+      {},
+      null,
+      '/?tab=agreement',
+    )
+    const bill = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
+    expect(bill).toHaveTextContent('Rent Subtotal₹45,000.00')
+    expect(bill).toHaveTextContent('Tax / GST (18%)₹8,100.01As invoiced')
+    expect(bill).toHaveTextContent('Gross Rent Total₹53,100.01Calculated: ₹53,100.00')
+  })
+
+  it('offers no GST to set for a month gone by, or one not charged yet', async () => {
+    const { unmount } = renderRent(overview({ cycle: cycle({ cycle_state: 'frozen' }) }), {}, null, '/?tab=agreement')
+    const bill = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
+    expect(within(bill).queryByRole('button', { name: 'Configure GST & Total' })).toBeNull()
+    unmount()
+    stub?.restore()
+
+    renderRent(overview({ cycle: null, preview }), {}, null, '/?tab=agreement')
+    const upcoming = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
+    expect(within(upcoming).queryByRole('button', { name: 'Configure GST & Total' })).toBeNull()
+  })
+
+  it('breaks a room-tiered rent down by room', async () => {
+    renderRent(
+      overview({
+        config: { ...config, rent_split_mode: 'room_tiered' },
+        cycle: null,
+        preview: { ...tieredPreview, split_mode: 'room_tiered' },
+      }),
+      {},
+      null,
+      '/?tab=agreement',
+    )
+    const rooms = await screen.findByRole('table', { name: 'Rent by room' })
+    expect(within(rooms).getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Room',
+      'Paid by',
+      'Monthly rent',
+      'Status',
+    ])
+    expect(within(rooms).getByRole('row', { name: /Alice/ })).toHaveTextContent('Room 1Alice₹20,000.00Occupied')
+    expect(within(rooms).getByRole('row', { name: /Chris/ })).toHaveTextContent('Room 3Chris₹10,000.00Occupied')
+  })
+
   it('changes the agreement model in a dialog that saves only that', async () => {
     renderRent(
       overview({ cycle: null, preview: tieredPreview }),
@@ -815,10 +933,10 @@ describe('RentMonth', () => {
       null,
       '/?tab=agreement',
     )
-    await userEvent.click(await screen.findByRole('button', { name: 'Edit agreement model' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Change Agreement Model' }))
     const dialog = screen.getByRole('dialog')
-    // The dialog keeps the name of the card it edits.
-    expect(within(dialog).getByRole('heading', { name: 'Rental Agreement Structure' })).toBeInTheDocument()
+    // The dialog keeps the name of the action that opens it.
+    expect(within(dialog).getByRole('heading', { name: 'Change Agreement Model' })).toBeInTheDocument()
     const save = within(dialog).getByRole('button', { name: 'Save Model' })
     expect(save).toBeDisabled()
     const group = within(dialog).getByRole('radiogroup', { name: 'Rental agreement structure' })
@@ -836,7 +954,7 @@ describe('RentMonth', () => {
 
   it('cancels a model change without saving', async () => {
     renderRent(overview({ cycle: null, preview }), {}, null, '/?tab=agreement')
-    await userEvent.click(await screen.findByRole('button', { name: 'Edit agreement model' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Change Agreement Model' }))
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(posted('/api/rent/config')).toBeUndefined()
@@ -883,7 +1001,6 @@ describe('RentMonth', () => {
     expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeDisabled()
     expect(screen.queryByRole('checkbox')).toBeNull()
     expect(screen.queryByRole('button', { name: /Generate/ })).toBeNull()
-    expect(stat('Internal Collection')).toHaveTextContent('Starts once the month begins')
     expect(posted('/generate')).toBeUndefined()
   })
 
@@ -941,7 +1058,6 @@ describe('RentMonth', () => {
     expect(screen.getByRole('button', { name: 'Pay now to landlord' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: /HRA receipt/ })).not.toBeInTheDocument()
     expect(stub!.calls.some((call) => call.path.includes('/receipt/'))).toBe(false)
-    expect(stat('Landlord Due Date')).toHaveTextContent('Paid 5 Oct 2026')
     expect(landlordRow()).toHaveTextContent('₹45,000.00₹45,000.00₹0.00Paid')
     expect(landlordRow()).not.toHaveTextContent('5 Oct 2026')
     // The payment itself is in the landlord's statement, not on the page.
@@ -1049,7 +1165,6 @@ describe('RentMonth', () => {
       renderRent(overview({ cycle: partCycle() }))
       await screen.findByRole('table', { name: 'Rent owed to the landlord' })
       expect(screen.getByRole('button', { name: 'Pay now to landlord' })).toBeEnabled()
-      expect(stat('Landlord Due Date')).toHaveTextContent('₹15,000.00 still to pay')
       expect(landlordRow()).toHaveTextContent('₹45,000.00₹30,000.00₹15,000.00Part paid')
     })
 

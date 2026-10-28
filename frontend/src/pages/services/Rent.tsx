@@ -18,6 +18,7 @@ import {
   Check,
   Clock,
   Layers,
+  Percent,
   Receipt,
   Settings,
   ShieldCheck,
@@ -35,6 +36,7 @@ import {
   type ResidentCollectionItem,
 } from '../../components/ResidentCollectionTable'
 import { DeleteTransactionDialog, type PendingDeletion } from '../../components/DeleteTransactionDialog'
+import { BillGstModal, rateText } from '../../components/BillGstModal'
 import { ServiceDisbursementDialog } from '../../components/ServiceDisbursementDialog'
 import { PAYMENT_MODES, ServicePaymentDialog } from '../../components/ServicePaymentDialog'
 import {
@@ -92,14 +94,6 @@ export default function RentPage() {
   return <RentMonth key={month} month={month} apartment={apartment} />
 }
 
-/** A share of the whole to one decimal place, for display only. */
-function percent(part: number, whole: number): string {
-  if (whole <= 0) return '0.0%'
-  const tenths = Math.round((part * 1000) / whole)
-  // Rounding must never make an incomplete collection read as complete.
-  return `${((part < whole ? Math.min(tenths, 999) : tenths) / 10).toFixed(1)}%`
-}
-
 /**
  * How long a payment has been past its due date, as `13 days overdue`, or
  * null when it is not yet due. Calendar days, so no time zone can shift it.
@@ -120,7 +114,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
   // An open month is charged by itself and follows the lease, so there is
   // nothing to generate here: the month shows its live shares, or a preview.
   const overview = useResource<RentMonthOverview>(`/api/rent/cycle/${month}`)
-  const [dialog, setDialog] = useState<'payout' | null>(null)
+  const [dialog, setDialog] = useState<'payout' | 'billing' | null>(null)
   // Whom the kitty is paying back, when it is; whose reimbursement statement is open.
   const [reimbursing, setReimbursing] = useState<KittyReimbursement | null>(null)
   const [viewingReimbursement, setViewingReimbursement] = useState<string | null>(null)
@@ -195,7 +189,6 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                           overview.reload()
                         }}
                       />
-                      <Metrics config={config} cycle={cycle} preview={preview} month={month} />
                       {/* The month's two steps, in order: collect from residents, then
                           pay the landlord. */}
                       {cycle ? (
@@ -227,14 +220,23 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   )}
                   {/* How the rent is divided: equally, or by each room's base rent. */}
                   {tab === 'agreement' && (
-                    <RentAgreementCard
-                      config={config}
-                      cycle={cycle}
-                      preview={preview}
-                      roomTiered={data.room_tiered ?? preview?.room_tiered ?? null}
-                      month={month}
-                      onSaved={overview.reload}
-                    />
+                    <>
+                      <RentBillPanel
+                        month={month}
+                        config={config}
+                        source={cycle ?? preview}
+                        // Only a month charged and still open has a bill to set.
+                        onConfigure={cycle?.cycle_state === 'live' ? () => setDialog('billing') : undefined}
+                      />
+                      <RentAgreementCard
+                        config={config}
+                        cycle={cycle}
+                        preview={preview}
+                        roomTiered={data.room_tiered ?? preview?.room_tiered ?? null}
+                        month={month}
+                        onSaved={overview.reload}
+                      />
+                    </>
                   )}
                   {tab === 'lease' && <LeasePanels config={config} onSaved={overview.reload} />}
                 </div>
@@ -258,6 +260,31 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                   toast.success('Reimbursement recorded', `${formatInr(amount)} from the kitty to ${name}`)
                   overview.reload()
                 }}
+              />
+            )}
+            {dialog === 'billing' && cycle && config && (
+              <BillGstModal
+                month={month}
+                title="Configure Rent GST & Total"
+                description={`${formatMonth(month)} rent: Tax/GST on the lease, and the actual total paid to the landlord.`}
+                subtotalPaise={cycle.subtotal_base_paise ?? config.monthly_rent_paise}
+                subtotalLabel="Rent Subtotal"
+                subtotalOwner="the lease rent's"
+                gstRatePercent={cycle.gst_rate_percent ?? 0}
+                defaultGstRatePercent={0}
+                chargedTotalOverridePaise={cycle.charged_total_override_paise}
+                isBilled
+                onSave={(values) =>
+                  api.post<RentMonthOverview>(`/api/rent/cycle/${month}/billing`, values).then((updated) => {
+                    setDialog(null)
+                    toast.success(
+                      'Rent bill updated',
+                      `${formatMonth(month)} rent is ${formatInr(updated.cycle?.total_rent_paise ?? cycle.total_rent_paise)}.`,
+                    )
+                    overview.reload()
+                  })
+                }
+                onClose={() => setDialog(null)}
               />
             )}
             {dialog === 'payout' && cycle && config && (
@@ -462,6 +489,59 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
   )
 }
 
+/* --------------------------------------------------------- the agreement -- */
+
+/**
+ * The month's rent as a bill: rent on a residential lease carries no GST, so
+ * it bills the rent as it is.
+ */
+function RentBillPanel({
+  month,
+  config,
+  source,
+  onConfigure,
+}: {
+  month: string
+  config: RentLeaseConfig
+  source: RentCycle | RentPreview | null
+  /** Set the month's GST and total; left out for a month that cannot change. */
+  onConfigure?: () => void
+}) {
+  const subtotal = source?.subtotal_base_paise ?? source?.total_rent_paise ?? config.monthly_rent_paise
+  const rate = source?.gst_rate_percent ?? 0
+  const gst = source?.total_gst_paise ?? 0
+  const total = source?.total_rent_paise ?? subtotal
+  const overridden = source?.charged_total_override_paise != null
+  return (
+    <Panel
+      title="Monthly Bill"
+      icon={<Receipt className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint="Rent on a residential lease carries no GST unless the month is given a rate, or the invoice's own total."
+      menuActions={onConfigure ? [{ label: 'Configure GST & Total', icon: Percent, onClick: onConfigure }] : undefined}
+    >
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <MiniStat label="Rent Subtotal" value={<Rupees paise={subtotal} />} note={`For ${formatMonth(month)}`} />
+        <MiniStat
+          label={`Tax / GST (${rateText(rate)}%)`}
+          value={<Rupees paise={gst} />}
+          note={overridden ? 'As invoiced' : rate === 0 ? 'Exempt' : undefined}
+        />
+        <MiniStat
+          label="Gross Rent Total"
+          value={<Rupees paise={total} />}
+          note={
+            overridden
+              ? `Calculated: ${formatInr(source?.calculated_total_paise ?? subtotal)}`
+              : rate === 0
+                ? 'No GST'
+                : 'GST included'
+          }
+        />
+      </div>
+    </Panel>
+  )
+}
+
 /* ------------------------------------------------------------- the lease -- */
 
 /**
@@ -516,68 +596,6 @@ function DepositSummaryPanel() {
         )}
       </AsyncSection>
     </Panel>
-  )
-}
-
-function Metrics({
-  config,
-  cycle,
-  preview,
-  month,
-}: {
-  config: RentLeaseConfig
-  cycle: RentCycle | null
-  preview: RentPreview | null
-  month: string
-}) {
-  const source = cycle ?? preview
-  const total = source?.total_rent_paise ?? config.monthly_rent_paise
-  const count = source?.participant_count ?? 0
-  const dueDate =
-    source?.due_date ?? `${month}-${String(config.due_day_of_month).padStart(2, '0')}`
-  return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-      <MiniStat
-        label="Contract Rent"
-        value={<Rupees paise={total} />}
-        note={
-          cycle && !cycle.matches_lease_rent
-            ? `Lease now says ${formatInr(cycle.lease_rent_paise)}`
-            : 'Single master lease'
-        }
-      />
-      <MiniStat
-        label={count > 0 ? `Equal Share (1/${count})` : 'Equal Share'}
-        value={<Rupees paise={source ? source.base_share_paise : null} />}
-        note={
-          count === 0
-            ? 'Nobody taking part'
-            : source && source.remainder_paise > 0
-              ? `${count} taking part · ${source.remainder_paise} paise over`
-              : `${count} taking part`
-        }
-      />
-      <MiniStat
-        label="Internal Collection"
-        value={<Rupees paise={cycle ? cycle.collected_paise : null} />}
-        note={
-          cycle
-            ? `${cycle.collected_count} of ${cycle.participant_count} covered · ${percent(cycle.collected_paise, cycle.total_rent_paise)}`
-            : 'Starts once the month begins'
-        }
-      />
-      <MiniStat
-        label="Landlord Due Date"
-        value={<span className="tabular">{formatDate(dueDate)}</span>}
-        note={
-          cycle?.disbursement_status === 'disbursed'
-            ? `Paid ${formatDate(cycle.disbursed_at)}`
-            : cycle?.disbursement_status === 'partially_disbursed'
-              ? `${formatInr(cycle.remaining_disbursement_paise)} still to pay`
-              : config.landlord_name
-        }
-      />
-    </div>
   )
 }
 

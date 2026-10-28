@@ -47,6 +47,9 @@ export interface BillGstModalProps {
   month: string
   /** What the bill comes to before GST. */
   subtotalPaise: number
+  /** What the subtotal is called, and whose it is in a sentence: the items', or the lease rent's. */
+  subtotalLabel?: string
+  subtotalOwner?: string
   /** The bill's rate; null or left out for the service's default. */
   gstRatePercent?: number | null
   /** The service's rate when the bill has none: 18 unless given; 0 for one exempt from GST, like rent. */
@@ -64,6 +67,8 @@ export function BillGstModal({
   description,
   month,
   subtotalPaise,
+  subtotalLabel = 'Items Subtotal',
+  subtotalOwner = "the items'",
   gstRatePercent,
   defaultGstRatePercent = DEFAULT_GST_RATE,
   chargedTotalOverridePaise,
@@ -95,9 +100,9 @@ export function BillGstModal({
     !isBilled || !overridden || !chargedOk
       ? null
       : chargedPaise < subtotal
-        ? `Less than the items' ${formatInr(subtotal)} before GST.`
+        ? `Less than ${subtotalOwner} ${formatInr(subtotal)} before GST.`
         : chargedPaise > 2 * subtotal
-          ? `More GST than the items' ${formatInr(subtotal)} before it.`
+          ? `More GST than ${subtotalOwner} ${formatInr(subtotal)} before it.`
           : null
   // A month not billed yet takes only the rate: there is no invoice to match.
   const valid = rate.ok && (!isBilled || !overridden || (chargedOk && chargedError === null))
@@ -165,7 +170,7 @@ export function BillGstModal({
           />
         </div>
         <dl className="m-0 grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm" aria-label="Calculated bill">
-          <DetailFact label="Items Subtotal">
+          <DetailFact label={subtotalLabel}>
             <span className="tabular">{formatInr(subtotal)}</span>
           </DetailFact>
           <DetailFact label={rate.ok ? `Calculated GST (${rateText(rate.percent)}%)` : 'Calculated GST'}>

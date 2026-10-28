@@ -43,7 +43,7 @@ describe('RentAgreementCard', () => {
       <ToastProvider>
         <RentAgreementCard
           config={{ ...(config as object), rent_split_mode: 'room_tiered' } as never}
-          cycle={{ split_mode: 'equal', participant_count: 3, base_share_paise: 950000 } as never}
+          cycle={{ split_mode: 'equal', participant_count: 3, base_share_paise: 950000, participants: [] } as never}
           preview={null}
           month="2026-10"
           onSaved={() => {}}

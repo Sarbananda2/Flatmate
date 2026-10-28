@@ -64,8 +64,14 @@ export const RENTAL_MODELS: ReadonlyArray<{
   },
 ]
 
-/** The card's name, shared with the dialog that edits it. */
-const AGREEMENT_TITLE = 'Rental Agreement Structure'
+/** The card's name: how the rent falls across the rooms and the flatmates in them. */
+const AGREEMENT_TITLE = 'Rooms & Tenancy Breakdown'
+
+/** The action that changes the model, and the dialog it opens. */
+const CHANGE_MODEL = 'Change Agreement Model'
+
+const TABLE_HEAD =
+  'border-b border-[var(--border-subtle)] text-[var(--text-tertiary)] uppercase tracking-wider text-[10px] font-bold'
 
 export const MODEL_TITLES: Record<RentSplitMode, string> = {
   equal: 'Single Master Lease (Equal Split)',
@@ -156,7 +162,11 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   )
 }
 
-/** The agreement as it stands, read-only, with the way to change it. */
+/**
+ * The agreement as it stands, read-only, and how it divides the month's rent:
+ * each room's base rent under a room-tiered model, or each flatmate's equal
+ * part -- with the way to change the model.
+ */
 export function RentAgreementCard({
   config,
   cycle,
@@ -185,10 +195,8 @@ export function RentAgreementCard({
     <Panel
       title={AGREEMENT_TITLE}
       icon={<Layers className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="How the household divides the rent between flatmates."
-      actions={
-        <EditButton label="Edit agreement model" onClick={() => setChanging(true)} />
-      }
+      hint="How the household divides the rent between flatmates, room by room."
+      actions={<EditButton label={CHANGE_MODEL} onClick={() => setChanging(true)} />}
     >
       <dl className="m-0 grid grid-cols-1 md:grid-cols-2 gap-4" aria-label="Rental agreement">
         <Fact label="Active Agreement Model">
@@ -219,6 +227,32 @@ export function RentAgreementCard({
         </Fact>
       </dl>
 
+      {model === 'room_tiered' && roomTiered?.shares.length ? (
+        <BreakdownTable
+          caption="Rent by room"
+          first="Room"
+          status="Occupied"
+          rows={roomTiered.shares.map((share) => ({
+            key: share.resident_id,
+            first: share.room_number ?? 'No room',
+            name: share.display_name,
+            rentPaise: share.base_rent_paise,
+          }))}
+        />
+      ) : source && source.participants.length > 0 ? (
+        <BreakdownTable
+          caption="Rent by tenancy share"
+          first="Tenancy"
+          status="Active"
+          rows={source.participants.map((share, index) => ({
+            key: share.resident_id,
+            first: `Share ${index + 1} of ${source.participants.length}`,
+            name: share.display_name,
+            rentPaise: share.share_paise,
+          }))}
+        />
+      ) : null}
+
       {changing && (
         <ChangeAgreementModal
           config={config}
@@ -231,6 +265,52 @@ export function RentAgreementCard({
         />
       )}
     </Panel>
+  )
+}
+
+/** Each room, or each tenancy share, with who pays it and what it costs a month. */
+function BreakdownTable({
+  caption,
+  first,
+  status,
+  rows,
+}: {
+  caption: string
+  /** What each row is: a room, or a tenancy share. */
+  first: string
+  status: string
+  rows: Array<{ key: string; first: string; name: string; rentPaise: number | null }>
+}) {
+  return (
+    <div className="overflow-x-auto min-w-0">
+      <table className="w-full text-xs min-w-[480px] border-collapse">
+        <caption className="sr-only">{caption}</caption>
+        <thead>
+          <tr className={TABLE_HEAD}>
+            <th scope="col" className="pb-3 pr-3 font-bold text-left">{first}</th>
+            <th scope="col" className="pb-3 pr-3 font-bold text-left">Paid by</th>
+            <th scope="col" className="pb-3 pr-3 font-bold text-center">Monthly rent</th>
+            <th scope="col" className="pb-3 font-bold text-center">Status</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+          {rows.map((row) => (
+            <tr key={row.key} className="align-middle">
+              <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)]">
+                {row.first}
+              </th>
+              <td className="py-3 pr-3 text-left">{row.name}</td>
+              <td className="py-3 pr-3 text-center font-bold text-[var(--text-primary)]">
+                <Rupees paise={row.rentPaise} />
+              </td>
+              <td className="py-3 text-center whitespace-nowrap">
+                <Pill tone="success">{status}</Pill>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
@@ -262,7 +342,7 @@ function ChangeAgreementModal({
 
   return (
     <Modal
-      title={AGREEMENT_TITLE}
+      title={CHANGE_MODEL}
       description="How every month's rent is divided. The open month's shares follow it as soon as it is saved; a month already closed keeps the split it was charged with."
       onClose={onClose}
       wide

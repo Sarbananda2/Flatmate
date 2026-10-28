@@ -1093,6 +1093,14 @@ export interface RentCycle {
   /** The due date of the residents' charges, which orders oldest-first payment. */
   charge_due_date: string | null
   total_rent_paise: number
+  /** The month's rent as a bill: the lease rent before GST, the month's GST rate (none unless set), and the GST on it. */
+  subtotal_base_paise?: number
+  gst_rate_percent?: number
+  calculated_gst_paise?: number
+  calculated_total_paise?: number
+  /** The landlord's invoice's own total, where it rounds its GST another way; null bills the total worked out. */
+  charged_total_override_paise?: number | null
+  total_gst_paise?: number
   /** How this month was divided: equally, or by each room's base rent. */
   split_mode: RentSplitMode
   participant_count: number
@@ -1165,6 +1173,14 @@ export interface RentPreview {
   existing_expense_description: string | null
   due_date: string
   total_rent_paise: number
+  /** The month's rent as a bill: the lease rent before GST, the month's GST rate (none unless set), and the GST on it. */
+  subtotal_base_paise?: number
+  gst_rate_percent?: number
+  calculated_gst_paise?: number
+  calculated_total_paise?: number
+  /** The landlord's invoice's own total, where it rounds its GST another way; null bills the total worked out. */
+  charged_total_override_paise?: number | null
+  total_gst_paise?: number
   participant_count: number
   base_share_paise: number
   remainder_paise: number
