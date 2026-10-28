@@ -445,7 +445,7 @@ describe('RentMonth', () => {
     )
 
     const dialog = await screen.findByRole('dialog')
-    expect(dialog).toHaveTextContent('Chris · October 2026 rent · ₹15,000.00 outstanding')
+    expect(dialog).toHaveTextContent('Chris · October 2026 rent share · ₹15,000.00 outstanding')
     expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('15000.00')
     expect(within(dialog).getByLabelText(/Payment date/)).not.toHaveValue('')
     await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), 'UPI-778')
@@ -537,16 +537,22 @@ describe('RentMonth', () => {
     })
   })
 
-  it('asks for the same Reference / UTR whatever the payment mode', async () => {
+  it('asks for the Reference / UTR of a bank or UPI payment, not of cash', async () => {
     renderRent(overview())
     await userEvent.click(await screen.findByRole('button', { name: 'Pay now for Chris' }))
     const dialog = await screen.findByRole('dialog')
     for (const mode of ['upi', 'bank_transfer', 'cash', 'other']) {
       await userEvent.selectOptions(within(dialog).getByLabelText(/Payment mode/), mode)
       const reference = within(dialog).getByLabelText(/Reference \/ UTR/)
-      expect(reference).toBeRequired()
+      if (mode === 'cash') expect(reference).not.toBeRequired()
+      else expect(reference).toBeRequired()
       expect(reference).toHaveAttribute('placeholder', 'e.g. UPI ref or bank UTR')
     }
+    // Cash carries no transaction ID: it is recorded without one.
+    await userEvent.selectOptions(within(dialog).getByLabelText(/Payment mode/), 'cash')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Record Payment' }))
+    await waitFor(() => expect(posted('/pay')).toBeDefined())
+    expect(posted('/pay')!.body).toMatchObject({ payment_mode: 'cash', reference: null })
   })
 
   it("sends the payout to the account's holder, and says where to add a missing account", async () => {
@@ -608,16 +614,12 @@ describe('RentMonth', () => {
     const confirm = within(dialog).getByRole('button', { name: 'Record Payout' })
     expect(confirm).toBeDisabled()
     await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), '329188401928')
-    expect(within(dialog).getByRole('option', { name: 'House Kitty (direct transfer)' })).toBeInTheDocument()
-    await userEvent.selectOptions(
-      within(dialog).getByLabelText(/Who funded this payout/),
-      'resident_advance',
-    )
+    // From the House Kitty unless a resident paid the landlord themselves.
+    expect(within(dialog).getByRole('radio', { name: /^House Kitty/ })).toBeChecked()
+    await userEvent.click(within(dialog).getByRole('radio', { name: /Paid by a resident/ }))
+    expect(dialog).toHaveTextContent('A resident paid the landlord from their own account.')
     expect(confirm).toBeDisabled()
-    await userEvent.selectOptions(within(dialog).getByLabelText(/Funding resident/), 'alice')
-    expect(dialog).toHaveTextContent(
-      'Their own share goes through the House Kitty; the kitty pays back what they paid beyond it.',
-    )
+    await userEvent.selectOptions(within(dialog).getByRole('combobox', { name: /^Paid by/ }), 'alice')
     await userEvent.click(confirm)
 
     await waitFor(() => expect(posted('/disburse')).toBeDefined())

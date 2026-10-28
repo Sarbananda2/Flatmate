@@ -20,7 +20,7 @@
  * subscription with its deposit. The open tab is kept in the address
  * (`?tab=items`), so a link or a reload lands on it.
  */
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   Archive,
@@ -46,6 +46,9 @@ import {
   type ResidentCollectionItem,
 } from '../../components/ResidentCollectionTable'
 import { DeleteTransactionDialog, type PendingDeletion } from '../../components/DeleteTransactionDialog'
+import { BillGstModal, rateText } from '../../components/BillGstModal'
+import { ServiceDisbursementDialog } from '../../components/ServiceDisbursementDialog'
+import { PAYMENT_MODES, ServicePaymentDialog } from '../../components/ServicePaymentDialog'
 import {
   KittyReimbursementPanel,
   KittyReimbursementStatementModal,
@@ -128,43 +131,27 @@ const SHARE_STATUS: Record<FurnitureShareStatus, { label: string; tone: Tone }> 
   funded_payout: { label: 'Paid', tone: 'success' },
 }
 
-type PaymentMode = 'upi' | 'bank_transfer' | 'cash' | 'other'
-
-const PAYMENT_MODES: Array<{ value: PaymentMode; label: string }> = [
-  { value: 'upi', label: 'UPI' },
-  { value: 'bank_transfer', label: 'Bank transfer' },
-  { value: 'cash', label: 'Cash' },
-  { value: 'other', label: 'Other' },
-]
-
-/** GST on a month's bill, unless the subscription has a rate of its own. */
-const GST_RATE_PERCENT = 18
-
-/** The GST slider's range: India's GST slabs run up to 28%; a rate above it is typed. */
-const GST_SLIDER_MAX = 28
+/**
+ * Who may have paid a provider for the month: everyone on its bill, and the
+ * residents left out of it.
+ */
+function payersOf(bill: FurnitureMonthBill): Array<{ resident_id: string; display_name: string }> {
+  return [...bill.shares, ...bill.excluded_residents]
+    .map(({ resident_id, display_name }) => ({ resident_id, display_name }))
+    .sort((a, b) => a.display_name.localeCompare(b.display_name))
+}
 
 /**
- * GST at `ratePercent` on rents quoted before GST, in whole paise, rounded half
- * up -- as the backend works it out. The rate is taken in hundredths of a
- * percent so the sum stays in whole numbers.
+ * The provider bills on a fixed day and flatmates pay when they can, so a first
+ * payout offers what the kitty has collected so far; after that, the rest. With
+ * several providers, what was collected is not any one's.
  */
-function gstOn(paise: number, ratePercent: number): number {
-  return Math.floor((paise * Math.round(ratePercent * 100) + 5000) / 10000)
-}
-
-/** "18", "12.5": a GST rate as it is written. */
-function rateText(ratePercent: number): string {
-  return String(Number(ratePercent.toFixed(2)))
-}
-
-/** A GST rate as typed: from 0 to 100 percent, to two decimal places at most. */
-function parseGstRate(raw: string): { ok: boolean; percent: number; error?: string } {
-  const text = raw.trim()
-  const percent = Number(text)
-  if (!/^\d{1,3}(\.\d{1,2})?$/.test(text) || percent > 100) {
-    return { ok: false, percent: 0, error: 'Enter a rate from 0 to 100, to two decimal places at most.' }
-  }
-  return { ok: true, percent }
+function collectedForPayout(bill: FurnitureMonthBill): number | undefined {
+  const total = bill.expense?.amount_paise ?? 0
+  const single = (bill.provider_payouts?.length ?? 1) <= 1
+  return single && bill.disbursements.length === 0 && bill.collected_paise > 0 && bill.collected_paise < total
+    ? bill.collected_paise
+    : undefined
 }
 
 /** A quantity as typed: a whole number, 1 or more; null otherwise. */
@@ -266,6 +253,8 @@ export function FurnitureRental({ month }: { month: string }) {
   // A payment or payout recorded by mistake, about to be deleted. It opens over
   // the statement it was chosen from, which then shows the month as it stands.
   const [deleting, setDeleting] = useState<PendingDeletion | null>(null)
+  // The month as a payout to a provider left it, for what its toast says is still owed.
+  const payoutSaved = useRef<FurnitureMonthBill | null>(null)
   const [params, setParams] = useSearchParams()
   const requested = params.get('tab')
   const tab: FurnitureTab = FURNITURE_TABS.some((entry) => entry.value === requested)
@@ -452,16 +441,34 @@ export function FurnitureRental({ month }: { month: string }) {
             />
           )}
           {dialog?.kind === 'provider_payout' && (
-            <ProviderPayoutModal
+            <ServiceDisbursementDialog
+              title="Record Provider Payout"
               month={month}
-              bill={dialog.bill}
-              payout={dialog.payout}
+              payeeName={dialog.payout.provider_name}
+              remainingPaise={dialog.payout.remaining_disbursement_paise}
+              totalBillPaise={dialog.payout.total_paise}
+              suggestedPaise={collectedForPayout(dialog.bill)}
+              residents={payersOf(dialog.bill)}
+              onSave={(payload) =>
+                api
+                  .post<FurnitureRentalOverview>(`${BASE}/disburse-payout`, {
+                    settlement_month: month,
+                    service_id: dialog.payout.service_id,
+                    ...payload,
+                  })
+                  .then((updated) => {
+                    payoutSaved.current = updated.month
+                  })
+              }
               onClose={() => setDialog(null)}
-              onDone={(updated) => {
+              onDone={() => {
                 const payout = dialog.payout
-                const now = updated.provider_payouts?.find((row) => row.service_id === payout.service_id)
-                const left = now ? now.remaining_disbursement_paise : updated.remaining_disbursement_paise
-                const part = now ? now.payout_status === 'partially_disbursed' : updated.payout_status === 'partially_disbursed'
+                const updated = payoutSaved.current
+                const now = updated?.provider_payouts?.find((row) => row.service_id === payout.service_id)
+                const left = now ? now.remaining_disbursement_paise : (updated?.remaining_disbursement_paise ?? 0)
+                const part = now
+                  ? now.payout_status === 'partially_disbursed'
+                  : updated?.payout_status === 'partially_disbursed'
                 done(
                   'Provider payout recorded',
                   part ? `${formatInr(left)} is still owed to ${payout.provider_name}.` : undefined,
@@ -560,9 +567,19 @@ export function FurnitureRental({ month }: { month: string }) {
             />
           )}
           {dialog?.kind === 'pay_share' && (
-            <RecordFurniturePaymentDialog
+            <ServicePaymentDialog
+              title="Record Payment into House Kitty"
               month={month}
-              share={dialog.share}
+              serviceLabel="furniture rental"
+              residentName={dialog.share.display_name}
+              outstandingPaise={dialog.share.outstanding_paise}
+              onSave={(payload) =>
+                api.post<FurnitureRentalOverview>(`${BASE}/record-payment`, {
+                  settlement_month: month,
+                  resident_id: dialog.share.resident_id,
+                  ...payload,
+                })
+              }
               onClose={() => setDialog(null)}
               onDone={(amount) =>
                 done('Payment recorded', `${formatInr(amount)} from ${dialog.share.display_name} into the House Kitty`)
@@ -572,14 +589,22 @@ export function FurnitureRental({ month }: { month: string }) {
           {dialog?.kind === 'bill_gst' && (
             <BillGstModal
               month={month}
-              bill={dialog.bill}
-              onClose={() => setDialog(null)}
-              onSaved={(updated) =>
-                done(
-                  'Bill updated',
-                  `${formatMonth(month)} bills ${formatInr(updated.month?.total_paise ?? dialog.bill.total_paise)}, GST included.`,
-                )
+              description={`${formatMonth(month)} furniture bill: GST on the items' rents, and the total the invoice charges.`}
+              subtotalPaise={dialog.bill.subtotal_base_paise}
+              gstRatePercent={dialog.bill.gst_rate_percent}
+              chargedTotalOverridePaise={dialog.bill.charged_total_override_paise}
+              isBilled={dialog.bill.expense != null}
+              onSave={(values) =>
+                api
+                  .post<FurnitureRentalOverview>(`${BASE}/month/${encodeURIComponent(month)}/billing`, values)
+                  .then((updated) =>
+                    done(
+                      'Bill updated',
+                      `${formatMonth(month)} bills ${formatInr(updated.month?.total_paise ?? dialog.bill.total_paise)}, GST included.`,
+                    ),
+                  )
               }
+              onClose={() => setDialog(null)}
             />
           )}
           {dialog?.kind === 'reimburse' && (
@@ -1782,301 +1807,6 @@ function RemoveDialog({ item, onClose, onRemoved }: { item: FurnitureItem; onClo
   )
 }
 
-type PayoutSource = 'pool' | 'resident_advance'
-
-/**
- * An open month's GST and total: the rate the bill adds on the items' rents
- * and, where the provider's invoice rounds its GST another way, the total it
- * actually charges. The total follows the rate until it is set by hand.
- */
-function BillGstModal({
-  month,
-  bill,
-  onClose,
-  onSaved,
-}: {
-  month: string
-  bill: FurnitureMonthBill
-  onClose: () => void
-  onSaved: (updated: FurnitureRentalOverview) => void
-}) {
-  const subtotal = bill.subtotal_base_paise
-  // A month not billed yet takes only the rate: there is no invoice to match.
-  const recorded = bill.expense != null
-  const [rateRaw, setRateRaw] = useState(rateText(bill.gst_rate_percent ?? GST_RATE_PERCENT))
-  const rate = parseGstRate(rateRaw)
-  const calculatedGst = rate.ok ? gstOn(subtotal, rate.percent) : 0
-  const calculated = subtotal + calculatedGst
-  const [overridden, setOverridden] = useState(bill.charged_total_override_paise != null)
-  const startingTotal = bill.charged_total_override_paise ?? calculated
-  const [charged, setCharged] = useState(paiseToInput(startingTotal))
-  const [chargedPaise, setChargedPaise] = useState(startingTotal)
-  const [chargedOk, setChargedOk] = useState(true)
-  const follow = (total: number) => {
-    setCharged(paiseToInput(total))
-    setChargedPaise(total)
-    setChargedOk(true)
-  }
-  const changeRate = (raw: string) => {
-    setRateRaw(raw)
-    const next = parseGstRate(raw)
-    if (!overridden && next.ok) follow(subtotal + gstOn(subtotal, next.percent))
-  }
-  const chargedError =
-    !recorded || !overridden || !chargedOk
-      ? null
-      : chargedPaise < subtotal
-        ? `Less than the items' ${formatInr(subtotal)} before GST.`
-        : chargedPaise > 2 * subtotal
-          ? `More GST than the items' ${formatInr(subtotal)} before it.`
-          : null
-  const valid = rate.ok && (!recorded || !overridden || (chargedOk && chargedError === null))
-  const save = useMutation(
-    () =>
-      api.post<FurnitureRentalOverview>(`${BASE}/month/${encodeURIComponent(month)}/billing`, {
-        gst_rate_percent: rate.percent,
-        charged_total_paise: recorded && overridden && chargedPaise !== calculated ? chargedPaise : null,
-      }),
-    { onSuccess: onSaved },
-  )
-  const sliderValue = rate.ok ? Math.min(Math.round(rate.percent), GST_SLIDER_MAX) : 0
-
-  return (
-    <Modal
-      title="Configure GST & Total"
-      description={`${formatMonth(month)} furniture bill: GST on the items' rents, and the total the invoice charges.`}
-      onClose={onClose}
-      footer={<DialogFooter onClose={onClose} pending={save.pending} disabled={!valid} label="Save" form="furniture-bill-gst" />}
-    >
-      <form id="furniture-bill-gst" className="stack" noValidate onSubmit={submitWith(() => valid && void save.run(undefined))}>
-        <ErrorNotice error={save.error} />
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_7rem] gap-4 items-start">
-          <div className="space-y-1 pt-1">
-            <input
-              type="range"
-              min={0}
-              max={GST_SLIDER_MAX}
-              step={1}
-              value={sliderValue}
-              onChange={(event) => changeRate(event.target.value)}
-              aria-label="GST rate"
-              aria-valuetext={`${sliderValue}%`}
-              className="w-full accent-[var(--accent)]"
-            />
-            <div className="flex justify-between text-[10px] font-medium text-[var(--text-tertiary)] tabular" aria-hidden="true">
-              <span>0%</span>
-              <span>{GST_SLIDER_MAX}%</span>
-            </div>
-          </div>
-          <TextField
-            label="GST (%)"
-            value={rateRaw}
-            onChange={changeRate}
-            inputMode="decimal"
-            maxLength={6}
-            error={rateRaw.trim() && !rate.ok ? rate.error : null}
-          />
-        </div>
-        <dl className="m-0 grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm" aria-label="Calculated bill">
-          <DetailFact label="Items Subtotal">
-            <span className="tabular">{formatInr(subtotal)}</span>
-          </DetailFact>
-          <DetailFact label={rate.ok ? `Calculated GST (${rateText(rate.percent)}%)` : 'Calculated GST'}>
-            <span className="tabular">{rate.ok ? formatInr(calculatedGst) : '—'}</span>
-          </DetailFact>
-          <DetailFact label="Calculated Total">
-            <span className="tabular font-semibold">{rate.ok ? formatInr(calculated) : '—'}</span>
-          </DetailFact>
-        </dl>
-        {recorded ? (
-          <div className="stack">
-            <MoneyInput
-              label="Actual Charged Total"
-              required
-              value={charged}
-              onChange={(raw, parsed) => {
-                setCharged(raw)
-                setChargedPaise(parsed.paise)
-                setChargedOk(parsed.ok)
-                setOverridden(true)
-              }}
-              error={chargedError}
-              hint={
-                overridden
-                  ? 'As the invoice charges it, GST included. Shares follow it.'
-                  : 'Follows the rate. Change it to match the invoice to the paisa.'
-              }
-            />
-            {overridden && (
-              <button
-                type="button"
-                className={`${BUTTON_QUIET} self-start`}
-                onClick={() => {
-                  setOverridden(false)
-                  if (rate.ok) follow(calculated)
-                }}
-              >
-                Reset to calculated
-              </button>
-            )}
-          </div>
-        ) : (
-          <p className="m-0 text-xs text-[var(--text-secondary)]">
-            The total can be matched to the invoice once the month is billed.
-          </p>
-        )}
-      </form>
-    </Modal>
-  )
-}
-
-function ProviderPayoutModal({
-  month,
-  bill,
-  payout,
-  onClose,
-  onDone,
-}: {
-  month: string
-  bill: FurnitureMonthBill
-  payout: FurnitureProviderPayout
-  onClose: () => void
-  onDone: (bill: FurnitureMonthBill) => void
-}) {
-  const residents = useResource<{ items: Resident[] }>('/api/residents')
-  const provider = payout.provider_name
-  const total = bill.expense!.amount_paise
-  const remaining = payout.remaining_disbursement_paise
-  // The provider bills on a fixed day and flatmates pay when they can, so a
-  // first payout offers what the kitty has collected so far; after that, the
-  // rest. With several providers, what was collected is not any one's.
-  const single = (bill.provider_payouts?.length ?? 1) <= 1
-  const fromCollection =
-    single && bill.disbursements.length === 0 && bill.collected_paise > 0 && bill.collected_paise < total
-  const suggested = fromCollection ? bill.collected_paise : remaining
-  const [amount, setAmount] = useState(paiseToInput(suggested))
-  const [amountPaise, setAmountPaise] = useState(suggested)
-  const [amountOk, setAmountOk] = useState(true)
-  const [source, setSource] = useState<PayoutSource>('pool')
-  const [funder, setFunder] = useState('')
-  const [date, setDate] = useState(todayIso())
-  const [reference, setReference] = useState('')
-  const [notes, setNotes] = useState('')
-  const people = (residents.data?.items ?? []).filter(
-    (resident) => resident.is_active || bill.shares.some((share) => share.resident_id === resident.resident_id),
-  )
-  const sources: Array<{ value: PayoutSource; title: string; body: string }> = [
-    {
-      value: 'pool',
-      title: 'House Kitty',
-      body: `Paid to ${provider} from the kitty's account, out of what residents have paid in.`,
-    },
-    {
-      value: 'resident_advance',
-      title: 'Paid by a resident (reimburse extra via Kitty)',
-      body: 'Their allotted share is recorded through the House Kitty, and any extra amount paid beyond their share is reimbursed to them via the House Kitty.',
-    },
-  ]
-
-  const record = useMutation(
-    () =>
-      api.post<FurnitureRentalOverview>(`${BASE}/disburse-payout`, {
-        settlement_month: month,
-        service_id: payout.service_id,
-        disbursement_mode: source,
-        funding_resident_id: source === 'resident_advance' ? funder : null,
-        reference: reference.trim(),
-        disbursed_date: date,
-        amount_paise: amountPaise,
-        notes: notes.trim() || null,
-      }),
-    { onSuccess: (updated) => onDone(updated.month!) },
-  )
-  const tooMuch = amountOk && amountPaise > remaining
-  const amountValid = amountOk && amountPaise > 0 && amountPaise <= remaining
-  const valid =
-    amountValid && Boolean(date) && reference.trim().length > 0 && (source === 'pool' || Boolean(funder))
-
-  return (
-    <Modal
-      title="Record Provider Payout"
-      description={`${formatMonth(month)} · ${formatInr(remaining)} still owed to ${provider}`}
-      onClose={onClose}
-      footer={
-        <DialogFooter onClose={onClose} pending={record.pending} disabled={!valid} label="Record Payout" form="furniture-provider-payout" />
-      }
-    >
-      <form id="furniture-provider-payout" className="stack" noValidate onSubmit={submitWith(() => valid && void record.run(undefined))}>
-        <ErrorNotice error={record.error} />
-        <fieldset role="radiogroup" className="m-0 border-0 p-0 space-y-2">
-          <legend className="p-0 pb-1 text-sm font-bold text-[var(--text-primary)]">Paid from</legend>
-          {sources.map((option) => (
-            <label
-              key={option.value}
-              className={
-                source === option.value
-                  ? 'flex items-start gap-3 rounded-xl border border-[var(--accent)] bg-[var(--accent-glow)] p-3 cursor-pointer'
-                  : 'flex items-start gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] p-3 cursor-pointer'
-              }
-            >
-              <input
-                type="radio"
-                name="furniture-payout-source"
-                className="mt-1 shrink-0"
-                value={option.value}
-                checked={source === option.value}
-                onChange={() => setSource(option.value)}
-              />
-              <span className="min-w-0">
-                <span className="block text-sm font-bold text-[var(--text-primary)]">{option.title}</span>
-                <span className="block text-xs text-[var(--text-secondary)]">{option.body}</span>
-              </span>
-            </label>
-          ))}
-        </fieldset>
-        {source === 'resident_advance' && (
-          <SelectField
-            label="Paid by"
-            required
-            value={funder}
-            placeholder={residents.data ? 'Choose a resident' : 'Loading…'}
-            options={people.map((resident) => ({ value: resident.resident_id, label: resident.display_name }))}
-            onChange={setFunder}
-          />
-        )}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <MoneyInput
-            label="Amount"
-            required
-            value={amount}
-            error={tooMuch ? `More than the ${formatInr(remaining)} still owed to ${provider}.` : null}
-            hint={
-              fromCollection
-                ? `Pre-filled with what the kitty has collected. You can pay any amount up to ${formatInr(remaining)}.`
-                : `Pre-filled with the balance still owed. You can pay any amount up to ${formatInr(remaining)}.`
-            }
-            onChange={(raw, parsed) => {
-              setAmount(raw)
-              setAmountPaise(parsed.paise)
-              setAmountOk(parsed.ok)
-            }}
-          />
-          <DateField label="Payment date" required value={date} onChange={setDate} />
-        </div>
-        <TextField
-          label="Reference / UTR"
-          required
-          value={reference}
-          onChange={setReference}
-          maxLength={200}
-          placeholder="e.g. UPI ref or bank UTR"
-        />
-        <TextField label="Note" value={notes} onChange={setNotes} maxLength={500} />
-      </form>
-    </Modal>
-  )
-}
-
 /** The provider's side of the month: what is due to them, and every payment made (Rule U7). */
 /** One resident's share of the month: what they owe, and every payment into the kitty towards it (Rule U7). */
 function FurnitureStatementModal({
@@ -2184,93 +1914,3 @@ function FurnitureStatementModal({
   )
 }
 
-function RecordFurniturePaymentDialog({
-  month,
-  share,
-  onClose,
-  onDone,
-}: {
-  month: string
-  share: FurnitureShare
-  onClose: () => void
-  onDone: (amount: number) => void
-}) {
-  const owed = share.outstanding_paise
-  const [amount, setAmount] = useState(paiseToInput(owed))
-  const [amountPaise, setAmountPaise] = useState(owed)
-  const [amountOk, setAmountOk] = useState(true)
-  const [date, setDate] = useState(todayIso())
-  const [mode, setMode] = useState<PaymentMode>('upi')
-  const [reference, setReference] = useState('')
-  const [note, setNote] = useState('')
-
-  const save = useMutation(
-    () =>
-      api.post<FurnitureRentalOverview>(`${BASE}/record-payment`, {
-        settlement_month: month,
-        resident_id: share.resident_id,
-        amount_paise: amountPaise,
-        payment_date: date,
-        payment_mode: mode,
-        reference: reference.trim() || null,
-        note: note.trim() || null,
-      }),
-    { onSuccess: () => onDone(amountPaise) },
-  )
-  // A bank or UPI payment carries its transaction ID; cash has none.
-  const needsReference = mode !== 'cash'
-  const valid = amountOk && amountPaise > 0 && Boolean(date) && (!needsReference || Boolean(reference.trim()))
-
-  return (
-    <Modal
-      title="Record Payment into House Kitty"
-      description={`${share.display_name} · ${formatMonth(month)} furniture rental share · ${formatInr(owed)} outstanding`}
-      onClose={onClose}
-      footer={
-        <DialogFooter onClose={onClose} pending={save.pending} disabled={!valid} label="Record Payment" form="furniture-pay" />
-      }
-    >
-      <form id="furniture-pay" className="stack" noValidate onSubmit={submitWith(() => valid && void save.run(undefined))}>
-        <ErrorNotice error={save.error} />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <MoneyInput
-            label="Amount"
-            required
-            value={amount}
-            hint={
-              amountOk && amountPaise > owed
-                ? `${formatInr(amountPaise - owed)} more than this month's share. The extra goes to ${share.display_name}'s other charges, oldest first.`
-                : amountOk && amountPaise > 0 && amountPaise < owed
-                  ? `Part payment: ${formatInr(owed - amountPaise)} of this month's share will still be owed.`
-                  : `Pre-filled with the outstanding share. It is applied to the ${formatMonth(month)} furniture bill first.`
-            }
-            onChange={(raw, parsed) => {
-              setAmount(raw)
-              setAmountPaise(parsed.paise)
-              setAmountOk(parsed.ok)
-            }}
-          />
-          <DateField label="Payment date" required value={date} onChange={setDate} />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <SelectField<PaymentMode> label="Payment mode" value={mode} options={PAYMENT_MODES} onChange={setMode} />
-          <TextField
-            label="Reference / UTR"
-            required={needsReference}
-            value={reference}
-            onChange={setReference}
-            maxLength={200}
-            placeholder="e.g. UPI ref or bank UTR"
-          />
-        </div>
-        <TextField
-          label="Note"
-          value={note}
-          onChange={setNote}
-          maxLength={500}
-          placeholder="Optional remark (e.g. GPay transfer)"
-        />
-      </form>
-    </Modal>
-  )
-}

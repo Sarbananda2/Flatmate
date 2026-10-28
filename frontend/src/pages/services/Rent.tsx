@@ -6,7 +6,7 @@
  * has been paid. Every figure comes from the backend; nothing here divides
  * money.
  */
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Building2,
@@ -18,14 +18,15 @@ import {
 } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
 import { RentAgreementCard } from './RentAgreement'
-import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
-import { DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
+import { AsyncSection, Callout, Modal } from '../../components/Primitives'
 import {
   ResidentCollectionTable,
   type CollectionStatus,
   type ResidentCollectionItem,
 } from '../../components/ResidentCollectionTable'
 import { DeleteTransactionDialog, type PendingDeletion } from '../../components/DeleteTransactionDialog'
+import { ServiceDisbursementDialog } from '../../components/ServiceDisbursementDialog'
+import { PAYMENT_MODES, ServicePaymentDialog } from '../../components/ServicePaymentDialog'
 import {
   KittyReimbursementPanel,
   KittyReimbursementStatementModal,
@@ -40,7 +41,6 @@ import { useToast } from '../../components/Toast'
 import {
   BUTTON_PRIMARY,
   BUTTON_QUIET,
-  BUTTON_SECONDARY,
   EmptyBlock,
   MiniStat,
   Panel,
@@ -50,21 +50,19 @@ import {
   type Tone,
 } from '../../components/ui'
 import { api } from '../../api/client'
-import { useMutation, useResource } from '../../lib/useApi'
+import { useResource } from '../../lib/useApi'
 import { LeaseNoticeBanner } from './LeaseLifecycle'
-import { formatDate, formatInr, formatMonth, paiseToInput, todayIso } from '../../lib/format'
+import { formatDate, formatInr, formatMonth, todayIso } from '../../lib/format'
 import type {
   Apartment,
   RentCollectionStatus,
   KittyReimbursement,
   RentCycle,
   RentDisbursement,
-  RentDisbursementMode,
   RentLeaseConfig,
   RentMonthOverview,
   RentParticipant,
   RentPreview,
-  Resident,
 } from '../../api/types'
 
 const TABLE_HEAD =
@@ -112,6 +110,8 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
   const [payingFor, setPayingFor] = useState<RentParticipant | null>(null)
   const [viewingStatement, setViewingStatement] = useState<RentParticipant | null>(null)
   const [viewingLandlordStatement, setViewingLandlordStatement] = useState(false)
+  // The month as the last payment or payout left it, for what its toast says.
+  const saved = useRef<RentCycle | null>(null)
 
   return (
     <AsyncSection resource={overview} loadingLabel="Loading rent…">
@@ -213,17 +213,49 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
               />
             )}
             {dialog === 'payout' && cycle && config && (
-              <PayoutModal
+              <ServiceDisbursementDialog
+                title="Record Landlord Payout"
                 month={month}
-                cycle={cycle}
-                config={config}
+                payeeName={config.landlord_name || 'Landlord'}
+                payeeRole="landlord"
+                remainingPaise={cycle.remaining_disbursement_paise}
+                totalBillPaise={cycle.total_rent_paise}
+                suggestedPaise={collectedForPayout(cycle)}
+                residents={cycle.participants.map(({ resident_id, display_name }) => ({ resident_id, display_name }))}
+                destination={(amountPaise) => (
+                  <TransferDestination
+                    label="Payout destination"
+                    name={config.payout_beneficiary_name || config.landlord_name}
+                    amountPaise={amountPaise}
+                    bankAccount={config.landlord_bank_account}
+                    bankIfsc={config.landlord_bank_ifsc}
+                    upiId={config.landlord_upi_id}
+                    missing={
+                      <>
+                        No bank account or UPI ID is recorded for the landlord.{' '}
+                        <Link to="/payments" className="font-semibold">
+                          Add them on Payment Pools
+                        </Link>
+                        .
+                      </>
+                    }
+                  />
+                )}
+                onSave={({ notes, ...payout }) =>
+                  api
+                    .post<RentCycle>(`/api/rent/cycle/${month}/disburse`, { ...payout, note: notes })
+                    .then((updated) => {
+                      saved.current = updated
+                    })
+                }
                 onClose={() => setDialog(null)}
-                onRecorded={(updated) => {
+                onDone={() => {
+                  const updated = saved.current
                   setDialog(null)
                   toast.success(
                     'Landlord payout recorded',
-                    updated.warnings?.[0] ??
-                      (updated.disbursement_status === 'partially_disbursed'
+                    updated?.warnings?.[0] ??
+                      (updated?.disbursement_status === 'partially_disbursed'
                         ? `${formatInr(updated.remaining_disbursement_paise)} is still owed to the landlord.`
                         : undefined),
                   )
@@ -318,14 +350,46 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
               />
             )}
             {payingFor && cycle && (
-              <RentPaymentModal
+              <ServicePaymentDialog
+                title="Record Rent Payment"
                 month={month}
-                participant={payingFor}
-                apartment={apartment}
+                serviceLabel="rent"
+                residentName={payingFor.display_name}
+                outstandingPaise={payingFor.outstanding_paise}
+                // Residents pay their share into the House Kitty.
+                destination={(amountPaise) => (
+                  <TransferDestination
+                    name={apartment?.pool_name || 'House Kitty'}
+                    amountPaise={amountPaise}
+                    bankAccount={apartment?.pool_bank_account}
+                    bankIfsc={apartment?.pool_bank_ifsc}
+                    upiId={apartment?.pool_upi_id}
+                    missing={
+                      <>
+                        No bank account or UPI ID is recorded for the House Kitty.{' '}
+                        <Link to="/payments" className="font-semibold">
+                          Add them on Payment Pools
+                        </Link>
+                        .
+                      </>
+                    }
+                  />
+                )}
+                onSave={(payment) =>
+                  api
+                    .post<RentCycle>(`/api/rent/cycle/${month}/pay`, {
+                      resident_id: payingFor.resident_id,
+                      ...payment,
+                    })
+                    .then((updated) => {
+                      saved.current = updated
+                    })
+                }
                 onClose={() => setPayingFor(null)}
-                onRecorded={(updated) => {
+                onDone={() => {
+                  const updated = saved.current
                   const name = payingFor.display_name
-                  const row = updated.participants.find(
+                  const row = updated?.participants.find(
                     (item) => item.resident_id === payingFor.resident_id,
                   )
                   setPayingFor(null)
@@ -335,7 +399,7 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                       : `Payment from ${name} recorded`,
                     row && row.outstanding_paise > 0
                       ? `${formatInr(row.outstanding_paise)} of this month's share is still owed.`
-                      : updated.payment && updated.payment.unapplied_credit_paise > 0
+                      : updated?.payment && updated.payment.unapplied_credit_paise > 0
                         ? `${formatInr(updated.payment.unapplied_credit_paise)} is left as unapplied credit.`
                         : undefined,
                   )
@@ -768,296 +832,14 @@ function RentStatementModal({
 /* ----------------------------------------------- landlord statement modal -- */
 
 /** The landlord's side of the month: what is due to them, and every payment made. */
-/* ----------------------------------------------------- rent payment modal -- */
+/* ------------------------------------------------------------ the payout -- */
 
-type PaymentMode = 'upi' | 'bank_transfer' | 'cash' | 'other'
-
-const PAYMENT_MODES: Array<{ value: PaymentMode; label: string }> = [
-  { value: 'upi', label: 'UPI' },
-  { value: 'bank_transfer', label: 'Bank transfer' },
-  { value: 'cash', label: 'Cash' },
-  { value: 'other', label: 'Other' },
-]
-
-function RentPaymentModal({
-  month,
-  participant,
-  apartment,
-  onClose,
-  onRecorded,
-}: {
-  month: string
-  participant: RentParticipant
-  apartment: Apartment | null
-  onClose: () => void
-  onRecorded: (cycle: RentCycle) => void
-}) {
-  const owed = participant.outstanding_paise
-  const [amount, setAmount] = useState(paiseToInput(owed))
-  const [amountPaise, setAmountPaise] = useState(owed)
-  const [amountOk, setAmountOk] = useState(true)
-  const [date, setDate] = useState(todayIso())
-  const [mode, setMode] = useState<PaymentMode>('upi')
-  const [reference, setReference] = useState('')
-  const [note, setNote] = useState('')
-
-  const record = useMutation(
-    () =>
-      api.post<RentCycle>(`/api/rent/cycle/${month}/pay`, {
-        resident_id: participant.resident_id,
-        amount_paise: amountPaise,
-        payment_date: date,
-        payment_mode: mode,
-        reference: reference.trim() || null,
-        note: note.trim() || null,
-      }),
-    { onSuccess: onRecorded },
-  )
-  // Every payment into the kitty carries the bank's or UPI app's transaction ID.
-  const valid = amountOk && amountPaise > 0 && Boolean(date) && Boolean(reference.trim())
-
-  return (
-    <Modal
-      title="Record Rent Payment"
-      description={`${participant.display_name} · ${formatMonth(month)} rent · ${formatInr(owed)} outstanding`}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className={BUTTON_SECONDARY} onClick={onClose} disabled={record.pending}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className={BUTTON_PRIMARY}
-            disabled={!valid || record.pending}
-            onClick={() => void record.run(undefined)}
-          >
-            {record.pending ? 'Recording…' : 'Record Payment'}
-          </button>
-        </>
-      }
-    >
-      <div className="stack">
-        {record.error && <ErrorNotice error={record.error} />}
-        {/* Residents pay their share into the House Kitty. */}
-        <TransferDestination
-          name={apartment?.pool_name || 'House Kitty'}
-          amountPaise={amountOk ? amountPaise : null}
-          bankAccount={apartment?.pool_bank_account}
-          bankIfsc={apartment?.pool_bank_ifsc}
-          upiId={apartment?.pool_upi_id}
-          missing={
-            <>
-              No bank account or UPI ID is recorded for the House Kitty.{' '}
-              <Link to="/payments" className="font-semibold">
-                Add them on Payment Pools
-              </Link>
-              .
-            </>
-          }
-        />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <MoneyInput
-            label="Amount"
-            required
-            value={amount}
-            hint={
-              amountOk && amountPaise > owed
-                ? `${formatInr(amountPaise - owed)} more than this month's share. The extra goes to ${participant.display_name}'s other charges, oldest first.`
-                : amountOk && amountPaise > 0 && amountPaise < owed
-                  ? `Part payment: ${formatInr(owed - amountPaise)} of this month's share will still be owed.`
-                  : `Pre-filled with the outstanding share. It is applied to ${formatMonth(month)} rent first.`
-            }
-            onChange={(raw, parsed) => {
-              setAmount(raw)
-              setAmountPaise(parsed.paise)
-              setAmountOk(parsed.ok)
-            }}
-          />
-          <DateField label="Payment date" required value={date} onChange={setDate} />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <SelectField<PaymentMode>
-            label="Payment mode"
-            value={mode}
-            options={PAYMENT_MODES}
-            onChange={setMode}
-          />
-          <TextField
-            label="Reference / UTR"
-            required
-            value={reference}
-            onChange={setReference}
-            maxLength={200}
-            placeholder="e.g. UPI ref or bank UTR"
-          />
-        </div>
-        <TextField
-          label="Note"
-          value={note}
-          onChange={setNote}
-          maxLength={500}
-          placeholder="Optional remark (e.g. GPay transfer)"
-        />
-      </div>
-    </Modal>
-  )
-}
-
-/* ----------------------------------------------------------- payout modal -- */
-
-function PayoutModal({
-  month,
-  cycle,
-  config,
-  onClose,
-  onRecorded,
-}: {
-  month: string
-  cycle: RentCycle
-  config: RentLeaseConfig
-  onClose: () => void
-  onRecorded: (cycle: RentCycle) => void
-}) {
-  const residents = useResource<{ items: Resident[] }>('/api/residents')
-  const total = cycle.total_rent_paise
-  const remaining = cycle.remaining_disbursement_paise
-  // The landlord is due on a fixed day and flatmates pay when they can, so a
-  // first payout offers what has been collected so far; after that, the rest.
-  const fromCollection =
-    cycle.disbursements.length === 0 && cycle.collected_paise > 0 && cycle.collected_paise < total
-  const suggested = fromCollection ? cycle.collected_paise : remaining
-  const [amount, setAmount] = useState(paiseToInput(suggested))
-  const [amountPaise, setAmountPaise] = useState(suggested)
-  const [amountOk, setAmountOk] = useState(true)
-  const [mode, setMode] = useState<RentDisbursementMode>('pool')
-  const [funder, setFunder] = useState('')
-  const [date, setDate] = useState(todayIso())
-  const [reference, setReference] = useState('')
-  const [note, setNote] = useState('')
-
-  const record = useMutation(
-    () =>
-      api.post<RentCycle>(`/api/rent/cycle/${month}/disburse`, {
-        amount_paise: amountPaise,
-        disbursement_mode: mode,
-        funding_resident_id: mode === 'resident_advance' ? funder : null,
-        reference: reference.trim(),
-        disbursed_date: date,
-        note: note.trim() || null,
-      }),
-    { onSuccess: onRecorded },
-  )
-
-  const tooMuch = amountOk && amountPaise > remaining
-  const amountValid = amountOk && amountPaise > 0 && amountPaise <= remaining
-  const valid =
-    amountValid &&
-    Boolean(date) &&
-    reference.trim().length > 0 &&
-    (mode === 'pool' || Boolean(funder))
-
-  return (
-    <Modal
-      title="Record Landlord Payout"
-      description={`${formatMonth(month)} · ${formatInr(remaining)} still owed to ${config.landlord_name}`}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className={BUTTON_SECONDARY} onClick={onClose} disabled={record.pending}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className={BUTTON_PRIMARY}
-            disabled={!valid || record.pending}
-            onClick={() => void record.run(undefined)}
-          >
-            {record.pending ? 'Recording…' : 'Record Payout'}
-          </button>
-        </>
-      }
-    >
-      <div className="stack">
-        {record.error && <ErrorNotice error={record.error} />}
-        {/* Laid out as a resident's payment: where the money goes, then what was paid. */}
-        <TransferDestination
-          label="Payout destination"
-          name={config.payout_beneficiary_name || config.landlord_name}
-          amountPaise={amountValid ? amountPaise : null}
-          bankAccount={config.landlord_bank_account}
-          bankIfsc={config.landlord_bank_ifsc}
-          upiId={config.landlord_upi_id}
-          missing={
-            <>
-              No bank account or UPI ID is recorded for the landlord.{' '}
-              <Link to="/payments" className="font-semibold">
-                Add them on Payment Pools
-              </Link>
-              .
-            </>
-          }
-        />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <MoneyInput
-            label="Amount"
-            required
-            value={amount}
-            error={tooMuch ? `More than the ${formatInr(remaining)} still owed to the landlord.` : null}
-            hint={
-              fromCollection
-                ? `Pre-filled with collected funds. You can pay any amount up to ${formatInr(remaining)}.`
-                : `Pre-filled with the balance still owed. You can pay any amount up to ${formatInr(remaining)}.`
-            }
-            onChange={(raw, parsed) => {
-              setAmount(raw)
-              setAmountPaise(parsed.paise)
-              setAmountOk(parsed.ok)
-            }}
-          />
-          <DateField label="Payment date" required value={date} onChange={setDate} />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <SelectField<RentDisbursementMode>
-            label="Who funded this payout?"
-            value={mode}
-            options={[
-              { value: 'pool', label: 'House Kitty (direct transfer)' },
-              { value: 'resident_advance', label: 'A resident paid on the household’s behalf' },
-            ]}
-            onChange={setMode}
-          />
-          <TextField
-            label="Reference / UTR"
-            required
-            value={reference}
-            onChange={setReference}
-            maxLength={200}
-            placeholder="e.g. 428919028471"
-          />
-        </div>
-        {mode === 'resident_advance' && (
-          <SelectField
-            label="Funding resident"
-            required
-            value={funder}
-            placeholder={residents.data ? 'Choose a resident' : 'Loading…'}
-            options={(residents.data?.items ?? []).map((resident) => ({
-              value: resident.resident_id,
-              label: resident.display_name,
-            }))}
-            onChange={setFunder}
-            hint="Their own share goes through the House Kitty; the kitty pays back what they paid beyond it."
-          />
-        )}
-        <TextField
-          label="Note"
-          value={note}
-          onChange={setNote}
-          maxLength={500}
-          placeholder="e.g. Balance after the late shares came in"
-        />
-      </div>
-    </Modal>
-  )
+/**
+ * The landlord is due on a fixed day and flatmates pay when they can, so a
+ * first payout offers what has been collected so far; after that, the rest.
+ */
+function collectedForPayout(cycle: RentCycle): number | undefined {
+  return cycle.disbursements.length === 0 && cycle.collected_paise > 0 && cycle.collected_paise < cycle.total_rent_paise
+    ? cycle.collected_paise
+    : undefined
 }
