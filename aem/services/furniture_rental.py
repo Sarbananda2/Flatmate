@@ -20,7 +20,8 @@ reckoned on it, GST included.
 
 **Nothing prorates** -- the household's rule for every category. An item counts
 in full for any month it was in the flat: delivered by the month's last day and
-not returned before its first. An item still awaiting delivery is not billed.
+not returned before its first. An item with no delivery date counts from the
+month its subscription was set up, and one still awaiting delivery is not billed.
 
 Each month is billed once: the expense is unique for the definition and month,
 so a bill already recorded, by hand or by the recurring generator, is refused
@@ -114,11 +115,16 @@ def next_billing_date(day: int | None, today: str) -> str | None:
 
 
 def is_billable(item: Mapping[str, Any], month: str) -> bool:
-    """Whether `item` was in the flat at any point in `month`."""
+    """Whether `item` was in the flat at any point in `month`: from its
+    delivery, or for an item with no delivery date, from the month its
+    subscription was set up."""
     if item["status"] == "pending_delivery":
         return False
     first, last = f"{month}-01", month_end(month).isoformat()
-    if item.get("delivery_date") and item["delivery_date"] > last:
+    if item.get("delivery_date"):
+        if item["delivery_date"] > last:
+            return False
+    elif item.get("service_created_at") and month < item["service_created_at"][:7]:
         return False
     if item.get("return_date") and item["return_date"] < first:
         return False
@@ -484,8 +490,9 @@ def _attach_funding(uow: UnitOfWork, apartment_id: str, bill: dict[str, Any],
 # bill, and follows its items -- added, changed, returned or removed, from any
 # provider -- for as long as the month is open: until its statement is
 # finalized, however long ago the month was. That is the month's snapshot, and
-# it freezes for good. A future month is only a preview until it begins, and a
-# month before furniture rental was set up is not billed by itself.
+# it freezes for good. A month gone by is billed as it is looked at, for what
+# was in the flat then -- before furniture rental was set up too; a future
+# month is only a preview until it begins.
 
 def _current_month() -> str:
     return _today()[:7]
@@ -697,9 +704,10 @@ def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
     if expense is not None and not _bill_is_live(month, statement):
         return expense
     if expense is None:
+        # A month gone by is billed for what was in the flat then, before the
+        # rental was set up too (see :func:`is_billable`).
         if (not services or not definition_id or month > _current_month()
-                or (statement is not None and statement["status"] != "draft")
-                or month < min(service["created_at"][:7] for service in services)):
+                or (statement is not None and statement["status"] != "draft")):
             return None
     allocations = uow.furniture.allocations_for_expense(expense["expense_id"]) if expense else []
     basis = _stored_basis(allocations)
@@ -886,7 +894,7 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
                             and (statement is None or statement["status"] == "draft"))
     # 'live': billed and following its items, until its statement is finalized;
     # 'frozen': the month's snapshot; 'upcoming': not begun; 'not_billed':
-    # nothing to bill, or before the rental.
+    # nothing in the flat to bill.
     bill["bill_state"] = (("live" if _bill_is_live(month, statement) else "frozen") if expense
                           else "upcoming" if month > _current_month() else "not_billed")
     # Whether a payment or payout recorded by mistake can still be deleted.
@@ -1232,8 +1240,7 @@ def generate_month(db: Database, apartment_id: str, settlement_month: str,
     """Record `settlement_month`'s furniture bill as one expense, in one transaction.
 
     An open month's bill is recorded by itself (see the live bill above); this
-    records one by hand -- a month before the rental was set up, or one with
-    some residents left out. The expense is due on the earliest billing day of
+    records one by hand -- one with some residents left out. The expense is due on the earliest billing day of
     the providers billing, and is attached to the month's statement, which must
     still be a draft. A month already recorded is refused, as is a month whose
     bill cannot be shared (see ``blocked_reason``).

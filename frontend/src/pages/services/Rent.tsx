@@ -29,7 +29,7 @@ import { Page, useApp } from '../../components/Layout'
 import { RentAgreementCard } from './RentAgreement'
 import { LandlordProfileCard, TenancyTermsCard } from './RentConfig'
 import { useDepositSummary } from './SecurityDeposits'
-import { AsyncSection, Callout, Modal } from '../../components/Primitives'
+import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
 import {
   ResidentCollectionTable,
   type CollectionStatus,
@@ -62,7 +62,7 @@ import {
   type Tone,
 } from '../../components/ui'
 import { api } from '../../api/client'
-import { useResource } from '../../lib/useApi'
+import { useMutation, useResource } from '../../lib/useApi'
 import { LeaseNoticeBanner } from './LeaseLifecycle'
 import { formatDate, formatInr, formatMonth, todayIso } from '../../lib/format'
 import type {
@@ -111,8 +111,8 @@ function overdueNotice(dueDate: string | null | undefined): string | null {
 
 export function RentMonth({ month, apartment = null }: { month: string; apartment?: Apartment | null }) {
   const toast = useToast()
-  // An open month is charged by itself and follows the lease, so there is
-  // nothing to generate here: the month shows its live shares, or a preview.
+  // A month the lease covers is charged by itself and follows the lease; any
+  // other shows a preview, from which it can be recorded by hand.
   const overview = useResource<RentMonthOverview>(`/api/rent/cycle/${month}`)
   const [dialog, setDialog] = useState<'payout' | 'billing' | null>(null)
   // Whom the kitty is paying back, when it is; whose reimbursement statement is open.
@@ -200,7 +200,24 @@ export function RentMonth({ month, apartment = null }: { month: string; apartmen
                           onViewStatement={setViewingStatement}
                         />
                       ) : (
-                        preview && <PreviewPanel month={month} preview={preview} />
+                        preview && (
+                          <PreviewPanel
+                            month={month}
+                            preview={preview}
+                            // A month not begun is only a preview; any other can be charged by hand.
+                            onRecorded={
+                              data.month_state === 'upcoming'
+                                ? undefined
+                                : (recorded) => {
+                                    toast.success(
+                                      'Rent recorded',
+                                      `${formatMonth(month)} rent of ${formatInr(recorded.total_rent_paise)} is open for collection.`,
+                                    )
+                                    overview.reload()
+                                  }
+                            }
+                          />
+                        )
                       )}
                       <LandlordPanel
                         config={config}
@@ -677,7 +694,19 @@ function CyclePanel({
   )
 }
 
-function PreviewPanel({ month, preview }: { month: string; preview: RentPreview }) {
+function PreviewPanel({
+  month,
+  preview,
+  onRecorded,
+}: {
+  month: string
+  preview: RentPreview
+  onRecorded?: (cycle: RentCycle) => void
+}) {
+  // Charging the month opens it for collection: each share can then be paid.
+  const record = useMutation(() => api.post<RentCycle>(`/api/rent/cycle/${month}/generate`, {}), {
+    onSuccess: onRecorded,
+  })
   // The split follows the agreement model; it is changed on the agreement card.
   const tiered = preview.split_mode === 'room_tiered'
   const rooms = new Map(preview.room_tiered.shares.map((row) => [row.resident_id, row.room_number]))
@@ -708,6 +737,7 @@ function PreviewPanel({ month, preview }: { month: string; preview: RentPreview 
           {preview.blocked_reason}
         </p>
       )}
+      {record.error && <ErrorNotice error={record.error} />}
       {items.length > 0 && (
         <ResidentCollectionTable caption={`Rent shares for ${formatMonth(month)}`} items={items} />
       )}
@@ -716,6 +746,19 @@ function PreviewPanel({ month, preview }: { month: string; preview: RentPreview 
           Not taking part:{' '}
           {preview.excluded_residents.map((resident) => resident.display_name).join(', ')}.
         </p>
+      )}
+      {onRecorded && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className={BUTTON_PRIMARY}
+            disabled={!preview.can_generate || record.pending}
+            onClick={() => void record.run(undefined)}
+          >
+            <Receipt className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            {record.pending ? 'Recording…' : `Record Rent for ${formatMonth(month)}`}
+          </button>
+        </div>
       )}
     </Panel>
   )

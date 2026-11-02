@@ -1990,6 +1990,55 @@ def test_each_month_is_charged_by_itself_once_it_begins(apartment, clock):
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
+def _charges_for(db, month):
+    return [(row["resident_id"], row["amount_paise"]) for row in _rows(
+        db, """SELECT a.resident_id, a.amount_paise FROM allocation a
+                 JOIN rent_cycle c ON c.expense_id = a.expense_id
+                WHERE c.settlement_month = %s ORDER BY a.resident_id""", (month,))]
+
+
+def test_a_month_gone_by_within_the_lease_term_is_charged_and_can_be_paid(apartment, clock):
+    # Set up in November, for a lease that began in April: August is in its term.
+    _lease(apartment, **TERM)
+    august = rent.rent_month_overview(apartment, APARTMENT, "2026-08")
+    assert (august["month_state"], august["preview"], august["cycle"]["total_rent_paise"]) == (
+        "live", None, 4_500_000)
+    assert _charges_for(apartment, "2026-08") == [
+        ("alice", 1_500_000), ("bob", 1_500_000), ("chris", 1_500_000)]
+    paid = _pay(apartment, "alice", 1_500_000, month="2026-08")
+    assert (paid["cycle_state"], _row(paid, "alice")) == ("live", (1_500_000, 1_500_000, 0, "paid"))
+    assert _row(paid, "bob") == (1_500_000, 0, 1_500_000, "unpaid")
+
+    # A month before the term is only a preview, and is charged by hand.
+    march = rent.rent_month_overview(apartment, APARTMENT, "2026-03")
+    assert (march["month_state"], march["cycle"], march["preview"]["can_generate"]) == (
+        "not_generated", None, True)
+    assert _charges_for(apartment, "2026-03") == []
+    _generate(apartment, "2026-03")
+    _pay(apartment, "bob", 1_500_000, month="2026-03")
+    assert _row(rent.get_rent_cycle(apartment, APARTMENT, "2026-03"), "bob") == (
+        1_500_000, 1_500_000, 0, "paid")
+
+    # Once the lease is renewed, a month of the term before is still the lease's.
+    rent.renew_lease_contract(apartment, APARTMENT, {"new_monthly_rent_paise": 4_800_000})
+    july = rent.rent_month_overview(apartment, APARTMENT, "2026-07")
+    assert (july["month_state"], july["cycle"]["total_rent_paise"]) == ("live", 4_500_000)
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+    assert sum(_positions(apartment).values()) == 0
+
+
+def test_a_month_after_the_lease_ran_out_is_charged_by_hand_only(apartment, clock):
+    # The lease ran from December to October and has not been renewed.
+    _lease(apartment, lease_start_date="2025-12-01", duration_months=11)
+    assert rent.get_rent_cycle(apartment, APARTMENT, "2026-10")["cycle_state"] == "live"
+    november = rent.rent_month_overview(apartment, APARTMENT, MONTH)
+    assert (november["month_state"], november["cycle"], november["preview"]["can_generate"]) == (
+        "not_generated", None, True)
+    assert _shares(_generate(apartment)) == {"alice": 1_500_000, "bob": 1_500_000,
+                                             "chris": 1_500_000}
+    assert rent.get_rent_cycle(apartment, APARTMENT, MONTH)["cycle_state"] == "live"
+
+
 def test_raising_the_rent_mid_month_tops_up_the_open_month_in_place(apartment, clock):
     _lease(apartment)
     _pay(apartment, "alice", 1_500_000)

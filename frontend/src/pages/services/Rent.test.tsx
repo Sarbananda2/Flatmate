@@ -1000,8 +1000,31 @@ describe('RentMonth', () => {
     expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Chris₹15,000.00———')
     expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeDisabled()
     expect(screen.queryByRole('checkbox')).toBeNull()
-    expect(screen.queryByRole('button', { name: /Generate/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Generate|Record Rent/ })).toBeNull()
     expect(posted('/generate')).toBeUndefined()
+  })
+
+  it('records the rent for a month with none yet, opening each share to be paid', async () => {
+    // A month the lease does not cover is not charged by itself.
+    let recorded = false
+    renderRent(overview(), {
+      [`/api/rent/cycle/${MONTH}`]: () =>
+        recorded ? overview({ month_state: 'live' }) : overview({ cycle: null, preview, month_state: 'not_generated' }),
+      [`POST /api/rent/cycle/${MONTH}/generate`]: () => {
+        recorded = true
+        return cycle()
+      },
+    })
+    const shares = await screen.findByRole('table', { name: 'Rent shares for October 2026' })
+    expect(within(shares).getByRole('button', { name: 'Pay now for Chris' })).toBeDisabled()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Record Rent for October 2026' }))
+    expect(posted('/generate')?.body).toEqual({})
+    expect(await screen.findByText('Rent recorded')).toBeInTheDocument()
+    expect(screen.getByText('October 2026 rent of ₹45,000.00 is open for collection.')).toBeInTheDocument()
+    const charged = await screen.findByRole('table', { name: 'Rent shares and collection' })
+    expect(within(charged).getByRole('button', { name: 'Pay now for Chris' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: /Record Rent/ })).toBeNull()
   })
 
   it('says why an open month cannot follow the lease yet, keeping it as charged', async () => {
@@ -1049,6 +1072,7 @@ describe('RentMonth', () => {
       'status',
     )
     expect(screen.queryByRole('button', { name: /Generate/ })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Record Rent for October 2026' })).toBeDisabled()
   })
 
   it('shows a paid month as fully disbursed, with no HRA receipt on offer', async () => {

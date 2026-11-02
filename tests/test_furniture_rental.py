@@ -34,12 +34,12 @@ MONTH = "2026-11"
 
 
 @pytest.fixture(autouse=True)
-def _mid_september(monkeypatch):
-    """The tests run as if it were mid-September 2026. Furniture rental is set
-    up later than that, so no month bills by itself: November is ahead, and is
-    recorded when a test generates it -- after which, being still open, it
-    follows its items. A test about the live bill moves the date on itself."""
-    monkeypatch.setattr(furniture, "_today", lambda: "2026-09-15")
+def _mid_august(monkeypatch):
+    """The tests run as if it were mid-August 2026, before anything rented is
+    delivered, so no month bills by itself: November is ahead, and is recorded
+    when a test generates it -- after which, being still open, it follows its
+    items. A test about the live bill moves the date on itself."""
+    monkeypatch.setattr(furniture, "_today", lambda: "2026-08-15")
 
 
 def _rows(db, sql, params=()):
@@ -1129,6 +1129,31 @@ def test_a_live_bill_goes_with_its_last_item_unless_paid_and_freezes_with_its_st
         _item(apartment, "Desk", 20_000, scope="resident", resident="chris")
     assert blocked.value.code == "furniture_bill_blocked"
     assert _month(apartment, "2026-12")["total_paise"] == 220_000
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
+def test_a_month_before_the_rental_was_set_up_bills_what_was_delivered_by_then(apartment,
+                                                                               november):
+    # Set up in November, for a sofa delivered in August and a lamp of no known date.
+    _setup(apartment, provider_name="Furlenco")
+    _item(apartment, "Sofa", 120_000, delivery_date="2026-08-20")
+    _item(apartment, "Lamp", 9_000)
+    # August bills the sofa as it is looked at; the lamp counts from November.
+    august = _month(apartment, "2026-08")
+    assert (august["bill_state"], august["total_paise"]) == ("live", 120_000)
+    assert [(row["settlement_period"], row["amount_paise"]) for row in _rows(
+        apartment, "SELECT * FROM expense_instance ORDER BY settlement_period")] == [
+        ("2026-08", 120_000), (MONTH, 129_000)]
+    furniture.record_furniture_payment(apartment, APARTMENT, "2026-08", "alice",
+                                       amount_paise=40_000, payment_date="2026-11-10")
+    august = _month(apartment, "2026-08")
+    assert {row["resident_id"]: (row["total_paise"], row["paid_paise"], row["status"])
+            for row in august["shares"]} == {"alice": (40_000, 40_000, "paid"),
+                                             "bob": (40_000, 0, "unpaid"),
+                                             "chris": (40_000, 0, "unpaid")}
+    # Before anything was delivered there is nothing to bill.
+    assert _month(apartment, "2026-07")["bill_state"] == "not_billed"
+    assert len(_rows(apartment, "SELECT 1 FROM expense_instance")) == 2
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 

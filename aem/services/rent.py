@@ -933,8 +933,10 @@ def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
 # its rent, its agreement model, and under a room-tiered model the rooms' base
 # rents -- for as long as the month is open, however much has been paid: until
 # its statement is finalized, a month gone by as much as this one. It then
-# freezes for good: that is the month's snapshot. A future month is only a preview until it begins, and a
-# month before the lease was set up is charged only by hand.
+# freezes for good: that is the month's snapshot. Any month the lease covers is
+# charged by itself once it has begun, one gone by as soon as it is looked at; a
+# future month is only a preview until it begins, and a month outside the lease
+# is charged only by hand.
 #
 # Who a month charges is settled when it is charged: a resident who moves in
 # later starts with the next month, and one who moves out keeps their share of
@@ -975,6 +977,20 @@ def _rent_for_month(uow: UnitOfWork, config: Mapping[str, Any], month: str) -> i
     return int(config["monthly_rent_paise"])
 
 
+def _lease_months(uow: UnitOfWork, config: Mapping[str, Any]) -> tuple[str, str | None]:
+    """The first and last months the lease covers, the last null for a lease
+    with no end: from its first term's start -- a term since renewed included,
+    or the month it was set up for a lease with no dates -- to its current
+    term's end."""
+    terms = uow.rent.lease_terms(config["apartment_id"])
+    starts = [term["start_date"] for term in terms]
+    if config.get("lease_start_date"):
+        starts.append(config["lease_start_date"])
+    first = min(starts) if starts else config["created_at"]
+    last = config.get("lease_end_date")
+    return first[:7], last[:7] if last else None
+
+
 def _cycle_state(cycle: Mapping[str, Any] | None, month: str,
                  statement: Mapping[str, Any] | None) -> str:
     """'live': charged, and following the lease -- until its statement is
@@ -1010,9 +1026,10 @@ def _follow_lease(uow: UnitOfWork, apartment_id: str, settlement_month: str, *,
     if config is None:
         return cycle, None
     if cycle is None:
+        first, last = _lease_months(uow, config)
         if (settlement_month > _current_month()
                 or (statement is not None and statement["status"] != "draft")
-                or settlement_month < config["created_at"][:7]):
+                or settlement_month < first or (last and settlement_month > last)):
             return None, None
         preview = _preview(uow, apartment_id, settlement_month, config, excluded_resident_ids,
                            split_mode)
@@ -1487,8 +1504,8 @@ def generate_monthly_rent_cycle(
     """Charge the month's rent between the residents taking part.
 
     An open month's rent is charged by itself (see the live cycle above); this
-    charges one by hand -- a month before the lease was set up, or one with
-    somebody left out, or split another way than the agreement model.
+    charges one by hand -- a month outside the lease, or one with somebody
+    left out, or split another way than the agreement model.
 
     ``split_mode`` is ``equal`` or ``room_tiered``, and defaults to the lease's
     agreement model. Under ``room_tiered`` each participant is charged their

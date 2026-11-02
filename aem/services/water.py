@@ -214,8 +214,9 @@ def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
     is one.
 
     A frozen bill is returned as it is, and so is one this module did not record.
-    A month is billed by itself once it has
-    begun, from the month the supply was set up. Its charges change in place,
+    A month is billed by itself once it has begun while the supply is active,
+    a month gone by -- before the supply was set up too -- as soon as it is
+    looked at. Its charges change in place,
     and what each resident paid -- into the kitty, or to the supplier -- follows
     their new share (see :mod:`aem.services.bill_shares`). A change the kitty
     cannot follow -- one leaving it having paid a resident back more than it
@@ -234,9 +235,8 @@ def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
     if expense is not None and not _bill_is_live(month, statement):
         return expense
     if expense is None:
-        if (not definition_id or month > _current_month()
-                or (statement is not None and statement["status"] != "draft")
-                or month < service["created_at"][:7]):
+        if (not definition_id or service["status"] != "active" or month > _current_month()
+                or (statement is not None and statement["status"] != "draft")):
             return None
         bill = _month_bill(uow, apartment_id, config, month)
         if bill["blocked_reason"]:

@@ -268,6 +268,23 @@ def test_a_month_gone_by_follows_the_contract_until_its_statement_is_finalized(a
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
+def test_a_month_before_the_supply_was_set_up_is_billed_and_paid(apartment, clock):
+    # Set up in November: August is billed as it is looked at, at the contract's rate.
+    _setup(apartment)
+    august = _month(apartment, "2026-08")
+    assert (august["bill_state"], _shares(august)) == (
+        "live", {"alice": 20_000, "bob": 20_000, "chris": 20_000})
+    _pay_in(apartment, "alice", 20_000, month="2026-08")
+    _payout(apartment, month="2026-08", amount_paise=20_000)
+    assert _standing(apartment, "2026-08") == {"alice": (20_000, 20_000, 0, "paid"),
+                                               "bob": (20_000, 0, 20_000, "unpaid"),
+                                               "chris": (20_000, 0, 20_000, "unpaid")}
+    assert [(row["settlement_period"], row["amount_paise"]) for row in _rows(
+        apartment, "SELECT * FROM expense_instance ORDER BY settlement_period")] == [
+        ("2026-08", 60_000), (MONTH, 60_000)]
+    assert validation.validate(apartment, APARTMENT)["issues"] == []
+
+
 def test_a_water_expense_entered_by_hand_is_kept_as_it_was(apartment, clock):
     definitions.create_expense_definition(
         apartment, apartment_id=APARTMENT, definition_id="water", name="Water",
