@@ -501,6 +501,57 @@ describe('FurnitureRental', () => {
     expect(screen.getByRole('dialog', { name: 'Return Desk' })).toBeInTheDocument()
   })
 
+  it('asks for the delivery date of an item in the flat that has none', async () => {
+    const undated = item({ delivery_date: null })
+    show(overview({ items: [undated, ...items.slice(1)] }), {
+      'PATCH /api/services/furniture/items/furn-sofa': item({ delivery_date: '2026-08-01' }),
+    }, '/?tab=items')
+    const banner = await screen.findByRole('alert')
+    expect(banner).toHaveTextContent('Delivery date required for Sofa')
+    expect(banner).toHaveTextContent('when this item arrived in the flat')
+    // Its row says so too; an item awaiting delivery needs no date yet.
+    const table = screen.getByRole('table', { name: 'Rented items' })
+    expect(within(table).getByRole('row', { name: /Sofa/ })).toHaveTextContent('In the flatDate missing')
+    expect(within(table).getByRole('row', { name: /Fridge/ })).not.toHaveTextContent('Date missing')
+
+    await userEvent.click(within(banner).getByRole('button', { name: 'Set Delivery Date' }))
+    const dialog = screen.getByRole('dialog', { name: 'Edit Sofa' })
+    const delivered = within(dialog).getByLabelText(/^Delivered on/)
+    expect(delivered).toHaveValue('')
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled()
+    fireEvent.change(delivered, { target: { value: '2026-08-01' } })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(sent('PATCH', '/api/services/furniture/items/furn-sofa')).toBeDefined())
+    expect(sent('PATCH', '/api/services/furniture/items/furn-sofa')!.body).toMatchObject({
+      delivery_date: '2026-08-01',
+      status: 'active',
+    })
+  })
+
+  it('counts every undated item, and sets one from its details', async () => {
+    show(
+      overview({
+        items: [
+          item({ delivery_date: null }),
+          item({ item_id: 'furn-fridge', name: 'Fridge', delivery_date: null }),
+          item({ item_id: 'furn-desk', name: 'Desk', status: 'pending_delivery', delivery_date: null }),
+        ],
+      }),
+      {},
+      '/?tab=items',
+    )
+    const banner = await screen.findByRole('alert')
+    expect(banner).toHaveTextContent('Delivery date required for 2 rented items')
+    expect(banner).toHaveTextContent('when these items arrived in the flat')
+    const table = screen.getByRole('table', { name: 'Rented items' })
+    expect(within(table).getByRole('row', { name: /Desk/ })).not.toHaveTextContent('Date missing')
+
+    await userEvent.click(within(table).getByRole('row', { name: /Fridge/ }))
+    const details = screen.getByRole('dialog', { name: 'Fridge' })
+    await userEvent.click(within(details).getByRole('button', { name: 'Set arrival date' }))
+    expect(screen.getByRole('dialog', { name: 'Edit Fridge' })).toBeInTheDocument()
+  })
+
   it("edits or returns an item from its row's menu, without opening it", async () => {
     show(overview({ items: [...items, item({ item_id: 'furn-lamp', name: 'Lamp', status: 'returned', return_date: '2026-10-31' })] }), {}, '/?tab=items')
     const table = await screen.findByRole('table', { name: 'Rented items' })

@@ -23,6 +23,7 @@
 import { useRef, useState, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
+  AlertTriangle,
   Archive,
   Check,
   Clock,
@@ -277,6 +278,10 @@ export function FurnitureRental({ month }: { month: string }) {
             </Panel>
           ) : (
             <>
+              <UndatedItemsBanner
+                items={data.items.filter(isUndated)}
+                onSetDate={(item) => setDialog({ kind: 'edit', item })}
+              />
               <div className="tabs" role="tablist" aria-label="Furniture Rental">
                 {FURNITURE_TABS.map(({ value, label, icon: Icon }) => (
                   <button
@@ -885,6 +890,48 @@ function SubscriptionDetailModal({
 
 /* ---------------------------------------------------------- 2. the items -- */
 
+/**
+ * An item in the flat, or returned, with no delivery date: it is billed from
+ * the month it arrived, so that date is needed before its bills are right.
+ */
+function isUndated(item: FurnitureItem): boolean {
+  return item.status !== 'pending_delivery' && !item.delivery_date
+}
+
+/** Asks for the delivery date of each item that has none, one at a time. */
+function UndatedItemsBanner({
+  items,
+  onSetDate,
+}: {
+  items: FurnitureItem[]
+  onSetDate: (item: FurnitureItem) => void
+}) {
+  if (items.length === 0) return null
+  const one = items.length === 1
+  return (
+    <div
+      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--warning)] bg-[var(--warn-soft)] p-4 text-sm"
+      role="alert"
+    >
+      <div className="flex items-center gap-3">
+        <AlertTriangle className="w-5 h-5 text-[var(--warning)] shrink-0" aria-hidden="true" />
+        <div>
+          <strong className="font-semibold text-[var(--text-primary)]">
+            Delivery date required for {one ? items[0].name : `${items.length} rented items`}
+          </strong>
+          <p className="m-0 text-xs text-[var(--text-secondary)]">
+            Flatmate needs to know when {one ? 'this item' : 'these items'} arrived in the flat to calculate past
+            and current month bills accurately.
+          </p>
+        </div>
+      </div>
+      <button type="button" className={BUTTON_PRIMARY} onClick={() => onSetDate(items[0])}>
+        Set Delivery Date
+      </button>
+    </div>
+  )
+}
+
 function ItemsPanel({
   items,
   onAdd,
@@ -957,7 +1004,10 @@ function ItemsPanel({
                       <Rupees paise={item.monthly_rent_paise} />
                     </td>
                     <td className="py-3 pr-3 text-center whitespace-nowrap">
-                      <Pill tone={status.tone}>{status.label}</Pill>
+                      <span className="inline-flex flex-wrap justify-center gap-1">
+                        <Pill tone={status.tone}>{status.label}</Pill>
+                        {isUndated(item) && <Pill tone="warning">Date missing</Pill>}
+                      </span>
                     </td>
                     <td className="py-3 text-center whitespace-nowrap">
                       {/* The row's own actions: choosing one does not also open the item. */}
@@ -1052,7 +1102,13 @@ function ItemDetailModal({
           )}
           <DetailFact label="Rental Provider">{item.provider_name ?? '—'}</DetailFact>
           <DetailFact label="Delivery Date">
-            <span className="tabular">{item.delivery_date ? formatDate(item.delivery_date) : '—'}</span>
+            {isUndated(item) ? (
+              <button type="button" className="text-xs text-[var(--warning)] underline font-medium" onClick={onEdit}>
+                Set arrival date
+              </button>
+            ) : (
+              <span className="tabular">{item.delivery_date ? formatDate(item.delivery_date) : '—'}</span>
+            )}
           </DetailFact>
           <DetailFact label="Return Date">
             <span className="tabular">
