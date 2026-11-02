@@ -62,6 +62,8 @@ const noFurniture = {
   deposit_held_paise: 0,
 }
 
+const noWater = { service: null, config: null, month: null, next_billing_date: null }
+
 function renderHub(
   overview: { rent: unknown; electricity: unknown },
   deposits: Record<string, unknown> = noDeposits,
@@ -69,6 +71,7 @@ function renderHub(
   contacts: Record<string, unknown> = noContacts,
   documents: Record<string, unknown> = noDocuments,
   furniture: Record<string, unknown> = noFurniture,
+  water: Record<string, unknown> = noWater,
 ) {
   stub = installFetchStub({
     routes: {
@@ -78,6 +81,7 @@ function renderHub(
       '/api/property/contacts': contacts,
       '/api/property/documents': documents,
       '/api/services/furniture': furniture,
+      '/api/services/water': water,
     },
   })
   render(
@@ -180,7 +184,7 @@ describe('ServicesHub', () => {
       electricity: { bill: null, bills_for_month: 0, latest_bill: null },
     })
 
-    for (const name of ['Water & Tankers', 'Cooking Gas (LPG)', 'Broadband & WiFi', 'House Help & Cook']) {
+    for (const name of ['Cooking Gas (LPG)', 'Broadband & WiFi', 'House Help & Cook']) {
       const card = screen.getByRole('region', { name })
       expect(within(card).getByText('Planned')).toBeInTheDocument()
       expect(within(card).queryByRole('link')).toBeNull()
@@ -264,6 +268,53 @@ describe('ServicesHub', () => {
       '/services/furniture',
     )
     expect(within(card).queryByText('Provider')).toBeNull()
+  })
+
+  it('summarises the water contract and its month', async () => {
+    const share = (id: string, name: string, paid: number) => ({
+      resident_id: id,
+      display_name: name,
+      total_paise: 20000,
+      paid_paise: paid,
+      settled_paise: paid,
+      outstanding_paise: 20000 - paid,
+      status: paid ? 'paid' : 'unpaid',
+      paid_date: null,
+      payments: [],
+    })
+    renderHub(
+      { rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
+      noDeposits,
+      noRooms,
+      noContacts,
+      noDocuments,
+      noFurniture,
+      {
+        service: { service_id: 'svc-w', service_type: 'water_tanker', display_name: 'Water Supply' },
+        config: { provider_name: 'Society Water Supply', monthly_rate_paise: 60000, billing_day_of_month: 10 },
+        month: {
+          due_date: '2026-10-10',
+          expense: { expense_id: 'water-1', amount_paise: 60000 },
+          collected_count: 2,
+          shares: [share('alice', 'Alice', 20000), share('bob', 'Bob', 20000), share('chris', 'Chris', 0)],
+        },
+        next_billing_date: '2026-11-10',
+      },
+    )
+    const card = screen.getByRole('region', { name: 'Water Supply' })
+    expect(await within(card).findByText('Society Water Supply')).toBeInTheDocument()
+    expect(within(card).getByText('Active')).toBeInTheDocument()
+    expect(fact(card, 'Contract rate')).toHaveTextContent('₹600.00/mo')
+    expect(fact(card, 'Due date')).toHaveTextContent('10 Oct 2026')
+    expect(fact(card, 'Kitty collection')).toHaveTextContent('2 of 3 covered')
+    expect(within(card).getByRole('link', { name: 'Open Water Hub' })).toHaveAttribute('href', '/services/water')
+  })
+
+  it('offers to set up the water supply when there is none', async () => {
+    renderHub({ rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
+    const card = screen.getByRole('region', { name: 'Water Supply' })
+    expect(await within(card).findByText('Not set up')).toBeInTheDocument()
+    expect(within(card).getByRole('link', { name: 'Set up water supply' })).toHaveAttribute('href', '/services/water')
   })
 
   it('keeps a card that fails to itself', () => {

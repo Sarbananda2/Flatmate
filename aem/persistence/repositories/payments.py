@@ -336,8 +336,10 @@ class PaymentsRepository(Repository):
                            0)::BIGINT AS reimbursed_paise,
                   EXISTS (SELECT 1 FROM rent_cycle c WHERE c.expense_id = e.expense_id)
                       AS is_rent,
-                  EXISTS (SELECT 1 FROM furniture_rental_config f
-                           WHERE f.expense_definition_id = e.expense_definition_id)
+                  (EXISTS (SELECT 1 FROM furniture_rental_config f
+                            WHERE f.expense_definition_id = e.expense_definition_id)
+                   OR EXISTS (SELECT 1 FROM water_service_config w
+                               WHERE w.expense_definition_id = e.expense_definition_id))
                       AS is_service
                  FROM expense_instance e WHERE e.expense_id = %s""", (expense_id,))
 

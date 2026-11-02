@@ -1247,6 +1247,61 @@ class FurnitureReimburseRequest(ApiModel):
                                   description="Bank UTR or UPI transaction ID.")
     notes: str | None = Field(None, max_length=500)
 
+class WaterSetupRequest(ApiModel):
+    """The water supply's fixed contract. Only the fields sent change."""
+    display_name: str | None = Field(None, min_length=1, max_length=100)
+    provider_name: str | None = Field(None, min_length=1, max_length=100,
+                                      description="Society Water Supply, unless named.")
+    monthly_rate_paise: int | None = _money_field(
+        "The fixed rate the flat pays a month, whatever it uses.", default=None)
+    consumer_id: str | None = Field(None, max_length=100)
+    billing_day_of_month: int | None = Field(None, ge=1, le=31)
+    pipeline_notes: str | None = Field(None, max_length=2000)
+    notes: str | None = Field(None, max_length=2000)
+
+
+class WaterPaymentCreate(ApiModel):
+    """A resident paying their share of a month's water bill into the kitty."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "What the resident paid. Settles their share of the month's bill first; any "
+        "excess goes to their other charges, oldest first.", ge=1)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    payment_mode: Literal["upi", "bank_transfer", "cash", "other"] | None = None
+    reference: str | None = Field(None, max_length=200)
+    note: str | None = Field(None, max_length=2000)
+
+
+class WaterPayoutRequest(ApiModel):
+    """A payment to the water supplier towards a month's bill: from the kitty, or by a resident."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    disbursement_mode: Literal["pool", "resident_advance"] = Field(
+        description="pool: paid from the House Kitty; resident_advance: a resident paid it "
+                    "from their own account.")
+    funding_resident_id: str | None = Field(
+        None, max_length=64, description="For a resident advance: who paid the supplier.")
+    reference: str = Field(min_length=1, max_length=200,
+                           description="Bank UTR or UPI transaction ID.")
+    disbursed_date: str = Field(pattern=DATE_PATTERN)
+    amount_paise: int | None = _money_field(
+        "This payment; omit for everything still owed to the supplier.", ge=1, default=None)
+    notes: str | None = Field(None, max_length=500)
+
+
+class WaterReimburseRequest(ApiModel):
+    """The kitty paying back a resident who paid the water supplier beyond their share."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    recipient_resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "No more than the kitty collected for the bill and has not paid back, nor more "
+        "than the resident is still owed.", ge=1)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    reference: str | None = Field(None, max_length=200,
+                                  description="Bank UTR or UPI transaction ID.")
+    notes: str | None = Field(None, max_length=500)
+
+
 __all__ = [
     "AdjustmentCreate", "AdjustmentReverse", "RentReimburseRequest", "AuthStatusResponse", "AuthUser",
     "AuthUserResponse", "LoginRequest", "SignupRequest", "AllocationMethod", "OpeningBalanceCreate", "OpeningBalanceItem",
@@ -1273,6 +1328,7 @@ __all__ = [
     "FurnitureItemUpdate", "FurniturePaymentCreate", "FurniturePayoutRequest",
     "FurnitureReimburseRequest",
     "FurnitureSetupRequest",
+    "WaterPaymentCreate", "WaterPayoutRequest", "WaterReimburseRequest", "WaterSetupRequest",
     "RentLeaseConfigSave", "RentLeaseRenewRequest", "RentLeaseVacateRequest",
     "RentPaymentCreate",
     "ResidentCreate", "ResidentDeactivate", "ResidentUpdate", "SetupApartmentRequest",

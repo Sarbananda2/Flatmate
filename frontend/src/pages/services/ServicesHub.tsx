@@ -2,10 +2,10 @@
  * Services & Utilities.
  *
  * One card per recurring monthly bill, each a module of its own: rent,
- * electricity and furniture rental are live and link to their own screens; the
- * rest are placeholders for services that are planned but not built. Each card
- * loads and fails on its own, so one service that cannot be shown never takes
- * the others with it. The lease, deposit, rooms and documents are not here:
+ * electricity, furniture rental and the water supply are live and link to their
+ * own screens; the rest are placeholders for services that are planned but not
+ * built. Each card loads and fails on its own, so one service that cannot be
+ * shown never takes the others with it. The lease, deposit, rooms and documents are not here:
  * they are the home itself, under Housing.
  */
 import { Component, type ErrorInfo, type ReactNode } from 'react'
@@ -30,14 +30,9 @@ import {
 } from '../../components/ui'
 import { type Resource, useResource } from '../../lib/useApi'
 import { formatDate, formatInr, formatMonth, formatMonthShort } from '../../lib/format'
-import type { FurnitureRentalOverview, ServicesOverview } from '../../api/types'
+import type { FurnitureRentalOverview, ServicesOverview, WaterOverview } from '../../api/types'
 
 const PLANNED_SERVICES: Array<{ title: string; icon: LucideIcon; body: string }> = [
-  {
-    title: 'Water & Tankers',
-    icon: Droplets,
-    body: 'Tracking private water tankers, municipal water bills, and capacity logs.',
-  },
   {
     title: 'Cooking Gas (LPG)',
     icon: Flame,
@@ -69,6 +64,7 @@ const SERVICE_MODULES: Array<{
   { key: 'rent', title: 'Rent', Card: RentCard },
   { key: 'electricity', title: 'Electricity', Card: ElectricityCard },
   { key: 'furniture', title: 'Furniture Rental', Card: FurnitureRentalCard },
+  { key: 'water', title: 'Water Supply', Card: WaterCard },
 ]
 
 export function ServicesHub({ month }: { month: string }) {
@@ -376,6 +372,57 @@ function FurnitureRentalCard({ month }: CardProps) {
             <p className="m-0 text-xs text-[var(--text-secondary)]">
               Track a Furlenco or Rentomojo subscription: each month&apos;s bill split between
               everyone for shared items, and to each person for their own.
+            </p>
+          )
+        }
+      </AsyncSection>
+    </ServiceCard>
+  )
+}
+
+/* ------------------------------------------------------------------ water -- */
+
+function WaterCard({ month }: CardProps) {
+  const water = useResource<WaterOverview>('/api/services/water', { month })
+  const data = water.data
+  const live = Boolean(data?.service)
+
+  return (
+    <ServiceCard
+      title="Water Supply"
+      icon={Droplets}
+      badge={data ? live ? <Pill tone="success">Active</Pill> : <Pill>Not set up</Pill> : undefined}
+      actions={
+        <Link to="/services/water" className={BUTTON_PRIMARY}>
+          {live || !data ? 'Open Water Hub' : 'Set up water supply'}
+        </Link>
+      }
+    >
+      <AsyncSection resource={water} loadingLabel="Loading water…">
+        {(overview) =>
+          overview.service && overview.config && overview.month ? (
+            <dl className="m-0 space-y-2">
+              <Fact label="Supplier">{overview.config.provider_name}</Fact>
+              <Fact label="Contract rate">
+                <Rupees paise={overview.config.monthly_rate_paise} />
+                <span className="font-normal text-[var(--text-secondary)]">/mo</span>
+              </Fact>
+              <Fact label="Due date">
+                {overview.month.due_date ? formatDate(overview.month.due_date) : 'No billing day set'}
+              </Fact>
+              {/* What flatmates have paid into the house kitty towards the month's water. */}
+              <Fact label="Kitty collection">
+                {!overview.month.expense ? (
+                  <span className="font-normal text-[var(--text-tertiary)]">Not billed</span>
+                ) : (
+                  `${overview.month.collected_count} of ${overview.month.shares.filter((share) => share.total_paise > 0).length} covered`
+                )}
+              </Fact>
+            </dl>
+          ) : (
+            <p className="m-0 text-xs text-[var(--text-secondary)]">
+              Track a fixed monthly water contract, such as the society&apos;s pipeline: each
+              month&apos;s rate split equally and paid through the House Kitty.
             </p>
           )
         }

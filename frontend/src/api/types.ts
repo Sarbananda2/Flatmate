@@ -1888,3 +1888,70 @@ export interface AuthStatus {
   authenticated: boolean
   user: AuthUser | null
 }
+
+/* ------------------------------------------------------------------- water -- */
+
+/** The water supply's fixed contract. */
+export interface WaterConfig {
+  provider_name: string
+  /** The fixed rate the flat pays a month, whatever it uses. */
+  monthly_rate_paise: number
+  consumer_id: string | null
+  billing_day_of_month: number | null
+  /** The definition each month's bill is recorded under. */
+  expense_definition_id: string | null
+  pipeline_notes: string | null
+  notes: string | null
+  updated_at: string
+}
+
+/** One resident's equal share of a month's water bill, and what they have paid of it. */
+export interface WaterShare {
+  resident_id: string
+  display_name: string
+  total_paise: number
+  /** Paid towards their charge, into the kitty or by paying the supplier. 0 until the bill is recorded. */
+  paid_paise: number
+  /** Paid into the kitty against their charge. */
+  settled_paise: number
+  outstanding_paise: number
+  /** Null until the bill is recorded. */
+  status: FurnitureShareStatus | null
+  paid_date: string | null
+  payments: FurnitureShare['payments']
+}
+
+export interface WaterMonthBill {
+  settlement_month: string
+  /** The month's fixed rate, split equally. */
+  total_paise: number
+  participant_count: number
+  base_share_paise: number
+  remainder_paise: number
+  shares: WaterShare[]
+  /** Why the month cannot be billed, if it cannot. */
+  blocked_reason: string | null
+  due_date: string | null
+  expense: { expense_id: string; description: string; amount_paise: number; statement_id: string | null } | null
+  statement_status: StatementStatus | null
+  /** 'live': billed, following the contract; 'frozen': its snapshot; 'upcoming': not begun; 'not_billed'. */
+  bill_state: 'live' | 'frozen' | 'upcoming' | 'not_billed'
+  /** Whether a payment or payout recorded by mistake can still be deleted. */
+  transactions_open: boolean
+  collected_paise: number
+  collected_count: number
+  payout_status: FurniturePayoutStatus
+  disbursed_paise: number
+  remaining_disbursement_paise: number
+  disbursements: FurnitureDisbursement[]
+  reimbursement: KittyReimbursement | null
+  reimbursements: KittyReimbursement[]
+}
+
+/** `GET /api/services/water`: null service and config until the supply is set up. */
+export interface WaterOverview {
+  service: HouseholdService | null
+  config: WaterConfig | null
+  month: WaterMonthBill | null
+  next_billing_date: string | null
+}

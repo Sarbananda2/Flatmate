@@ -22,6 +22,7 @@ from . import (  # noqa: F401
     setup,
     statements,
     transactions,
+    water,
 )
 
 ALL_ROUTERS = [
@@ -42,6 +43,7 @@ ALL_ROUTERS = [
     property.router,
     services.router,
     furniture_rental.router,
+    water.router,
     statements.router,
     reconciliation.router,
     transactions.router,
