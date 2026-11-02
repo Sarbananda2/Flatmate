@@ -20,8 +20,8 @@ reckoned on it, GST included.
 
 **Nothing prorates** -- the household's rule for every category. An item counts
 in full for any month it was in the flat: delivered by the month's last day and
-not returned before its first. An item with no delivery date counts from the
-month its subscription was set up, and one still awaiting delivery is not billed.
+not returned before its first. Every item in the flat says when it was
+delivered; one still awaiting delivery is not billed.
 
 Each month is billed once: the expense is unique for the definition and month,
 so a bill already recorded, by hand or by the recurring generator, is refused
@@ -115,16 +115,12 @@ def next_billing_date(day: int | None, today: str) -> str | None:
 
 
 def is_billable(item: Mapping[str, Any], month: str) -> bool:
-    """Whether `item` was in the flat at any point in `month`: from its
-    delivery, or for an item with no delivery date, from the month its
-    subscription was set up."""
+    """Whether `item` was in the flat at any point in `month`: from the month
+    it was delivered to the month it was returned."""
     if item["status"] == "pending_delivery":
         return False
     first, last = f"{month}-01", month_end(month).isoformat()
-    if item.get("delivery_date"):
-        if item["delivery_date"] > last:
-            return False
-    elif item.get("service_created_at") and month < item["service_created_at"][:7]:
+    if item.get("delivery_date") and item["delivery_date"] > last:
         return False
     if item.get("return_date") and item["return_date"] < first:
         return False
@@ -1153,6 +1149,9 @@ def _clean_item(uow: UnitOfWork, apartment_id: str, values: Mapping[str, Any],
     for field, value in (("delivery_date", delivery), ("return_date", returned)):
         if value:
             parse_iso_date(value, field)
+    if status in ("active", "returned") and not delivery:
+        raise ValidationError("A delivered item needs the date it arrived in the flat.",
+                              code="delivery_date_required", details={"field": "delivery_date"})
     if status == "returned" and not returned:
         raise ValidationError("A returned item needs the date it went back.",
                               details={"field": "return_date"})

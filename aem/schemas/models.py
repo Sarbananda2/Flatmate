@@ -1134,7 +1134,10 @@ class FurnitureItemCreate(ApiModel):
         description="common: split equally; resident: charged to assigned_resident_id alone.")
     assigned_resident_id: str | None = Field(None, max_length=64)
     status: Literal["active", "pending_delivery"] = "active"
-    delivery_date: str | None = Field(None, pattern=DATE_PATTERN)
+    delivery_date: str | None = Field(
+        None, pattern=DATE_PATTERN,
+        description="The day it arrived in the flat, from which it is billed: needed unless "
+                    "it is still awaiting delivery.")
 
 
 class FurnitureItemUpdate(ApiModel):

@@ -15,8 +15,7 @@ ITEM_COLUMNS = ("service_id", "name", "category", "monthly_rent_paise", "quantit
 ITEM_SELECT = """SELECT i.*, r.display_name AS assigned_resident_name,
                         COALESCE(c.provider_name, s.provider_name, s.display_name)
                             AS provider_name,
-                        s.display_name AS service_display_name,
-                        s.created_at AS service_created_at
+                        s.display_name AS service_display_name
                    FROM furniture_rental_item i
                    JOIN household_service s ON s.service_id = i.service_id
                    LEFT JOIN furniture_rental_config c ON c.service_id = i.service_id

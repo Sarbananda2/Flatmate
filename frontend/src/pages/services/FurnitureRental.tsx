@@ -1483,12 +1483,19 @@ function ItemDialog({
   const [status, setStatus] = useState<'active' | 'pending_delivery'>(
     item?.status === 'pending_delivery' ? 'pending_delivery' : 'active',
   )
-  const [delivery, setDelivery] = useState(item?.delivery_date ?? '')
+  // The day it arrived, from which it is billed: today for a new item, unless changed.
+  const [delivery, setDelivery] = useState(item ? (item.delivery_date ?? '') : todayIso())
 
   const people = (residents.data?.items ?? []).filter(
     (resident) => resident.is_active || resident.resident_id === item?.assigned_resident_id,
   )
-  const valid = Boolean(serviceId) && name.trim().length > 0 && rentOk && rentPaise > 0 && quantity !== null
+  const valid =
+    Boolean(serviceId) &&
+    name.trim().length > 0 &&
+    rentOk &&
+    rentPaise > 0 &&
+    quantity !== null &&
+    (status !== 'active' || Boolean(delivery))
   const body = {
     service_id: serviceId || null,
     name: name.trim(),
@@ -1591,7 +1598,18 @@ function ItemDialog({
               onChange={setStatus}
               hint="An item awaiting delivery is not billed."
             />
-            <DateField label={status === 'pending_delivery' ? 'Expected delivery' : 'Delivered on'} value={delivery} onChange={setDelivery} />
+            {status === 'pending_delivery' ? (
+              <DateField label="Expected delivery" value={delivery} onChange={setDelivery} hint="Optional until delivered." />
+            ) : (
+              <DateField
+                label="Delivered on"
+                required
+                value={delivery}
+                onChange={setDelivery}
+                error={delivery ? null : 'Enter the day it arrived in the flat.'}
+                hint="It is billed from the month it arrived."
+              />
+            )}
           </div>
         )}
       </form>

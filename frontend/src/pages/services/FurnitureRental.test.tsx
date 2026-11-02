@@ -9,6 +9,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event'
 import { FurnitureRental } from './FurnitureRental'
 import { ToastProvider } from '../../components/Toast'
+import { todayIso } from '../../lib/format'
 import { RESIDENTS, installFetchStub, type Recorded } from '../../test/server'
 
 const MONTH = '2026-11'
@@ -571,6 +572,10 @@ describe('FurnitureRental', () => {
     await userEvent.type(within(dialog).getByLabelText(/^Monthly rent/), '199')
     await waitFor(() => expect(within(dialog).getByRole('option', { name: 'Bob' })).toBeInTheDocument())
     await userEvent.selectOptions(within(dialog).getByLabelText('Paid by'), 'bob')
+    // Delivered today unless another day is picked: it is billed from that month.
+    const delivered = within(dialog).getByLabelText(/^Delivered on/)
+    expect(delivered).toHaveValue(todayIso())
+    fireEvent.change(delivered, { target: { value: '2026-08-01' } })
     await userEvent.click(add)
 
     // Its rent before GST: the month's bill adds GST on the items together.
@@ -582,8 +587,36 @@ describe('FurnitureRental', () => {
       monthly_rent_paise: 19900,
       allocation_scope: 'resident',
       assigned_resident_id: 'bob',
-      delivery_date: null,
+      delivery_date: '2026-08-01',
       status: 'active',
+    })
+  })
+
+  it('needs the day an item in the flat arrived, but not one still awaiting delivery', async () => {
+    show(overview(), {}, '/?tab=items')
+    const panel = (await screen.findByRole('heading', { name: 'Rented Items' })).closest('section')!
+    await userEvent.click(within(panel).getByRole('button', { name: 'Add item' }))
+    const dialog = screen.getByRole('dialog', { name: 'Add a rented item' })
+    const add = within(dialog).getByRole('button', { name: 'Add item' })
+    await userEvent.type(within(dialog).getByLabelText(/^Item/), 'Study chair')
+    await userEvent.type(within(dialog).getByLabelText(/^Monthly rent/), '199')
+    expect(add).toBeEnabled()
+
+    const delivered = within(dialog).getByLabelText(/^Delivered on/)
+    expect(delivered).toBeRequired()
+    fireEvent.change(delivered, { target: { value: '' } })
+    expect(within(dialog).getByText('Enter the day it arrived in the flat.')).toBeInTheDocument()
+    expect(add).toBeDisabled()
+
+    await userEvent.selectOptions(within(dialog).getByLabelText('Status'), 'pending_delivery')
+    expect(within(dialog).getByLabelText('Expected delivery')).not.toBeRequired()
+    expect(within(dialog).getByText('Optional until delivered.')).toBeInTheDocument()
+    expect(add).toBeEnabled()
+    await userEvent.click(add)
+    await waitFor(() => expect(sent('POST', '/api/services/furniture/items')).toBeDefined())
+    expect(sent('POST', '/api/services/furniture/items')!.body).toMatchObject({
+      delivery_date: null,
+      status: 'pending_delivery',
     })
   })
 

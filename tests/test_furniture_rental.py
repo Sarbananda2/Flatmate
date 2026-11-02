@@ -31,6 +31,8 @@ from .conftest import APARTMENT, RESIDENTS
 from .support import DatabaseRefusal, connect, sign_in
 
 MONTH = "2026-11"
+#: The day an item arrived, unless a test says otherwise: every item in the flat has one.
+DELIVERED = "2026-09-01"
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +57,8 @@ def _setup(db, **payload):
 
 
 def _item(db, name, rent_paise, scope="common", resident=None, **extra):
+    if extra.get("status") != "pending_delivery":
+        extra.setdefault("delivery_date", DELIVERED)
     return furniture.add_item(db, APARTMENT, {
         "name": name, "category": extra.pop("category", "living_room"),
         "monthly_rent_paise": rent_paise, "allocation_scope": scope,
@@ -145,7 +149,7 @@ def test_an_item_needs_the_service_first(apartment):
 def test_an_invalid_item_is_refused(apartment, payload):
     _setup(apartment)
     item = {"name": "Desk", "category": "workstation", "monthly_rent_paise": 30_000,
-            "allocation_scope": "common", "assigned_resident_id": None, **payload}
+            "allocation_scope": "common", "assigned_resident_id": None, "delivery_date": DELIVERED, **payload}
     with pytest.raises(ValidationError):
         furniture.add_item(apartment, APARTMENT, item)
     assert _rows(apartment, "SELECT 1 FROM furniture_rental_item") == []
@@ -154,10 +158,10 @@ def test_an_invalid_item_is_refused(apartment, payload):
 def test_an_item_sent_without_a_category_is_other(apartment, api):
     _setup(apartment)
     lamp = furniture.add_item(apartment, APARTMENT, {
-        "name": "Lamp", "monthly_rent_paise": 5_000, "allocation_scope": "common"})
+        "name": "Lamp", "monthly_rent_paise": 5_000, "allocation_scope": "common", "delivery_date": DELIVERED})
     assert lamp["category"] == "other"
     chair = api.post("/api/services/furniture/items", json={
-        "name": "Chair", "monthly_rent_paise": 4_000, "allocation_scope": "common"})
+        "name": "Chair", "monthly_rent_paise": 4_000, "allocation_scope": "common", "delivery_date": DELIVERED})
     assert chair.status_code == 201, chair.text
     assert chair.json()["category"] == "other"
     # Editing it leaves the category as it was.
@@ -717,6 +721,32 @@ def test_migration_0023_turns_each_furniture_advance_into_a_tranche(database_fac
          "disbursed_by": "resident_advance", "settlement_month": MONTH}]
 
 
+def test_migration_0032_dates_every_item_that_was_delivered(database_factory):
+    db = database_factory(migrated=False)
+    db.migrate(target_version=31)
+    apartments.create_apartment(db, apartment_id=APARTMENT, name="Flat 402")
+    for resident_id, name in RESIDENTS:
+        residents.create_resident(db, apartment_id=APARTMENT, resident_id=resident_id,
+                                  display_name=name, active_from="2026-08-01")
+    _setup(db, provider_name="Furlenco")
+    sofa = _item(db, "Sofa", 120_000)
+    chair = _item(db, "Chair", 20_000)
+    furniture.update_item(db, APARTMENT, chair["item_id"],
+                          {"status": "returned", "return_date": "2026-10-20"})
+    bed = _item(db, "Bed", 50_000, status="pending_delivery")
+    # As schema 31 let them be: entered with no delivery date -- the chair after
+    # it had already gone back.
+    with connect(db) as conn:
+        conn.execute("""UPDATE furniture_rental_item SET delivery_date = NULL,
+                               created_at = '2026-10-25T10:00:00+05:30'""")
+    db.migrate()
+    dates = {row["name"]: row["delivery_date"] for row in _rows(
+        db, "SELECT name, delivery_date FROM furniture_rental_item")}
+    assert dates == {"Sofa": "2026-10-25", "Chair": "2026-10-20", "Bed": None}
+    assert {sofa["item_id"], chair["item_id"], bed["item_id"]} == {
+        row["item_id"] for row in _rows(db, "SELECT item_id FROM furniture_rental_item")}
+
+
 def test_flatmates_payments_into_the_kitty_show_against_their_share(billed):
     _advance(billed)
     _into_kitty(billed, "bob", 106_667, "pay-bob")
@@ -970,7 +1000,7 @@ def test_several_providers_over_http(api):
         "Furlenco", "Rentomojo"]
     rentomojo = second.json()["services"][1]["service"]["service_id"]
     lamp = {"name": "Lamp", "category": "other", "monthly_rent_paise": 10_000,
-            "allocation_scope": "common"}
+            "allocation_scope": "common", "delivery_date": DELIVERED}
     assert api.post(f"{base}/items", json=lamp).status_code == 422
     added = api.post(f"{base}/items", json={**lamp, "service_id": rentomojo})
     assert (added.status_code, added.json()["provider_name"]) == (201, "Rentomojo")
@@ -1132,13 +1162,40 @@ def test_a_live_bill_goes_with_its_last_item_unless_paid_and_freezes_with_its_st
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
-def test_a_month_before_the_rental_was_set_up_bills_what_was_delivered_by_then(apartment,
-                                                                               november):
-    # Set up in November, for a sofa delivered in August and a lamp of no known date.
+def test_an_item_in_the_flat_needs_the_day_it_arrived(apartment, api):
+    _setup(apartment)
+    for status in ("active", None):
+        with pytest.raises(ValidationError) as refused:
+            furniture.add_item(apartment, APARTMENT, {
+                "name": "Sofa", "monthly_rent_paise": 120_000, "allocation_scope": "common",
+                **({"status": status} if status else {})})
+        assert (refused.value.code, refused.value.details) == (
+            "delivery_date_required", {"field": "delivery_date"})
+    # One awaiting delivery need not say when it is coming; delivered, it must.
+    bed = furniture.add_item(apartment, APARTMENT, {
+        "name": "Bed", "monthly_rent_paise": 50_000, "allocation_scope": "common",
+        "status": "pending_delivery"})
+    assert bed["delivery_date"] is None
+    with pytest.raises(ValidationError) as refused:
+        furniture.update_item(apartment, APARTMENT, bed["item_id"], {"status": "active"})
+    assert refused.value.code == "delivery_date_required"
+    with pytest.raises(ValidationError) as refused:
+        _item(apartment, "Desk", 30_000, delivery_date=None)
+    assert refused.value.code == "delivery_date_required"
+    posted = api.post("/api/services/furniture/items", json={
+        "name": "Lamp", "monthly_rent_paise": 9_000, "allocation_scope": "common"})
+    assert (posted.status_code, posted.json()["error"]["code"]) == (422, "delivery_date_required")
+    # And the database holds every item in the flat to it.
+    with connect(apartment) as conn, pytest.raises(DatabaseRefusal, match="delivery_check"):
+        conn.execute("UPDATE furniture_rental_item SET status='active' WHERE item_id=%s",
+                     (bed["item_id"],))
+
+
+def test_an_item_delivered_in_a_month_gone_by_bills_it_and_can_be_paid(apartment, november):
+    # Set up in November, for a sofa delivered on 15 August and a lamp in November.
     _setup(apartment, provider_name="Furlenco")
-    _item(apartment, "Sofa", 120_000, delivery_date="2026-08-20")
-    _item(apartment, "Lamp", 9_000)
-    # August bills the sofa as it is looked at; the lamp counts from November.
+    _item(apartment, "Sofa", 120_000, delivery_date="2026-08-15")
+    _item(apartment, "Lamp", 9_000, delivery_date="2026-11-03")
     august = _month(apartment, "2026-08")
     assert (august["bill_state"], august["total_paise"]) == ("live", 120_000)
     assert [(row["settlement_period"], row["amount_paise"]) for row in _rows(
@@ -1351,11 +1408,11 @@ def test_a_quantity_is_whole_and_its_rents_agree(apartment, payload, code):
     _setup(apartment)
     with pytest.raises(ValidationError) as refused:
         furniture.add_item(apartment, APARTMENT, {"name": "Chair", "allocation_scope": "common",
-                                                  **payload})
+                                                  "delivery_date": DELIVERED, **payload})
     assert code is None or refused.value.code == code
     both = furniture.add_item(apartment, APARTMENT, {
         "name": "Chair", "allocation_scope": "common", "quantity": 3,
-        "unit_monthly_rent_paise": 50_000, "monthly_rent_paise": 150_000})
+        "unit_monthly_rent_paise": 50_000, "monthly_rent_paise": 150_000, "delivery_date": DELIVERED})
     assert both["monthly_rent_paise"] == 150_000
 
 
@@ -1364,7 +1421,7 @@ def test_quantity_over_http(api):
     api.post(f"{base}/setup", params={"month": MONTH}, json={"provider_name": "Furlenco"})
     added = api.post(f"{base}/items", json={
         "name": "Mattress", "quantity": 3, "unit_monthly_rent_paise": 50_000,
-        "allocation_scope": "common"})
+        "allocation_scope": "common", "delivery_date": DELIVERED})
     assert added.status_code == 201, added.text
     body = added.json()
     assert (body["quantity"], body["unit_monthly_rent_paise"], body["monthly_rent_paise"]) == (
@@ -1375,7 +1432,7 @@ def test_quantity_over_http(api):
     assert api.patch(url, json={"quantity": 0}).status_code == 422
     assert api.post(f"{base}/items", json={
         "name": "Chair", "quantity": 3, "monthly_rent_paise": 100_000,
-        "allocation_scope": "common"}).status_code == 422
+        "allocation_scope": "common", "delivery_date": DELIVERED}).status_code == 422
 
 
 # ----------------------------------------------------------- retirement --
@@ -1416,7 +1473,7 @@ def test_wrong_furniture_transactions_are_deleted_over_http(api):
     base = "/api/services/furniture"
     api.post(f"{base}/setup", params={"month": MONTH}, json={"provider_name": "Furlenco"})
     api.post(f"{base}/items", json={"name": "Sofa", "monthly_rent_paise": 90_000,
-                                    "allocation_scope": "common"})
+                                    "allocation_scope": "common", "delivery_date": DELIVERED})
     assert api.post(f"{base}/generate-cycle", json={"settlement_month": MONTH}).status_code in (
         200, 201)
     payout = api.post(f"{base}/disburse-payout", json={
@@ -1446,15 +1503,17 @@ def test_furniture_rental_over_http(api):
     assert sofa.status_code == 201, sofa.text
     desk = api.post(f"{base}/items", json={
         "name": "Desk", "category": "workstation", "monthly_rent_paise": 30_000,
-        "allocation_scope": "resident", "assigned_resident_id": "alice"}).json()
+        "allocation_scope": "resident", "assigned_resident_id": "alice", "delivery_date": DELIVERED}).json()
     assert api.patch(f"{base}/items/{desk['item_id']}",
                      json={"monthly_rent_paise": 45_000}).json()["monthly_rent_paise"] == 45_000
     assert api.delete(f"{base}/items/{desk['item_id']}").status_code == 204
     assert api.patch(f"{base}/items/{desk['item_id']}", json={"name": "x"}).status_code == 404
 
     for body in ({"name": "Lamp", "category": "lighting", "monthly_rent_paise": 1000,
-                  "allocation_scope": "common"},
+                  "allocation_scope": "common", "delivery_date": DELIVERED},
                  {"name": "Lamp", "category": "other", "monthly_rent_paise": 0,
+                  "allocation_scope": "common", "delivery_date": DELIVERED},
+                 {"name": "Lamp", "category": "other", "monthly_rent_paise": 1000,
                   "allocation_scope": "common"}):
         assert api.post(f"{base}/items", json=body).status_code == 422, body
     assert api.post(f"{base}/generate-cycle", json={"settlement_month": "2026-13"}).status_code == 422
@@ -1471,7 +1530,8 @@ def test_paying_the_bill_over_http(api):
     api.post(f"{base}/setup", params={"month": MONTH},
              json={"provider_name": "Furlenco", "gst_rate_percent": 0})
     api.post(f"{base}/items", json={"name": "Sofa", "category": "living_room",
-                                    "monthly_rent_paise": 90_000, "allocation_scope": "common"})
+                                    "monthly_rent_paise": 90_000, "allocation_scope": "common",
+                                    "delivery_date": DELIVERED})
     payout = {"settlement_month": MONTH, "disbursement_mode": "pool", "reference": "UTR-1",
               "disbursed_date": "2026-11-05", "amount_paise": 30_000}
     assert api.post(f"{base}/disburse-payout", json=payout).status_code == 409, \
@@ -1744,16 +1804,16 @@ def test_gst_on_the_bill_over_http(api):
     setup = api.post(f"{base}/setup", params={"month": MONTH}, json={"provider_name": "Furlenco"})
     assert setup.json()["config"]["gst_rate_percent"] == 18.0
     sofa = api.post(f"{base}/items", json={"name": "Sofa", "monthly_rent_paise": SOFA,
-                                           "allocation_scope": "common"})
+                                           "allocation_scope": "common", "delivery_date": DELIVERED})
     assert sofa.status_code == 201, sofa.text
     api.post(f"{base}/items", json={"name": "Dining table", "monthly_rent_paise": DINING_TABLE,
-                                    "allocation_scope": "common"})
+                                    "allocation_scope": "common", "delivery_date": DELIVERED})
     # GST is the bill's, not an item's.
     for extra in ({"base_rent_paise": SOFA}, {"is_gst_exclusive": True},
                   {"gst_rate_percent": 18}):
         assert api.post(f"{base}/items", json={
             "name": "Lamp", "monthly_rent_paise": 10_000, "allocation_scope": "common",
-            **extra}).status_code == 422, extra
+            "delivery_date": DELIVERED, **extra}).status_code == 422, extra
     assert api.post(f"{base}/generate-cycle", json={"settlement_month": MONTH}).status_code == 201
 
     url = f"{base}/month/{MONTH}/billing"
