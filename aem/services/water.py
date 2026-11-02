@@ -17,8 +17,8 @@ kitty, and the kitty pays back what they paid beyond it.
 
 While the month is open its bill follows the contract and the flat: a new rate,
 or a resident moving in, re-splits it, and what each resident paid moves to
-their new share (see :mod:`aem.services.bill_shares`). It freezes for good once
-the month is over or its statement is finalized.
+their new share (see :mod:`aem.services.bill_shares`) -- a month gone by as much
+as this one, until its statement is finalized, when it freezes for good.
 """
 from __future__ import annotations
 
@@ -161,8 +161,9 @@ def _recorded_bill(uow: UnitOfWork, apartment_id: str, definition_id: str | None
 
 
 def _bill_is_live(month: str, statement: Mapping[str, Any] | None) -> bool:
-    """Whether a recorded bill still follows the contract and the flat."""
-    return month >= _current_month() and (statement is None or statement["status"] == "draft")
+    """Whether a recorded bill still follows the contract and the flat: until its
+    month's statement is finalized, a month gone by as much as this one."""
+    return statement is None or statement["status"] == "draft"
 
 
 def _bill_notes(service: Mapping[str, Any], config: Mapping[str, Any],
@@ -330,6 +331,20 @@ def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
     return _recorded_bill(uow, apartment_id, definition_id, month)
 
 
+def _sync_open_months(uow: UnitOfWork, apartment_id: str, *, timestamp: str,
+                      actor: str = "operator") -> None:
+    """Bring every live month's bill up to date with the contract: this month's,
+    and every month billed whose statement is still a draft. A month whose
+    statement is finalized keeps its bill as it stood."""
+    service = _live(uow, apartment_id)
+    config = uow.water.config(service["service_id"]) if service else None
+    months = {_current_month()}
+    if config and config["expense_definition_id"]:
+        months |= set(uow.furniture.bill_months(apartment_id, config["expense_definition_id"]))
+    for month in sorted(months):
+        _sync_live_month_bill(uow, apartment_id, month, timestamp=timestamp, actor=actor)
+
+
 # ----------------------------------------------------------------- overview --
 
 def get_overview(db: Database, apartment_id: str, settlement_month: str) -> dict[str, Any]:
@@ -357,7 +372,7 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
         bill = _month_bill(uow, apartment_id, config, month,
                            _on_the_bill(allocations, _stored_basis(allocations)))
         funding = service_bills.funding(uow, apartment_id, expense)
-        # As recorded: a month gone by keeps its bill, whatever the rate since.
+        # As recorded: a frozen month keeps its bill, whatever the rate since.
         total = expense["amount_paise"]
         charged = {rid: row["share_paise"] for rid, row in funding["charges"].items()
                    if row["share_paise"]}
@@ -461,7 +476,7 @@ def setup_water(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
     sent change.
 
     Each month's bill is recorded under the household's water definition; one is
-    created when the household has none. A new rate moves the open month's bill
+    created when the household has none. A new rate moves every open month's bill
     with it -- refused if the kitty could not follow (see
     :func:`_sync_live_month_bill`). Returns the overview of `settlement_month`,
     or of this month."""
@@ -523,9 +538,9 @@ def setup_water(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
                              old_value={key: {**before_config, **service}.get(key)
                                         for key in changed},
                              new_value=changed)
-        # The open month follows the contract.
-        _sync_live_month_bill(uow, apartment_id, _current_month(), timestamp=timestamp,
-                              actor=actor)
+        # Every open month follows the contract: this one, and each billed whose
+        # statement is still a draft.
+        _sync_open_months(uow, apartment_id, timestamp=timestamp, actor=actor)
         return _overview(uow, apartment_id, month)
 
 

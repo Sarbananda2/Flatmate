@@ -1063,21 +1063,30 @@ def test_the_monthly_bill_is_live_and_tops_up_when_items_or_providers_are_added(
     assert validation.validate(apartment, APARTMENT)["issues"] == []
     assert sum(_net(apartment).values()) == 0
 
-    # The month over, its bill is kept as it stood -- what each provider was owed
-    # included, though a lamp delivered in it is billed from December.
+    # The month over, its bill still follows its items until its statement is
+    # finalized: a lamp delivered in it is billed in it, as well as from December.
     november["now"] = "2026-12-05T09:00:00+05:30"
-    _item(apartment, "Lamp", 10_000, service_id=furlenco_id, delivery_date="2026-11-20")
+    lamp = _item(apartment, "Lamp", 10_000, service_id=furlenco_id, delivery_date="2026-11-20")
+    month = _month(apartment)
+    assert (month["bill_state"], month["total_paise"]) == ("live", 90_000)
+    assert _payouts(month) == {"Furlenco": (60_000, 60_000, "pending"),
+                               "Rentomojo": (30_000, 0, "disbursed")}
+    # Finalized, it is kept as it stood -- what each provider was owed included.
+    statement = statements.create_monthly_statement(apartment, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(apartment, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
+    furniture.update_item(apartment, APARTMENT, lamp["item_id"], {"monthly_rent_paise": 20_000})
     month = _month(apartment)
     assert (month["bill_state"], month["total_paise"], month["subtotal_base_paise"]) == (
-        "frozen", 80_000, 80_000)
-    assert _payouts(month) == {"Furlenco": (50_000, 50_000, "pending"),
+        "frozen", 90_000, 90_000)
+    assert _payouts(month) == {"Furlenco": (60_000, 60_000, "pending"),
                                "Rentomojo": (30_000, 0, "disbursed")}
     december = _month(apartment, "2026-12")
-    assert (december["bill_state"], december["total_paise"]) == ("live", 90_000)
+    assert (december["bill_state"], december["total_paise"]) == ("live", 100_000)
     assert [(row["settlement_period"], row["amount_paise"]) for row in _rows(
         apartment, "SELECT * FROM expense_instance ORDER BY settlement_period")] == [
-        (MONTH, 80_000), ("2026-12", 90_000)]
-    assert validation.validate(apartment, APARTMENT)["issues"] == []
+        (MONTH, 90_000), ("2026-12", 100_000)]
 
 
 def test_a_live_bill_goes_with_its_last_item_unless_paid_and_freezes_with_its_statement(
@@ -1203,8 +1212,8 @@ def test_an_item_cheaper_after_the_kitty_paid_the_provider_is_owed_back_to_all(a
     assert set(_net(apartment).values()) == {0}
 
 
-def test_a_month_gone_by_keeps_its_bill_payouts_and_shares_as_prices_change(apartment,
-                                                                           november):
+def test_a_finalized_month_keeps_its_bill_payouts_and_shares_as_prices_change(apartment,
+                                                                             november):
     november["now"] = "2026-10-10T09:00:00+05:30"
     furlenco_id = _setup(apartment, provider_name="Furlenco", billing_day_of_month=5,
                          gst_rate_percent=18)["service"]["service_id"]
@@ -1226,7 +1235,14 @@ def test_a_month_gone_by_keeps_its_bill_payouts_and_shares_as_prices_change(apar
         apartment, APARTMENT, "2026-10", disbursement_mode="pool", service_id=rentomojo_id,
         reference="UTR-OCT-2", disbursed_date="2026-10-09")
 
+    # November: October is still open until its statement is finalized; then it
+    # is its snapshot.
     november["now"] = "2026-11-10T09:00:00+05:30"
+    assert _month(apartment, "2026-10")["bill_state"] == "live"
+    statement = statements.create_monthly_statement(apartment, apartment_id=APARTMENT,
+                                                    settlement_month="2026-10")
+    statements.finalize_statement(apartment, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
     october = _month(apartment, "2026-10")
     # ₹2,542.37 and ₹900.00 before 18% GST: ₹3,442.37 and ₹619.63, ₹4,062.00 --
     # ₹3,000.00 of it Furlenco's and ₹1,062.00 Rentomojo's.
@@ -1658,12 +1674,21 @@ def test_a_charged_total_stands_only_while_the_items_come_to_what_they_did(apart
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
-def test_a_month_gone_by_keeps_its_gst_and_total(apartment, november):
+def test_a_month_gone_by_keeps_its_gst_and_total_once_finalized(apartment, november):
     _gst_month(apartment, november)
     _billing(apartment, charged=263_706)
     _pay_in(apartment, "alice", 87_902)
 
+    # December: November is still open, and its GST and total can still be set.
     november["now"] = "2026-12-03T09:00:00+05:30"
+    assert _month(apartment)["bill_state"] == "live"
+    assert _billing(apartment, charged=263_705)["charged_total_override_paise"] is None
+    _billing(apartment, charged=263_706)
+    # Its statement finalized, it is its snapshot.
+    statement = statements.create_monthly_statement(apartment, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(apartment, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
     before = _month(apartment)
     assert (before["bill_state"], _gst(before)) == (
         "frozen", (223_479, 18.0, 40_226, 263_705, 263_706, 40_227, 263_706))

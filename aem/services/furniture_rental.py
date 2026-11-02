@@ -482,9 +482,9 @@ def _attach_funding(uow: UnitOfWork, apartment_id: str, bill: dict[str, Any],
 #
 # A month's bill is recorded as soon as the month has anything in the flat to
 # bill, and follows its items -- added, changed, returned or removed, from any
-# provider -- for as long as the month is open. It freezes for good when the
-# month is over, or sooner if the month's statement is finalized: that is the
-# month's snapshot. A future month is only a preview until it begins, and a
+# provider -- for as long as the month is open: until its statement is
+# finalized, however long ago the month was. That is the month's snapshot, and
+# it freezes for good. A future month is only a preview until it begins, and a
 # month before furniture rental was set up is not billed by itself.
 
 def _current_month() -> str:
@@ -492,8 +492,9 @@ def _current_month() -> str:
 
 
 def _bill_is_live(month: str, statement: Mapping[str, Any] | None) -> bool:
-    """Whether a recorded bill still follows its items."""
-    return month >= _current_month() and (statement is None or statement["status"] == "draft")
+    """Whether a recorded bill still follows its items: until its month's
+    statement is finalized, a month gone by as much as this one."""
+    return statement is None or statement["status"] == "draft"
 
 
 #: The totals a recorded bill keeps, so a month gone by reads as it was billed.
@@ -795,14 +796,14 @@ def _sync_live_month_bill(uow: UnitOfWork, apartment_id: str, month: str, *,
 def _sync_open_months(uow: UnitOfWork, apartment_id: str, *, timestamp: str,
                       actor: str = "operator") -> None:
     """After an item changes, bring every live month's bill up to date with it:
-    this month's and any later one's, while its statement is a draft. A month
-    gone by keeps its bill as it stood. The change is refused if the kitty has
-    already paid a resident back more than a bill would then owe them."""
+    this month's, and every month billed whose statement is still a draft,
+    gone by or ahead. A month whose statement is finalized keeps its bill as it
+    stood. The change is refused if the kitty has already paid a resident back
+    more than a bill would then owe them."""
     definition_id = _definition_id(uow, apartment_id)
     months = {_current_month()}
     if definition_id:
-        months |= {month for month in uow.furniture.bill_months(apartment_id, definition_id)
-                   if month >= _current_month()}
+        months |= set(uow.furniture.bill_months(apartment_id, definition_id))
     for month in sorted(months):
         _sync_live_month_bill(uow, apartment_id, month, timestamp=timestamp, actor=actor)
 
@@ -883,8 +884,9 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
     bill["statement_status"] = statement["status"] if statement else None
     bill["can_generate"] = (expense is None and bill["blocked_reason"] is None
                             and (statement is None or statement["status"] == "draft"))
-    # 'live': billed and following its items; 'frozen': the month's snapshot;
-    # 'upcoming': not begun; 'not_billed': nothing to bill, or before the rental.
+    # 'live': billed and following its items, until its statement is finalized;
+    # 'frozen': the month's snapshot; 'upcoming': not begun; 'not_billed':
+    # nothing to bill, or before the rental.
     bill["bill_state"] = (("live" if _bill_is_live(month, statement) else "frozen") if expense
                           else "upcoming" if month > _current_month() else "not_billed")
     # Whether a payment or payout recorded by mistake can still be deleted.
@@ -1279,9 +1281,9 @@ def set_month_billing(db: Database, apartment_id: str, settlement_month: str, *,
     bills the month as worked out; any other is the month's total -- never below
     its items' rents, nor with GST of more than them -- for as long as its items
     come to what they do now. The shares follow, and what residents have paid
-    moves with them (see :func:`_sync_live_month_bill`). A month gone by, or
-    with its statement finalized, never changes, and a month not yet billed
-    takes only the rate.
+    moves with them (see :func:`_sync_live_month_bill`). A month whose
+    statement is finalized never changes, and a month not yet billed takes
+    only the rate.
     """
     month = normalize_month(settlement_month, "settlement_month")
     rate = _gst_rate(gst_rate_percent)

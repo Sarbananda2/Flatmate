@@ -108,7 +108,8 @@ def set_month_billing(payload: FurnitureBillingRequest, db: Db, apartment_id: Ap
     subscriptions' rate for the months after too. ``charged_total_paise`` is the
     invoice's total where its GST is rounded another way; null bills the month
     as worked out. The shares, and what residents have paid towards them,
-    follow. A month gone by never changes. Returns the month's overview."""
+    follow. A month whose statement is finalized never changes. Returns the
+    month's overview."""
     try:
         return furniture_rental.set_month_billing(
             db, apartment_id, settlement_month, gst_rate_percent=payload.gst_rate_percent,

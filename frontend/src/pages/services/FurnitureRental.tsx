@@ -1071,10 +1071,12 @@ function ItemDetailModal({
 
 /* ------------------------------------------------- 3. the month's bill -- */
 
-/** Whether the month's GST and total can still change: it is open, or not begun. */
+/**
+ * Whether the month's GST and total can still change: until its statement is
+ * finalized, a month gone by as much as this one or one ahead.
+ */
 function billIsOpen(bill: FurnitureMonthBill): boolean {
-  if (bill.bill_state === 'live' || bill.bill_state === 'upcoming') return true
-  return bill.bill_state === 'not_billed' && bill.settlement_month >= todayIso().slice(0, 7)
+  return bill.bill_state === 'live' || bill.statement_status === 'draft' || bill.statement_status == null
 }
 
 /**

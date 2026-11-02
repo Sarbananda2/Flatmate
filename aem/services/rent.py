@@ -32,8 +32,8 @@ Rules this module holds to (see ``docs/ACCOUNTING_RULES.md``):
   whenever they moved in or out. Who takes part is settled when the month is
   charged; leaving somebody out is an explicit decision made then.
 * **An open month follows its lease** -- see "the live cycle" below -- and
-  freezes as its snapshot once it is over, finalized, or paid to the landlord
-  in full.
+  freezes as its snapshot once its statement is finalized, however long ago
+  the month was.
 * **Remainder paise** that cannot be divided go one each to non-payers first,
   in resident-ID order, and to the resident who paid the landlord last.
 * **The shares always sum to the rent exactly.**
@@ -931,9 +931,9 @@ def _preview(uow: UnitOfWork, apartment_id: str, settlement_month: str,
 #
 # A month's rent is charged as soon as the month begins, and follows the lease --
 # its rent, its agreement model, and under a room-tiered model the rooms' base
-# rents -- for as long as the month is open, however much has been paid. It
-# freezes for good when the month is over or its statement is finalized: that is
-# the month's snapshot. A future month is only a preview until it begins, and a
+# rents -- for as long as the month is open, however much has been paid: until
+# its statement is finalized, a month gone by as much as this one. It then
+# freezes for good: that is the month's snapshot. A future month is only a preview until it begins, and a
 # month before the lease was set up is charged only by hand.
 #
 # Who a month charges is settled when it is charged: a resident who moves in
@@ -959,8 +959,9 @@ def _current_month() -> str:
 
 
 def _cycle_is_live(month: str, statement: Mapping[str, Any] | None) -> bool:
-    """Whether a month's rent cycle still follows the lease and room rents."""
-    return month >= _current_month() and (statement is None or statement["status"] == "draft")
+    """Whether a month's rent cycle still follows the lease and room rents:
+    until its month's statement is finalized, a month gone by as much as this one."""
+    return statement is None or statement["status"] == "draft"
 
 
 def _rent_for_month(uow: UnitOfWork, config: Mapping[str, Any], month: str) -> int:
@@ -976,8 +977,8 @@ def _rent_for_month(uow: UnitOfWork, config: Mapping[str, Any], month: str) -> i
 
 def _cycle_state(cycle: Mapping[str, Any] | None, month: str,
                  statement: Mapping[str, Any] | None) -> str:
-    """'live': charged, and following the lease -- for as long as the month is
-    open, whoever has been paid; 'frozen': the month's snapshot; 'upcoming': not
+    """'live': charged, and following the lease -- until its statement is
+    finalized, whoever has been paid; 'frozen': the month's snapshot; 'upcoming': not
     begun; 'not_generated': not charged."""
     if cycle is not None:
         return "live" if _cycle_is_live(month, statement) else "frozen"
@@ -1174,16 +1175,15 @@ def _splits_by_room(uow: UnitOfWork, apartment_id: str, month: str,
 def sync_open_rent_cycles(uow: UnitOfWork, apartment_id: str, *, timestamp: str | None = None,
                           actor: str = "operator", rooms_changed: bool = False) -> None:
     """After the lease or the rooms change, bring every open month up to date:
-    this month and any later one charged already, while its statement is a
-    draft. A month gone by keeps its rent as it stood. The change is refused if
+    this month and every month charged already, gone by or ahead, while its
+    statement is a draft. A month whose statement is finalized keeps its rent as
+    it stood. The change is refused if
     the kitty has already paid a resident back more than a month would then owe
     them. ``rooms_changed`` limits it to the months charged by room."""
     config = _config_row(uow, apartment_id)
     if config is None:
         return
-    current = _current_month()
-    months = {current} | {month for month in uow.rent.open_cycle_months(apartment_id)
-                          if month >= current}
+    months = {_current_month()} | set(uow.rent.open_cycle_months(apartment_id))
     for month in sorted(months):
         if rooms_changed and not _splits_by_room(uow, apartment_id, month, config):
             continue
@@ -1254,8 +1254,8 @@ def configure_rent_billing(db: Database, apartment_id: str, settlement_month: st
     the lease rent, nor with GST of more than it -- while the lease rent is what
     it is now. The shares follow, split as the agreement says and brought to the
     total to the paisa, and what residents have paid moves with them. A month
-    gone by, or with its statement finalized, never changes; a month not charged
-    yet has no bill to set. Returns the month as :func:`rent_month_overview`
+    whose statement is finalized never changes; a month not charged yet has no
+    bill to set. Returns the month as :func:`rent_month_overview`
     gives it.
     """
     settlement_month = normalize_month(settlement_month, "settlement_month")

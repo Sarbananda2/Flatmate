@@ -891,11 +891,21 @@ describe('FurnitureRental', () => {
       })
     })
 
-    it('keeps a month gone by as it was billed, with nothing to configure', async () => {
-      show(overview({ month: withGst({ bill_state: 'frozen' }) }), {}, '/?tab=items')
+    it('keeps a month whose statement is finalized as it was billed, with nothing to configure', async () => {
+      show(
+        overview({ month: withGst({ bill_state: 'frozen', statement_status: 'finalized_correction_window' }) }),
+        {},
+        '/?tab=items',
+      )
       const panel = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
       expect(panel).toHaveTextContent('November 2026 is closed')
       expect(within(panel).queryByRole('button', { name: 'Configure GST & Total' })).toBeNull()
+    })
+
+    it('still configures a month gone by while its statement is a draft', async () => {
+      show(overview({ month: withGst({ settlement_month: '2026-10', bill_state: 'live' }) }), {}, '/?tab=items')
+      const panel = (await screen.findByRole('heading', { name: 'Monthly Bill' })).closest('section')!
+      expect(within(panel).getByRole('button', { name: 'Configure GST & Total' })).toBeInTheDocument()
     })
 
     it('shows a month billed before GST was on the bill without a rate', async () => {

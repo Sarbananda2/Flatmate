@@ -1982,8 +1982,9 @@ def test_each_month_is_charged_by_itself_once_it_begins(apartment, clock):
     december = rent.rent_month_overview(apartment, APARTMENT, "2026-12")
     assert (december["month_state"], december["cycle"]["total_rent_paise"], december["preview"]) == (
         "live", 4_500_000, None)
-    # The months gone by are their snapshots; a month before the lease is charged by hand only.
-    assert rent.get_rent_cycle(apartment, APARTMENT, MONTH)["cycle_state"] == "frozen"
+    # A month gone by stays open until its statement is finalized; a month before
+    # the lease is charged by hand only.
+    assert rent.get_rent_cycle(apartment, APARTMENT, MONTH)["cycle_state"] == "live"
     assert rent.get_rent_cycle(apartment, APARTMENT, "2026-09") is None
     assert len(_rows(apartment, "SELECT 1 FROM rent_cycle")) == 3
     assert validation.validate(apartment, APARTMENT)["issues"] == []
@@ -2101,15 +2102,21 @@ def test_a_rent_gone_below_what_a_resident_paid_the_landlord_is_owed_back_to_the
     assert sum(_positions(apartment).values()) == 0
 
 
-def test_a_month_gone_by_keeps_its_rent_payouts_and_shares_as_the_rent_changes(apartment,
-                                                                              clock):
+def test_a_finalized_month_keeps_its_rent_payouts_and_shares_as_the_rent_changes(apartment,
+                                                                                clock):
     clock["now"] = "2026-10-10T09:00:00+05:30"
     _lease(apartment)
     # October: Bob paid the landlord the whole ₹45,000, and Alice her share into the kitty.
     _tranche(apartment, 4_500_000, "resident_advance", month="2026-10",
              funding_resident_id="bob", reference="UTR-OCT")
     _pay(apartment, "alice", 1_500_000, month="2026-10")
+    # November: October is open until its statement is finalized, then its snapshot.
     clock["now"] = "2026-11-10T09:00:00+05:30"
+    assert rent.get_rent_cycle(apartment, APARTMENT, "2026-10")["cycle_state"] == "live"
+    statement = statements.create_monthly_statement(apartment, apartment_id=APARTMENT,
+                                                    settlement_month="2026-10")
+    statements.finalize_statement(apartment, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
     october = rent.get_rent_cycle(apartment, APARTMENT, "2026-10")
     assert october["cycle_state"] == "frozen"
 
@@ -2268,13 +2275,14 @@ def test_a_closed_month_keeps_its_rent_whatever_the_lease_says_later(apartment, 
             paid_out["disbursement_status"], paid_out["remaining_disbursement_paise"]) == (
         "live", 5_000_000, "partially_disbursed", 200_000)
 
-    # And so is a month that is over: January is charged the new rent by itself.
+    # And so is a month that is over, until its statement is finalized: December
+    # follows the new rent too, and January is charged it by itself.
     clock["now"] = "2027-01-04T09:00:00+05:30"
     _lease(apartment, monthly_rent_paise=5_100_000)
     assert [(row["settlement_period"], row["amount_paise"]) for row in _rows(
         apartment, "SELECT settlement_period, amount_paise FROM expense_instance "
                    "ORDER BY settlement_period")] == [
-        (MONTH, 4_500_000), ("2026-12", 5_000_000), ("2027-01", 5_100_000)]
+        (MONTH, 4_500_000), ("2026-12", 5_100_000), ("2027-01", 5_100_000)]
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
@@ -2623,7 +2631,7 @@ def test_a_rent_split_by_room_carries_its_gst_in_proportion(apartment, clock):
     assert validation.validate(apartment, APARTMENT)["issues"] == []
 
 
-def test_a_charged_total_lasts_while_the_lease_rent_does_and_a_month_gone_by_keeps_its_bill(
+def test_a_charged_total_lasts_while_the_lease_rent_does_and_a_finalized_month_keeps_its_bill(
         apartment, clock):
     _lease(apartment)
     _billing(apartment, rate=18, charged=5_310_001)
@@ -2635,8 +2643,15 @@ def test_a_charged_total_lasts_while_the_lease_rent_does_and_a_month_gone_by_kee
     cycle = rent.get_rent_cycle(apartment, APARTMENT, MONTH)
     assert _bill(cycle) == (4_800_000, 18.0, 864_000, 5_664_000, None, 864_000, 5_664_000)
 
-    # December: November is its snapshot, and December carries no GST of its own.
+    # December: November is still open, its GST still set from it, until its
+    # statement is finalized; December carries no GST of its own.
     clock["now"] = "2026-12-03T09:00:00+05:30"
+    assert _billing(apartment, rate=12)["total_rent_paise"] == 5_376_000
+    _billing(apartment, rate=18)
+    statement = statements.create_monthly_statement(apartment, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(apartment, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
     with pytest.raises(ConflictError) as refused:
         _billing(apartment, rate=12)
     assert refused.value.code == "rent_cycle_frozen"

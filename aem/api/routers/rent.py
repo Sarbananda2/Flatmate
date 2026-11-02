@@ -129,7 +129,8 @@ def configure_billing(payload: RentBillingRequest, db: Db, apartment_id: Apartme
     """GST at ``gst_rate_percent`` on the lease rent, none unless set;
     ``charged_total_paise`` is the invoice's total where it rounds its GST
     another way, and null bills the month as worked out. The shares, and what
-    residents have paid towards them, follow. A month gone by never changes.
+    residents have paid towards them, follow. A month whose statement is
+    finalized never changes.
     Returns the month as ``GET /cycle/{settlement_month}`` gives it."""
     try:
         return rent.configure_rent_billing(

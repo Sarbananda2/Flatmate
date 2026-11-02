@@ -2,8 +2,9 @@
 
 These tests pin what reaches the ledger: the rate split equally to the paisa,
 the two steps of paying it -- into the kitty, then out to the supplier -- the
-kitty paying back whoever paid the supplier beyond their share, and an open
-month following the contract and the flat while a month gone by never changes.
+kitty paying back whoever paid the supplier beyond their share, and a month
+following the contract and the flat -- one gone by too -- until its statement
+is finalized.
 """
 from __future__ import annotations
 
@@ -13,7 +14,15 @@ import pytest
 
 from aem.config import get_settings
 from aem.errors import ConflictError, ValidationError
-from aem.services import definitions, expenses, reconciliation, residents, validation, water
+from aem.services import (
+    definitions,
+    expenses,
+    reconciliation,
+    residents,
+    statements,
+    validation,
+    water,
+)
 
 from .conftest import APARTMENT
 from .support import connect, sign_in
@@ -224,18 +233,34 @@ def test_the_open_month_follows_a_new_flatmate_and_a_new_rate(apartment, clock):
     assert sum(_net(apartment).values()) == 0
 
 
-def test_a_month_gone_by_keeps_its_bill(apartment, clock):
+def test_a_month_gone_by_follows_the_contract_until_its_statement_is_finalized(apartment,
+                                                                               clock):
     _setup(apartment)
     _pay_in(apartment, "alice", 20_000)
-    before = _month(apartment)
 
+    # December: November is still open, so a new rate reaches it too, and
+    # Alice's ₹200 now stands against a ₹250 share.
     clock["now"] = "2026-12-03T09:00:00+05:30"
+    _setup(apartment, monthly_rate_paise=75_000)
+    assert (_month(apartment)["bill_state"], _shares(_month(apartment))) == (
+        "live", {"alice": 25_000, "bob": 25_000, "chris": 25_000})
+    assert _standing(apartment)["alice"] == (25_000, 20_000, 5_000, "partial")
+    # A payment for it is still taken.
+    _pay_in(apartment, "alice", 5_000)
+
+    # Its statement finalized, it is its snapshot.
+    statement = statements.create_monthly_statement(apartment, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(apartment, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
+    before = _month(apartment)
+    assert (before["bill_state"], before["total_paise"]) == ("frozen", 75_000)
     _setup(apartment, monthly_rate_paise=90_000)
     residents.create_resident(apartment, apartment_id=APARTMENT, resident_id="dave",
                               display_name="Dave", active_from="2026-12-01")
     november = _month(apartment)
     assert (november["bill_state"], november["total_paise"], _shares(november)) == (
-        "frozen", 60_000, {"alice": 20_000, "bob": 20_000, "chris": 20_000})
+        "frozen", 75_000, {"alice": 25_000, "bob": 25_000, "chris": 25_000})
     assert november["shares"] == before["shares"]
     # December bills the new rate between the four.
     assert _shares(_month(apartment, "2026-12")) == {
