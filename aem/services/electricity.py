@@ -1240,6 +1240,36 @@ def delete_month_top_up(db: Database, apartment_id: str, settlement_month: str,
         return _month_overview(uow, apartment_id, month)
 
 
+def delete_payment(db: Database, apartment_id: str, payment_id: str, *,
+                   actor: str = "operator") -> dict[str, Any]:
+    """Delete, while its month is open, a flatmate's payment into the kitty
+    towards a month's electricity, or the kitty's reimbursement for one --
+    recorded by mistake. Returns the overview of that month.
+
+    A flatmate's share paid with their own meter recharge is refused: it goes
+    with that recharge (:func:`delete_month_top_up`), which brings the meter's
+    bill down too. See :mod:`aem.services.deletions`.
+    """
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        payout = uow.payments.service_payout_of(payment_id)
+        provider = next((row for row in _month_providers(uow, apartment_id).values()
+                         if payout is not None and row["service_id"] == payout["service_id"]),
+                        None)
+        if provider is not None:
+            payment = uow.payments.get(payment_id)
+            name = get_resident(uow, payment["payer_resident_id"], apartment_id)["display_name"]
+            raise ConflictError(
+                f"This payment is {name}'s share of their {provider['provider_name']} "
+                "recharge. Remove the recharge instead: the meter's bill comes down with it.",
+                code="electricity_payment_is_a_recharge",
+                details={"payment_id": payment_id, "disbursement_id": payout["disbursement_id"]})
+        deleted = deletions.delete_payment_in(uow, apartment_id=apartment_id, scope="service",
+                                              payment_id=payment_id, actor=actor)
+        return {**_month_overview(uow, apartment_id, deleted["settlement_month"]),
+                "deleted": deleted}
+
+
 def get_month(db: Database, apartment_id: str, settlement_month: str) -> dict[str, Any]:
     """A month's electricity: its bills and AC, how they are split, and where
     paying them stands -- into the kitty, and out to UPPCL and DG."""
@@ -1349,6 +1379,12 @@ def _month_overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str,
         top_ups.sort(key=lambda row: (row["recharged_on"], row["seq"]))
         for row in top_ups:
             del row["seq"]
+        # A flatmate's share paid with their own recharge goes with it.
+        recharge_of = {group["share_payment_id"]: group["tranches"][0]["disbursement_id"]
+                       for group in by_flatmate if group["share_payment_id"]}
+        for share in shares:
+            for payment in share["payments"]:
+                payment["top_up_id"] = recharge_of.get(payment["payment_id"])
 
     live = statement is None or statement["status"] == "draft"
     service_period = (_month_service_period(uow, definition_id, month)[1] if definition_id

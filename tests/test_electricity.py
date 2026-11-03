@@ -346,6 +346,58 @@ def test_removing_a_recharge_brings_its_meter_down_and_splits_the_month_again(fl
     assert validation.validate(flat, APARTMENT)["issues"] == []
 
 
+def test_a_payment_into_the_kitty_recorded_by_mistake_is_deleted(flat):
+    _top_up(flat, "uppcl", 200_000, by="sarbananda", day="03")
+    _top_up(flat, "uppcl", 150_000, by="arnab", day="12")
+    _top_up(flat, "dg", 50_000, by="sarbananda", day="20")
+    _set_ac(flat, sarbananda=97_105, arnab=89_548, anagarag=0)
+    month = _pay_in(flat, "anagarag", 71_116)
+    [paid] = next(row for row in month["shares"] if row["resident_id"] == "anagarag")["payments"]
+    assert paid["top_up_id"] is None
+
+    month = electricity.delete_payment(flat, APARTMENT, paid["payment_id"])
+    assert month["deleted"]["deleted_payment_ids"] == [paid["payment_id"]]
+    # Anagarag owes their share again; the recharges and everyone else stay.
+    assert _standing(month)["anagarag"] == (71_116, 0, 71_116, "unpaid")
+    assert _nets(month) == {"anagarag": -71_116, "arnab": -10_664, "sarbananda": 81_780}
+    assert month["total_paise"] == 400_000
+    assert validation.validate(flat, APARTMENT)["issues"] == []
+    with pytest.raises(NotFoundError):
+        electricity.delete_payment(flat, APARTMENT, paid["payment_id"])
+
+
+def test_a_share_paid_with_a_recharge_goes_only_with_the_recharge(flat):
+    month = _top_up(flat, "uppcl", 200_000, by="sarbananda", day="03")
+    [recharge] = month["top_ups"]
+    [paid] = next(row for row in month["shares"] if row["resident_id"] == "sarbananda")["payments"]
+    # It came with the recharge, and says so.
+    assert paid["top_up_id"] == recharge["top_up_id"]
+    with pytest.raises(ConflictError) as refused:
+        electricity.delete_payment(flat, APARTMENT, paid["payment_id"])
+    assert refused.value.code == "electricity_payment_is_a_recharge"
+    assert "Remove the recharge instead" in str(refused.value)
+    # Deleting it alone would leave the meter's bill up: nothing moved.
+    after = electricity.get_month(flat, APARTMENT, MONTH)
+    assert (after["total_paise"], _recharges(after)) == (
+        200_000, [("uppcl", 200_000, "flatmate", "sarbananda")])
+    assert _standing(after) == _standing(month)
+
+
+def test_a_payment_stays_once_its_month_is_finalized(flat):
+    _top_up(flat, "uppcl", 120_000)
+    month = _pay_in(flat, "arnab", 40_000)
+    [paid] = next(row for row in month["shares"] if row["resident_id"] == "arnab")["payments"]
+    statement = statements.create_monthly_statement(flat, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(flat, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
+    with pytest.raises(ConflictError) as refused:
+        electricity.delete_payment(flat, APARTMENT, paid["payment_id"])
+    assert refused.value.code == "statement_not_draft"
+    assert _standing(electricity.get_month(flat, APARTMENT, MONTH))["arnab"] == (
+        40_000, 40_000, 0, "paid")
+
+
 def test_the_ac_comes_out_of_what_was_recharged(flat):
     with pytest.raises(ConflictError) as nothing:
         _set_ac(flat, sarbananda=10_000)
@@ -452,3 +504,30 @@ def test_the_prepaid_meters_over_http(api):
         "settlement_month": MONTH, "recipient_resident_id": "arnab", "amount_paise": 1,
         "payment_date": f"{MONTH}-07"})
     assert nothing_owed.status_code == 404
+
+
+def test_a_payment_is_deleted_over_http(api):
+    base = "/api/electricity"
+    recharge = {"settlement_month": MONTH, "provider": "uppcl", "amount_paise": 120_000,
+                "disbursed_date": f"{MONTH}-03", "reference": "UTR-1"}
+    assert api.post(f"{base}/disburse-payout",
+                    json={**recharge, "disbursement_mode": "pool"}).status_code == 200
+    month = api.post(f"{base}/disburse-payout", json={
+        **recharge, "amount_paise": 30_000, "disbursement_mode": "resident_advance",
+        "funding_resident_id": "sarbananda", "reference": "UTR-2"}).json()
+    paid = api.post(f"{base}/record-payment", json={
+        "settlement_month": MONTH, "resident_id": "arnab", "amount_paise": 50_000,
+        "payment_date": f"{MONTH}-05"})
+    assert paid.status_code == 200, paid.text
+    [payment] = next(row for row in paid.json()["shares"] if row["resident_id"] == "arnab")["payments"]
+
+    deleted = api.delete(f"{base}/payments/{payment['payment_id']}")
+    assert deleted.status_code == 200, deleted.text
+    assert _standing(deleted.json())["arnab"] == (50_000, 0, 50_000, "unpaid")
+    assert api.delete(f"{base}/payments/{payment['payment_id']}").status_code == 404
+    # A share paid with a recharge goes with the recharge.
+    [with_recharge] = next(row for row in month["shares"]
+                           if row["resident_id"] == "sarbananda")["payments"]
+    refused = api.delete(f"{base}/payments/{with_recharge['payment_id']}")
+    assert (refused.status_code, refused.json()["error"]["code"]) == (
+        409, "electricity_payment_is_a_recharge")

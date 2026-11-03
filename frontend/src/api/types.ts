@@ -1983,7 +1983,8 @@ export interface ElectricityShare {
   /** Null until the month is recorded. */
   status: FurnitureShareStatus | null
   paid_date: string | null
-  payments: FurnitureShare['payments']
+  /** Into the kitty; `top_up_id` names the recharge a share was paid with, which it goes with. */
+  payments: Array<FurnitureShare['payments'][number] & { top_up_id: string | null }>
   /** Above zero the kitty owes them; below, they owe the kitty. */
   net_balance_paise: number
 }

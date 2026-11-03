@@ -217,6 +217,21 @@ def reimburse_from_kitty(payload: ElectricityReimburseRequest, db: Db,
         raise to_http(exc) from exc
 
 
+@router.delete("/payments/{payment_id}",
+               summary="Delete a resident's payment towards electricity recorded by mistake")
+def delete_payment(db: Db, apartment_id: ApartmentId, settings: AppSettings,
+                   payment_id: str = Path()) -> dict[str, Any]:
+    """A flatmate's payment into the kitty towards a month's electricity, or the
+    kitty's reimbursement for one, deleted outright while its month is open.
+    Refused for a share paid with a meter recharge: remove the recharge instead.
+    Returns that month's overview."""
+    try:
+        return electricity.delete_payment(db, apartment_id, payment_id,
+                                          actor=settings.operator_name)
+    except AemError as exc:
+        raise to_http(exc) from exc
+
+
 @router.delete("/month/{settlement_month}/top-ups/{top_up_id}",
                summary="Remove a meter recharge logged by mistake")
 def delete_top_up(db: Db, apartment_id: ApartmentId, settings: AppSettings,

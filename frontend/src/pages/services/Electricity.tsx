@@ -32,9 +32,18 @@ import {
   ReimburseDialog,
 } from '../../components/KittyReimbursement'
 import { DeleteTransactionDialog, type PendingDeletion } from '../../components/DeleteTransactionDialog'
-import { ServicePaymentDialog } from '../../components/ServicePaymentDialog'
+import { PAYMENT_MODES, ServicePaymentDialog } from '../../components/ServicePaymentDialog'
 import { useToast } from '../../components/Toast'
-import { BUTTON_PRIMARY, BUTTON_QUIET, BUTTON_SECONDARY, DetailFact, Panel, Rupees } from '../../components/ui'
+import {
+  BUTTON_PRIMARY,
+  BUTTON_QUIET,
+  BUTTON_SECONDARY,
+  DetailFact,
+  EmptyBlock,
+  MiniStat,
+  Panel,
+  Rupees,
+} from '../../components/ui'
 import { ApiError, api } from '../../api/client'
 import { useDebounced, useMutation, useResource } from '../../lib/useApi'
 import { formatDate, formatInr, formatMonth, paiseToInput, parseRupees, todayIso } from '../../lib/format'
@@ -59,6 +68,8 @@ export type ElectricityTab = (typeof ELECTRICITY_TABS)[number]['value']
 
 type Dialog =
   | { kind: 'pay_share'; share: ElectricityShare }
+  | { kind: 'share_statement'; share: ElectricityShare }
+  | { kind: 'delete_payment'; deletion: PendingDeletion }
   | { kind: 'top_up' }
   | { kind: 'top_up_detail'; topUp: ElectricityTopUp }
   | { kind: 'remove_top_up'; deletion: PendingDeletion }
@@ -151,6 +162,7 @@ export function Electricity({ month }: { month: string }) {
                   month={month}
                   data={data}
                   onPay={(share) => setDialog({ kind: 'pay_share', share })}
+                  onViewStatement={(share) => setDialog({ kind: 'share_statement', share })}
                 />
                 {/* What the kitty owes back to whoever recharged a meter beyond their share. */}
                 {data.reimbursements.length > 0 && (
@@ -208,6 +220,37 @@ export function Electricity({ month }: { month: string }) {
               deletion={dialog.deletion}
               onClose={() => setDialog(null)}
               onDeleted={() => done('Recharge removed')}
+            />
+          )}
+          {dialog?.kind === 'share_statement' && (
+            <ElectricityStatementModal
+              month={month}
+              // The share as it now stands, not as it was when opened.
+              share={data.shares.find((row) => row.resident_id === dialog.share.resident_id) ?? dialog.share}
+              reimbursement={data.reimbursements.find(
+                (row) => row.recipient_resident_id === dialog.share.resident_id,
+              )}
+              onDeletePayment={
+                data.transactions_open
+                  ? (payment) =>
+                      setDialog({
+                        kind: 'delete_payment',
+                        deletion: {
+                          title: 'Delete this payment?',
+                          what: `${dialog.share.display_name}'s ${formatInr(payment.amount_paise)} payment into the House Kitty of ${formatDate(payment.payment_date)}.`,
+                          url: `${BASE}/payments/${encodeURIComponent(payment.payment_id)}`,
+                        },
+                      })
+                  : undefined
+              }
+              onClose={() => setDialog(null)}
+            />
+          )}
+          {dialog?.kind === 'delete_payment' && (
+            <DeleteTransactionDialog
+              deletion={dialog.deletion}
+              onClose={() => setDialog(null)}
+              onDeleted={() => done('Payment deleted')}
             />
           )}
           {dialog?.kind === 'pay_share' && (
@@ -771,10 +814,12 @@ function ResidentCollectionPanel({
   month,
   data,
   onPay,
+  onViewStatement,
 }: {
   month: string
   data: ElectricityMonth
   onPay: (share: ElectricityShare) => void
+  onViewStatement: (share: ElectricityShare) => void
 }) {
   // Who has paid what means something only once the month is recorded.
   const billed = data.expense != null
@@ -792,6 +837,7 @@ function ResidentCollectionPanel({
       status: billed ? collectionStatus(share) : null,
       canPay: billed && share.outstanding_paise > 0 && share.status !== 'funded_payout',
       onPay: () => onPay(share),
+      onViewStatement: () => onViewStatement(share),
     }
   })
   return (
@@ -802,5 +848,128 @@ function ResidentCollectionPanel({
     >
       <ResidentCollectionTable caption={`Electricity owed for ${formatMonth(month)}`} items={items} />
     </Panel>
+  )
+}
+
+/**
+ * A flatmate's electricity for the month: their share, what they have paid
+ * into the kitty towards it, payment by payment, and what the kitty owes them
+ * back for recharging beyond it.
+ */
+function ElectricityStatementModal({
+  month,
+  share,
+  reimbursement,
+  onDeletePayment,
+  onClose,
+}: {
+  month: string
+  share: ElectricityShare
+  /** What the kitty owes them for recharging the meters beyond their share, if anything. */
+  reimbursement?: KittyReimbursement
+  /** Deletes a payment recorded by mistake, while the month is open; without it none is offered. */
+  onDeletePayment?: (payment: ElectricityShare['payments'][number]) => void
+  onClose: () => void
+}) {
+  // Nothing is owed, or paid, until the month is recorded.
+  const billed = share.status != null
+  const modes = new Map(PAYMENT_MODES.map((mode) => [mode.value, mode.label]))
+  const dash = <span className="text-[var(--text-tertiary)]">—</span>
+  const extra = reimbursement?.net_reimbursement_owed_paise ?? 0
+  const pending = reimbursement?.pending_reimbursement_paise ?? 0
+  return (
+    <Modal title="Electricity Statement" description={`${share.display_name} · ${formatMonth(month)}`} onClose={onClose}>
+      <div className="stack">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <MiniStat
+            label="Share"
+            value={<Rupees paise={share.total_paise} />}
+            note={`Common: ${formatInr(share.common_share_paise)}${share.ac_paise > 0 ? ` · AC: ${formatInr(share.ac_paise)}` : ''}`}
+          />
+          <MiniStat label="Paid into Kitty" value={billed ? <Rupees paise={share.settled_paise} /> : dash} />
+          <MiniStat label="Still Owed" value={billed ? <Rupees paise={share.outstanding_paise} /> : dash} />
+        </div>
+
+        {reimbursement && extra > 0 && (
+          <Callout>
+            {share.display_name} advanced {formatInr(reimbursement.total_fronted_paise)} for prepaid meter top-ups,{' '}
+            {formatInr(extra)} beyond their share of {formatInr(share.total_paise)},{' '}
+            {pending === 0
+              ? 'which the House Kitty has reimbursed.'
+              : pending < extra
+                ? `which will be reimbursed via the House Kitty: ${formatInr(pending)} still to come.`
+                : 'which will be reimbursed via the House Kitty.'}
+          </Callout>
+        )}
+
+        <section aria-label="Payment history" className="space-y-3">
+          <h3 className="m-0 text-sm font-bold text-[var(--text-primary)]">Payment History</h3>
+          {share.payments.length === 0 ? (
+            <EmptyBlock title="No payments recorded yet for this month." />
+          ) : (
+            <>
+              <div className="overflow-x-auto min-w-0">
+                <table className="w-full text-left text-xs min-w-[480px] border-collapse">
+                  <caption className="sr-only">Payments towards {share.display_name}'s electricity share</caption>
+                  <thead>
+                    <tr className={TABLE_HEAD}>
+                      <th scope="col" className="pb-3 pr-3 font-bold text-center">Date</th>
+                      <th scope="col" className="pb-3 pr-3 font-bold text-center">Amount</th>
+                      <th scope="col" className="pb-3 pr-3 font-bold text-center">Mode</th>
+                      <th scope="col" className="pb-3 pr-3 font-bold text-center">Reference / UTR</th>
+                      {onDeletePayment && <th scope="col" className="pb-3 font-bold text-center">Actions</th>}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+                    {share.payments.map((payment) => (
+                      <tr key={payment.payment_id} className="align-middle">
+                        <td className="py-2.5 pr-3 text-center tabular">{formatDate(payment.payment_date)}</td>
+                        <td className="py-2.5 pr-3 text-center font-bold text-[var(--text-primary)]">
+                          <Rupees paise={payment.amount_paise} />
+                        </td>
+                        <td className="py-2.5 pr-3 text-center">
+                          {payment.top_up_id
+                            ? 'Meter recharge'
+                            : payment.payment_mode
+                              ? modes.get(payment.payment_mode)
+                              : dash}
+                        </td>
+                        <td className="py-2.5 pr-3 text-center tabular break-all text-[var(--text-primary)]">
+                          {payment.reference || dash}
+                        </td>
+                        {onDeletePayment && (
+                          <td className="py-2.5 text-center">
+                            {/* A share paid with a recharge goes with the recharge. */}
+                            {payment.top_up_id ? (
+                              dash
+                            ) : (
+                              <button
+                                type="button"
+                                className={BUTTON_QUIET}
+                                onClick={() => onDeletePayment(payment)}
+                                aria-label={`Delete the ${formatInr(payment.amount_paise)} payment of ${formatDate(payment.payment_date)}`}
+                              >
+                                <Trash2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                                Delete
+                              </button>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {onDeletePayment && share.payments.some((payment) => payment.top_up_id) && (
+                <p className="m-0 text-xs text-[var(--text-secondary)]">
+                  A share paid with a meter recharge goes with that recharge: remove it under Top-ups &amp; AC
+                  Allocations.
+                </p>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+    </Modal>
   )
 }

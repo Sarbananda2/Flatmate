@@ -77,6 +77,18 @@ const reimbursement = {
   reimbursements: [],
 }
 
+/** A payment into the kitty; `top_up_id` when it was a share paid with a recharge. */
+const paidIn = (paymentId: string, date: string, paise: number, extra: Record<string, unknown> = {}) => ({
+  payment_id: paymentId,
+  payment_date: date,
+  amount_paise: paise,
+  payment_mode: null,
+  reference: null,
+  note: 'Electricity for November 2026',
+  top_up_id: null,
+  ...extra,
+})
+
 /** November recharged and its AC set. */
 const recorded = (overrides: Record<string, unknown> = {}) => ({
   settlement_month: MONTH,
@@ -451,6 +463,136 @@ describe('Electricity', () => {
     expect(shares(within(panel).getByRole('row', { name: /^Arnab/ }))).toEqual(['—Not worked out', '—Not worked out'])
     expect(sent('POST', `/api/electricity/month/${MONTH}/preview`)).toBeUndefined()
     expect(within(panel).getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it("opens a flatmate's statement from their row: their share, what they recharged, and their payments", async () => {
+    show(
+      recorded({
+        shares: [
+          share('anagarag', 'Anagarag', 71116, 0),
+          share('arnab', 'Arnab', 71116, 89548),
+          share('sarbananda', 'Sarbananda', 71115, 97105, {
+            settled_paise: 168220,
+            paid_paise: 168220,
+            outstanding_paise: 0,
+            status: 'paid',
+            net_balance_paise: 81780,
+            payments: [paidIn('payment_s1', '2026-11-03', 168220, { reference: 'UTR-1', top_up_id: 'svcdisb_1' })],
+          }),
+        ],
+      }),
+    )
+    const owed = within(await section('Resident Collection')).getByRole('table', {
+      name: 'Electricity owed for November 2026',
+    })
+    await userEvent.click(within(owed).getByRole('row', { name: /Sarbananda/ }))
+    const statement = screen.getByRole('dialog', { name: 'Electricity Statement' })
+    expect(statement).toHaveTextContent('Sarbananda · November 2026')
+    expect(statement).toHaveTextContent('Share₹1,682.20Common: ₹711.15 · AC: ₹971.05')
+    expect(statement).toHaveTextContent('Paid into Kitty₹1,682.20')
+    expect(statement).toHaveTextContent('Still Owed₹0.00')
+    // They recharged beyond their share: the kitty pays them back the rest.
+    expect(statement).toHaveTextContent(
+      'Sarbananda advanced ₹2,500.00 for prepaid meter top-ups, ₹817.80 beyond their share of ₹1,682.20, which will be reimbursed via the House Kitty.',
+    )
+    const history = within(statement).getByRole('table', { name: "Payments towards Sarbananda's electricity share" })
+    expect(within(history).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Date',
+      'Amount',
+      'Mode',
+      'Reference / UTR',
+      'Actions',
+    ])
+    // Their share paid with a recharge goes only with the recharge.
+    expect(within(history).getAllByRole('row')[1]).toHaveTextContent('3 Nov 2026₹1,682.20Meter rechargeUTR-1—')
+    expect(within(history).queryByRole('button', { name: /^Delete/ })).toBeNull()
+    expect(statement).toHaveTextContent('A share paid with a meter recharge goes with that recharge')
+  })
+
+  it("deletes a flatmate's payment from their statement, once confirmed", async () => {
+    show(
+      recorded({
+        shares: [
+          share('anagarag', 'Anagarag', 71116, 0, {
+            settled_paise: 30000,
+            paid_paise: 30000,
+            outstanding_paise: 41116,
+            status: 'partial',
+            net_balance_paise: -41116,
+            payments: [paidIn('payment_g1', '2026-11-12', 30000, { payment_mode: 'upi', reference: 'UPI-7' })],
+          }),
+          share('arnab', 'Arnab', 71116, 89548),
+          share('sarbananda', 'Sarbananda', 71115, 97105),
+        ],
+      }),
+      { 'DELETE /api/electricity/payments/payment_g1': recorded() },
+    )
+    const owed = within(await section('Resident Collection')).getByRole('table', {
+      name: 'Electricity owed for November 2026',
+    })
+    const row = within(owed).getByRole('row', { name: /Anagarag/ })
+    row.focus()
+    await userEvent.keyboard('{Enter}')
+    const statement = screen.getByRole('dialog', { name: 'Electricity Statement' })
+    // No AC: their share is all common.
+    expect(statement).toHaveTextContent('Share₹711.16Common: ₹711.16Paid')
+    expect(statement).not.toHaveTextContent('advanced')
+    const history = within(statement).getByRole('table', { name: "Payments towards Anagarag's electricity share" })
+    expect(within(history).getAllByRole('row')[1]).toHaveTextContent('12 Nov 2026₹300.00UPIUPI-7')
+
+    await userEvent.click(within(history).getByRole('button', { name: 'Delete the ₹300.00 payment of 12 Nov 2026' }))
+    const confirm = screen.getByRole('dialog', { name: 'Delete this payment?' })
+    expect(confirm).toHaveTextContent("Anagarag's ₹300.00 payment into the House Kitty of 12 Nov 2026.")
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(sent('DELETE', '/api/electricity/payments/payment_g1')).toBeDefined())
+    expect(await screen.findByText('Payment deleted')).toBeInTheDocument()
+  })
+
+  it('shows a statement with nothing recorded yet', async () => {
+    show(empty)
+    const owed = within(await section('Resident Collection')).getByRole('table', {
+      name: 'Electricity owed for November 2026',
+    })
+    await userEvent.click(within(owed).getByRole('row', { name: /Arnab/ }))
+    const statement = screen.getByRole('dialog', { name: 'Electricity Statement' })
+    // Nothing is owed or paid until the month is recorded.
+    expect(statement).toHaveTextContent('Paid into Kitty—')
+    expect(statement).toHaveTextContent('Still Owed—')
+    expect(statement).toHaveTextContent('No payments recorded yet for this month.')
+  })
+
+  it("keeps a finalized month's payments in its statements", async () => {
+    show(
+      recorded({
+        bill_state: 'frozen',
+        can_record: false,
+        transactions_open: false,
+        statement_status: 'finalized_correction_window',
+        shares: [
+          share('anagarag', 'Anagarag', 71116, 0, {
+            settled_paise: 30000,
+            paid_paise: 30000,
+            outstanding_paise: 41116,
+            status: 'partial',
+            payments: [paidIn('payment_g1', '2026-11-12', 30000, { payment_mode: 'upi' })],
+          }),
+          share('arnab', 'Arnab', 71116, 89548),
+          share('sarbananda', 'Sarbananda', 71115, 97105),
+        ],
+      }),
+    )
+    const owed = within(await section('Resident Collection')).getByRole('table', {
+      name: 'Electricity owed for November 2026',
+    })
+    await userEvent.click(within(owed).getByRole('row', { name: /Anagarag/ }))
+    const history = within(screen.getByRole('dialog', { name: 'Electricity Statement' })).getByRole('table')
+    expect(within(history).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Date',
+      'Amount',
+      'Mode',
+      'Reference / UTR',
+    ])
+    expect(within(history).queryByRole('button')).toBeNull()
   })
 
   it('shows what each flatmate owes the kitty, and what it owes back', async () => {
