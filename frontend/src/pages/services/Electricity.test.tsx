@@ -1,0 +1,426 @@
+/**
+ * The electricity screen logs the prepaid meters' recharges, adds up what was
+ * recharged and the AC, and shows the split the backend works out from them:
+ * each flatmate's AC and an equal share of the rest. It sends every recharge,
+ * the AC and every payment in integer paise, exactly as the operator entered them.
+ *
+ * The household's own month: Sarbananda recharges UPPCL ₹2,000.00 and the DG
+ * ₹500.00, Arnab UPPCL ₹1,500.00 -- ₹4,000.00 in all; Sarbananda's AC ₹971.05,
+ * Arnab's ₹895.48, Anagarag's none. The spare paisa goes in resident order.
+ */
+import { afterEach, describe, expect, it } from 'vitest'
+import { MemoryRouter, useLocation } from 'react-router-dom'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { Electricity } from './Electricity'
+import { ToastProvider } from '../../components/Toast'
+import { RESIDENTS, installFetchStub, type Recorded } from '../../test/server'
+
+const MONTH = '2026-11'
+
+let stub: { calls: Recorded[]; restore: () => void } | null = null
+afterEach(() => {
+  stub?.restore()
+  stub = null
+})
+
+const PEOPLE = [
+  { resident_id: 'anagarag', display_name: 'Anagarag' },
+  { resident_id: 'arnab', display_name: 'Arnab' },
+  { resident_id: 'sarbananda', display_name: 'Sarbananda' },
+]
+
+function share(residentId: string, name: string, common: number, ac: number, overrides: Record<string, unknown> = {}) {
+  return {
+    resident_id: residentId,
+    display_name: name,
+    ac_paise: ac,
+    common_share_paise: common,
+    total_paise: common + ac,
+    paid_paise: 0,
+    settled_paise: 0,
+    outstanding_paise: common + ac,
+    status: 'unpaid',
+    paid_date: null,
+    payments: [],
+    net_balance_paise: -(common + ac),
+    ...overrides,
+  }
+}
+
+function topUp(id: string, key: 'uppcl' | 'dg', paise: number, on: string, by: [string, string] | null, reference: string) {
+  return {
+    top_up_id: id,
+    provider_key: key,
+    provider_name: key === 'uppcl' ? 'UPPCL (Grid)' : 'Diesel Generator (DG)',
+    amount_paise: paise,
+    recharged_on: on,
+    reference,
+    paid_by: by ? 'flatmate' : 'kitty',
+    resident_id: by?.[0] ?? null,
+    resident_name: by?.[1] ?? null,
+    note: null,
+  }
+}
+
+const reimbursement = {
+  recipient_resident_id: 'sarbananda',
+  recipient_name: 'Sarbananda',
+  total_fronted_paise: 250000,
+  payer_share_paise: 168220,
+  net_reimbursement_owed_paise: 81780,
+  reimbursed_so_far_paise: 0,
+  pending_reimbursement_paise: 81780,
+  kitty_cash_available_paise: 0,
+  reimbursable_paise: 0,
+  can_reimburse: false,
+  reimbursements: [],
+}
+
+/** November recharged and its AC set. */
+const recorded = (overrides: Record<string, unknown> = {}) => ({
+  settlement_month: MONTH,
+  service_period: '2026-10',
+  participants: PEOPLE,
+  components: [
+    { id: 'uppcl', name: 'UPPCL (Grid)', amount_paise: 350000 },
+    { id: 'dg', name: 'Diesel Generator (DG)', amount_paise: 50000 },
+  ],
+  ac_allocations: { anagarag: 0, arnab: 89548, sarbananda: 97105 },
+  total_paise: 400000,
+  total_ac_paise: 186653,
+  common_remainder_paise: 213347,
+  common_share_paise: 71115,
+  shares: [
+    share('anagarag', 'Anagarag', 71116, 0),
+    share('arnab', 'Arnab', 71116, 89548, {
+      settled_paise: 150000,
+      paid_paise: 150000,
+      outstanding_paise: 10664,
+      status: 'partial',
+      net_balance_paise: -10664,
+    }),
+    share('sarbananda', 'Sarbananda', 71115, 97105, {
+      settled_paise: 168220,
+      paid_paise: 168220,
+      outstanding_paise: 0,
+      status: 'paid',
+      net_balance_paise: 81780,
+    }),
+  ],
+  payouts: [],
+  top_ups: [
+    topUp('svcdisb_1', 'uppcl', 200000, '2026-11-03', ['sarbananda', 'Sarbananda'], 'UTR-1'),
+    topUp('svcdisb_2', 'uppcl', 150000, '2026-11-12', ['arnab', 'Arnab'], 'UTR-2'),
+    topUp('svcdisb_3', 'dg', 50000, '2026-11-20', ['sarbananda', 'Sarbananda'], 'UTR-3'),
+  ],
+  collected_paise: 318220,
+  collected_count: 1,
+  reimbursements: [reimbursement],
+  expense: { expense_id: 'electricity-1', description: 'Electricity for November 2026', amount_paise: 400000, statement_id: null },
+  foreign_expense: null,
+  statement_status: 'draft',
+  bill_state: 'live',
+  can_record: true,
+  transactions_open: true,
+  ...overrides,
+})
+
+/** November with nothing recharged yet. */
+const empty = recorded({
+  components: [
+    { id: 'uppcl', name: 'UPPCL (Grid)', amount_paise: 0 },
+    { id: 'dg', name: 'Diesel Generator (DG)', amount_paise: 0 },
+  ],
+  ac_allocations: {},
+  total_paise: 0,
+  total_ac_paise: 0,
+  common_remainder_paise: 0,
+  common_share_paise: 0,
+  shares: PEOPLE.map((person) =>
+    share(person.resident_id, person.display_name, 0, 0, { status: null, outstanding_paise: 0, net_balance_paise: 0 }),
+  ),
+  top_ups: [],
+  collected_paise: 0,
+  collected_count: 0,
+  reimbursements: [],
+  expense: null,
+  bill_state: 'not_billed',
+})
+
+/** Recharged ₹4,000.00, with no AC set yet. */
+const recharged = recorded({
+  ac_allocations: { anagarag: 0, arnab: 0, sarbananda: 0 },
+  total_ac_paise: 0,
+  common_remainder_paise: 400000,
+  common_share_paise: 133333,
+  shares: [share('anagarag', 'Anagarag', 133334, 0), share('arnab', 'Arnab', 133333, 0), share('sarbananda', 'Sarbananda', 133333, 0)],
+})
+
+const preview = {
+  settlement_month: MONTH,
+  components: recorded().components,
+  total_paise: 400000,
+  total_ac_paise: 186653,
+  common_remainder_paise: 213347,
+  common_share_paise: 71115,
+  residents: [
+    { resident_id: 'anagarag', display_name: 'Anagarag', common_share_paise: 71116, ac_paise: 0, responsibility_paise: 71116 },
+    { resident_id: 'arnab', display_name: 'Arnab', common_share_paise: 71116, ac_paise: 89548, responsibility_paise: 160664 },
+    { resident_id: 'sarbananda', display_name: 'Sarbananda', common_share_paise: 71115, ac_paise: 97105, responsibility_paise: 168220 },
+  ],
+}
+
+function Where() {
+  const location = useLocation()
+  return <output aria-label="location">{location.pathname + location.search}</output>
+}
+
+/** The page at `path`: `/?tab=allocations` opens on the recharges and AC. */
+function show(payload: unknown, routes: Record<string, unknown> = {}, path = '/') {
+  stub = installFetchStub({
+    routes: {
+      [`/api/electricity/month/${MONTH}`]: payload,
+      '/api/residents': RESIDENTS,
+      [`POST /api/electricity/month/${MONTH}/preview`]: preview,
+      'POST /api/electricity/bills': recorded(),
+      'POST /api/electricity/record-payment': recorded(),
+      'POST /api/electricity/disburse-payout': recorded(),
+      [`DELETE /api/electricity/month/${MONTH}/top-ups/svcdisb_3`]: recorded(),
+      ...routes,
+    } as never,
+  })
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <ToastProvider>
+        <Electricity month={MONTH} />
+        <Where />
+      </ToastProvider>
+    </MemoryRouter>,
+  )
+}
+
+const sent = (method: string, path: string) =>
+  stub!.calls.find((call) => call.method === method && call.path.split('?')[0] === path)
+
+const section = async (title: string) => (await screen.findByRole('heading', { name: title })).closest('section')!
+
+/** Give a flatmate an AC row, through the selector. */
+async function addAc(panel: HTMLElement, residentId: string) {
+  await userEvent.selectOptions(within(panel).getByLabelText('Flatmate with an AC'), residentId)
+  await userEvent.click(within(panel).getByRole('button', { name: 'Add AC' }))
+}
+
+const ALLOCATIONS = '/?tab=allocations'
+
+describe('Electricity', () => {
+  it('opens on the settlement, and moves to the recharges and AC through the address', async () => {
+    show(recorded())
+    expect(await screen.findByRole('tab', { name: 'Monthly Settlement' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tablist', { name: 'Electricity' })).toBeInTheDocument()
+    // What each flatmate owes the kitty, and what the kitty owes back.
+    expect(screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      'Resident Collection',
+      'Reimbursement',
+    ])
+    expect(screen.getByLabelText('location')).toHaveTextContent(/^\/$/)
+
+    await userEvent.click(screen.getByRole('tab', { name: 'Top-ups & AC Allocations' }))
+    expect(screen.getByLabelText('location')).toHaveTextContent('/?tab=allocations')
+    expect(screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      'Meter Top-ups / Recharges',
+      'Individual AC Allocations',
+      'Common Split & Net Responsibility',
+    ])
+  })
+
+  it('lists every recharge of the month, and what they come to', async () => {
+    show(recorded(), {}, ALLOCATIONS)
+    const panel = await section('Meter Top-ups / Recharges')
+    const log = within(panel).getByRole('table', { name: 'Meter recharges for November 2026' })
+    const rows = within(log).getAllByRole('row').slice(1)
+    expect(rows.map((row) => row.textContent)).toEqual([
+      '3 Nov 2026UPPCL (Grid)₹2,000.00SarbanandaUTR-1',
+      '12 Nov 2026UPPCL (Grid)₹1,500.00ArnabUTR-2',
+      '20 Nov 2026Diesel Generator (DG)₹500.00SarbanandaUTR-3',
+    ])
+    const totals = within(panel).getByLabelText('Recharge subtotals')
+    expect(totals).toHaveTextContent('UPPCL Recharges₹3,500.00')
+    expect(totals).toHaveTextContent('DG Recharges₹500.00')
+    expect(totals).toHaveTextContent('Total Prepaid Electricity₹4,000.00')
+  })
+
+  it('logs a recharge from its dialog, and shows it in the list', async () => {
+    let logged = false
+    show(
+      empty,
+      {
+        [`/api/electricity/month/${MONTH}`]: () => (logged ? recorded({ top_ups: [recorded().top_ups[2]] }) : empty),
+        'POST /api/electricity/disburse-payout': () => {
+          logged = true
+          return recorded()
+        },
+      },
+      ALLOCATIONS,
+    )
+    const panel = await section('Meter Top-ups / Recharges')
+    expect(panel).toHaveTextContent('No recharge logged for November 2026 yet.')
+    // The AC waits for a recharge to come out of.
+    expect(await section('Individual AC Allocations')).toHaveTextContent('Log a meter recharge first')
+
+    await userEvent.click(within(panel).getByRole('button', { name: 'Add Meter Recharge' }))
+    const dialog = screen.getByRole('dialog', { name: 'Add Meter Recharge' })
+    const log = within(dialog).getByRole('button', { name: 'Log Recharge' })
+    expect(log).toBeDisabled()
+    await userEvent.selectOptions(within(dialog).getByLabelText(/^Meter/), 'dg')
+    await userEvent.selectOptions(within(dialog).getByLabelText(/^Paid by/), 'sarbananda')
+    expect(dialog).toHaveTextContent('What they paid beyond their own share, the kitty pays back to them.')
+    await userEvent.type(within(dialog).getByLabelText(/^Amount/), '500')
+    fireEvent.change(within(dialog).getByLabelText(/^Recharged on/), { target: { value: '2026-11-20' } })
+    await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), 'UTR-3')
+    await userEvent.click(log)
+    await waitFor(() => expect(sent('POST', '/api/electricity/disburse-payout')).toBeDefined())
+    expect(sent('POST', '/api/electricity/disburse-payout')!.body).toEqual({
+      settlement_month: MONTH,
+      provider: 'dg',
+      disbursement_mode: 'resident_advance',
+      funding_resident_id: 'sarbananda',
+      amount_paise: 50000,
+      disbursed_date: '2026-11-20',
+      reference: 'UTR-3',
+      notes: null,
+    })
+    expect(await screen.findByText('Recharge logged')).toBeInTheDocument()
+    const list = await within(await section('Meter Top-ups / Recharges')).findByRole('table', {
+      name: 'Meter recharges for November 2026',
+    })
+    expect(within(list).getByRole('row', { name: /Diesel Generator/ })).toHaveTextContent('₹500.00Sarbananda')
+  })
+
+  it('logs a recharge from the kitty with no flatmate behind it', async () => {
+    show(empty, {}, ALLOCATIONS)
+    await userEvent.click(
+      within(await section('Meter Top-ups / Recharges')).getByRole('button', { name: 'Add Meter Recharge' }),
+    )
+    const dialog = screen.getByRole('dialog', { name: 'Add Meter Recharge' })
+    await userEvent.selectOptions(within(dialog).getByLabelText(/^Paid by/), 'kitty')
+    await userEvent.type(within(dialog).getByLabelText(/^Amount/), '1000')
+    await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), 'UTR-K')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Log Recharge' }))
+    await waitFor(() => expect(sent('POST', '/api/electricity/disburse-payout')).toBeDefined())
+    const body = sent('POST', '/api/electricity/disburse-payout')!.body as Record<string, unknown>
+    expect(body).toMatchObject({ provider: 'uppcl', disbursement_mode: 'pool', amount_paise: 100000 })
+    expect(body).not.toHaveProperty('funding_resident_id')
+  })
+
+  it('removes a recharge logged by mistake, once confirmed', async () => {
+    show(recorded(), {}, ALLOCATIONS)
+    const panel = await section('Meter Top-ups / Recharges')
+    await userEvent.click(within(panel).getByRole('button', { name: 'Remove Diesel Generator (DG) recharge of ₹500.00' }))
+    const confirm = screen.getByRole('dialog', { name: 'Remove this recharge?' })
+    expect(confirm).toHaveTextContent('Diesel Generator (DG) recharge of ₹500.00 on 20 Nov 2026, paid by Sarbananda.')
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(sent('DELETE', `/api/electricity/month/${MONTH}/top-ups/svcdisb_3`)).toBeDefined())
+    expect(await screen.findByText('Recharge removed')).toBeInTheDocument()
+  })
+
+  it("takes each flatmate's AC out of what was recharged, and saves it in paise", async () => {
+    show(recharged, {}, ALLOCATIONS)
+    const ac = await section('Individual AC Allocations')
+    expect(ac).toHaveTextContent('No AC this month: everything recharged is shared equally.')
+    const sums = within(ac).getByLabelText('AC and the shared remainder')
+    expect(sums).toHaveTextContent('Total Recharged₹4,000.00')
+
+    await addAc(ac, 'sarbananda')
+    fireEvent.change(within(ac).getByLabelText(/^Sarbananda AC/), { target: { value: '971.05' } })
+    await addAc(ac, 'arnab')
+    fireEvent.change(within(ac).getByLabelText(/^Arnab AC/), { target: { value: '895.48' } })
+    expect(sums).toHaveTextContent('Sum of ACs₹1,866.53')
+    expect(sums).toHaveTextContent('Shared Common Remainder₹2,133.47')
+
+    // The split itself is the backend's, once typing pauses.
+    const split = await within(await section('Common Split & Net Responsibility')).findByRole('table', {
+      name: 'Responsibility for November 2026',
+    })
+    expect(within(split).getByRole('row', { name: /Sarbananda/ })).toHaveTextContent('Sarbananda₹711.15₹971.05₹1,682.20')
+    expect(within(split).getByRole('row', { name: /^Total ₹/ })).toHaveTextContent('Total₹2,133.47₹1,866.53₹4,000.00')
+    expect(sent('POST', `/api/electricity/month/${MONTH}/preview`)!.body).toEqual({
+      ac_allocations: { anagarag: 0, arnab: 89548, sarbananda: 97105 },
+    })
+
+    // Removed, a flatmate's AC is back to ₹0.
+    await userEvent.click(within(ac).getByRole('button', { name: 'Remove Arnab AC' }))
+    expect(sums).toHaveTextContent('Shared Common Remainder₹3,028.95')
+    await addAc(ac, 'arnab')
+    fireEvent.change(within(ac).getByLabelText(/^Arnab AC/), { target: { value: '895.48' } })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Save AC Allocations' }))
+    await waitFor(() => expect(sent('POST', '/api/electricity/bills')).toBeDefined())
+    expect(sent('POST', '/api/electricity/bills')!.body).toEqual({
+      settlement_month: MONTH,
+      ac_allocations: { anagarag: 0, arnab: 89548, sarbananda: 97105 },
+    })
+    expect(await screen.findByText('AC allocations saved')).toBeInTheDocument()
+    // Saved, the month is collected and paid back on its settlement.
+    expect(screen.getByLabelText('location')).toHaveTextContent(/^\/$/)
+    expect(await screen.findByRole('heading', { name: 'Resident Collection' })).toBeInTheDocument()
+  })
+
+  it('refuses AC that comes to more than was recharged', async () => {
+    show(recorded({ total_paise: 100000 }), {}, ALLOCATIONS)
+    const ac = await section('Individual AC Allocations')
+    fireEvent.change(within(ac).getByLabelText(/^Arnab AC/), { target: { value: '1200' } })
+    expect(within(ac).getByRole('alert')).toHaveTextContent(
+      'The AC comes to ₹2,171.05, more than the ₹1,000.00 recharged.',
+    )
+    expect(screen.getByRole('button', { name: 'Save AC Allocations' })).toBeDisabled()
+  })
+
+  it('shows what each flatmate owes the kitty, and what it owes back', async () => {
+    show(recorded())
+    const collection = await section('Resident Collection')
+    const owed = within(collection).getByRole('table', { name: 'Electricity owed for November 2026' })
+    // Responsible for their common share and their AC.
+    expect(within(owed).getByRole('row', { name: /Sarbananda/ })).toHaveTextContent('Receives ₹817.80')
+    expect(within(owed).getByRole('row', { name: /Arnab/ })).toHaveTextContent('Owes ₹106.64')
+    expect(within(owed).getByRole('row', { name: /Anagarag/ })).toHaveTextContent('Owes ₹711.16')
+    // Sarbananda recharged beyond their own share: the kitty owes back the rest.
+    const kitty = within(await section('Reimbursement')).getByRole('table', {
+      name: 'Reimbursements from the House Kitty',
+    })
+    expect(within(kitty).getByRole('row', { name: /Sarbananda/ })).toHaveTextContent('₹817.80')
+
+    await userEvent.click(within(owed).getByRole('button', { name: 'Pay now for Arnab' }))
+    const dialog = screen.getByRole('dialog', { name: 'Record Payment into House Kitty' })
+    expect(within(dialog).getByLabelText(/^Amount/)).toHaveValue('106.64')
+    await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), 'UPI-7')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Record Payment' }))
+    await waitFor(() => expect(sent('POST', '/api/electricity/record-payment')).toBeDefined())
+    expect(sent('POST', '/api/electricity/record-payment')!.body).toMatchObject({
+      settlement_month: MONTH,
+      resident_id: 'arnab',
+      amount_paise: 10664,
+    })
+  })
+
+  it('keeps a finalized month as it was entered', async () => {
+    show(
+      recorded({ bill_state: 'frozen', can_record: false, transactions_open: false, statement_status: 'finalized_correction_window' }),
+      {},
+      ALLOCATIONS,
+    )
+    expect(await screen.findByText('Statement finalized')).toBeInTheDocument()
+    const panel = await section('Meter Top-ups / Recharges')
+    expect(within(panel).queryByRole('button', { name: 'Add Meter Recharge' })).toBeNull()
+    expect(within(panel).queryByRole('button', { name: /^Remove/ })).toBeNull()
+    const ac = await section('Individual AC Allocations')
+    expect(within(ac).getByLabelText(/^Arnab AC/)).toBeDisabled()
+    expect(within(ac).queryByLabelText('Flatmate with an AC')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Save AC Allocations' })).toBeNull()
+    expect(
+      within(await section('Common Split & Net Responsibility')).getByRole('table', {
+        name: 'Responsibility for November 2026',
+      }),
+    ).toBeInTheDocument()
+  })
+})

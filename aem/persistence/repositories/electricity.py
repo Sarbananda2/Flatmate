@@ -229,6 +229,82 @@ class ElectricityRepository(Repository):
     def delete_expense(self, expense_id: str) -> None:
         self._s.execute("DELETE FROM expense_instance WHERE expense_id=%s", (expense_id,))
 
+    # -- the providers a month's bill is paid to (migration 0033) ------------ #
+
+    def live_providers(self, apartment_id: str) -> list[dict[str, Any]]:
+        """The flat's electricity providers -- UPPCL's grid, then the DG -- each a
+        live household service with its config."""
+        return self._s.fetch_all(
+            """SELECT s.service_id, s.display_name, s.status, s.created_at,
+                      c.provider_key, c.provider_name, c.expense_definition_id
+                 FROM household_service s
+                 JOIN electricity_service_config c ON c.service_id = s.service_id
+                WHERE s.apartment_id=%s AND s.service_type='electricity'
+                  AND s.status <> 'retired'
+                ORDER BY CASE c.provider_key WHEN 'uppcl' THEN 0 ELSE 1 END, s.row_seq""",
+            (apartment_id,))
+
+    def insert_provider(self, *, service_id: str, apartment_id: str, provider_key: str,
+                        provider_name: str, expense_definition_id: str,
+                        created_at: str) -> None:
+        self._s.execute(
+            """INSERT INTO household_service (service_id, apartment_id, service_type,
+                   display_name, provider_name, created_at, updated_at)
+               VALUES (%s,%s,'electricity','Electricity',%s,%s,%s)""",
+            (service_id, apartment_id, provider_name, created_at, created_at))
+        self._s.execute(
+            """INSERT INTO electricity_service_config (service_id, apartment_id, provider_key,
+                   provider_name, expense_definition_id, created_at, updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+            (service_id, apartment_id, provider_key, provider_name, expense_definition_id,
+             created_at, created_at))
+
+    def rename_provider(self, service_id: str, *, provider_name: str, updated_at: str) -> None:
+        self._s.execute(
+            "UPDATE household_service SET provider_name=%s, updated_at=%s WHERE service_id=%s",
+            (provider_name, updated_at, service_id))
+        self._s.execute(
+            """UPDATE electricity_service_config SET provider_name=%s, updated_at=%s
+                WHERE service_id=%s""", (provider_name, updated_at, service_id))
+
+    def find_definition_id(self, apartment_id: str) -> str | None:
+        """The active definition called, or with the ID, 'Electricity'."""
+        return self._s.scalar(
+            """SELECT expense_definition_id FROM expense_definition
+                WHERE apartment_id=%s AND is_active=1
+                  AND (lower(trim(name)) = 'electricity'
+                       OR lower(expense_definition_id) = 'electricity')
+                ORDER BY sort_order, expense_definition_id LIMIT 1""", (apartment_id,))
+
+    def definition_id_taken(self, definition_id: str) -> bool:
+        return self._s.fetch_one(
+            "SELECT 1 AS present FROM expense_definition WHERE expense_definition_id=%s",
+            (definition_id,)) is not None
+
+    # -- the month's consolidated bill ---------------------------------------- #
+
+    def replace_components(self, expense_id: str,
+                           components: list[dict[str, Any]]) -> None:
+        """The bill's components, one per provider. Each resident's charge is the
+        whole of what they owe on the bill, so no charge belongs to one of them."""
+        self._s.execute("UPDATE allocation SET component_id=NULL WHERE expense_id=%s",
+                        (expense_id,))
+        self._s.execute("DELETE FROM expense_component WHERE expense_id=%s", (expense_id,))
+        for component in components:
+            self.insert_component(component_id=component["component_id"],
+                                  expense_id=expense_id, name=component["name"],
+                                  amount_paise=component["amount_paise"],
+                                  allocation_method="custom")
+
+    def update_bill_row(self, expense_id: str, *, provider_name: str, total_amount_paise: int,
+                        bill_number: str | None, calculation_json: str,
+                        notes: str | None) -> None:
+        self._s.execute(
+            """UPDATE electricity_bill SET provider_name=%s, total_amount_paise=%s,
+                   bill_number=%s, calculation_json=%s, notes=%s WHERE expense_id=%s""",
+            (provider_name, total_amount_paise, bill_number, calculation_json, notes,
+             expense_id))
+
     # -- lists and reports --------------------------------------------------- #
 
     def count_bills(self, apartment_id: str) -> int:

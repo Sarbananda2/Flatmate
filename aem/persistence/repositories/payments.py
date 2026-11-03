@@ -339,7 +339,11 @@ class PaymentsRepository(Repository):
                   (EXISTS (SELECT 1 FROM furniture_rental_config f
                             WHERE f.expense_definition_id = e.expense_definition_id)
                    OR EXISTS (SELECT 1 FROM water_service_config w
-                               WHERE w.expense_definition_id = e.expense_definition_id))
+                               WHERE w.expense_definition_id = e.expense_definition_id)
+                   -- a month's electricity, settled through the kitty (0033)
+                   OR EXISTS (SELECT 1 FROM electricity_bill b
+                               WHERE b.expense_id = e.expense_id
+                                 AND b.calculation_json::jsonb ->> 'model' = 'consolidated'))
                       AS is_service
                  FROM expense_instance e WHERE e.expense_id = %s""", (expense_id,))
 

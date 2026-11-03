@@ -1,5 +1,12 @@
 """Electricity bills: a dedicated module over the standalone electricity engine.
 
+Each month's electricity is entered on the Electricity page as the flat's two
+bills -- the grid's (UPPCL) and the diesel generator's (DG) -- and each
+flatmate's AC: everyone pays their own AC and an equal share of the rest, into
+the House Kitty, which pays UPPCL and DG (see "the month's bill" below). A bill
+can still be recorded, and corrected, split by smart-plug readings instead, as
+the rest of this docstring describes.
+
 What is authoritative, and what is not
 --------------------------------------
 
@@ -43,7 +50,11 @@ import json
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
-from ..engine.electricity import ElectricityCalculationError, calculate_electricity
+from ..engine.electricity import (
+    ElectricityCalculationError,
+    calculate_consolidated_electricity,
+    calculate_electricity,
+)
 from ..errors import ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, format_inr, kwh_to_wh, wh_to_kwh_string
@@ -52,17 +63,31 @@ from ..periods import (
     month_end,
     month_start,
     normalize_month,
+    month_label,
     parse_iso_date,
     resolve_periods,
+    shift_month,
 )
 from ..persistence import Database, PersistenceError, UnitOfWork
-from . import audit
+from . import (
+    audit,
+    bill_shares,
+    definitions,
+    deletions,
+    expenses,
+    payments,
+    resident_payouts,
+    service_bills,
+)
 from .common import (
     assert_not_locked,
     get_apartment,
     get_expense,
+    get_resident,
+    list_residents,
     optional_text,
     require_draft_statement,
+    require_text,
     resident_ids,
 )
 
@@ -572,6 +597,11 @@ def recalculate_electricity_expense(db: Database, expense_id: str, *, reason: st
             raise ValidationError("That expense is not an electricity bill.",
                                   details={"expense_id": expense_id})
         bill = uow.electricity.bill_for_expense(expense_id)
+        if _is_consolidated(bill):
+            raise ConflictError(
+                "This month's electricity is split by AC and settled through the House "
+                "Kitty: change it on the Electricity page.", code="electricity_bill_consolidated",
+                details={"expense_id": expense_id})
         readings = uow.electricity.readings_for_expense(expense_id)
         allocations = uow.electricity.allocations_for_expense(expense_id)
         mode = assert_not_locked(uow, expense["statement_id"], "electricity bill")
@@ -729,3 +759,889 @@ def consumption_history(db: Database, apartment_id: str) -> list[dict[str, Any]]
     for row in rows:
         row["kwh"] = wh_to_kwh_string(row["energy_wh"])
     return rows
+
+
+# ======================================================== the month's bill ==
+#
+# Each month the flat's two bills -- the grid's (UPPCL) and the diesel
+# generator's (DG) -- are settled as one, through the House Kitty. Each
+# flatmate is responsible for their own AC, and an equal share of the rest
+# (:func:`aem.engine.electricity.calculate_consolidated_electricity`).
+#
+# The month is one ``electricity`` expense with a component per bill, and a
+# charge per flatmate for all they owe on it. They pay it into the kitty, and
+# the kitty pays UPPCL and DG separately, in one payout or several -- each
+# provider a household service of its own, so a payout names it (migration
+# 0033). A resident who pays a provider from their own account pays their own
+# share through the kitty, and the kitty pays back what they paid beyond it
+# (:mod:`aem.services.bill_shares`).
+#
+# Until the month's statement is finalized, the bills and the AC can be
+# entered again: the charges change in place, and what each flatmate paid
+# moves with their new share.
+
+PROVIDER_KEYS = ("uppcl", "dg")
+DEFAULT_PROVIDER_NAMES = {"uppcl": "UPPCL (Grid)", "dg": "Diesel Generator (DG)"}
+#: Where a payout to a provider came from: the kitty, or a resident's own account.
+PAYOUT_MODES = ("pool", "resident_advance")
+#: What a month's bill row says it is (``electricity_bill.calculation_json``).
+CONSOLIDATED = "consolidated"
+
+
+def _is_consolidated(bill: Mapping[str, Any] | None) -> bool:
+    if not bill or not bill.get("calculation_json"):
+        return False
+    try:
+        return json.loads(bill["calculation_json"]).get("model") == CONSOLIDATED
+    except (ValueError, AttributeError):
+        return False
+
+
+def _month_providers(uow: UnitOfWork, apartment_id: str) -> dict[str, dict[str, Any]]:
+    return {row["provider_key"]: row for row in uow.electricity.live_providers(apartment_id)}
+
+
+def _month_definition_id(uow: UnitOfWork, apartment_id: str,
+                         providers: Mapping[str, Mapping[str, Any]]) -> str | None:
+    return (next((row["expense_definition_id"] for row in providers.values()
+                  if row["expense_definition_id"]), None)
+            or uow.electricity.find_definition_id(apartment_id))
+
+
+def _month_expense(uow: UnitOfWork, apartment_id: str, definition_id: str | None,
+                   month: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """``(the month's bill, an electricity bill recorded for it some other way)``."""
+    if not definition_id:
+        return None, None
+    foreign = None
+    for expense in uow.furniture.expenses_for_month(apartment_id, definition_id, month):
+        if _is_consolidated(uow.electricity.bill_for_expense(expense["expense_id"])):
+            return expense, None
+        foreign = foreign or expense
+    return None, foreign
+
+
+def _month_stored_basis(allocations: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    for row in allocations:
+        if row.get("allocation_basis_json"):
+            try:
+                return json.loads(row["allocation_basis_json"])
+            except ValueError:
+                return {}
+    return {}
+
+
+def _month_participants(uow: UnitOfWork, apartment_id: str,
+                        allocations: Sequence[Mapping[str, Any]],
+                        basis: Mapping[str, Any]) -> list[str]:
+    """Who shares the month: everyone living in the flat, and whoever the bill
+    already charges -- a flatmate who moved out keeps the month they were in."""
+    everyone = set(resident_ids(uow, apartment_id))
+    on_bill = set(basis.get("participants")
+                  or [row["resident_id"] for row in allocations if row["amount_paise"]])
+    return sorted(set(resident_ids(uow, apartment_id, active_only=True))
+                  | (on_bill & everyone))
+
+
+def _clean_ac(payload: Mapping[str, Any]) -> dict[str, int]:
+    """Each flatmate's AC, as sent, in paise."""
+    ac = payload.get("ac_allocations") or {}
+    if not isinstance(ac, Mapping):
+        raise ValidationError("ac_allocations must give each flatmate's AC in paise.",
+                              details={"field": "ac_allocations"})
+    return {str(rid): ensure_paise(paise, f"AC for {rid}") for rid, paise in ac.items()}
+
+
+def _month_plan(uow: UnitOfWork, apartment_id: str, participants: Sequence[str],
+                bills: Sequence[Mapping[str, Any]], ac: Mapping[str, int]) -> dict[str, Any]:
+    """The month split: each flatmate's AC, and an equal share of the rest."""
+    names = {row["resident_id"]: row["display_name"] for row in list_residents(uow, apartment_id)}
+    if not participants:
+        raise ValidationError("Nobody lives in the flat, so there is nobody to share the bill.",
+                              code="electricity_no_participants")
+    strangers = sorted(rid for rid, paise in ac.items() if rid not in participants and paise)
+    if strangers:
+        raise ValidationError(
+            f"{', '.join(names.get(rid, rid) for rid in strangers)} is not sharing this "
+            "month's electricity, so has no AC on it.", code="electricity_ac_not_participant",
+            details={"field": "ac_allocations", "resident_ids": strangers})
+    total = sum(bill["amount_paise"] for bill in bills)
+    total_ac = sum(ac.get(rid, 0) for rid in participants)
+    if total_ac > total:
+        raise ValidationError(
+            f"The AC comes to {format_inr(total_ac)}, more than the {format_inr(total)} the "
+            "bills come to.", code="electricity_ac_exceeds_bill",
+            details={"field": "ac_allocations", "total_ac_paise": total_ac,
+                     "total_paise": total})
+    try:
+        calc = calculate_consolidated_electricity(
+            components=bills, ac_allocations={rid: ac.get(rid, 0) for rid in participants},
+            residents=participants)
+    except ElectricityCalculationError as exc:
+        raise ValidationError(str(exc), code="electricity_split_invalid") from exc
+    for share in calc["residents"]:
+        share["display_name"] = names.get(share["resident_id"], share["resident_id"])
+    return calc
+
+
+def _month_basis(calc: Mapping[str, Any]) -> dict[str, Any]:
+    """Kept with each charge, so the month reads as it was split."""
+    amounts = {bill["id"]: bill["amount_paise"] for bill in calc["components"]}
+    return {
+        "source": "electricity", "method": "custom",
+        "uppcl_paise": amounts["uppcl"], "dg_paise": amounts["dg"],
+        "ac_allocations": {share["resident_id"]: share["ac_paise"]
+                           for share in calc["residents"]},
+        "common_remainder_paise": calc["common_remainder_paise"],
+        "common_share_paise": calc["common_share_paise"],
+        "participants": [share["resident_id"] for share in calc["residents"]],
+    }
+
+
+def _month_shares(calc: Mapping[str, Any]) -> dict[str, int]:
+    return {share["resident_id"]: share["responsibility_paise"]
+            for share in calc["residents"] if share["responsibility_paise"]}
+
+
+def _month_provider_label(calc: Mapping[str, Any]) -> str:
+    return " + ".join(bill["name"] for bill in calc["components"])
+
+
+def _month_notes(calc: Mapping[str, Any]) -> str:
+    bills = " + ".join(f"{bill['name']} {format_inr(bill['amount_paise'])}"
+                       for bill in calc["components"])
+    return (f"{bills}. AC by flatmate ({format_inr(calc['total_ac_paise'])}); "
+            f"{format_inr(calc['common_remainder_paise'])} shared equally by "
+            f"{len(calc['residents'])}.")[:2000]
+
+
+def _month_calculation_json(calc: Mapping[str, Any]) -> str:
+    return json.dumps({"model": CONSOLIDATED, **calc}, sort_keys=True, default=str)
+
+
+def _month_components(calc: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [{"component_id": new_id("component"), "name": bill["name"],
+             "amount_paise": bill["amount_paise"]} for bill in calc["components"]]
+
+
+def _month_service_period(uow: UnitOfWork, definition_id: str, month: str) -> tuple[str, str]:
+    """``(period rule, service period)``: as the household's electricity
+    definition says -- by default, last month's usage settles this month."""
+    rule = uow.electricity.definition_period_rule(definition_id) or "previous_month"
+    return rule, shift_month(month, -1) if rule == "previous_month" else month
+
+
+def _ensure_providers(uow: UnitOfWork, apartment_id: str, bills: Sequence[Mapping[str, Any]],
+                      definition_id: str, timestamp: str,
+                      actor: str) -> dict[str, dict[str, Any]]:
+    """UPPCL and DG as the flat's providers, by the names the bills give them."""
+    providers = _month_providers(uow, apartment_id)
+    for bill in bills:
+        provider = providers.get(bill["id"])
+        if provider is None:
+            service_id = new_id("svc")
+            uow.electricity.insert_provider(
+                service_id=service_id, apartment_id=apartment_id, provider_key=bill["id"],
+                provider_name=bill["name"], expense_definition_id=definition_id,
+                created_at=timestamp)
+            audit.record(uow, entity_type="household_service", entity_id=service_id,
+                         action="create", actor=actor, apartment_id=apartment_id,
+                         new_value={"service_type": "electricity", "provider_key": bill["id"],
+                                    "provider_name": bill["name"]})
+        elif provider["provider_name"] != bill["name"]:
+            uow.electricity.rename_provider(provider["service_id"], provider_name=bill["name"],
+                                            updated_at=timestamp)
+            audit.record(uow, entity_type="household_service", entity_id=provider["service_id"],
+                         action="update", actor=actor, apartment_id=apartment_id,
+                         old_value={"provider_name": provider["provider_name"]},
+                         new_value={"provider_name": bill["name"]})
+    return _month_providers(uow, apartment_id)
+
+
+def _record_month(uow: UnitOfWork, apartment_id: str, month: str, calc: Mapping[str, Any],
+                  definition_id: str, statement: Mapping[str, Any] | None, timestamp: str,
+                  actor: str) -> str:
+    """Write the month's bill: one expense, a component per bill, a charge per flatmate."""
+    expense_id = new_id("electricity")
+    rule, service_period = _month_service_period(uow, definition_id, month)
+    shares = _month_shares(calc)
+    expenses._create_expense(
+        uow, apartment_id=apartment_id, expense_id=expense_id,
+        description=f"Electricity for {month_label(month)}",
+        amount_paise=calc["total_paise"], expense_date=f"{month}-01",
+        allocation_method="custom",
+        allocations_paise={rid: shares.get(rid, 0) for rid in resident_ids(uow, apartment_id)},
+        allocation_basis=_month_basis(calc), provider_name=_month_provider_label(calc),
+        expense_definition_id=definition_id,
+        statement_id=statement["statement_id"] if statement else None,
+        period_rule=rule, service_period=service_period, settlement_period=month,
+        notes=_month_notes(calc), expense_kind="electricity", created_at=timestamp, actor=actor)
+    uow.electricity.replace_components(expense_id, _month_components(calc))
+    uow.electricity.insert_bill(
+        electricity_bill_id=new_id("electricity-bill"), expense_id=expense_id,
+        bill_period_start=month_start(service_period).isoformat(),
+        bill_period_end=month_end(service_period).isoformat(), settlement_period=month,
+        bill_number=None, provider_name=_month_provider_label(calc),
+        total_amount_paise=calc["total_paise"], calculation_json=_month_calculation_json(calc),
+        notes=None, created_at=timestamp)
+    return expense_id
+
+
+def _rewrite_month(uow: UnitOfWork, apartment_id: str, month: str,
+                   expense: Mapping[str, Any], allocations: Sequence[Mapping[str, Any]],
+                   basis: Mapping[str, Any], calc: Mapping[str, Any],
+                   providers: Mapping[str, Mapping[str, Any]], timestamp: str,
+                   actor: str) -> None:
+    """Bring the month's bill to new figures. Charges change in place, and what
+    each flatmate paid -- into the kitty, or to a provider -- follows their new
+    share; refused if the kitty has paid somebody back more than it would then
+    owe them."""
+    expense_id = expense["expense_id"]
+    shares = _month_shares(calc)
+    new_basis = _month_basis(calc)
+    basis_json = json.dumps(new_basis, sort_keys=True, default=str)
+    current = {row["resident_id"]: row for row in allocations}
+    components = [(row["name"], row["amount_paise"])
+                  for row in uow.electricity.components_for_expense(expense_id)]
+    if (expense["amount_paise"] == calc["total_paise"] and basis == new_basis
+            and components == [(bill["name"], bill["amount_paise"])
+                               for bill in calc["components"]]
+            and {rid: row["amount_paise"] for rid, row in current.items()
+                 if row["amount_paise"]} == shares):
+        return
+    name = month_label(month)
+    rebalance = bill_shares.plan(
+        uow, scope="service", apartment_id=apartment_id, expense_id=expense_id,
+        shares=shares, charged=list(current),
+        tranches=uow.furniture.service_disbursements(expense_id),
+        owed={providers[bill["id"]]["service_id"]: bill["amount_paise"]
+              for bill in calc["components"]},
+        names={row["resident_id"]: row["display_name"]
+               for row in list_residents(uow, apartment_id)},
+        what=f"the {name} electricity bill")
+    if rebalance.problem is not None:
+        raise rebalance.problem
+    uow.furniture.update_bill(expense_id, amount_paise=calc["total_paise"],
+                              notes=_month_notes(calc), provider_name=_month_provider_label(calc),
+                              updated_at=timestamp)
+    uow.electricity.replace_components(expense_id, _month_components(calc))
+
+    def set_charge(rid: str, amount: int) -> None:
+        row = current.get(rid)
+        if row is not None and amount:
+            uow.furniture.update_allocation(row["allocation_id"], amount_paise=amount,
+                                            allocation_basis_json=basis_json)
+        elif row is not None:
+            uow.furniture.delete_allocation(row["allocation_id"])
+        elif amount:
+            uow.expenses.insert_allocation(
+                allocation_id=new_id("allocation"), expense_id=expense_id, component_id=None,
+                resident_id=rid, amount_paise=amount, allocation_basis_json=basis_json)
+
+    bill_shares.apply(
+        uow, rebalance, set_charge=set_charge,
+        payee=lambda group: group["tranches"][0]["provider_name"],
+        share_note=f"Electricity for {name}",
+        advance_note=f"Extra paid for electricity ({name}) to be reimbursed via House Kitty",
+        timestamp=timestamp, actor=actor)
+    # Every charge reads the month as it now stands, a charge left as it was too.
+    for row in uow.furniture.allocations_for_expense(expense_id):
+        uow.furniture.update_allocation(row["allocation_id"], amount_paise=row["amount_paise"],
+                                        allocation_basis_json=basis_json)
+    uow.electricity.update_bill_row(
+        expense_id, provider_name=_month_provider_label(calc),
+        total_amount_paise=calc["total_paise"], bill_number=None,
+        calculation_json=_month_calculation_json(calc), notes=None)
+    audit.record(uow, entity_type="expense", entity_id=expense_id, action="sync",
+                 actor=actor, apartment_id=apartment_id,
+                 old_value={"amount_paise": expense["amount_paise"],
+                            "shares": {rid: row["amount_paise"] for rid, row in current.items()},
+                            "split": {key: basis.get(key) for key in (
+                                "uppcl_paise", "dg_paise", "ac_allocations")}},
+                 new_value={"amount_paise": calc["total_paise"], "shares": shares,
+                            "split": {key: new_basis[key] for key in (
+                                "uppcl_paise", "dg_paise", "ac_allocations")}})
+
+
+def _month_bills_at(providers: Mapping[str, Mapping[str, Any]],
+                    amounts: Mapping[str, int]) -> list[dict[str, Any]]:
+    """UPPCL's and DG's bills at these amounts -- ₹0 for one not given -- by
+    the names the flat knows them by."""
+    return [{"id": key,
+             "name": (providers[key]["provider_name"] if key in providers
+                      else DEFAULT_PROVIDER_NAMES[key]),
+             "amount_paise": amounts.get(key, 0)} for key in PROVIDER_KEYS]
+
+
+def _recharged(uow: UnitOfWork, apartment_id: str,
+               expense: Mapping[str, Any] | None) -> dict[str, int]:
+    """What each prepaid meter has been recharged for the month: the sum of its
+    top-ups, which is its bill."""
+    recharged = {key: 0 for key in PROVIDER_KEYS}
+    if expense is None:
+        return recharged
+    keys = {row["service_id"]: row["provider_key"]
+            for row in uow.electricity.live_providers(apartment_id)}
+    for tranche in uow.furniture.service_disbursements(expense["expense_id"]):
+        recharged[keys.get(tranche["service_id"], "uppcl")] += tranche["amount_paise"]
+    return recharged
+
+
+def _ensure_month_definition(db: Database, apartment_id: str, actor: str) -> str:
+    """The household's electricity definition, created if it has none."""
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        definition_id = _month_definition_id(uow, apartment_id,
+                                             _month_providers(uow, apartment_id))
+        id_taken = definition_id is None and uow.electricity.definition_id_taken("electricity")
+    if definition_id is None:
+        definition_id = definitions.create_expense_definition(
+            db, apartment_id=apartment_id,
+            definition_id=new_id("electricity") if id_taken else "electricity",
+            name="Electricity", category="Utilities", period_rule="previous_month",
+            default_allocation_method="custom", is_recurring=False, recurrence="none",
+            sort_order=20, notes="Created by the Electricity screen, where each month's UPPCL "
+                                 "and DG bills are entered.", actor=actor)["expense_definition_id"]
+    return definition_id
+
+
+def _write_month(uow: UnitOfWork, apartment_id: str, month: str,
+                 bills: Sequence[Mapping[str, Any]], ac: Mapping[str, int], definition_id: str,
+                 timestamp: str, actor: str) -> None:
+    """Record the month at these bills and AC, or bring its bill to them."""
+    statement = uow.furniture.statement_for_month(apartment_id, month)
+    if statement is not None and statement["status"] != "draft":
+        raise ConflictError(
+            f"The {month_label(month)} statement has been finalized, so its electricity "
+            "can no longer change.", code="electricity_month_finalized",
+            details={"settlement_month": month, "status": statement["status"]})
+    expense, foreign = _month_expense(uow, apartment_id, definition_id, month)
+    if foreign is not None:
+        raise ConflictError(
+            f"{month_label(month)}'s electricity is already recorded with smart-plug "
+            "readings. Correct that bill instead.", code="electricity_bill_recorded_elsewhere",
+            details={"expense_id": foreign["expense_id"]})
+    providers = _ensure_providers(uow, apartment_id, bills, definition_id, timestamp, actor)
+    allocations = (uow.furniture.allocations_for_expense(expense["expense_id"])
+                   if expense else [])
+    basis = _month_stored_basis(allocations)
+    calc = _month_plan(uow, apartment_id,
+                       _month_participants(uow, apartment_id, allocations, basis), bills, ac)
+    if expense is None:
+        expense_id = _record_month(uow, apartment_id, month, calc, definition_id, statement,
+                                   timestamp, actor)
+        audit.record(uow, entity_type="expense", entity_id=expense_id, action="generate",
+                     actor=actor, apartment_id=apartment_id,
+                     new_value={"settlement_month": month, **_month_basis(calc)})
+    else:
+        _rewrite_month(uow, apartment_id, month, expense, allocations, basis, calc, providers,
+                       timestamp, actor)
+
+
+def record_month_bill(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
+                      actor: str = "operator") -> dict[str, Any]:
+    """Set a month's AC: what each flatmate's AC cost, taken out of what the
+    meters were recharged. The rest is shared equally.
+
+    ``payload``: ``settlement_month`` and ``ac_allocations``, each flatmate's
+    AC in paise -- together no more than the month's recharges. The month's
+    bills are its recharges, so it needs one logged first (see
+    :func:`disburse_month_payout`). What each flatmate paid moves with their
+    new share. Refused once the month's statement is finalized. Returns the
+    month as :func:`get_month` gives it.
+    """
+    month = normalize_month(payload.get("settlement_month"), "settlement_month")
+    ac = _clean_ac(payload)
+    timestamp = now_timestamp()
+    definition_id = _ensure_month_definition(db, apartment_id, actor)
+    with db.transaction() as uow:
+        expense, foreign = _month_expense(uow, apartment_id, definition_id, month)
+        if expense is None and foreign is None:
+            raise ConflictError(
+                f"No meter recharge is logged for {month_label(month)} yet: the AC is taken out "
+                "of what was recharged.", code="electricity_no_recharges",
+                details={"settlement_month": month})
+        _write_month(uow, apartment_id, month,
+                     _month_bills_at(_month_providers(uow, apartment_id),
+                                     _recharged(uow, apartment_id, expense)),
+                     ac, definition_id, timestamp, actor)
+        return _month_overview(uow, apartment_id, month)
+
+
+def preview_month_bill(db: Database, apartment_id: str, settlement_month: str,
+                       payload: Mapping[str, Any]) -> dict[str, Any]:
+    """What this AC would leave each flatmate responsible for, at the month's
+    recharges so far. Nothing is written."""
+    month = normalize_month(settlement_month, "month")
+    ac = _clean_ac(payload)
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        providers = _month_providers(uow, apartment_id)
+        expense, _ = _month_expense(uow, apartment_id,
+                                    _month_definition_id(uow, apartment_id, providers), month)
+        allocations = (uow.furniture.allocations_for_expense(expense["expense_id"])
+                       if expense else [])
+        participants = _month_participants(uow, apartment_id, allocations,
+                                           _month_stored_basis(allocations))
+        bills = _month_bills_at(providers, _recharged(uow, apartment_id, expense))
+        return {"settlement_month": month,
+                **_month_plan(uow, apartment_id, participants, bills, ac)}
+
+
+def delete_month_top_up(db: Database, apartment_id: str, settlement_month: str,
+                        top_up_id: str, *, actor: str = "operator") -> dict[str, Any]:
+    """Remove a meter recharge logged by mistake, and everything recorded with it.
+
+    Its meter's bill comes down by it, and the month is split again; what
+    flatmates have paid moves with their shares. The month's last recharge
+    takes the month with it -- refused once flatmates have paid towards it.
+    Refused once the month's statement is finalized.
+    """
+    month = normalize_month(settlement_month, "month")
+    timestamp = now_timestamp()
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        expense, providers = _require_month_bill(uow, apartment_id, month)
+        expense_id = expense["expense_id"]
+        tranche = uow.furniture.service_disbursement(top_up_id)
+        if tranche is None or tranche["expense_id"] != expense_id:
+            raise NotFoundError(f"No such recharge for {month_label(month)}.",
+                                code="top_up_not_found", details={"top_up_id": top_up_id})
+        basis = _month_stored_basis(uow.furniture.allocations_for_expense(expense_id))
+        deletions.delete_payout_in(uow, apartment_id=apartment_id, scope="service",
+                                   disbursement_id=top_up_id, settlement_month=month,
+                                   actor=actor)
+        recharged = _recharged(uow, apartment_id, expense)
+        if not sum(recharged.values()):
+            allocations = uow.furniture.allocations_for_expense(expense_id)
+            if (sum(row["settled_paise"] for row in allocations)
+                    or uow.furniture.linked_advance_total_paise(expense_id)
+                    or uow.payments.kitty_payments_for_bill(expense_id)):
+                raise ConflictError(
+                    f"Flatmates have paid towards {month_label(month)}'s electricity, so its "
+                    "last recharge cannot be removed. Delete their payments first.",
+                    code="electricity_month_has_payments",
+                    details={"settlement_month": month, "expense_id": expense_id})
+            # Nothing recharged, and nothing paid: no month.
+            uow.electricity.delete_bill(expense_id)
+            uow.expenses.delete_allocations(expense_id)
+            uow.expenses.delete_components(expense_id)
+            uow.expenses.delete_expense(expense_id)
+            audit.record(uow, entity_type="expense", entity_id=expense_id, action="delete",
+                         actor=actor, apartment_id=apartment_id,
+                         reason="Its last meter recharge was removed.",
+                         old_value={"settlement_month": month,
+                                    "amount_paise": expense["amount_paise"]})
+        else:
+            _write_month(uow, apartment_id, month, _month_bills_at(providers, recharged),
+                         {rid: int(paise)
+                          for rid, paise in (basis.get("ac_allocations") or {}).items()},
+                         _month_definition_id(uow, apartment_id, providers), timestamp, actor)
+        return _month_overview(uow, apartment_id, month)
+
+
+def get_month(db: Database, apartment_id: str, settlement_month: str) -> dict[str, Any]:
+    """A month's electricity: its bills and AC, how they are split, and where
+    paying them stands -- into the kitty, and out to UPPCL and DG."""
+    month = normalize_month(settlement_month, "month")
+    with db.read() as uow:
+        get_apartment(uow, apartment_id)
+        return _month_overview(uow, apartment_id, month)
+
+
+def _month_overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
+    names = {row["resident_id"]: row["display_name"] for row in list_residents(uow, apartment_id)}
+    providers = _month_providers(uow, apartment_id)
+    definition_id = _month_definition_id(uow, apartment_id, providers)
+    statement = uow.furniture.statement_for_month(apartment_id, month)
+    expense, foreign = _month_expense(uow, apartment_id, definition_id, month)
+    allocations = uow.furniture.allocations_for_expense(expense["expense_id"]) if expense else []
+    basis = _month_stored_basis(allocations)
+    participants = _month_participants(uow, apartment_id, allocations, basis)
+    funding = service_bills.funding(uow, apartment_id, expense) if expense else None
+    components = (uow.electricity.components_for_expense(expense["expense_id"])
+                  if expense else [])
+    amounts = {key: (basis.get(f"{key}_paise") or 0) for key in PROVIDER_KEYS}
+    bills = [{"id": key,
+              "name": (providers[key]["provider_name"] if key in providers
+                       else DEFAULT_PROVIDER_NAMES[key]),
+              "amount_paise": amounts[key]} for key in PROVIDER_KEYS]
+    for bill, component in zip(bills, components):
+        bill["name"] = component["name"]
+    ac = {rid: int(paise) for rid, paise in (basis.get("ac_allocations") or {}).items()}
+    total = expense["amount_paise"] if expense else 0
+    total_ac = sum(ac.values())
+    owing = {entry["recipient_resident_id"]: entry["pending_reimbursement_paise"]
+             for entry in (funding["reimbursements"] if funding else [])}
+
+    shares = []
+    charged = {rid: row["share_paise"] for rid, row in funding["charges"].items()} \
+        if funding else {}
+    for rid in sorted(set(participants) | set(charged), key=lambda r: (names.get(r, r), r)):
+        owed = charged.get(rid, 0)
+        charge = funding["charges"].get(rid) if funding else None
+        paid = charge["settled_paise"] if charge else 0
+        advanced = funding["advanced"].get(rid, 0) if funding else 0
+        covered = min(owed, paid + advanced)
+        status = service_bills.share_status(owed, paid, advanced) if funding else None
+        shares.append({
+            "resident_id": rid, "display_name": names.get(rid, rid),
+            "ac_paise": ac.get(rid, 0),
+            "common_share_paise": owed - ac.get(rid, 0) if expense else 0,
+            # What they are responsible for: paid + still owed, always.
+            "total_paise": owed,
+            "paid_paise": covered,
+            "settled_paise": paid,
+            "outstanding_paise": owed - covered,
+            "status": status,
+            "paid_date": (funding["advanced_on"][rid] if status == "funded_payout"
+                          else charge["last_payment_date"] if paid and charge else None),
+            "payments": funding["paid_in"].get(rid, []) if funding else [],
+            # Above zero the kitty owes them; below, they owe the kitty.
+            "net_balance_paise": owing.get(rid, 0) - (owed - covered),
+        })
+
+    payouts = []
+    tranches = funding["disbursements"] if funding else []
+    for bill in bills:
+        provider = providers.get(bill["id"])
+        own = [tranche for tranche in tranches
+               if provider and tranche["service_id"] == provider["service_id"]]
+        disbursed = sum(tranche["amount_paise"] for tranche in own)
+        payouts.append({
+            "provider_key": bill["id"], "provider_name": bill["name"],
+            "service_id": provider["service_id"] if provider else None,
+            "total_paise": bill["amount_paise"], "disbursed_paise": disbursed,
+            "remaining_paise": max(0, bill["amount_paise"] - disbursed),
+            "payout_status": ("disbursed" if expense and disbursed >= bill["amount_paise"]
+                              else "partially_disbursed" if disbursed else "pending"),
+            "disbursements": own,
+        })
+
+    # Each recharge as it was made: a flatmate's, whatever went through the kitty
+    # with it, or the kitty's own.
+    top_ups = []
+    if funding is not None:
+        active = {row["payment_id"]: row for row in uow.payments.active_payments(apartment_id)}
+        keys = {row["service_id"]: key for key, row in providers.items()}
+        by_flatmate, by_kitty = resident_payouts.group_payouts("service", funding["tranches"],
+                                                               active)
+        for group in by_flatmate:
+            first = group["tranches"][0]
+            top_ups.append({
+                "top_up_id": first["disbursement_id"],
+                "provider_key": keys.get(first["service_id"]),
+                "provider_name": first["provider_name"],
+                "amount_paise": group["amount_paise"], "recharged_on": group["disbursed_at"],
+                "reference": group["reference"], "paid_by": "flatmate",
+                "resident_id": group["resident_id"],
+                "resident_name": names.get(group["resident_id"], group["resident_name"]),
+                "note": group["note"], "seq": group["seq"]})
+        for tranche in by_kitty:
+            top_ups.append({
+                "top_up_id": tranche["disbursement_id"],
+                "provider_key": keys.get(tranche["service_id"]),
+                "provider_name": tranche["provider_name"],
+                "amount_paise": tranche["amount_paise"], "recharged_on": tranche["disbursed_at"],
+                "reference": tranche["disbursement_reference"], "paid_by": "kitty",
+                "resident_id": None, "resident_name": None, "note": tranche.get("note"),
+                "seq": tranche["seq"]})
+        top_ups.sort(key=lambda row: (row["recharged_on"], row["seq"]))
+        for row in top_ups:
+            del row["seq"]
+
+    live = statement is None or statement["status"] == "draft"
+    service_period = (_month_service_period(uow, definition_id, month)[1] if definition_id
+                      else shift_month(month, -1))
+    return {
+        "settlement_month": month,
+        "service_period": service_period,
+        "participants": [{"resident_id": rid, "display_name": names.get(rid, rid)}
+                         for rid in sorted(participants, key=lambda r: (names.get(r, r), r))],
+        "components": bills,
+        "ac_allocations": ac,
+        "total_paise": total,
+        "total_ac_paise": total_ac,
+        "common_remainder_paise": basis.get("common_remainder_paise", 0) if expense else 0,
+        "common_share_paise": basis.get("common_share_paise", 0) if expense else 0,
+        "shares": shares,
+        "payouts": payouts,
+        "top_ups": top_ups,
+        "collected_paise": funding["collected_paise"] if funding else 0,
+        "collected_count": funding["collected_count"] if funding else 0,
+        "reimbursements": funding["reimbursements"] if funding else [],
+        "expense": expense,
+        "foreign_expense": foreign,
+        "statement_status": statement["status"] if statement else None,
+        # 'live': recorded, and can be entered again until its statement is
+        # finalized; 'frozen': the month's snapshot; 'not_billed': no bill yet;
+        # 'recorded_elsewhere': entered with smart-plug readings instead.
+        "bill_state": ("recorded_elsewhere" if foreign is not None
+                       else ("live" if live else "frozen") if expense else "not_billed"),
+        "can_record": live and foreign is None,
+        "transactions_open": deletions.month_is_open(uow, apartment_id, month),
+    }
+
+
+# ------------------------------------------------------------ paying it -- #
+
+def _require_month_bill(uow: UnitOfWork, apartment_id: str,
+                        month: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    providers = _month_providers(uow, apartment_id)
+    expense, _ = _month_expense(uow, apartment_id,
+                                _month_definition_id(uow, apartment_id, providers), month)
+    if expense is None:
+        raise ConflictError(f"{month_label(month)}'s electricity is not recorded yet.",
+                            code="electricity_bill_not_recorded",
+                            details={"settlement_month": month})
+    return expense, providers
+
+
+def record_month_payment(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
+                         actor: str = "operator") -> dict[str, Any]:
+    """Record a flatmate paying what they owe for a month's electricity into the kitty.
+
+    ``payload``: ``settlement_month``, ``resident_id``, ``amount_paise``,
+    ``payment_date``, and optionally ``payment_mode``, ``reference`` and ``note``.
+    It settles their share of the month first; anything beyond goes to their
+    other charges, oldest first, and what is left stays a credit. A share
+    already paid, or covered by their paying a provider, is refused.
+    """
+    month = normalize_month(payload.get("settlement_month"), "settlement_month")
+    resident_id = require_text(payload.get("resident_id"), "resident_id", max_length=64)
+    amount = ensure_paise(payload.get("amount_paise"), "amount_paise", allow_zero=False)
+    payment_date = parse_iso_date(payload.get("payment_date"), "payment_date").isoformat()
+    timestamp = now_timestamp()
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        name = get_resident(uow, resident_id, apartment_id)["display_name"]
+        expense, _ = _require_month_bill(uow, apartment_id, month)
+        charges = uow.furniture.resident_charges_for_expense(expense["expense_id"], resident_id)
+        if not charges:
+            raise ValidationError(
+                f"{name} has no share of {month_label(month)}'s electricity.",
+                code="not_an_electricity_participant",
+                details={"field": "resident_id", "resident_id": resident_id})
+        target = next((charge for charge in charges if charge["outstanding_paise"] > 0), None)
+        if target is None:
+            raise ConflictError(
+                f"{name} has already paid their share of {month_label(month)}'s electricity.",
+                code="electricity_share_already_paid", details={"resident_id": resident_id})
+        advanced = sum(tranche["amount_paise"]
+                       for tranche in uow.furniture.service_disbursements(expense["expense_id"])
+                       if tranche["funding_resident_id"] == resident_id)
+        if advanced and advanced >= sum(charge["outstanding_paise"] for charge in charges):
+            raise ConflictError(
+                f"{name} paid a provider {month_label(month)}'s electricity, which already "
+                "covers their share; the kitty owes them the rest.",
+                code="electricity_share_funded_by_payout", details={"resident_id": resident_id})
+        payments._record_payment(
+            uow, apartment_id=apartment_id, payment_id=new_id("payment"),
+            payer_resident_id=resident_id, amount_paise=amount, payment_date=payment_date,
+            payment_kind="to_pool", payee_or_provider=None,
+            reference=optional_text(payload.get("reference"), "reference", max_length=200),
+            note=(optional_text(payload.get("note"), "note")
+                  or f"Electricity for {month_label(month)}"),
+            timestamp=timestamp, expense_id=expense["expense_id"], actor=actor,
+            target_allocation_id=target["allocation_id"],
+            payment_mode=payload.get("payment_mode"))
+        return _month_overview(uow, apartment_id, month)
+
+
+def disburse_month_payout(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
+                          actor: str = "operator") -> dict[str, Any]:
+    """Record a recharge of the UPPCL or the DG prepaid meter: a top-up.
+
+    The meters are prepaid, topped up as the month goes, so the month's bills
+    are what was recharged: each top-up raises its meter's bill by its amount,
+    and the month is split again -- each flatmate's AC, and an equal share of
+    the rest -- with what everyone has paid moving with their shares (see
+    :func:`_rewrite_month`). The first top-up of a month records it. Refused
+    once the month's statement is finalized.
+
+    ``payload``: ``settlement_month``, ``provider`` (``"uppcl"`` or ``"dg"``),
+    ``disbursement_mode``, ``amount_paise``, ``reference``, ``disbursed_date``,
+    and optionally ``funding_resident_id`` and ``notes``.
+
+    ``pool``: the kitty recharged it, out of what flatmates paid in.
+    ``resident_advance``: a flatmate recharged it from their own account --
+    what covers their own open share goes through the kitty as everyone's
+    does, and what they paid beyond it the kitty pays back to them
+    (``reimbursements``).
+    """
+    month = normalize_month(payload.get("settlement_month"), "settlement_month")
+    key = payload.get("provider")
+    if key not in PROVIDER_KEYS:
+        raise ValidationError("provider must be 'uppcl' or 'dg'.",
+                              details={"field": "provider", "allowed": list(PROVIDER_KEYS)})
+    mode = payload.get("disbursement_mode")
+    if mode not in PAYOUT_MODES:
+        raise ValidationError("Unsupported disbursement_mode.",
+                              details={"field": "disbursement_mode",
+                                       "allowed": list(PAYOUT_MODES)})
+    reference = require_text(payload.get("reference"), "reference", max_length=200)
+    disbursed_date = parse_iso_date(payload.get("disbursed_date"), "disbursed_date").isoformat()
+    note = optional_text(payload.get("notes"), "notes", max_length=500)
+    if payload.get("amount_paise") is None:
+        raise ValidationError("Give the amount recharged.", code="electricity_amount_required",
+                              details={"field": "amount_paise"})
+    amount_paise = ensure_paise(payload.get("amount_paise"), "amount_paise", allow_zero=False)
+    funding_resident_id = payload.get("funding_resident_id")
+    if mode == "pool" and funding_resident_id:
+        raise ValidationError("A recharge from the kitty has no funding resident.",
+                              details={"field": "funding_resident_id"})
+    if mode == "resident_advance" and not funding_resident_id:
+        raise ValidationError("Choose the flatmate who recharged the meter.",
+                              details={"field": "funding_resident_id"})
+    timestamp = now_timestamp()
+    definition_id = _ensure_month_definition(db, apartment_id, actor)
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        expense, _ = _month_expense(uow, apartment_id, definition_id, month)
+        # The month's bills are what was recharged: this top-up raises its meter's.
+        recharged = _recharged(uow, apartment_id, expense)
+        recharged[key] += amount_paise
+        basis = (_month_stored_basis(uow.furniture.allocations_for_expense(expense["expense_id"]))
+                 if expense else {})
+        _write_month(uow, apartment_id, month,
+                     _month_bills_at(_month_providers(uow, apartment_id), recharged),
+                     {rid: int(paise) for rid, paise in (basis.get("ac_allocations") or {}).items()},
+                     definition_id, timestamp, actor)
+        expense, providers = _require_month_bill(uow, apartment_id, month)
+        provider = providers[key]
+        expense_id = expense["expense_id"]
+        tranches = uow.furniture.service_disbursements(expense_id)
+        amount = amount_paise
+        owed = recharged[key]
+        remaining = amount
+        name = provider["provider_name"]
+        advanced = sum(tranche["amount_paise"] for tranche in tranches
+                       if tranche["disbursed_by"] == "resident_advance")
+        external = uow.furniture.linked_advance_total_paise(expense_id) - advanced
+        if external > 0 or expense["payer_resident_id"]:
+            raise ConflictError(
+                f"{month_label(month)}'s electricity already records a flatmate as having paid "
+                "it, so a payout cannot also be recorded here. Correct the expense, or the "
+                "payment linked to it, first.", code="electricity_already_funded",
+                details={"expense_id": expense_id,
+                         "payer_resident_id": expense["payer_resident_id"],
+                         "linked_advance_paise": external})
+
+        written: list[dict[str, Any]] = []
+        if mode == "pool":
+            written.append(dict(disbursement_id=new_id("svcdisb"), amount_paise=amount,
+                                disbursed_by="pool", funding_resident_id=None,
+                                funding_payment_id=None, note=note))
+        else:
+            payer = get_resident(uow, funding_resident_id, apartment_id)["display_name"]
+            open_charge = next((charge for charge in uow.furniture.resident_charges_for_expense(
+                expense_id, funding_resident_id) if charge["outstanding_paise"] > 0), None)
+            share_paise = min(amount, open_charge["outstanding_paise"]) if open_charge else 0
+            extra_paise = amount - share_paise
+            if share_paise:
+                # Their own share goes through the kitty, as everyone else's does.
+                share_payment_id = new_id("payment")
+                payments._record_payment(
+                    uow, apartment_id=apartment_id, payment_id=share_payment_id,
+                    payer_resident_id=funding_resident_id, amount_paise=share_paise,
+                    payment_date=disbursed_date, payment_kind="to_pool",
+                    payee_or_provider=None, reference=reference,
+                    note=f"Electricity for {month_label(month)}",
+                    timestamp=timestamp, expense_id=expense_id, actor=actor,
+                    target_allocation_id=open_charge["allocation_id"])
+                written.append(dict(disbursement_id=service_bills.share_payout_id(share_payment_id),
+                                    amount_paise=share_paise, disbursed_by="pool",
+                                    funding_resident_id=None, funding_payment_id=None,
+                                    note=f"{payer}'s allotted share via House Kitty"))
+            if extra_paise:
+                # Only what they paid beyond their share is an advance, which the
+                # kitty pays back out of what the others pay in.
+                funding_payment_id = new_id("electricity-payout")
+                payments._record_payment(
+                    uow, apartment_id=apartment_id, payment_id=funding_payment_id,
+                    payer_resident_id=funding_resident_id, amount_paise=extra_paise,
+                    payment_date=disbursed_date, payment_kind="provider_advance",
+                    payee_or_provider=name, reference=reference,
+                    note=(f"Extra paid for electricity ({month_label(month)}) to be "
+                          "reimbursed via House Kitty"),
+                    timestamp=timestamp, expense_id=expense_id, actor=actor)
+                written.append(dict(disbursement_id=new_id("svcdisb"), amount_paise=extra_paise,
+                                    disbursed_by="resident_advance",
+                                    funding_resident_id=funding_resident_id,
+                                    funding_payment_id=funding_payment_id,
+                                    note=note or (f"Extra above {payer}'s share "
+                                                  "(reimbursable via House Kitty)")))
+        for tranche in written:
+            uow.furniture.insert_service_disbursement(
+                service_id=provider["service_id"], expense_id=expense_id,
+                apartment_id=apartment_id, settlement_month=month, disbursed_at=disbursed_date,
+                disbursement_reference=reference, created_at=timestamp, **tranche)
+        audit.record(uow, entity_type="household_service", entity_id=provider["service_id"],
+                     action="disburse", actor=actor, apartment_id=apartment_id,
+                     new_value={"settlement_month": month, "expense_id": expense_id,
+                                "provider": key, "amount_paise": amount, "owed_paise": owed,
+                                "remaining_paise": remaining - amount, "disbursed_by": mode,
+                                "disbursed_at": disbursed_date,
+                                "disbursement_reference": reference,
+                                "funding_resident_id": funding_resident_id, "note": note,
+                                "tranches": [{k: tranche[k] for k in (
+                                    "disbursement_id", "amount_paise", "disbursed_by",
+                                    "funding_payment_id")} for tranche in written]})
+        return _month_overview(uow, apartment_id, month)
+
+
+def reimburse_month_from_kitty(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
+                               actor: str = "operator") -> dict[str, Any]:
+    """Pay back, from the kitty, a flatmate who paid a provider more than their share.
+
+    ``payload``: ``settlement_month``, ``recipient_resident_id``, ``amount_paise``,
+    ``payment_date``, and optionally ``reference`` and ``notes``. Never more than
+    the kitty holds for the month, nor more than they are still owed."""
+    month = normalize_month(payload.get("settlement_month"), "settlement_month")
+    recipient = require_text(payload.get("recipient_resident_id"), "recipient_resident_id",
+                             max_length=64)
+    amount = ensure_paise(payload.get("amount_paise"), "amount_paise", allow_zero=False)
+    payment_date = parse_iso_date(payload.get("payment_date"), "payment_date").isoformat()
+    timestamp = now_timestamp()
+    with db.transaction() as uow:
+        get_apartment(uow, apartment_id)
+        expense, _ = _require_month_bill(uow, apartment_id, month)
+        owing = service_bills.funding(uow, apartment_id, expense)["reimbursements"]
+        owed = next((entry for entry in owing
+                     if entry["recipient_resident_id"] == recipient), None)
+        if owed is None:
+            raise NotFoundError(
+                f"The kitty owes nobody by that name for {month_label(month)}'s electricity.",
+                code="electricity_no_reimbursement",
+                details={"field": "recipient_resident_id", "settlement_month": month})
+        name = owed["recipient_name"]
+        if amount > owed["pending_reimbursement_paise"]:
+            raise ValidationError(
+                f"That is more than the {format_inr(owed['pending_reimbursement_paise'])} "
+                f"still owed to {name} for {month_label(month)}.",
+                code="exceeds_pending_reimbursement",
+                details={"field": "amount_paise", "amount_paise": amount,
+                         "pending_reimbursement_paise": owed["pending_reimbursement_paise"]})
+        if amount > owed["kitty_cash_available_paise"]:
+            raise ValidationError(
+                f"The kitty holds only {format_inr(owed['kitty_cash_available_paise'])} from "
+                f"flatmates for this month that has not already gone to UPPCL, the DG, or back "
+                f"to {name}.", code="exceeds_kitty_cash",
+                details={"field": "amount_paise", "amount_paise": amount,
+                         "kitty_cash_available_paise": owed["kitty_cash_available_paise"]})
+        payment = payments._record_payment(
+            uow, apartment_id=apartment_id,
+            payment_id=new_id(service_bills.reimbursement_id_base(expense["expense_id"])),
+            payer_resident_id=recipient, amount_paise=amount, payment_date=payment_date,
+            payment_kind="refund", payee_or_provider=None,
+            reference=optional_text(payload.get("reference"), "reference", max_length=200),
+            note=(optional_text(payload.get("notes"), "notes", max_length=500)
+                  or f"Reimbursement for electricity for {month_label(month)}, paid to UPPCL "
+                     "or the DG on the household's behalf"),
+            timestamp=timestamp, expense_id=None, actor=actor)
+        audit.record(uow, entity_type="expense", entity_id=expense["expense_id"],
+                     action="reimburse", actor=actor, apartment_id=apartment_id,
+                     new_value={"settlement_month": month, "recipient_resident_id": recipient,
+                                "amount_paise": amount, "payment_id": payment["payment_id"],
+                                "payment_date": payment_date})
+        return _month_overview(uow, apartment_id, month)

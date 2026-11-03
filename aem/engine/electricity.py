@@ -39,6 +39,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence
 import json
 
+from .ledger import net_settlement_transfers
+
 
 class ElectricityCalculationError(ValueError):
     """Raised when bill inputs or allocation rules are invalid."""
@@ -284,3 +286,105 @@ def calculate_electricity(input_data: Mapping[str, Any]) -> ElectricityCalculati
         },
         warnings=(),
     )
+
+
+# ------------------------------------------------- the consolidated bill --
+#
+# The flat's grid (UPPCL) and diesel-generator (DG) bills are settled as one:
+# each flatmate's own AC is theirs, and what is left of the combined bill is
+# shared equally.
+
+
+def calculate_consolidated_electricity(
+    *, components: Sequence[Mapping[str, Any]], ac_allocations: Mapping[str, int],
+    residents: Sequence[str], payments: Mapping[str, int] | None = None,
+) -> dict[str, Any]:
+    """Split the month's bills: each resident's AC, and an equal share of the rest.
+
+    ``components`` are the bills that make it up -- ``{"id", "name",
+    "amount_paise"}``, UPPCL's and DG's -- and together they are the total.
+    ``ac_allocations`` is what each resident's AC cost, in paise, which together
+    can never be more than the total; a resident left out ran none. What is left
+    -- the shared remainder -- is split equally between ``residents`` in whole
+    paise, the paise that do not divide going one each to the first of them in
+    the order given. A resident is responsible for their common share and their
+    AC, and the responsibilities add up to the total exactly.
+
+    With ``payments`` -- what each resident has paid towards the bills -- each
+    resident's ``net_balance_paise`` is what they paid less what they are
+    responsible for (above zero, they receive; below, they owe), and once the
+    payments cover the bills in full, ``transfers`` settles the balances between
+    them in as few payments as the greedy order makes.
+    """
+    resident_ids = list(residents) if isinstance(residents, Sequence) \
+        and not isinstance(residents, (str, bytes)) else None
+    if not resident_ids or any(not isinstance(rid, str) or not rid.strip()
+                               for rid in resident_ids):
+        raise ElectricityCalculationError("At least one resident must share the bill.")
+    if len(set(resident_ids)) != len(resident_ids):
+        raise ElectricityCalculationError("Resident IDs must be unique.")
+    if not isinstance(components, Sequence) or isinstance(components, (str, bytes)) \
+            or not components:
+        raise ElectricityCalculationError("The bill needs at least one component.")
+    bills: list[dict[str, Any]] = []
+    for index, component in enumerate(components):
+        if not isinstance(component, Mapping):
+            raise ElectricityCalculationError(f"Bill component {index} must be an object.")
+        cid, name = component.get("id"), component.get("name")
+        if not isinstance(cid, str) or not cid.strip():
+            raise ElectricityCalculationError(f"Bill component {index} requires a non-empty id.")
+        if any(bill["id"] == cid for bill in bills):
+            raise ElectricityCalculationError(f"Duplicate bill component id: {cid}.")
+        if not isinstance(name, str) or not name.strip():
+            raise ElectricityCalculationError(f"Bill component {cid} requires a non-empty name.")
+        bills.append({"id": cid, "name": name,
+                      "amount_paise": _money(component.get("amount_paise"),
+                                             f"Component {cid} amount_paise")})
+    if not isinstance(ac_allocations, Mapping):
+        raise ElectricityCalculationError("ac_allocations must be an object keyed by resident ID.")
+    unknown = sorted(set(ac_allocations) - set(resident_ids))
+    if unknown:
+        raise ElectricityCalculationError(
+            f"AC is allocated to someone not sharing the bill: {', '.join(unknown)}.")
+    ac = {rid: _money(ac_allocations.get(rid, 0), f"AC for {rid}") for rid in resident_ids}
+
+    total = sum(bill["amount_paise"] for bill in bills)
+    total_ac = sum(ac.values())
+    if total_ac > total:
+        raise ElectricityCalculationError(
+            f"The AC costs come to {total_ac} paise, more than the {total} paise bill.")
+    remainder = total - total_ac
+    base, extra = divmod(remainder, len(resident_ids))
+    shares = []
+    for index, rid in enumerate(resident_ids):
+        common = base + (1 if index < extra else 0)
+        shares.append({"resident_id": rid, "common_share_paise": common,
+                       "ac_paise": ac[rid], "responsibility_paise": common + ac[rid]})
+    if sum(share["responsibility_paise"] for share in shares) != total:
+        raise ElectricityCalculationError("Responsibilities do not add up to the bill.")
+
+    result: dict[str, Any] = {
+        "components": bills, "total_paise": total, "total_ac_paise": total_ac,
+        "common_remainder_paise": remainder, "common_share_paise": base,
+        "remainder_extra_paise": extra, "residents": shares,
+    }
+    if payments is not None:
+        if not isinstance(payments, Mapping):
+            raise ElectricityCalculationError("payments must be an object keyed by resident ID.")
+        strangers = sorted(set(payments) - set(resident_ids))
+        if strangers:
+            raise ElectricityCalculationError(
+                f"A payment is from someone not sharing the bill: {', '.join(strangers)}.")
+        for share in shares:
+            share["paid_paise"] = _money(payments.get(share["resident_id"], 0),
+                                         f"Payment by {share['resident_id']}")
+            share["net_balance_paise"] = share["paid_paise"] - share["responsibility_paise"]
+        paid = sum(share["paid_paise"] for share in shares)
+        result["paid_paise"] = paid
+        result["unpaid_paise"] = max(0, total - paid)
+        result["transfers"] = [
+            {"from_resident_id": debtor, "to_resident_id": creditor, "amount_paise": amount}
+            for debtor, creditor, amount in net_settlement_transfers(
+                {share["resident_id"]: share["net_balance_paise"] for share in shares})
+        ] if paid == total else []
+    return result

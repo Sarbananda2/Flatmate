@@ -10,6 +10,7 @@ from .electricity import (
     ElectricityCalculationError,
     ElectricityCalculationResult,
     ResidentAllocation,
+    calculate_consolidated_electricity,
     calculate_electricity,
 )
 from .ledger import (
@@ -39,4 +40,5 @@ __all__ = [
     "pooled_net_positions", "revise_statement", "weighted_split",
     "ComponentResult", "ElectricityCalculationError",
     "ElectricityCalculationResult", "ResidentAllocation", "calculate_electricity",
+    "calculate_consolidated_electricity",
 ]

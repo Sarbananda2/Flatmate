@@ -13,7 +13,7 @@ Conventions
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -369,6 +369,62 @@ class ElectricityCreate(ApiModel):
     bill_number: str | None = Field(None, max_length=120)
     due_date: str | None = Field(None, pattern=DATE_PATTERN)
     notes: str | None = Field(None, max_length=2000)
+
+
+class ElectricityMonthInput(ApiModel):
+    """Each flatmate's AC for a month, taken out of what the meters were recharged."""
+    ac_allocations: dict[str, Annotated[int, Field(ge=0)]] = Field(
+        default_factory=dict,
+        description="What each flatmate's AC cost, in paise, by resident ID; together no more "
+                    "than the month's recharges. Everything else is shared equally.")
+
+
+class ElectricityMonthBill(ElectricityMonthInput):
+    """Set a month's AC, until its statement is finalized. Its bills are its recharges."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+
+
+class ElectricityPaymentCreate(ApiModel):
+    """A flatmate paying what they owe for a month's electricity into the kitty."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "What the flatmate paid. Settles their share of the month first; any excess goes to "
+        "their other charges, oldest first.", ge=1)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    payment_mode: Literal["upi", "bank_transfer", "cash", "other"] | None = None
+    reference: str | None = Field(None, max_length=200)
+    note: str | None = Field(None, max_length=2000)
+
+
+class ElectricityPayoutRequest(ApiModel):
+    """A recharge of the UPPCL or the DG prepaid meter: by the kitty, or by a flatmate."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    provider: Literal["uppcl", "dg"]
+    disbursement_mode: Literal["pool", "resident_advance"] = Field(
+        description="pool: recharged from the House Kitty; resident_advance: a flatmate "
+                    "recharged it from their own account.")
+    funding_resident_id: str | None = Field(
+        None, max_length=64, description="For a resident advance: who recharged the meter.")
+    reference: str = Field(min_length=1, max_length=200,
+                           description="Bank UTR or UPI transaction ID.")
+    disbursed_date: str = Field(pattern=DATE_PATTERN)
+    amount_paise: int = _money_field(
+        "What was recharged. It raises the meter's bill for the month by as much.", ge=1)
+    notes: str | None = Field(None, max_length=500)
+
+
+class ElectricityReimburseRequest(ApiModel):
+    """The kitty paying back a flatmate who paid UPPCL or the DG beyond their share."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    recipient_resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "No more than the kitty holds for the month, nor more than the flatmate is still "
+        "owed.", ge=1)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    reference: str | None = Field(None, max_length=200,
+                                  description="Bank UTR or UPI transaction ID.")
+    notes: str | None = Field(None, max_length=500)
 
 
 class TapoSyncRequest(ApiModel):
@@ -1332,6 +1388,8 @@ __all__ = [
     "FurnitureReimburseRequest",
     "FurnitureSetupRequest",
     "WaterPaymentCreate", "WaterPayoutRequest", "WaterReimburseRequest", "WaterSetupRequest",
+    "ElectricityMonthBill", "ElectricityMonthInput",
+    "ElectricityPaymentCreate", "ElectricityPayoutRequest", "ElectricityReimburseRequest",
     "RentLeaseConfigSave", "RentLeaseRenewRequest", "RentLeaseVacateRequest",
     "RentPaymentCreate",
     "ResidentCreate", "ResidentDeactivate", "ResidentUpdate", "SetupApartmentRequest",

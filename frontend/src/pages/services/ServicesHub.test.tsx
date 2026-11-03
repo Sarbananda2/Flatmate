@@ -138,6 +138,7 @@ describe('ServicesHub', () => {
     const power = screen.getByRole('region', { name: 'Electricity' })
     expect(await within(power).findByText('BESCOM')).toBeInTheDocument()
     expect(within(power).getByText('Draft')).toBeInTheDocument()
+    expect(fact(power, 'Usage split')).toHaveTextContent('AC by flatmate, the rest equally')
     expect(within(power).getByRole('link', { name: 'Open Power Hub' })).toHaveAttribute(
       'href',
       '/services/electricity',

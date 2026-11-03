@@ -1955,3 +1955,109 @@ export interface WaterOverview {
   month: WaterMonthBill | null
   next_billing_date: string | null
 }
+
+/* ------------------------------------------------------------ electricity -- */
+
+/** The month's two bills: the grid's (UPPCL) and the diesel generator's (DG). */
+export type ElectricityProviderKey = 'uppcl' | 'dg'
+
+export interface ElectricityBillComponent {
+  id: ElectricityProviderKey
+  name: string
+  amount_paise: number
+}
+
+/** A flatmate's part of the month: their own AC, and an equal share of the rest. */
+export interface ElectricityShare {
+  resident_id: string
+  display_name: string
+  ac_paise: number
+  common_share_paise: number
+  /** What they are responsible for: their common share and their AC. */
+  total_paise: number
+  /** Paid towards it, into the kitty or by paying a provider. */
+  paid_paise: number
+  /** Paid into the kitty against it. */
+  settled_paise: number
+  outstanding_paise: number
+  /** Null until the month is recorded. */
+  status: FurnitureShareStatus | null
+  paid_date: string | null
+  payments: FurnitureShare['payments']
+  /** Above zero the kitty owes them; below, they owe the kitty. */
+  net_balance_paise: number
+}
+
+/** What UPPCL, or the DG, is owed for the month, and payouts made to it. */
+export interface ElectricityProviderPayout {
+  provider_key: ElectricityProviderKey
+  provider_name: string
+  service_id: string | null
+  total_paise: number
+  disbursed_paise: number
+  remaining_paise: number
+  payout_status: FurniturePayoutStatus
+  disbursements: FurnitureDisbursement[]
+}
+
+/** A recharge of a prepaid meter: by a flatmate from their own account, or by the kitty. */
+export interface ElectricityTopUp {
+  /** Removes the recharge, and whatever was recorded with it. */
+  top_up_id: string
+  provider_key: ElectricityProviderKey
+  provider_name: string
+  amount_paise: number
+  recharged_on: string
+  reference: string
+  paid_by: 'flatmate' | 'kitty'
+  resident_id: string | null
+  resident_name: string | null
+  note: string | null
+}
+
+/** `GET /api/electricity/month/{month}`. */
+export interface ElectricityMonth {
+  settlement_month: string
+  /** The month whose usage the bills are for. */
+  service_period: string
+  /** Who shares the month: everyone living in the flat, and whoever it already charges. */
+  participants: Array<{ resident_id: string; display_name: string }>
+  components: ElectricityBillComponent[]
+  ac_allocations: Record<string, number>
+  total_paise: number
+  total_ac_paise: number
+  common_remainder_paise: number
+  common_share_paise: number
+  shares: ElectricityShare[]
+  payouts: ElectricityProviderPayout[]
+  /** The month's recharges, oldest first: its bills are what they come to. */
+  top_ups: ElectricityTopUp[]
+  collected_paise: number
+  collected_count: number
+  reimbursements: KittyReimbursement[]
+  expense: { expense_id: string; description: string; amount_paise: number; statement_id: string | null } | null
+  /** A bill for the month entered with smart-plug readings instead. */
+  foreign_expense: { expense_id: string; description: string; amount_paise: number } | null
+  statement_status: StatementStatus | null
+  bill_state: 'live' | 'frozen' | 'not_billed' | 'recorded_elsewhere'
+  /** Whether the bills and AC can be entered: until the month's statement is finalized. */
+  can_record: boolean
+  transactions_open: boolean
+}
+
+/** `POST /api/electricity/month/{month}/preview`: the split, with nothing recorded. */
+export interface ElectricityMonthPreview {
+  settlement_month: string
+  components: ElectricityBillComponent[]
+  total_paise: number
+  total_ac_paise: number
+  common_remainder_paise: number
+  common_share_paise: number
+  residents: Array<{
+    resident_id: string
+    display_name: string
+    common_share_paise: number
+    ac_paise: number
+    responsibility_paise: number
+  }>
+}

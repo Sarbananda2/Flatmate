@@ -295,15 +295,18 @@ function ElectricityCard({ month, overview }: CardProps) {
         {() => (
           <dl className="m-0 space-y-2">
             <Fact label="Provider">{bill?.provider_name ?? '—'}</Fact>
-            <Fact label="Usage split">Tapo smart plugs</Fact>
+            <Fact label="Usage split">AC by flatmate, the rest equally</Fact>
             {bill ? (
               <>
                 <Fact label="Latest bill">
                   <Rupees paise={bill.amount_paise} />
-                  <span className="font-normal text-[var(--text-secondary)]">
-                    {' '}
-                    · {bill.total_kwh} kWh
-                  </span>
+                  {/* A bill split by smart-plug readings says how much was used. */}
+                  {Number(bill.total_kwh) > 0 && (
+                    <span className="font-normal text-[var(--text-secondary)]">
+                      {' '}
+                      · {bill.total_kwh} kWh
+                    </span>
+                  )}
                 </Fact>
                 <Fact label="Settles in">
                   {bill.settlement_period ? formatMonth(bill.settlement_period) : '—'}
