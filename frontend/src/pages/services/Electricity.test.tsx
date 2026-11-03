@@ -217,7 +217,7 @@ const sent = (method: string, path: string) =>
 
 const section = async (title: string) => (await screen.findByRole('heading', { name: title })).closest('section')!
 
-/** A flatmate's share of what's left, and what they are responsible for in all, as their row shows them. */
+/** A flatmate's shared cost and net cost, as their row shows them. */
 const shares = (row: HTMLElement) =>
   within(row)
     .getAllByRole('cell')
@@ -242,7 +242,7 @@ describe('Electricity', () => {
     expect(screen.getByLabelText('location')).toHaveTextContent('/?tab=allocations')
     expect(screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)).toEqual([
       'Meter Top-ups / Recharges',
-      'AC Allocations & Responsibility',
+      'AC Allocations & Costs',
     ])
   })
 
@@ -286,7 +286,7 @@ describe('Electricity', () => {
     const panel = await section('Meter Top-ups / Recharges')
     expect(panel).toHaveTextContent('No recharge logged for November 2026 yet.')
     // The AC waits for a recharge to come out of.
-    expect(await section('AC Allocations & Responsibility')).toHaveTextContent('Log a meter recharge first')
+    expect(await section('AC Allocations & Costs')).toHaveTextContent('Log a meter recharge first')
 
     await userEvent.click(within(panel).getByRole('button', { name: 'Add Meter Recharge' }))
     const dialog = screen.getByRole('dialog', { name: 'Add Meter Recharge' })
@@ -392,13 +392,13 @@ describe('Electricity', () => {
 
   it("takes each flatmate's AC out of what was recharged, beside what it leaves them, and saves it in paise", async () => {
     show(recharged, {}, ALLOCATIONS)
-    const panel = await section('AC Allocations & Responsibility')
-    const table = within(panel).getByRole('table', { name: 'AC and responsibility for November 2026' })
+    const panel = await section('AC Allocations & Costs')
+    const table = within(panel).getByRole('table', { name: 'AC and costs for November 2026' })
     expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
       'Flatmate',
       'Individual AC Cost',
-      'Shared Remainder',
-      'Net Responsibility',
+      'Shared Cost',
+      'Net Cost',
     ])
     const row = (name: string) => within(table).getByRole('row', { name: new RegExp(`^${name}`) })
     // Every flatmate has an AC to fill in, ₹0 until they do: the whole recharge is shared.
@@ -408,7 +408,7 @@ describe('Electricity', () => {
     }
     expect(shares(row('Sarbananda'))).toEqual(['₹1,333.33', '₹1,333.33'])
     expect(panel).not.toHaveTextContent('Stored as integer paise')
-    const sums = within(panel).getByLabelText('AC and the shared remainder')
+    const sums = within(panel).getByLabelText('AC and the shared cost')
     expect(sums).toHaveTextContent('Total Recharged₹4,000.00')
     const status = within(panel).getByRole('status')
     // Nothing to say until the AC changes.
@@ -419,7 +419,7 @@ describe('Electricity', () => {
     fireEvent.change(within(table).getByLabelText("Sarbananda's AC"), { target: { value: '971.05' } })
     fireEvent.change(within(table).getByLabelText("Arnab's AC"), { target: { value: '895.48' } })
     expect(sums).toHaveTextContent('Sum of ACs₹1,866.53')
-    expect(sums).toHaveTextContent('Shared Remainder₹2,133.47')
+    expect(sums).toHaveTextContent('Shared Cost₹2,133.47')
     // The AC and what's left of it come to what was recharged.
     expect(within(table).getByRole('row', { name: /^Total/ })).toHaveTextContent('Total₹1,866.53₹2,133.47₹4,000.00')
     // Each share is the backend's, once typing pauses.
@@ -436,7 +436,7 @@ describe('Electricity', () => {
 
     // Cleared, a flatmate's AC is back to ₹0.
     fireEvent.change(within(table).getByLabelText("Arnab's AC"), { target: { value: '' } })
-    expect(sums).toHaveTextContent('Shared Remainder₹3,028.95')
+    expect(sums).toHaveTextContent('Shared Cost₹3,028.95')
     fireEvent.change(within(table).getByLabelText("Arnab's AC"), { target: { value: '895.48' } })
 
     // Saved from the foot of the card.
@@ -455,11 +455,11 @@ describe('Electricity', () => {
 
   it('refuses AC that comes to more than was recharged', async () => {
     show(recorded({ total_paise: 100000 }), {}, ALLOCATIONS)
-    const panel = await section('AC Allocations & Responsibility')
+    const panel = await section('AC Allocations & Costs')
     fireEvent.change(within(panel).getByLabelText("Arnab's AC"), { target: { value: '1200' } })
     expect(within(panel).getByRole('alert')).toHaveTextContent('The AC sum, ₹2,171.05, exceeds the ₹1,000.00 recharged.')
     // Nothing is left to share, so no share is worked out.
-    expect(within(panel).getByLabelText('AC and the shared remainder')).toHaveTextContent('Shared Remainder−₹1,171.05')
+    expect(within(panel).getByLabelText('AC and the shared cost')).toHaveTextContent('Shared Cost−₹1,171.05')
     expect(shares(within(panel).getByRole('row', { name: /^Arnab/ }))).toEqual(['—Not worked out', '—Not worked out'])
     expect(sent('POST', `/api/electricity/month/${MONTH}/preview`)).toBeUndefined()
     expect(within(panel).getByRole('button', { name: 'Save' })).toBeDisabled()
@@ -638,9 +638,9 @@ describe('Electricity', () => {
     expect(within(details).queryByRole('button', { name: 'Remove Recharge' })).toBeNull()
     await userEvent.click(within(details).getByRole('button', { name: 'Close' }))
     // Its AC is read, not edited, beside what it left each flatmate.
-    const ac = await section('AC Allocations & Responsibility')
+    const ac = await section('AC Allocations & Costs')
     expect(within(ac).queryByRole('textbox')).toBeNull()
-    const table = within(ac).getByRole('table', { name: 'AC and responsibility for November 2026' })
+    const table = within(ac).getByRole('table', { name: 'AC and costs for November 2026' })
     expect(within(table).getByRole('row', { name: /^Arnab/ })).toHaveTextContent('Arnab₹895.48₹711.16₹1,606.64')
     expect(within(ac).queryByRole('button', { name: 'Save' })).toBeNull()
   })

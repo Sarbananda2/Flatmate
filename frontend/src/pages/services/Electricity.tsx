@@ -339,19 +339,19 @@ function TopUpsPanel({
             <caption className="sr-only">Meter recharges for {formatMonth(month)}</caption>
             <thead>
               <tr className={TABLE_HEAD}>
-                <th scope="col" className="w-[20%] pb-3 pr-4 text-left">
+                <th scope="col" className="w-[18%] pb-3 pr-3 text-left">
                   Date
                 </th>
-                <th scope="col" className="w-[30%] pb-3 pr-4 text-left">
+                <th scope="col" className="w-[28%] pb-3 pr-3 text-left">
                   Meter / Provider
                 </th>
-                <th scope="col" className="w-[25%] pb-3 pr-4 text-left">
+                <th scope="col" className="w-[26%] pb-3 pr-3 text-center">
                   Paid By
                 </th>
-                <th scope="col" className="w-[18%] pb-3 pl-2 text-right">
+                <th scope="col" className="w-[22%] pb-3 pr-3 text-center">
                   Amount
                 </th>
-                <th scope="col" className="w-[7%] pb-3 text-right">
+                <th scope="col" className="w-[6%] pb-3 text-center">
                   <span className="sr-only">Actions</span>
                 </th>
               </tr>
@@ -373,15 +373,15 @@ function TopUpsPanel({
                     }
                   }}
                 >
-                  <td className="py-2.5 pr-4 tabular whitespace-nowrap">{formatDate(topUp.recharged_on)}</td>
-                  <th scope="row" className="py-2.5 pr-4 text-left font-semibold text-[var(--text-primary)] truncate">
+                  <td className="py-2.5 pr-3 text-left tabular whitespace-nowrap">{formatDate(topUp.recharged_on)}</td>
+                  <th scope="row" className="py-2.5 pr-3 text-left font-semibold text-[var(--text-primary)] truncate">
                     {topUp.provider_name}
                   </th>
-                  <td className="py-2.5 pr-4 truncate">{topUp.resident_name ?? 'House Kitty'}</td>
-                  <td className="py-2.5 pl-2 text-right tabular font-bold text-[var(--text-primary)]">
+                  <td className="py-2.5 pr-3 text-center truncate">{topUp.resident_name ?? 'House Kitty'}</td>
+                  <td className="py-2.5 pr-3 text-center tabular font-bold text-[var(--text-primary)]">
                     {formatInr(topUp.amount_paise)}
                   </td>
-                  <td className="py-2.5 text-right">
+                  <td className="py-2.5 text-center">
                     {removable && (
                       <button
                         type="button"
@@ -586,7 +586,7 @@ function TopUpDialog({
   )
 }
 
-/* ------------------------------------------ 2. the AC and the responsibility -- */
+/* -------------------------------------------------- 2. the AC and the costs -- */
 
 /** A flatmate's part of the month: their share of what's left, and in all. */
 interface Share {
@@ -668,9 +668,9 @@ function MonthBill({
 
   return (
     <Panel
-      title="AC Allocations & Responsibility"
+      title="AC Allocations & Costs"
       icon={<Calculator className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="Each flatmate pays their own AC, out of what was recharged, and an equal share of whatever is left."
+      hint="Each flatmate's net cost is their own AC plus an equal part of the shared cost: what's left of the recharges."
     >
       {!recharged ? (
         <p className="m-0 text-xs text-[var(--text-secondary)]">
@@ -680,20 +680,20 @@ function MonthBill({
         <>
           <div className="overflow-x-auto min-w-0">
             <table className="w-full table-fixed text-xs min-w-[480px] border-collapse" aria-busy={working || undefined}>
-              <caption className="sr-only">AC and responsibility for {formatMonth(month)}</caption>
+              <caption className="sr-only">AC and costs for {formatMonth(month)}</caption>
               <thead>
                 <tr className={TABLE_HEAD}>
                   <th scope="col" className="w-[30%] pb-3 pr-3 text-left">
                     Flatmate
                   </th>
-                  <th scope="col" className="w-[26%] pb-3 pr-3 text-left">
+                  <th scope="col" className="w-[26%] pb-3 pr-3 text-center">
                     Individual AC Cost
                   </th>
-                  <th scope="col" className="w-[22%] pb-3 pr-3 text-right">
-                    Shared Remainder
+                  <th scope="col" className="w-[22%] pb-3 pr-3 text-center">
+                    Shared Cost
                   </th>
-                  <th scope="col" className="w-[22%] pb-3 text-right">
-                    Net Responsibility
+                  <th scope="col" className="w-[22%] pb-3 text-center">
+                    Net Cost
                   </th>
                 </tr>
               </thead>
@@ -705,21 +705,23 @@ function MonthBill({
                       <th scope="row" className="py-2 pr-3 text-left font-semibold text-[var(--text-primary)] truncate">
                         {person.display_name}
                       </th>
-                      <td className="py-2 pr-3 text-left">
+                      <td className="py-2 pr-3 text-center">
                         {editing ? (
-                          <MoneyInput
-                            label={<span className="sr-only">{person.display_name}'s AC</span>}
-                            value={ac[person.resident_id] ?? ''}
-                            placeholder="0.00"
-                            hint=""
-                            onChange={(raw) => setAc((before) => ({ ...before, [person.resident_id]: raw }))}
-                          />
+                          <div className="mx-auto max-w-[9rem]">
+                            <MoneyInput
+                              label={<span className="sr-only">{person.display_name}'s AC</span>}
+                              value={ac[person.resident_id] ?? ''}
+                              placeholder="0.00"
+                              hint=""
+                              onChange={(raw) => setAc((before) => ({ ...before, [person.resident_id]: raw }))}
+                            />
+                          </div>
                         ) : (
                           formatInr(person.parsed.paise)
                         )}
                       </td>
-                      <td className="py-2 pr-3 text-right">{share ? formatInr(share.common_share_paise) : missing}</td>
-                      <td className="py-2 text-right font-bold text-[var(--text-primary)]">
+                      <td className="py-2 pr-3 text-center tabular">{share ? formatInr(share.common_share_paise) : missing}</td>
+                      <td className="py-2 text-center tabular font-bold text-[var(--text-primary)]">
                         {share ? <Rupees paise={share.responsibility_paise} /> : missing}
                       </td>
                     </tr>
@@ -732,11 +734,11 @@ function MonthBill({
                   <th scope="row" className="pt-2.5 pr-3 text-left">
                     Total
                   </th>
-                  <td className="pt-2.5 pr-3 text-left">{formatInr(totalAc)}</td>
-                  <td className={`pt-2.5 pr-3 text-right ${remainder < 0 ? 'text-[var(--danger)]' : ''}`}>
+                  <td className="pt-2.5 pr-3 text-center tabular">{formatInr(totalAc)}</td>
+                  <td className={`pt-2.5 pr-3 text-center tabular ${remainder < 0 ? 'text-[var(--danger)]' : ''}`}>
                     {formatInr(remainder)}
                   </td>
-                  <td className="pt-2.5 text-right">{formatInr(total)}</td>
+                  <td className="pt-2.5 text-center tabular">{formatInr(total)}</td>
                 </tr>
               </tfoot>
             </table>
@@ -746,7 +748,7 @@ function MonthBill({
               {typed.error}
             </p>
           )}
-          <dl className="m-0 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm" aria-label="AC and the shared remainder">
+          <dl className="m-0 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm" aria-label="AC and the shared cost">
             <div>
               <dt className="text-xs text-[var(--text-secondary)]">Total Recharged</dt>
               <dd className="m-0 font-semibold tabular">{formatInr(total)}</dd>
@@ -756,7 +758,7 @@ function MonthBill({
               <dd className="m-0 font-semibold tabular">{formatInr(totalAc)}</dd>
             </div>
             <div>
-              <dt className="text-xs text-[var(--text-secondary)]">Shared Remainder</dt>
+              <dt className="text-xs text-[var(--text-secondary)]">Shared Cost</dt>
               <dd className={`m-0 font-semibold tabular ${remainder < 0 ? 'text-[var(--danger)]' : ''}`}>
                 {formatInr(remainder)}
               </dd>
