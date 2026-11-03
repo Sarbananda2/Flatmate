@@ -34,7 +34,7 @@ import {
 import { DeleteTransactionDialog, type PendingDeletion } from '../../components/DeleteTransactionDialog'
 import { ServicePaymentDialog } from '../../components/ServicePaymentDialog'
 import { useToast } from '../../components/Toast'
-import { BUTTON_PRIMARY, BUTTON_QUIET, BUTTON_SECONDARY, Panel, Rupees } from '../../components/ui'
+import { BUTTON_PRIMARY, BUTTON_QUIET, BUTTON_SECONDARY, DetailFact, Panel, Rupees } from '../../components/ui'
 import { ApiError, api } from '../../api/client'
 import { useDebounced, useMutation, useResource } from '../../lib/useApi'
 import { formatDate, formatInr, formatMonth, paiseToInput, parseRupees, todayIso } from '../../lib/format'
@@ -60,6 +60,7 @@ export type ElectricityTab = (typeof ELECTRICITY_TABS)[number]['value']
 type Dialog =
   | { kind: 'pay_share'; share: ElectricityShare }
   | { kind: 'top_up' }
+  | { kind: 'top_up_detail'; topUp: ElectricityTopUp }
   | { kind: 'remove_top_up'; deletion: PendingDeletion }
   | { kind: 'reimburse'; reimbursement: KittyReimbursement }
   | { kind: 'reimbursement_statement'; residentId: string }
@@ -90,6 +91,12 @@ export function Electricity({ month }: { month: string }) {
     : 'settlement'
   const open = (value: ElectricityTab) => setParams(value === 'settlement' ? {} : { tab: value }, { replace: true })
   const toast = useToast()
+  // Removing a recharge asks first, from its row or its details.
+  const removal = (topUp: ElectricityTopUp): PendingDeletion => ({
+    title: 'Remove this recharge?',
+    what: `${topUp.provider_name} recharge of ${formatInr(topUp.amount_paise)} on ${formatDate(topUp.recharged_on)}, paid by ${topUp.resident_name ?? 'the House Kitty'}.`,
+    url: `${BASE}/month/${month}/top-ups/${encodeURIComponent(topUp.top_up_id)}`,
+  })
   const done = (message: string, detail?: string) => {
     setDialog(null)
     toast.success(message, detail)
@@ -163,16 +170,8 @@ export function Electricity({ month }: { month: string }) {
                   month={month}
                   data={data}
                   onAdd={() => setDialog({ kind: 'top_up' })}
-                  onRemove={(topUp) =>
-                    setDialog({
-                      kind: 'remove_top_up',
-                      deletion: {
-                        title: 'Remove this recharge?',
-                        what: `${topUp.provider_name} recharge of ${formatInr(topUp.amount_paise)} on ${formatDate(topUp.recharged_on)}, paid by ${topUp.resident_name ?? 'the House Kitty'}.`,
-                        url: `${BASE}/month/${month}/top-ups/${encodeURIComponent(topUp.top_up_id)}`,
-                      },
-                    })
-                  }
+                  onSelect={(topUp) => setDialog({ kind: 'top_up_detail', topUp })}
+                  onRemove={(topUp) => setDialog({ kind: 'remove_top_up', deletion: removal(topUp) })}
                 />
                 <MonthBill
                   key={data.expense?.expense_id ?? 'new'}
@@ -194,6 +193,14 @@ export function Electricity({ month }: { month: string }) {
               data={data}
               onClose={() => setDialog(null)}
               onDone={(provider, paid) => done('Recharge logged', `${formatInr(paid)} to ${provider}.`)}
+            />
+          )}
+          {dialog?.kind === 'top_up_detail' && (
+            <TopUpDetailModal
+              topUp={dialog.topUp}
+              removable={data.can_record && data.transactions_open}
+              onClose={() => setDialog(null)}
+              onRemove={() => setDialog({ kind: 'remove_top_up', deletion: removal(dialog.topUp) })}
             />
           )}
           {dialog?.kind === 'remove_top_up' && (
@@ -264,11 +271,13 @@ function TopUpsPanel({
   month,
   data,
   onAdd,
+  onSelect,
   onRemove,
 }: {
   month: string
   data: ElectricityMonth
   onAdd: () => void
+  onSelect: (topUp: ElectricityTopUp) => void
   onRemove: (topUp: ElectricityTopUp) => void
 }) {
   const removable = data.can_record && data.transactions_open
@@ -276,56 +285,71 @@ function TopUpsPanel({
     <Panel
       title="Meter Top-ups / Recharges"
       icon={<Zap className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="Each recharge of the prepaid meters this month, by a flatmate or from the House Kitty. The month's bills are what was recharged."
+      hint="Each recharge of the prepaid meters this month, by a flatmate or from the House Kitty. The month's bills are what was recharged. Select a recharge for its details."
+      menuActions={data.can_record ? [{ label: 'Add Meter Recharge', icon: Plus, onClick: onAdd }] : undefined}
     >
       {data.top_ups.length === 0 ? (
         <p className="m-0 text-xs text-[var(--text-secondary)]">No recharge logged for {formatMonth(month)} yet.</p>
       ) : (
         <div className="overflow-x-auto min-w-0">
-          <table className="w-full text-xs min-w-[560px] border-collapse">
+          <table className="w-full table-fixed text-xs min-w-[480px] border-collapse">
             <caption className="sr-only">Meter recharges for {formatMonth(month)}</caption>
             <thead>
               <tr className={TABLE_HEAD}>
-                <th scope="col" className="pb-3 pr-3 text-left">
+                <th scope="col" className="w-[20%] pb-3 pr-4 text-left">
                   Date
                 </th>
-                <th scope="col" className="pb-3 pr-3 text-left">
-                  Provider
+                <th scope="col" className="w-[30%] pb-3 pr-4 text-left">
+                  Meter / Provider
                 </th>
-                <th scope="col" className="pb-3 pr-3 text-right">
-                  Amount
-                </th>
-                <th scope="col" className="pb-3 pr-3 text-left">
+                <th scope="col" className="w-[25%] pb-3 pr-4 text-left">
                   Paid By
                 </th>
-                <th scope="col" className="pb-3 pr-3 text-left">
-                  Reference / UTR
+                <th scope="col" className="w-[18%] pb-3 pl-2 text-right">
+                  Amount
                 </th>
-                <th scope="col" className="pb-3 text-right">
-                  <span className="sr-only">Remove</span>
+                <th scope="col" className="w-[7%] pb-3 text-right">
+                  <span className="sr-only">Actions</span>
                 </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
               {data.top_ups.map((topUp) => (
-                <tr key={topUp.top_up_id}>
-                  <td className="py-2.5 pr-3 tabular whitespace-nowrap">{formatDate(topUp.recharged_on)}</td>
-                  <th scope="row" className="py-2.5 pr-3 text-left font-semibold text-[var(--text-primary)]">
+                // The whole row opens the recharge (Rule U7); its button removes it.
+                <tr
+                  key={topUp.top_up_id}
+                  className="cursor-pointer hover:bg-[var(--bg-elevated)] transition-colors"
+                  tabIndex={0}
+                  title={`View ${topUp.provider_name} recharge details`}
+                  onClick={() => onSelect(topUp)}
+                  onKeyDown={(event) => {
+                    if (event.target !== event.currentTarget) return
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      onSelect(topUp)
+                    }
+                  }}
+                >
+                  <td className="py-2.5 pr-4 tabular whitespace-nowrap">{formatDate(topUp.recharged_on)}</td>
+                  <th scope="row" className="py-2.5 pr-4 text-left font-semibold text-[var(--text-primary)] truncate">
                     {topUp.provider_name}
                   </th>
-                  <td className="py-2.5 pr-3 text-right tabular font-bold text-[var(--text-primary)]">
+                  <td className="py-2.5 pr-4 truncate">{topUp.resident_name ?? 'House Kitty'}</td>
+                  <td className="py-2.5 pl-2 text-right tabular font-bold text-[var(--text-primary)]">
                     {formatInr(topUp.amount_paise)}
                   </td>
-                  <td className="py-2.5 pr-3">{topUp.resident_name ?? 'House Kitty'}</td>
-                  <td className="py-2.5 pr-3 tabular break-all">{topUp.reference}</td>
                   <td className="py-2.5 text-right">
                     {removable && (
                       <button
                         type="button"
-                        className={BUTTON_QUIET}
+                        className="p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--danger)] hover:bg-[var(--danger-glow)] transition-colors inline-flex items-center justify-center"
                         aria-label={`Remove ${topUp.provider_name} recharge of ${formatInr(topUp.amount_paise)}`}
                         title="Remove this recharge"
-                        onClick={() => onRemove(topUp)}
+                        onClick={(event) => {
+                          // Removing it does not also open it.
+                          event.stopPropagation()
+                          onRemove(topUp)
+                        }}
                       >
                         <Trash2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                       </button>
@@ -337,7 +361,10 @@ function TopUpsPanel({
           </table>
         </div>
       )}
-      <dl className="m-0 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm" aria-label="Recharge subtotals">
+      <dl
+        className="m-0 pt-3 border-t border-[var(--border-subtle)] grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm"
+        aria-label="Recharge subtotals"
+      >
         {data.components.map((bill) => (
           <div key={bill.id}>
             <dt className="text-xs text-[var(--text-secondary)]">{bill.id === 'uppcl' ? 'UPPCL Recharges' : 'DG Recharges'}</dt>
@@ -349,15 +376,64 @@ function TopUpsPanel({
           <dd className="m-0 font-bold tabular text-[var(--text-primary)]">{formatInr(data.total_paise)}</dd>
         </div>
       </dl>
-      {data.can_record && (
-        <div>
-          <button type="button" className={BUTTON_SECONDARY} onClick={onAdd}>
-            <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            Add Meter Recharge
-          </button>
-        </div>
-      )}
     </Panel>
+  )
+}
+
+/** One recharge: what was paid, to which meter, by whom, and its reference. */
+function TopUpDetailModal({
+  topUp,
+  removable,
+  onClose,
+  onRemove,
+}: {
+  topUp: ElectricityTopUp
+  removable: boolean
+  onClose: () => void
+  onRemove: () => void
+}) {
+  const byFlatmate = topUp.paid_by === 'flatmate'
+  return (
+    <Modal
+      title="Meter Recharge"
+      description={`${topUp.provider_name} · ${formatDate(topUp.recharged_on)}`}
+      onClose={onClose}
+      footer={
+        <>
+          {removable && (
+            <button type="button" className={`${BUTTON_QUIET} mr-auto text-[var(--danger)]`} onClick={onRemove}>
+              <Trash2 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              Remove Recharge
+            </button>
+          )}
+          <button type="button" className={BUTTON_SECONDARY} onClick={onClose}>
+            Close
+          </button>
+        </>
+      }
+    >
+      <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm" aria-label="Recharge details">
+        <DetailFact label="Amount">
+          <span className="tabular font-bold text-[var(--text-primary)]">{formatInr(topUp.amount_paise)}</span>
+        </DetailFact>
+        <DetailFact label="Meter / Provider">{topUp.provider_name}</DetailFact>
+        <DetailFact label="Recharged On">
+          <span className="tabular">{formatDate(topUp.recharged_on)}</span>
+        </DetailFact>
+        <DetailFact label="Paid By">
+          <span className="block">{topUp.resident_name ?? 'House Kitty'}</span>
+          <span className="block text-xs text-[var(--text-secondary)]">
+            {byFlatmate
+              ? 'From their own account: their share goes through the House Kitty, and anything beyond it the kitty pays back.'
+              : "From the House Kitty, out of what flatmates paid in."}
+          </span>
+        </DetailFact>
+        <DetailFact label="Reference / UTR">
+          <span className="font-mono tabular break-all">{topUp.reference}</span>
+        </DetailFact>
+        {topUp.note && <DetailFact label="Note">{topUp.note}</DetailFact>}
+      </dl>
+    </Modal>
   )
 }
 

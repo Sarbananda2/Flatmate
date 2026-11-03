@@ -239,10 +239,18 @@ describe('Electricity', () => {
     const panel = await section('Meter Top-ups / Recharges')
     const log = within(panel).getByRole('table', { name: 'Meter recharges for November 2026' })
     const rows = within(log).getAllByRole('row').slice(1)
+    // Date, meter, who paid, amount: the reference is in each recharge's details.
     expect(rows.map((row) => row.textContent)).toEqual([
-      '3 Nov 2026UPPCL (Grid)₹2,000.00SarbanandaUTR-1',
-      '12 Nov 2026UPPCL (Grid)₹1,500.00ArnabUTR-2',
-      '20 Nov 2026Diesel Generator (DG)₹500.00SarbanandaUTR-3',
+      '3 Nov 2026UPPCL (Grid)Sarbananda₹2,000.00',
+      '12 Nov 2026UPPCL (Grid)Arnab₹1,500.00',
+      '20 Nov 2026Diesel Generator (DG)Sarbananda₹500.00',
+    ])
+    expect(within(log).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Date',
+      'Meter / Provider',
+      'Paid By',
+      'Amount',
+      'Actions',
     ])
     const totals = within(panel).getByLabelText('Recharge subtotals')
     expect(totals).toHaveTextContent('UPPCL Recharges₹3,500.00')
@@ -294,7 +302,7 @@ describe('Electricity', () => {
     const list = await within(await section('Meter Top-ups / Recharges')).findByRole('table', {
       name: 'Meter recharges for November 2026',
     })
-    expect(within(list).getByRole('row', { name: /Diesel Generator/ })).toHaveTextContent('₹500.00Sarbananda')
+    expect(within(list).getByRole('row', { name: /Diesel Generator/ })).toHaveTextContent('Sarbananda₹500.00')
   })
 
   it('logs a recharge from the kitty with no flatmate behind it', async () => {
@@ -313,10 +321,56 @@ describe('Electricity', () => {
     expect(body).not.toHaveProperty('funding_resident_id')
   })
 
+  it('opens a recharge from its row, with all its details', async () => {
+    show(recorded({ top_ups: [{ ...recorded().top_ups[1], note: 'Meter low before the weekend' }, recorded().top_ups[2]] }), {}, ALLOCATIONS)
+    const log = within(await section('Meter Top-ups / Recharges')).getByRole('table', {
+      name: 'Meter recharges for November 2026',
+    })
+    await userEvent.click(within(log).getByRole('row', { name: /Arnab/ }))
+    const dialog = screen.getByRole('dialog', { name: 'Meter Recharge' })
+    expect(dialog).toHaveTextContent('UPPCL (Grid) · 12 Nov 2026')
+    const details = within(dialog).getByLabelText('Recharge details')
+    expect(details).toHaveTextContent('Amount₹1,500.00')
+    expect(details).toHaveTextContent('Meter / ProviderUPPCL (Grid)')
+    expect(details).toHaveTextContent('Recharged On12 Nov 2026')
+    expect(details).toHaveTextContent('Paid ByArnabFrom their own account')
+    expect(details).toHaveTextContent('Reference / UTRUTR-2')
+    expect(details).toHaveTextContent('NoteMeter low before the weekend')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('opens a recharge from the keyboard, and says when the kitty paid it', async () => {
+    show(recorded({ top_ups: [topUp('svcdisb_9', 'dg', 30000, '2026-11-25', null, 'UTR-K')] }), {}, ALLOCATIONS)
+    const log = within(await section('Meter Top-ups / Recharges')).getByRole('table', {
+      name: 'Meter recharges for November 2026',
+    })
+    within(log).getByRole('row', { name: /Diesel Generator/ }).focus()
+    await userEvent.keyboard('{Enter}')
+    const kitty = screen.getByRole('dialog', { name: 'Meter Recharge' })
+    expect(within(kitty).getByLabelText('Recharge details')).toHaveTextContent('Paid ByHouse KittyFrom the House Kitty')
+    expect(within(kitty).getByLabelText('Recharge details')).not.toHaveTextContent('Note')
+  })
+
+  it('removes a recharge from its details, once confirmed', async () => {
+    show(recorded(), {}, ALLOCATIONS)
+    const log = within(await section('Meter Top-ups / Recharges')).getByRole('table', {
+      name: 'Meter recharges for November 2026',
+    })
+    await userEvent.click(within(log).getByRole('row', { name: /Diesel Generator/ }))
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Meter Recharge' })).getByRole('button', { name: 'Remove Recharge' }))
+    expect(screen.queryByRole('dialog', { name: 'Meter Recharge' })).toBeNull()
+    const confirm = screen.getByRole('dialog', { name: 'Remove this recharge?' })
+    await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(sent('DELETE', `/api/electricity/month/${MONTH}/top-ups/svcdisb_3`)).toBeDefined())
+  })
+
   it('removes a recharge logged by mistake, once confirmed', async () => {
     show(recorded(), {}, ALLOCATIONS)
     const panel = await section('Meter Top-ups / Recharges')
     await userEvent.click(within(panel).getByRole('button', { name: 'Remove Diesel Generator (DG) recharge of ₹500.00' }))
+    // Its button removes it without also opening it.
+    expect(screen.queryByRole('dialog', { name: 'Meter Recharge' })).toBeNull()
     const confirm = screen.getByRole('dialog', { name: 'Remove this recharge?' })
     expect(confirm).toHaveTextContent('Diesel Generator (DG) recharge of ₹500.00 on 20 Nov 2026, paid by Sarbananda.')
     await userEvent.click(within(confirm).getByRole('button', { name: 'Delete' }))
@@ -413,6 +467,11 @@ describe('Electricity', () => {
     const panel = await section('Meter Top-ups / Recharges')
     expect(within(panel).queryByRole('button', { name: 'Add Meter Recharge' })).toBeNull()
     expect(within(panel).queryByRole('button', { name: /^Remove/ })).toBeNull()
+    // Its recharges can still be read, not removed.
+    await userEvent.click(within(panel).getByRole('row', { name: /Arnab/ }))
+    const details = screen.getByRole('dialog', { name: 'Meter Recharge' })
+    expect(within(details).queryByRole('button', { name: 'Remove Recharge' })).toBeNull()
+    await userEvent.click(within(details).getByRole('button', { name: 'Close' }))
     const ac = await section('Individual AC Allocations')
     expect(within(ac).getByLabelText(/^Arnab AC/)).toBeDisabled()
     expect(within(ac).queryByLabelText('Flatmate with an AC')).toBeNull()
