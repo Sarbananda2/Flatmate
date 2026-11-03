@@ -17,7 +17,7 @@
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { AirVent, Calculator, Plus, Receipt, Save, Trash2, Users, X, Zap } from 'lucide-react'
+import { Calculator, Plus, Receipt, Save, Trash2, Users, Zap } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
 import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
 import { DateField, MoneyInput, SelectField, TextField } from '../../components/Form'
@@ -543,18 +543,16 @@ function TopUpDialog({
   )
 }
 
-/* ------------------------------------------------- 2. the AC and the split -- */
+/* ------------------------------------------ 2. the AC and the responsibility -- */
 
-interface SplitRow {
-  resident_id: string
-  display_name: string
+/** A flatmate's part of the month: their share of what's left, and in all. */
+interface Share {
   common_share_paise: number
-  ac_paise: number
   responsibility_paise: number
 }
 
 /**
- * Each flatmate's AC, as it is being entered, and what it leaves everyone
+ * Each flatmate's AC, as it is being entered, beside what it leaves them
  * responsible for out of what was recharged. Saved, it is the month's.
  */
 function MonthBill({
@@ -566,33 +564,14 @@ function MonthBill({
   data: ElectricityMonth
   onSaved: (updated: ElectricityMonth) => void
 }) {
+  // Everyone's AC, ready to edit: left empty, it is ₹0.
   const [ac, setAc] = useState<Record<string, string>>(() =>
     Object.fromEntries(data.participants.map(({ resident_id }) => [resident_id, editable(data.ac_allocations[resident_id])])),
   )
-  // Who has an AC this month: those saved with one, and those added since.
-  // Everyone else's AC is ₹0.
-  const [withAc, setWithAc] = useState<string[]>(() =>
-    data.participants.filter(({ resident_id }) => (data.ac_allocations[resident_id] ?? 0) > 0).map(({ resident_id }) => resident_id),
-  )
-  const [adding, setAdding] = useState('')
   const recharged = data.expense != null
   const editing = data.can_record && recharged
-  const withoutAc = data.participants.filter(({ resident_id }) => !withAc.includes(resident_id))
-  const addAc = () => {
-    if (!adding) return
-    setWithAc((before) => [...before, adding])
-    setAc((before) => ({ ...before, [adding]: '' }))
-    setAdding('')
-  }
-  const removeAc = (residentId: string) => {
-    setWithAc((before) => before.filter((rid) => rid !== residentId))
-    setAc((before) => ({ ...before, [residentId]: '' }))
-  }
 
-  const parsedAc = data.participants.map((person) => ({
-    ...person,
-    parsed: withAc.includes(person.resident_id) ? amount(ac[person.resident_id] ?? '') : { ok: true, paise: 0 },
-  }))
+  const parsedAc = data.participants.map((person) => ({ ...person, parsed: amount(ac[person.resident_id] ?? '') }))
   const total = data.total_paise
   const totalAc = parsedAc.reduce((sum, person) => sum + person.parsed.paise, 0)
   const remainder = total - totalAc
@@ -618,19 +597,26 @@ function MonthBill({
     }
   }, [settledKey, month])
 
-  const recorded: SplitRow[] = data.shares.map((share) => ({
-    resident_id: share.resident_id,
-    display_name: share.display_name,
-    common_share_paise: share.common_share_paise,
-    ac_paise: share.ac_paise,
-    responsibility_paise: share.total_paise,
-  }))
   const typed = key && preview?.key === key ? preview : null
-  const split: { rows: SplitRow[]; remainder: number } | null = typed?.split
-    ? { rows: typed.split.residents, remainder: typed.split.common_remainder_paise }
+  const working = key != null && typed == null
+  // Each flatmate's share, by flatmate: of the AC as typed, or as saved.
+  const shares: Map<string, Share> | null = typed?.split
+    ? new Map(typed.split.residents.map((row) => [row.resident_id, row]))
     : recharged && (unchanged || !editing)
-      ? { rows: recorded, remainder: data.common_remainder_paise }
+      ? new Map(
+          data.shares.map((share) => [
+            share.resident_id,
+            { common_share_paise: share.common_share_paise, responsibility_paise: share.total_paise },
+          ]),
+        )
       : null
+  // Until there is one: still being worked out, or not for this AC.
+  const missing = (
+    <span className="text-[var(--text-tertiary)]">
+      <span aria-hidden="true">{working ? '…' : '—'}</span>
+      <span className="sr-only">{working ? 'Working out' : 'Not worked out'}</span>
+    </span>
+  )
 
   const save = useMutation(
     () => api.post<ElectricityMonth>(`${BASE}/bills`, { settlement_month: month, ...body }),
@@ -638,180 +624,135 @@ function MonthBill({
   )
 
   return (
-    <>
-      <Panel
-        title="Individual AC Allocations"
-        icon={<AirVent className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-        hint="What each flatmate's own AC cost this month, out of what was recharged. Whatever is left is shared equally."
-      >
-        {!recharged ? (
-          <p className="m-0 text-xs text-[var(--text-secondary)]">
-            Log a meter recharge first: the AC is taken out of what was recharged.
-          </p>
-        ) : withAc.length === 0 ? (
-          <p className="m-0 text-xs text-[var(--text-secondary)]">No AC this month: everything recharged is shared equally.</p>
-        ) : (
-          <ul className="m-0 p-0 list-none grid grid-cols-1 sm:grid-cols-2 gap-4 items-start" aria-label="AC by flatmate">
-            {/* In the flat's order, whenever each was added. */}
-            {data.participants
-              .filter(({ resident_id }) => withAc.includes(resident_id))
-              .map((person) => (
-                <li key={person.resident_id} className="flex items-start gap-2">
-                  <div className="flex-1 min-w-0">
-                    <MoneyInput
-                      label={`${person.display_name} AC`}
-                      value={ac[person.resident_id] ?? ''}
-                      disabled={!editing}
-                      onChange={(raw) => setAc((before) => ({ ...before, [person.resident_id]: raw }))}
-                      hint="What their AC cost this month."
-                    />
-                  </div>
-                  {editing && (
-                    <button
-                      type="button"
-                      className={`${BUTTON_QUIET} mt-6 shrink-0`}
-                      aria-label={`Remove ${person.display_name} AC`}
-                      title={`Remove ${person.display_name}'s AC`}
-                      onClick={() => removeAc(person.resident_id)}
-                    >
-                      <X className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                      Remove
-                    </button>
-                  )}
-                </li>
-              ))}
-          </ul>
-        )}
-        {editing && withoutAc.length > 0 && (
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="w-full sm:w-64">
-              <SelectField
-                label="Flatmate with an AC"
-                value={adding}
-                placeholder="Choose a flatmate"
-                options={withoutAc.map(({ resident_id, display_name }) => ({ value: resident_id, label: display_name }))}
-                onChange={setAdding}
-              />
+    <Panel
+      title="AC Allocations & Responsibility"
+      icon={<Calculator className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+      hint="Each flatmate pays their own AC, out of what was recharged, and an equal share of whatever is left."
+    >
+      {!recharged ? (
+        <p className="m-0 text-xs text-[var(--text-secondary)]">
+          Log a meter recharge first: the AC is taken out of what was recharged.
+        </p>
+      ) : (
+        <>
+          <div className="overflow-x-auto min-w-0">
+            <table className="w-full table-fixed text-xs min-w-[480px] border-collapse" aria-busy={working || undefined}>
+              <caption className="sr-only">AC and responsibility for {formatMonth(month)}</caption>
+              <thead>
+                <tr className={TABLE_HEAD}>
+                  <th scope="col" className="w-[30%] pb-3 pr-3 text-left">
+                    Flatmate
+                  </th>
+                  <th scope="col" className="w-[26%] pb-3 pr-3 text-left">
+                    Individual AC Cost
+                  </th>
+                  <th scope="col" className="w-[22%] pb-3 pr-3 text-right">
+                    Shared Remainder
+                  </th>
+                  <th scope="col" className="w-[22%] pb-3 text-right">
+                    Net Responsibility
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--border-subtle)] font-medium tabular">
+                {parsedAc.map((person) => {
+                  const share = shares?.get(person.resident_id)
+                  return (
+                    <tr key={person.resident_id}>
+                      <th scope="row" className="py-2 pr-3 text-left font-semibold text-[var(--text-primary)] truncate">
+                        {person.display_name}
+                      </th>
+                      <td className="py-2 pr-3 text-left">
+                        {editing ? (
+                          <MoneyInput
+                            label={<span className="sr-only">{person.display_name}'s AC</span>}
+                            value={ac[person.resident_id] ?? ''}
+                            placeholder="0.00"
+                            hint=""
+                            onChange={(raw) => setAc((before) => ({ ...before, [person.resident_id]: raw }))}
+                          />
+                        ) : (
+                          formatInr(person.parsed.paise)
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 text-right">{share ? formatInr(share.common_share_paise) : missing}</td>
+                      <td className="py-2 text-right font-bold text-[var(--text-primary)]">
+                        {share ? <Rupees paise={share.responsibility_paise} /> : missing}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              <tfoot>
+                {/* The AC and what's left of it come to what was recharged. */}
+                <tr className="border-t border-[var(--border-subtle)] font-bold tabular">
+                  <th scope="row" className="pt-2.5 pr-3 text-left">
+                    Total
+                  </th>
+                  <td className="pt-2.5 pr-3 text-left">{formatInr(totalAc)}</td>
+                  <td className={`pt-2.5 pr-3 text-right ${remainder < 0 ? 'text-[var(--danger)]' : ''}`}>
+                    {formatInr(remainder)}
+                  </td>
+                  <td className="pt-2.5 text-right">{formatInr(total)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          {typed?.error && (
+            <p className="m-0 text-xs font-medium text-[var(--danger)]" role="alert">
+              {typed.error}
+            </p>
+          )}
+          <dl className="m-0 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm" aria-label="AC and the shared remainder">
+            <div>
+              <dt className="text-xs text-[var(--text-secondary)]">Total Recharged</dt>
+              <dd className="m-0 font-semibold tabular">{formatInr(total)}</dd>
             </div>
-            <button type="button" className={BUTTON_SECONDARY} disabled={!adding} onClick={addAc}>
-              <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              Add AC
+            <div>
+              <dt className="text-xs text-[var(--text-secondary)]">Sum of ACs</dt>
+              <dd className="m-0 font-semibold tabular">{formatInr(totalAc)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-[var(--text-secondary)]">Shared Remainder</dt>
+              <dd className={`m-0 font-semibold tabular ${remainder < 0 ? 'text-[var(--danger)]' : ''}`}>
+                {formatInr(remainder)}
+              </dd>
+            </div>
+          </dl>
+          {remainder < 0 && (
+            <p className="m-0 text-xs font-medium text-[var(--danger)]" role="alert">
+              The AC sum, {formatInr(totalAc)}, exceeds the {formatInr(total)} recharged.
+            </p>
+          )}
+        </>
+      )}
+      {editing && (
+        <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
+          <p
+            className={`m-0 text-xs ${unchanged ? 'text-[var(--text-secondary)]' : 'font-medium text-[var(--warning)]'}`}
+            role="status"
+          >
+            {unchanged
+              ? 'No unsaved changes.'
+              : working
+                ? "Unsaved changes: working out each flatmate's share…"
+                : 'Unsaved changes: the shares above are a preview until you save.'}
+          </p>
+          <div className="flex flex-wrap items-center justify-end gap-3 ml-auto">
+            <ErrorNotice error={save.error} />
+            <button
+              type="button"
+              className={BUTTON_PRIMARY}
+              disabled={!valid || unchanged || save.pending}
+              onClick={() => void save.run(undefined)}
+            >
+              <Save className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              {save.pending ? 'Saving…' : 'Save AC Allocations'}
             </button>
           </div>
-        )}
-        <dl className="m-0 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm" aria-label="AC and the shared remainder">
-          <div>
-            <dt className="text-xs text-[var(--text-secondary)]">Total Recharged</dt>
-            <dd className="m-0 font-semibold tabular">{formatInr(total)}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-[var(--text-secondary)]">Sum of ACs</dt>
-            <dd className="m-0 font-semibold tabular">{formatInr(totalAc)}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-[var(--text-secondary)]">Shared Common Remainder</dt>
-            <dd className="m-0 font-semibold tabular">{formatInr(Math.max(0, remainder))}</dd>
-          </div>
-        </dl>
-        {remainder < 0 && (
-          <p className="m-0 text-xs font-medium text-[var(--danger)]" role="alert">
-            The AC comes to {formatInr(totalAc)}, more than the {formatInr(total)} recharged.
-          </p>
-        )}
-      </Panel>
-
-      <Panel
-        title="Common Split & Net Responsibility"
-        icon={<Calculator className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-        hint={
-          split
-            ? `The shared remainder, ${formatInr(split.remainder)}, split equally between ${split.rows.length}, plus each flatmate's own AC.`
-            : 'The shared remainder split equally, plus each flatmate’s own AC.'
-        }
-      >
-        {typed?.error ? (
-          <p className="m-0 text-xs font-medium text-[var(--danger)]" role="alert">
-            {typed.error}
-          </p>
-        ) : split ? (
-          <SplitTable rows={split.rows} month={month} />
-        ) : key ? (
-          <p className="m-0 text-xs text-[var(--text-secondary)]" role="status">
-            Working out each flatmate's share…
-          </p>
-        ) : (
-          <p className="m-0 text-xs text-[var(--text-secondary)]">
-            Log the month's recharges, and each flatmate's AC, to see what everyone is responsible for.
-          </p>
-        )}
-      </Panel>
-
-      {editing && (
-        <div className="flex flex-wrap items-center justify-end gap-3">
-          <ErrorNotice error={save.error} />
-          <button
-            type="button"
-            className={BUTTON_PRIMARY}
-            disabled={!valid || unchanged || save.pending}
-            onClick={() => void save.run(undefined)}
-          >
-            <Save className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            {save.pending ? 'Saving…' : 'Save AC Allocations'}
-          </button>
         </div>
       )}
-    </>
-  )
-}
-
-function SplitTable({ rows, month }: { rows: SplitRow[]; month: string }) {
-  const sum = (pick: (row: SplitRow) => number) => rows.reduce((total, row) => total + pick(row), 0)
-  return (
-    <div className="overflow-x-auto min-w-0">
-      <table className="w-full text-xs min-w-[420px] border-collapse">
-        <caption className="sr-only">Responsibility for {formatMonth(month)}</caption>
-        <thead>
-          <tr className={TABLE_HEAD}>
-            <th scope="col" className="pb-3 pr-3 text-left">
-              Flatmate
-            </th>
-            <th scope="col" className="pb-3 pr-3 text-right">
-              Common Share
-            </th>
-            <th scope="col" className="pb-3 pr-3 text-right">
-              AC Cost
-            </th>
-            <th scope="col" className="pb-3 text-right">
-              Total Responsibility
-            </th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[var(--border-subtle)] font-medium tabular">
-          {rows.map((row) => (
-            <tr key={row.resident_id}>
-              <th scope="row" className="py-2.5 pr-3 text-left font-semibold text-[var(--text-primary)]">
-                {row.display_name}
-              </th>
-              <td className="py-2.5 pr-3 text-right">{formatInr(row.common_share_paise)}</td>
-              <td className="py-2.5 pr-3 text-right">{formatInr(row.ac_paise)}</td>
-              <td className="py-2.5 text-right font-bold text-[var(--text-primary)]">
-                <Rupees paise={row.responsibility_paise} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-        <tfoot>
-          <tr className="border-t border-[var(--border-subtle)] font-bold tabular">
-            <th scope="row" className="pt-2.5 pr-3 text-left">
-              Total
-            </th>
-            <td className="pt-2.5 pr-3 text-right">{formatInr(sum((row) => row.common_share_paise))}</td>
-            <td className="pt-2.5 pr-3 text-right">{formatInr(sum((row) => row.ac_paise))}</td>
-            <td className="pt-2.5 text-right">{formatInr(sum((row) => row.responsibility_paise))}</td>
-          </tr>
-        </tfoot>
-      </table>
-    </div>
+    </Panel>
   )
 }
 

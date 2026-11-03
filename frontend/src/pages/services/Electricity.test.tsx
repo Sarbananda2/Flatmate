@@ -205,11 +205,12 @@ const sent = (method: string, path: string) =>
 
 const section = async (title: string) => (await screen.findByRole('heading', { name: title })).closest('section')!
 
-/** Give a flatmate an AC row, through the selector. */
-async function addAc(panel: HTMLElement, residentId: string) {
-  await userEvent.selectOptions(within(panel).getByLabelText('Flatmate with an AC'), residentId)
-  await userEvent.click(within(panel).getByRole('button', { name: 'Add AC' }))
-}
+/** A flatmate's share of what's left, and what they are responsible for in all, as their row shows them. */
+const shares = (row: HTMLElement) =>
+  within(row)
+    .getAllByRole('cell')
+    .slice(1)
+    .map((cell) => cell.textContent)
 
 const ALLOCATIONS = '/?tab=allocations'
 
@@ -229,8 +230,7 @@ describe('Electricity', () => {
     expect(screen.getByLabelText('location')).toHaveTextContent('/?tab=allocations')
     expect(screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)).toEqual([
       'Meter Top-ups / Recharges',
-      'Individual AC Allocations',
-      'Common Split & Net Responsibility',
+      'AC Allocations & Responsibility',
     ])
   })
 
@@ -274,7 +274,7 @@ describe('Electricity', () => {
     const panel = await section('Meter Top-ups / Recharges')
     expect(panel).toHaveTextContent('No recharge logged for November 2026 yet.')
     // The AC waits for a recharge to come out of.
-    expect(await section('Individual AC Allocations')).toHaveTextContent('Log a meter recharge first')
+    expect(await section('AC Allocations & Responsibility')).toHaveTextContent('Log a meter recharge first')
 
     await userEvent.click(within(panel).getByRole('button', { name: 'Add Meter Recharge' }))
     const dialog = screen.getByRole('dialog', { name: 'Add Meter Recharge' })
@@ -378,37 +378,57 @@ describe('Electricity', () => {
     expect(await screen.findByText('Recharge removed')).toBeInTheDocument()
   })
 
-  it("takes each flatmate's AC out of what was recharged, and saves it in paise", async () => {
+  it("takes each flatmate's AC out of what was recharged, beside what it leaves them, and saves it in paise", async () => {
     show(recharged, {}, ALLOCATIONS)
-    const ac = await section('Individual AC Allocations')
-    expect(ac).toHaveTextContent('No AC this month: everything recharged is shared equally.')
-    const sums = within(ac).getByLabelText('AC and the shared remainder')
+    const panel = await section('AC Allocations & Responsibility')
+    const table = within(panel).getByRole('table', { name: 'AC and responsibility for November 2026' })
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Flatmate',
+      'Individual AC Cost',
+      'Shared Remainder',
+      'Net Responsibility',
+    ])
+    const row = (name: string) => within(table).getByRole('row', { name: new RegExp(`^${name}`) })
+    // Every flatmate has an AC to fill in, ₹0 until they do: the whole recharge is shared.
+    for (const name of ['Anagarag', 'Arnab', 'Sarbananda']) {
+      expect(within(row(name)).getByLabelText(`${name}'s AC`)).toHaveValue('')
+      expect(within(row(name)).getByLabelText(`${name}'s AC`)).toHaveAttribute('placeholder', '0.00')
+    }
+    expect(shares(row('Sarbananda'))).toEqual(['₹1,333.33', '₹1,333.33'])
+    expect(panel).not.toHaveTextContent('Stored as integer paise')
+    const sums = within(panel).getByLabelText('AC and the shared remainder')
     expect(sums).toHaveTextContent('Total Recharged₹4,000.00')
+    const status = within(panel).getByRole('status')
+    expect(status).toHaveTextContent('No unsaved changes.')
+    const save = within(panel).getByRole('button', { name: 'Save AC Allocations' })
+    expect(save).toBeDisabled()
 
-    await addAc(ac, 'sarbananda')
-    fireEvent.change(within(ac).getByLabelText(/^Sarbananda AC/), { target: { value: '971.05' } })
-    await addAc(ac, 'arnab')
-    fireEvent.change(within(ac).getByLabelText(/^Arnab AC/), { target: { value: '895.48' } })
+    fireEvent.change(within(table).getByLabelText("Sarbananda's AC"), { target: { value: '971.05' } })
+    fireEvent.change(within(table).getByLabelText("Arnab's AC"), { target: { value: '895.48' } })
     expect(sums).toHaveTextContent('Sum of ACs₹1,866.53')
-    expect(sums).toHaveTextContent('Shared Common Remainder₹2,133.47')
-
-    // The split itself is the backend's, once typing pauses.
-    const split = await within(await section('Common Split & Net Responsibility')).findByRole('table', {
-      name: 'Responsibility for November 2026',
-    })
-    expect(within(split).getByRole('row', { name: /Sarbananda/ })).toHaveTextContent('Sarbananda₹711.15₹971.05₹1,682.20')
-    expect(within(split).getByRole('row', { name: /^Total ₹/ })).toHaveTextContent('Total₹2,133.47₹1,866.53₹4,000.00')
+    expect(sums).toHaveTextContent('Shared Remainder₹2,133.47')
+    // The AC and what's left of it come to what was recharged.
+    expect(within(table).getByRole('row', { name: /^Total/ })).toHaveTextContent('Total₹1,866.53₹2,133.47₹4,000.00')
+    // Each share is the backend's, once typing pauses.
+    expect(table).toHaveAttribute('aria-busy', 'true')
+    expect(status).toHaveTextContent("Unsaved changes: working out each flatmate's share…")
+    await waitFor(() => expect(shares(row('Sarbananda'))).toEqual(['₹711.15', '₹1,682.20']))
+    expect(shares(row('Arnab'))).toEqual(['₹711.16', '₹1,606.64'])
+    expect(shares(row('Anagarag'))).toEqual(['₹711.16', '₹711.16'])
+    expect(table).not.toHaveAttribute('aria-busy')
+    expect(status).toHaveTextContent('Unsaved changes: the shares above are a preview until you save.')
     expect(sent('POST', `/api/electricity/month/${MONTH}/preview`)!.body).toEqual({
       ac_allocations: { anagarag: 0, arnab: 89548, sarbananda: 97105 },
     })
 
-    // Removed, a flatmate's AC is back to ₹0.
-    await userEvent.click(within(ac).getByRole('button', { name: 'Remove Arnab AC' }))
-    expect(sums).toHaveTextContent('Shared Common Remainder₹3,028.95')
-    await addAc(ac, 'arnab')
-    fireEvent.change(within(ac).getByLabelText(/^Arnab AC/), { target: { value: '895.48' } })
+    // Cleared, a flatmate's AC is back to ₹0.
+    fireEvent.change(within(table).getByLabelText("Arnab's AC"), { target: { value: '' } })
+    expect(sums).toHaveTextContent('Shared Remainder₹3,028.95')
+    fireEvent.change(within(table).getByLabelText("Arnab's AC"), { target: { value: '895.48' } })
 
-    await userEvent.click(screen.getByRole('button', { name: 'Save AC Allocations' }))
+    // Saved from the foot of the card.
+    expect(save).toBeEnabled()
+    await userEvent.click(save)
     await waitFor(() => expect(sent('POST', '/api/electricity/bills')).toBeDefined())
     expect(sent('POST', '/api/electricity/bills')!.body).toEqual({
       settlement_month: MONTH,
@@ -422,12 +442,14 @@ describe('Electricity', () => {
 
   it('refuses AC that comes to more than was recharged', async () => {
     show(recorded({ total_paise: 100000 }), {}, ALLOCATIONS)
-    const ac = await section('Individual AC Allocations')
-    fireEvent.change(within(ac).getByLabelText(/^Arnab AC/), { target: { value: '1200' } })
-    expect(within(ac).getByRole('alert')).toHaveTextContent(
-      'The AC comes to ₹2,171.05, more than the ₹1,000.00 recharged.',
-    )
-    expect(screen.getByRole('button', { name: 'Save AC Allocations' })).toBeDisabled()
+    const panel = await section('AC Allocations & Responsibility')
+    fireEvent.change(within(panel).getByLabelText("Arnab's AC"), { target: { value: '1200' } })
+    expect(within(panel).getByRole('alert')).toHaveTextContent('The AC sum, ₹2,171.05, exceeds the ₹1,000.00 recharged.')
+    // Nothing is left to share, so no share is worked out.
+    expect(within(panel).getByLabelText('AC and the shared remainder')).toHaveTextContent('Shared Remainder−₹1,171.05')
+    expect(shares(within(panel).getByRole('row', { name: /^Arnab/ }))).toEqual(['—Not worked out', '—Not worked out'])
+    expect(sent('POST', `/api/electricity/month/${MONTH}/preview`)).toBeUndefined()
+    expect(within(panel).getByRole('button', { name: 'Save AC Allocations' })).toBeDisabled()
   })
 
   it('shows what each flatmate owes the kitty, and what it owes back', async () => {
@@ -472,14 +494,11 @@ describe('Electricity', () => {
     const details = screen.getByRole('dialog', { name: 'Meter Recharge' })
     expect(within(details).queryByRole('button', { name: 'Remove Recharge' })).toBeNull()
     await userEvent.click(within(details).getByRole('button', { name: 'Close' }))
-    const ac = await section('Individual AC Allocations')
-    expect(within(ac).getByLabelText(/^Arnab AC/)).toBeDisabled()
-    expect(within(ac).queryByLabelText('Flatmate with an AC')).toBeNull()
+    // Its AC is read, not edited, beside what it left each flatmate.
+    const ac = await section('AC Allocations & Responsibility')
+    expect(within(ac).queryByRole('textbox')).toBeNull()
+    const table = within(ac).getByRole('table', { name: 'AC and responsibility for November 2026' })
+    expect(within(table).getByRole('row', { name: /^Arnab/ })).toHaveTextContent('Arnab₹895.48₹711.16₹1,606.64')
     expect(screen.queryByRole('button', { name: 'Save AC Allocations' })).toBeNull()
-    expect(
-      within(await section('Common Split & Net Responsibility')).getByRole('table', {
-        name: 'Responsibility for November 2026',
-      }),
-    ).toBeInTheDocument()
   })
 })
