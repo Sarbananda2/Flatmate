@@ -747,7 +747,7 @@ function MonthBill({
               onClick={() => void save.run(undefined)}
             >
               <Save className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              {save.pending ? 'Saving…' : 'Save AC Allocations'}
+              {save.pending ? 'Saving…' : 'Save'}
             </button>
           </div>
         </div>

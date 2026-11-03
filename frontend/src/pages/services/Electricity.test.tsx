@@ -400,7 +400,7 @@ describe('Electricity', () => {
     expect(sums).toHaveTextContent('Total Recharged₹4,000.00')
     const status = within(panel).getByRole('status')
     expect(status).toHaveTextContent('No unsaved changes.')
-    const save = within(panel).getByRole('button', { name: 'Save AC Allocations' })
+    const save = within(panel).getByRole('button', { name: 'Save' })
     expect(save).toBeDisabled()
 
     fireEvent.change(within(table).getByLabelText("Sarbananda's AC"), { target: { value: '971.05' } })
@@ -449,7 +449,7 @@ describe('Electricity', () => {
     expect(within(panel).getByLabelText('AC and the shared remainder')).toHaveTextContent('Shared Remainder−₹1,171.05')
     expect(shares(within(panel).getByRole('row', { name: /^Arnab/ }))).toEqual(['—Not worked out', '—Not worked out'])
     expect(sent('POST', `/api/electricity/month/${MONTH}/preview`)).toBeUndefined()
-    expect(within(panel).getByRole('button', { name: 'Save AC Allocations' })).toBeDisabled()
+    expect(within(panel).getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
   it('shows what each flatmate owes the kitty, and what it owes back', async () => {
@@ -499,6 +499,6 @@ describe('Electricity', () => {
     expect(within(ac).queryByRole('textbox')).toBeNull()
     const table = within(ac).getByRole('table', { name: 'AC and responsibility for November 2026' })
     expect(within(table).getByRole('row', { name: /^Arnab/ })).toHaveTextContent('Arnab₹895.48₹711.16₹1,606.64')
-    expect(screen.queryByRole('button', { name: 'Save AC Allocations' })).toBeNull()
+    expect(within(ac).queryByRole('button', { name: 'Save' })).toBeNull()
   })
 })
