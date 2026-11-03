@@ -399,7 +399,8 @@ describe('Electricity', () => {
     const sums = within(panel).getByLabelText('AC and the shared remainder')
     expect(sums).toHaveTextContent('Total Recharged₹4,000.00')
     const status = within(panel).getByRole('status')
-    expect(status).toHaveTextContent('No unsaved changes.')
+    // Nothing to say until the AC changes.
+    expect(status).toBeEmptyDOMElement()
     const save = within(panel).getByRole('button', { name: 'Save' })
     expect(save).toBeDisabled()
 

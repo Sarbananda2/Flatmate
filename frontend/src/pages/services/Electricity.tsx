@@ -285,7 +285,7 @@ function TopUpsPanel({
     <Panel
       title="Meter Top-ups / Recharges"
       icon={<Zap className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="Each recharge of the prepaid meters this month, by a flatmate or from the House Kitty. The month's bills are what was recharged. Select a recharge for its details."
+      hint="Prepaid meter top-ups for this month. Select a row for details."
       menuActions={data.can_record ? [{ label: 'Add Meter Recharge', icon: Plus, onClick: onAdd }] : undefined}
     >
       {data.top_ups.length === 0 ? (
@@ -728,15 +728,12 @@ function MonthBill({
       )}
       {editing && (
         <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
-          <p
-            className={`m-0 text-xs ${unchanged ? 'text-[var(--text-secondary)]' : 'font-medium text-[var(--warning)]'}`}
-            role="status"
-          >
-            {unchanged
-              ? 'No unsaved changes.'
-              : working
+          {/* Always there, so a screen reader hears it fill; empty once saved. */}
+          <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
+            {!unchanged &&
+              (working
                 ? "Unsaved changes: working out each flatmate's share…"
-                : 'Unsaved changes: the shares above are a preview until you save.'}
+                : 'Unsaved changes: the shares above are a preview until you save.')}
           </p>
           <div className="flex flex-wrap items-center justify-end gap-3 ml-auto">
             <ErrorNotice error={save.error} />
