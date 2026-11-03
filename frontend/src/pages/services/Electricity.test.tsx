@@ -8,7 +8,7 @@
  * ₹500.00, Arnab UPPCL ₹1,500.00 -- ₹4,000.00 in all; Sarbananda's AC ₹971.05,
  * Arnab's ₹895.48, Anagarag's none. The spare paisa goes in resident order.
  */
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -19,9 +19,19 @@ import { RESIDENTS, installFetchStub, type Recorded } from '../../test/server'
 const MONTH = '2026-11'
 
 let stub: { calls: Recorded[]; restore: () => void } | null = null
+
+// Every test runs on 20 November, in the sample month, unless it sets a day of
+// its own; only the date is pinned, so timers run as normal.
+const today = (iso: string) => vi.setSystemTime(new Date(`${iso}T12:00:00`))
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  today('2026-11-20')
+})
+
 afterEach(() => {
   stub?.restore()
   stub = null
+  vi.useRealTimers()
 })
 
 const PEOPLE = [
@@ -188,8 +198,16 @@ function Where() {
   return <output aria-label="location">{location.pathname + location.search}</output>
 }
 
-/** The page at `path`: `/?tab=allocations` opens on the recharges and AC. */
-function show(payload: unknown, routes: Record<string, unknown> = {}, path = '/') {
+/**
+ * The page at `path`: `/?tab=allocations` opens on the recharges and AC.
+ * `onOpenMonth` hears where the page sends the app's month.
+ */
+function show(
+  payload: unknown,
+  routes: Record<string, unknown> = {},
+  path = '/',
+  onOpenMonth?: (month: string) => void,
+) {
   stub = installFetchStub({
     routes: {
       [`/api/electricity/month/${MONTH}`]: payload,
@@ -205,7 +223,7 @@ function show(payload: unknown, routes: Record<string, unknown> = {}, path = '/'
   return render(
     <MemoryRouter initialEntries={[path]}>
       <ToastProvider>
-        <Electricity month={MONTH} />
+        <Electricity month={MONTH} onOpenMonth={onOpenMonth} />
         <Where />
       </ToastProvider>
     </MemoryRouter>,
@@ -315,6 +333,49 @@ describe('Electricity', () => {
       name: 'Meter recharges for November 2026',
     })
     expect(within(list).getByRole('row', { name: /Diesel Generator/ })).toHaveTextContent('Sarbananda₹500.00')
+  })
+
+  it('records a recharge dated in another month under that month, and goes to it', async () => {
+    const opened: string[] = []
+    show(recorded(), {}, ALLOCATIONS, (month) => opened.push(month))
+    await userEvent.click(
+      within(await section('Meter Top-ups / Recharges')).getByRole('button', { name: 'Add Meter Recharge' }),
+    )
+    const dialog = screen.getByRole('dialog', { name: 'Add Meter Recharge' })
+    // Today, in the month that is open: nothing to say.
+    const date = within(dialog).getByLabelText(/^Recharged on/)
+    expect(date).toHaveValue('2026-11-20')
+    expect(dialog).not.toHaveTextContent('This date falls in')
+
+    fireEvent.change(date, { target: { value: '2026-10-28' } })
+    expect(dialog).toHaveTextContent(
+      "This date falls in October 2026. It will be recorded in October 2026's cycle.",
+    )
+    expect(dialog).toHaveTextContent('October 2026 · each recharge raises')
+    await userEvent.selectOptions(within(dialog).getByLabelText(/^Paid by/), 'kitty')
+    await userEvent.type(within(dialog).getByLabelText(/^Amount/), '500')
+    await userEvent.type(within(dialog).getByLabelText(/Reference \/ UTR/), 'UTR-O')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Log Recharge' }))
+    await waitFor(() => expect(sent('POST', '/api/electricity/disburse-payout')).toBeDefined())
+    expect(sent('POST', '/api/electricity/disburse-payout')!.body).toMatchObject({
+      settlement_month: '2026-10',
+      disbursed_date: '2026-10-28',
+      amount_paise: 50000,
+    })
+    expect(await screen.findByText('₹500.00 recorded under October 2026.')).toBeInTheDocument()
+    expect(opened).toEqual(['2026-10'])
+  })
+
+  it('dates a recharge for a past month on its first day', async () => {
+    today('2026-12-15')
+    show(empty, {}, ALLOCATIONS)
+    await userEvent.click(
+      within(await section('Meter Top-ups / Recharges')).getByRole('button', { name: 'Add Meter Recharge' }),
+    )
+    const dialog = screen.getByRole('dialog', { name: 'Add Meter Recharge' })
+    expect(within(dialog).getByLabelText(/^Recharged on/)).toHaveValue('2026-11-01')
+    expect(dialog).not.toHaveTextContent('This date falls in')
+    expect(dialog).toHaveTextContent('November 2026 · each recharge raises')
   })
 
   it('logs a recharge from the kitty with no flatmate behind it', async () => {

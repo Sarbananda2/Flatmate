@@ -77,8 +77,8 @@ type Dialog =
   | { kind: 'reimbursement_statement'; residentId: string }
 
 export default function ElectricityPage() {
-  const { month } = useApp()
-  return <Electricity key={month} month={month} />
+  const { month, setMonth } = useApp()
+  return <Electricity key={month} month={month} onOpenMonth={setMonth} />
 }
 
 /** An amount as typed; empty is ₹0. */
@@ -92,7 +92,14 @@ function editable(paise: number | undefined): string {
   return paise ? paiseToInput(paise) : ''
 }
 
-export function Electricity({ month }: { month: string }) {
+export function Electricity({
+  month,
+  onOpenMonth,
+}: {
+  month: string
+  /** Moves the app to another month: the one a recharge was recorded under. */
+  onOpenMonth?: (month: string) => void
+}) {
   const overview = useResource<ElectricityMonth>(`${BASE}/month/${month}`)
   const [dialog, setDialog] = useState<Dialog | null>(null)
   const [params, setParams] = useSearchParams()
@@ -204,7 +211,12 @@ export function Electricity({ month }: { month: string }) {
               month={month}
               data={data}
               onClose={() => setDialog(null)}
-              onDone={(provider, paid) => done('Recharge logged', `${formatInr(paid)} to ${provider}.`)}
+              onDone={(provider, paid, recordedUnder) => {
+                if (recordedUnder === month) return done('Recharge logged', `${formatInr(paid)} to ${provider}.`)
+                // Recorded under the month it was dated in: go there.
+                done('Recharge logged', `${formatInr(paid)} recorded under ${formatMonth(recordedUnder)}.`)
+                onOpenMonth?.(recordedUnder)
+              }}
             />
           )}
           {dialog?.kind === 'top_up_detail' && (
@@ -490,13 +502,17 @@ function TopUpDialog({
   month: string
   data: ElectricityMonth
   onClose: () => void
-  onDone: (provider: string, paid: number) => void
+  /** Logged: on which meter, how much, and the month it was recorded under. */
+  onDone: (provider: string, paid: number, recordedUnder: string) => void
 }) {
   const [provider, setProvider] = useState<ElectricityProviderKey>('uppcl')
   // 'kitty', or the flatmate who paid from their own account.
   const [payer, setPayer] = useState('')
   const [raw, setRaw] = useState('')
-  const [date, setDate] = useState(todayIso())
+  // Today, in the month it is; for any other month, its first day.
+  const [date, setDate] = useState(() => (month === todayIso().slice(0, 7) ? todayIso() : `${month}-01`))
+  // A recharge belongs to the month it was made in, whichever month is open.
+  const targetMonth = date ? date.slice(0, 7) : month
   const [reference, setReference] = useState('')
   const [note, setNote] = useState('')
   const parsed = parseRupees(raw)
@@ -505,7 +521,7 @@ function TopUpDialog({
   const record = useMutation(
     () =>
       api.post<ElectricityMonth>(`${BASE}/disburse-payout`, {
-        settlement_month: month,
+        settlement_month: targetMonth,
         provider,
         disbursement_mode: payer === 'kitty' ? 'pool' : 'resident_advance',
         ...(payer === 'kitty' ? {} : { funding_resident_id: payer }),
@@ -514,13 +530,13 @@ function TopUpDialog({
         reference: reference.trim(),
         notes: note.trim() || null,
       }),
-    { onSuccess: () => onDone(name, parsed.paise) },
+    { onSuccess: () => onDone(name, parsed.paise, targetMonth) },
   )
   const formId = `electricity-top-up-${month}`
   return (
     <Modal
       title="Add Meter Recharge"
-      description={`${formatMonth(month)} · each recharge raises that meter's bill for the month by as much.`}
+      description={`${formatMonth(targetMonth)} · each recharge raises that meter's bill for the month by as much.`}
       onClose={onClose}
       footer={
         <>
@@ -570,7 +586,18 @@ function TopUpDialog({
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <MoneyInput label="Amount" required value={raw} onChange={(value) => setRaw(value)} hint="What was recharged." />
-          <DateField label="Recharged on" required value={date} onChange={setDate} />
+          <div>
+            <DateField label="Recharged on" required value={date} onChange={setDate} />
+            {/* Always there, so a screen reader hears the notice when the date moves month. */}
+            <div aria-live="polite">
+              {targetMonth !== month && (
+                <p className="m-0 mt-1.5 text-xs text-[var(--accent)]">
+                  This date falls in {formatMonth(targetMonth)}. It will be recorded in {formatMonth(targetMonth)}'s
+                  cycle.
+                </p>
+              )}
+            </div>
+          </div>
         </div>
         <TextField
           label="Reference / UTR"
