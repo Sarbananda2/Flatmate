@@ -452,7 +452,6 @@ describe('HouseHelp', () => {
     const cooking = within(salaries).getByRole('row', { name: /^Cooking/ })
     const total = within(salaries).getByRole('row', { name: /^Total/ })
     expect(sunita).toHaveTextContent('Sunita2 days allowed')
-    expect(sunita).toHaveTextContent('Within allowance')
     expect(cleaning).toHaveTextContent('CleaningSunita₹3,000.00—')
     expect(total).toHaveTextContent('Total₹7,500.00——₹7,500.00')
     const save = screen.getByRole('button', { name: 'Save Attendance & Salaries' })
@@ -463,7 +462,6 @@ describe('HouseHelp', () => {
     const days = within(sunita).getByLabelText(/Sunita days absent/)
     await userEvent.clear(days)
     await userEvent.type(days, '5')
-    expect(sunita).toHaveTextContent('3 days beyond allowance')
     expect(cleaning).toHaveTextContent('₹3,000.00−₹300.00for 3 days')
     expect(cleaning).toHaveTextContent('₹2,700.00')
     expect(cooking).toHaveTextContent('₹4,500.00−₹450.00for 3 days')
@@ -477,7 +475,6 @@ describe('HouseHelp', () => {
       within(sunita).getByRole('combobox', { name: /Sunita leave beyond the allowance/ }),
       'waive',
     )
-    expect(sunita).toHaveTextContent('3 days beyond allowance, waived')
     await userEvent.type(within(cleaning).getByLabelText(/Cleaning \(Sunita\) bonus or extra/), '200')
     expect(cleaning).toHaveTextContent('₹3,200.00')
     expect(cooking).toHaveTextContent('₹4,500.00')
@@ -530,17 +527,20 @@ describe('HouseHelp', () => {
     show(overview({ roles: [role('cleaning'), bathrooms], total_paise: 420000 }), {}, '/?tab=attendance')
     const attendance = await screen.findByRole('table', { name: 'Helper attendance for November 2026' })
     const salaries = screen.getByRole('table', { name: 'Role salaries for November 2026' })
-    expect(within(attendance).getAllByRole('row').slice(1).map((row) => row.querySelector('th')?.textContent)).toEqual([
-      'Sunita2 days allowed',
-      'RameshNo leave allowed',
+    expect(
+      within(attendance)
+        .getAllByRole('row')
+        .slice(1)
+        .map((row) => [row.querySelector('th')?.textContent, row.querySelector('td')?.textContent]),
+    ).toEqual([
+      ['Sunita', '2 days allowed'],
+      ['Ramesh', 'No leave allowed'],
     ])
     // Ramesh away a day: only his role pays for it, ₹40 of a ₹1,200 month.
     const ramesh = within(attendance).getByRole('row', { name: /^Ramesh/ })
     const days = within(ramesh).getByLabelText(/Ramesh days absent/)
     await userEvent.clear(days)
     await userEvent.type(days, '1')
-    expect(ramesh).toHaveTextContent('1 day beyond allowance')
-    expect(within(attendance).getByRole('row', { name: /^Sunita/ })).toHaveTextContent('Within allowance')
     expect(within(salaries).getByRole('row', { name: /^Bathrooms/ })).toHaveTextContent('BathroomsRamesh₹1,200.00−₹40.00for 1 day')
     expect(within(salaries).getByRole('row', { name: /^Cleaning/ })).toHaveTextContent('CleaningSunita₹3,000.00—')
     await userEvent.click(screen.getByRole('button', { name: 'Save Attendance & Salaries' }))
@@ -621,7 +621,7 @@ describe('HouseHelp', () => {
       expect(within(table).queryByRole('combobox')).toBeNull()
     }
     expect(within(attendance).getByRole('row', { name: /^Sunita/ })).toHaveTextContent(
-      'Sunita2 days allowed5Deduct pro-rata3 days beyond allowance',
+      'Sunita2 days allowed5Deduct pro-rata',
     )
     expect(within(salaries).getByRole('row', { name: /^Cleaning/ })).toHaveTextContent(
       'CleaningSunita₹3,000.00−₹300.00for 3 days₹0.00₹2,700.00',

@@ -935,54 +935,51 @@ function AttendancePanel({
   }
 
   return (
-    <Panel
-      title="Attendance & Salaries"
-      icon={<CalendarCheck className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint={`Each helper's days absent in ${formatMonth(month)} (${data.days_in_month} days). Each day beyond their allowance costs each of their roles a day's pay unless waived; a bonus goes on top.`}
-    >
-      {data.bill_state === 'frozen' ? (
-        <p className="m-0 text-xs text-[var(--text-secondary)]">
-          The {formatMonth(month)} statement has been finalized: its salaries are final.
-        </p>
-      ) : data.bill_state === 'upcoming' ? (
-        <p className="m-0 text-xs text-[var(--text-secondary)]">
-          {formatMonth(month)} has not begun: its attendance can be saved once it does.
-        </p>
-      ) : data.bill_state === 'recorded_elsewhere' ? (
-        <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
-          {formatMonth(month)}&apos;s house help is already recorded as an expense entered by hand.
-        </p>
-      ) : (
-        data.blocked_reason && (
-          <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
-            {data.blocked_reason}
+    <div className="space-y-6">
+      <Panel
+        title="Helper Attendance"
+        icon={<CalendarCheck className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+        hint={`Days off each helper took in ${formatMonth(month)} (${data.days_in_month} days). Days beyond allowance are deducted from role salaries unless waived.`}
+      >
+        {data.bill_state === 'frozen' ? (
+          <p className="m-0 text-xs text-[var(--text-secondary)]">
+            The {formatMonth(month)} statement has been finalized: its salaries are final.
           </p>
-        )
-      )}
-      <section className="space-y-2" aria-labelledby="househelp-attendance">
-        <h3 id="househelp-attendance" className="m-0 text-sm font-bold text-[var(--text-primary)]">
-          Helper Attendance
-        </h3>
+        ) : data.bill_state === 'upcoming' ? (
+          <p className="m-0 text-xs text-[var(--text-secondary)]">
+            {formatMonth(month)} has not begun: its attendance can be saved once it does.
+          </p>
+        ) : data.bill_state === 'recorded_elsewhere' ? (
+          <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
+            {formatMonth(month)}&apos;s house help is already recorded as an expense entered by hand.
+          </p>
+        ) : (
+          data.blocked_reason && (
+            <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
+              {data.blocked_reason}
+            </p>
+          )
+        )}
         <div className="overflow-x-auto min-w-0">
           <table className="w-full table-fixed text-left text-xs min-w-[600px] border-collapse" aria-busy={save.pending}>
             <caption className="sr-only">Helper attendance for {formatMonth(month)}</caption>
             <thead>
               <tr className={TABLE_HEAD}>
                 <th scope="col" className="w-[32%] pb-3 pr-3 font-bold text-left">Helper</th>
-                <th scope="col" className="w-[16%] pb-3 pr-3 font-bold text-center">Days Absent</th>
-                <th scope="col" className="w-[26%] pb-3 pr-3 font-bold text-center">Beyond Allowance</th>
-                <th scope="col" className="w-[26%] pb-3 font-bold text-left">Status / Impact</th>
+                <th scope="col" className="w-[22%] pb-3 pr-3 font-bold text-center">Allowed Leaves</th>
+                <th scope="col" className="w-[22%] pb-3 pr-3 font-bold text-center">Days Absent</th>
+                <th scope="col" className="w-[24%] pb-3 font-bold text-center">Beyond Allowance</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
               {figures.map((helper) => (
                 <tr key={helper.workerId} className="align-middle">
-                  <th scope="row" className="py-3 pr-3 text-left font-normal">
-                    <span className="block font-semibold text-[var(--text-primary)] truncate">{helper.name}</span>
-                    <span className="mt-1 inline-flex">
-                      <Pill>{allowance(helper.allowed)}</Pill>
-                    </span>
+                  <th scope="row" className="py-3 pr-3 text-left font-semibold text-[var(--text-primary)] truncate">
+                    {helper.name}
                   </th>
+                  <td className="py-3 pr-3 text-center text-xs text-[var(--text-secondary)] font-medium tabular">
+                    {allowance(helper.allowed)}
+                  </td>
                   <td className="py-3 pr-3 text-center">
                     {editable ? (
                       <div className="mx-auto max-w-[5rem]">
@@ -1001,7 +998,7 @@ function AttendancePanel({
                       <span className="tabular">{helper.roles[0].role.days_absent}</span>
                     )}
                   </td>
-                  <td className="py-3 pr-3 text-center">
+                  <td className="py-3 text-center">
                     {editable ? (
                       <div className="mx-auto min-w-[160px] max-w-[12rem]">
                         <SelectField
@@ -1015,24 +1012,18 @@ function AttendancePanel({
                       LEAVE_ACTIONS.find((option) => option.value === helper.roles[0].role.excess_leave_action)?.label
                     )}
                   </td>
-                  <td className="py-3 text-left text-xs text-[var(--text-secondary)]">
-                    {helper.excess == null
-                      ? DASH
-                      : helper.excess === 0
-                        ? 'Within allowance'
-                        : `${dayCount(helper.excess)} beyond allowance${helper.draft.action === 'waive' ? ', waived' : ''}`}
-                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      </section>
+      </Panel>
 
-      <section className="space-y-2" aria-labelledby="househelp-salaries">
-        <h3 id="househelp-salaries" className="m-0 text-sm font-bold text-[var(--text-primary)]">
-          Monthly Salaries & Bonuses
-        </h3>
+      <Panel
+        title="Monthly Salaries & Bonuses"
+        icon={<Wallet className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+        hint={`Base monthly salary for each role, attendance deductions, and optional bonuses. Saving bills ${formatMonth(month)}'s house help.`}
+      >
         <div className="overflow-x-auto min-w-0">
           <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse" aria-busy={save.pending}>
             <caption className="sr-only">Role salaries for {formatMonth(month)}</caption>
@@ -1117,63 +1108,63 @@ function AttendancePanel({
             )}
           </table>
         </div>
-      </section>
 
-      {editable && data.roles_not_on_month.some((role) => !added.includes(role.role_id)) && (
-        <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-          <span>Not on {formatMonth(month)} yet:</span>
-          {data.roles_not_on_month
-            .filter((role) => !added.includes(role.role_id))
-            .map((role) => (
-              <button
-                key={role.role_id}
-                type="button"
-                className={BUTTON_QUIET}
-                onClick={() => setAdded((before) => [...before, role.role_id])}
-              >
-                <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                Add {role.role_name} ({role.worker_name})
-              </button>
-            ))}
-        </div>
-      )}
-
-      {data.unassigned_roles.length > 0 && (
-        <p className="m-0 text-xs text-[var(--text-secondary)]">
-          No helper yet, so not on {formatMonth(month)}:{' '}
-          {data.unassigned_roles.map((role) => role.role_name).join(', ')}. Give each role a helper under{' '}
-          <button type="button" className="font-semibold text-[var(--accent)] hover:underline" onClick={onOpenStaff}>
-            Staff & Roles
-          </button>
-          .
-        </p>
-      )}
-
-      {editable && (
-        <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
-          {/* Always there, so a screen reader hears it fill. */}
-          <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
-            {!data.saved
-              ? `Not saved yet: saving bills ${formatMonth(month)}.`
-              : changed
-                ? 'Unsaved changes: the net salaries above are a preview until you save.'
-                : ''}
-          </p>
-          <div className="flex flex-wrap items-center justify-end gap-3 ml-auto">
-            <ErrorNotice error={save.error} />
-            <button
-              type="button"
-              className={BUTTON_PRIMARY}
-              disabled={!valid || rows.length === 0 || (data.saved && !changed) || save.pending}
-              onClick={() => void save.run(undefined)}
-            >
-              <Save className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-              {save.pending ? 'Saving…' : 'Save Attendance & Salaries'}
-            </button>
+        {editable && data.roles_not_on_month.some((role) => !added.includes(role.role_id)) && (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
+            <span>Not on {formatMonth(month)} yet:</span>
+            {data.roles_not_on_month
+              .filter((role) => !added.includes(role.role_id))
+              .map((role) => (
+                <button
+                  key={role.role_id}
+                  type="button"
+                  className={BUTTON_QUIET}
+                  onClick={() => setAdded((before) => [...before, role.role_id])}
+                >
+                  <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  Add {role.role_name} ({role.worker_name})
+                </button>
+              ))}
           </div>
-        </div>
-      )}
-    </Panel>
+        )}
+
+        {data.unassigned_roles.length > 0 && (
+          <p className="m-0 text-xs text-[var(--text-secondary)]">
+            No helper yet, so not on {formatMonth(month)}:{' '}
+            {data.unassigned_roles.map((role) => role.role_name).join(', ')}. Give each role a helper under{' '}
+            <button type="button" className="font-semibold text-[var(--accent)] hover:underline" onClick={onOpenStaff}>
+              Staff & Roles
+            </button>
+            .
+          </p>
+        )}
+
+        {editable && (
+          <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
+            {/* Always there, so a screen reader hears it fill. */}
+            <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
+              {!data.saved
+                ? `Not saved yet: saving bills ${formatMonth(month)}.`
+                : changed
+                  ? 'Unsaved changes: the net salaries above are a preview until you save.'
+                  : ''}
+            </p>
+            <div className="flex flex-wrap items-center justify-end gap-3 ml-auto">
+              <ErrorNotice error={save.error} />
+              <button
+                type="button"
+                className={BUTTON_PRIMARY}
+                disabled={!valid || rows.length === 0 || (data.saved && !changed) || save.pending}
+                onClick={() => void save.run(undefined)}
+              >
+                <Save className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                {save.pending ? 'Saving…' : 'Save Attendance & Salaries'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Panel>
+    </div>
   )
 }
 
