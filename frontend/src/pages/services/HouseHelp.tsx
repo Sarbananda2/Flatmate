@@ -15,7 +15,7 @@
  */
 import { useRef, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { CalendarCheck, HandPlatter, Plus, Receipt, Save, Trash2, UserPlus, Users, Wallet } from 'lucide-react'
+import { CalendarCheck, HandPlatter, Pencil, Plus, Receipt, Save, Trash2, UserPlus, Users, Wallet } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
 import { AsyncSection, Callout, ConfirmDialog, ErrorNotice, Modal } from '../../components/Primitives'
 import { CheckboxField, MoneyInput, SelectField, SwitchField, TextAreaField, TextField } from '../../components/Form'
@@ -188,25 +188,13 @@ export function HouseHelp({ month }: { month: string }) {
               <AsyncSection resource={staff} loadingLabel="Loading roles…">
                 {({ items }) => (
                   <AttendancePanel
-                    // A fresh form for the month as it now stands.
-                    key={JSON.stringify([
-                      data.saved,
-                      data.roles.map((role) => [
-                        role.role_id,
-                        role.days_absent,
-                        role.excess_leave_action,
-                        role.bonus_or_extra_paise,
-                        role.final_salary_paise,
-                      ]),
-                      data.roles_not_on_month.map((role) => [role.role_id, role.base_salary_paise]),
-                    ])}
                     month={month}
                     data={data}
                     workers={items}
                     onOpenStaff={() => openTab('staff')}
-                    onSaved={(updated) =>
+                    onSaved={(updated, message) =>
                       done(
-                        'Attendance saved',
+                        message,
                         updated.total_paise > 0
                           ? `${formatMonth(month)}'s salaries come to ${formatInr(updated.total_paise)}.`
                           : undefined,
@@ -822,96 +810,151 @@ function AttendancePanel({
   /** The helpers and their roles as they now stand: a month is saved at each role's salary, and each helper's allowance, now. */
   workers: HouseHelpWorker[]
   onOpenStaff: () => void
-  onSaved: (overview: HouseHelpMonthOverview) => void
+  /** After either panel saves: the month as it then stands, and what to say. */
+  onSaved: (overview: HouseHelpMonthOverview, message: string) => void
 }) {
   const editable = data.can_save
+  const days = data.days_in_month
   const salaryNow = new Map(workers.flatMap((worker) => worker.roles).map((role) => [role.role_id, role.monthly_salary_paise]))
   const allowanceNow = new Map(workers.map((worker) => [worker.worker_id, worker.allowed_leaves_per_month]))
+  // Each panel reads as saved until it is edited, and is saved on its own.
+  const [editingAttendance, setEditingAttendance] = useState(false)
+  const [editingSalaries, setEditingSalaries] = useState(false)
+  // What has been changed while editing: a helper's attendance, a role's bonus, a role added to the month.
+  const [workerDrafts, setWorkerDrafts] = useState<Record<string, WorkerDraft>>({})
+  const [roleDrafts, setRoleDrafts] = useState<Record<string, RoleDraft>>({})
   const [added, setAdded] = useState<string[]>([])
-  const rows: Array<HouseHelpMonthlyRecord | HouseHelpRoleMonth> = [
-    ...data.roles,
-    ...data.roles_not_on_month.filter((role) => added.includes(role.role_id)),
-  ]
-  // A helper's days are theirs, across every role they do: as saved, or none yet.
-  const [workerDrafts, setWorkerDrafts] = useState<Record<string, WorkerDraft>>(() => {
-    const drafts: Record<string, WorkerDraft> = {}
-    for (const role of [...data.roles, ...data.roles_not_on_month]) {
-      drafts[role.worker_id] ??= { days: String(role.days_absent), action: role.excess_leave_action }
-    }
-    return drafts
-  })
-  const [roleDrafts, setRoleDrafts] = useState<Record<string, RoleDraft>>(() =>
-    Object.fromEntries([...data.roles, ...data.roles_not_on_month].map((role) => [role.role_id, roleDraftOf(role)])),
-  )
-  const setWorkerDraft = (workerId: string, change: Partial<WorkerDraft>) =>
-    setWorkerDrafts((before) => ({ ...before, [workerId]: { ...before[workerId], ...change } }))
-  const setRoleDraft = (roleId: string, change: Partial<RoleDraft>) =>
-    setRoleDrafts((before) => ({ ...before, [roleId]: { ...before[roleId], ...change } }))
 
-  // Each helper on the month with their roles, in the order the roles come.
-  const helpers: Array<{ workerId: string; name: string; roles: typeof rows }> = []
-  for (const role of rows) {
-    const helper = helpers.find((entry) => entry.workerId === role.worker_id)
-    if (helper) helper.roles.push(role)
-    else helpers.push({ workerId: role.worker_id, name: role.worker_name, roles: [role] })
+  /** A helper's attendance as saved -- the same on each of their roles -- or none, on a month not saved yet. */
+  const savedAttendance = (workerId: string): WorkerDraft => {
+    const role = [...data.roles, ...data.roles_not_on_month].find((entry) => entry.worker_id === workerId)
+    return { days: String(role?.days_absent ?? 0), action: role?.excess_leave_action ?? 'deduct' }
   }
-  const figures = helpers.map(({ workerId, name, roles }) => {
-    const draft = workerDrafts[workerId]
-    // An editable month is saved at the allowance now; a final one reads as it was saved.
-    const allowed = editable ? (allowanceNow.get(workerId) ?? roles[0].allowed_leaves_per_month) : roles[0].allowed_leaves_per_month
-    const days = parseDays(draft.days, data.days_in_month)
-    const excess = days == null ? null : Math.max(0, days - allowed)
-    const roleFigures = roles.map((role) => {
-      const bonus = roleDrafts[role.role_id]
-      const base = editable ? (salaryNow.get(role.role_id) ?? role.base_salary_paise) : role.base_salary_paise
-      const untouched =
-        data.saved &&
-        !added.includes(role.role_id) &&
-        draft.days === String(role.days_absent) &&
-        draft.action === role.excess_leave_action &&
-        bonus.bonusPaise === role.bonus_or_extra_paise &&
-        base === role.base_salary_paise &&
-        allowed === role.allowed_leaves_per_month
-      const worked =
-        excess != null && bonus.bonusOk
-          ? untouched || !editable
-            ? { excess: role.excess_leaves, deduction: role.deduction_paise, net: role.final_salary_paise }
-            : { excess, ...netSalary(base, excess, draft.action, bonus.bonusPaise, data.days_in_month) }
-          : null
-      // A deduction agreed by hand, kept while the role is left as it was saved.
-      const agreed =
-        untouched &&
-        role.deduction_paise !==
-          netSalary(base, role.excess_leaves, role.excess_leave_action, 0, data.days_in_month).deduction
-      return { role, bonus, base, worked, untouched, agreed }
+  const setWorkerDraft = (workerId: string, change: Partial<WorkerDraft>) =>
+    setWorkerDrafts((before) => ({ ...before, [workerId]: { ...(before[workerId] ?? savedAttendance(workerId)), ...change } }))
+  const setRoleDraft = (role: HouseHelpRoleMonth, change: Partial<RoleDraft>) =>
+    setRoleDrafts((before) => ({ ...before, [role.role_id]: { ...(before[role.role_id] ?? roleDraftOf(role)), ...change } }))
+
+  /**
+   * The month worked out from the attendance and bonuses as saved, or as
+   * drafted. As saved, it reads as it was billed; with anything drafted it is a
+   * preview of saving, at each role's salary and helper's allowance now.
+   */
+  const work = (attendanceDrafted: boolean, bonusesDrafted: boolean) => {
+    const preview = editable && (attendanceDrafted || bonusesDrafted)
+    const rows: Array<HouseHelpMonthlyRecord | HouseHelpRoleMonth> = [
+      ...data.roles,
+      ...(bonusesDrafted ? data.roles_not_on_month.filter((role) => added.includes(role.role_id)) : []),
+    ]
+    // Each helper on the month with their roles, in the order the roles come.
+    const helpers: Array<{ workerId: string; name: string; roles: typeof rows }> = []
+    for (const role of rows) {
+      const helper = helpers.find((entry) => entry.workerId === role.worker_id)
+      if (helper) helper.roles.push(role)
+      else helpers.push({ workerId: role.worker_id, name: role.worker_name, roles: [role] })
+    }
+    return helpers.map(({ workerId, name, roles }) => {
+      const attendance = (attendanceDrafted && workerDrafts[workerId]) || savedAttendance(workerId)
+      const allowed = preview ? (allowanceNow.get(workerId) ?? roles[0].allowed_leaves_per_month) : roles[0].allowed_leaves_per_month
+      const absent = parseDays(attendance.days, days)
+      const excess = absent == null ? null : Math.max(0, absent - allowed)
+      const roleFigures = roles.map((role) => {
+        const bonus = (bonusesDrafted && roleDrafts[role.role_id]) || roleDraftOf(role)
+        const base = preview ? (salaryNow.get(role.role_id) ?? role.base_salary_paise) : role.base_salary_paise
+        // The deduction as saved stands while nothing it was worked out from has changed.
+        const asSaved =
+          data.saved &&
+          data.roles.includes(role as HouseHelpMonthlyRecord) &&
+          attendance.days === String(role.days_absent) &&
+          attendance.action === role.excess_leave_action &&
+          base === role.base_salary_paise &&
+          allowed === role.allowed_leaves_per_month
+        // A deduction agreed by hand, kept with it.
+        const agreed =
+          asSaved && role.deduction_paise !== netSalary(base, role.excess_leaves, role.excess_leave_action, 0, days).deduction
+        const worked =
+          excess == null || !bonus.bonusOk
+            ? null
+            : !preview
+              ? { excess: role.excess_leaves, deduction: role.deduction_paise, net: role.final_salary_paise }
+              : asSaved
+                ? { excess: role.excess_leaves, deduction: role.deduction_paise, net: base - role.deduction_paise + bonus.bonusPaise }
+                : { excess, ...netSalary(base, excess, attendance.action, bonus.bonusPaise, days) }
+        return { role, bonus, base, worked, agreed }
+      })
+      return { workerId, name, attendance, allowed, absent, roles: roleFigures }
     })
-    return { workerId, name, draft, allowed, days, excess, roles: roleFigures }
-  })
+  }
+  const records = (helpers: ReturnType<typeof work>) =>
+    helpers.flatMap((helper) =>
+      helper.roles.map(({ role, bonus, agreed }) => ({
+        role_id: role.role_id,
+        days_absent: helper.absent,
+        excess_leave_action: helper.attendance.action,
+        bonus_or_extra_paise: bonus.bonusPaise,
+        deduction_paise: agreed ? role.deduction_paise : null,
+        extra_notes: role.extra_notes,
+      })),
+    )
+
+  const figures = work(editingAttendance, editingSalaries)
   const roleFigures = figures.flatMap((helper) => helper.roles)
-  const valid = roleFigures.every((row) => row.worked != null)
-  const changed = roleFigures.some((row) => !row.untouched)
   const total = roleFigures.reduce((sum, row) => sum + (row.worked?.net ?? 0), 0)
   const deducted = roleFigures.reduce((sum, row) => sum + (row.worked?.deduction ?? 0), 0)
   const bonuses = roleFigures.reduce((sum, row) => sum + (row.bonus.bonusOk ? row.bonus.bonusPaise : 0), 0)
+  // A role's salary or a helper's allowance changed since the month was saved: saving it again applies them.
+  const stale =
+    data.saved &&
+    data.roles.some(
+      (role) =>
+        (salaryNow.get(role.role_id) ?? role.base_salary_paise) !== role.base_salary_paise ||
+        (allowanceNow.get(role.worker_id) ?? role.allowed_leaves_per_month) !== role.allowed_leaves_per_month,
+    )
+  const attendanceValid = figures.every((helper) => helper.absent != null)
+  const attendanceChanged =
+    stale ||
+    figures.some((helper) => {
+      const saved = savedAttendance(helper.workerId)
+      return helper.attendance.days !== saved.days || helper.attendance.action !== saved.action
+    })
+  const salariesValid = roleFigures.every((row) => row.bonus.bonusOk)
+  const salariesChanged =
+    stale || added.length > 0 || roleFigures.some((row) => row.bonus.bonusPaise !== row.role.bonus_or_extra_paise)
 
-  const save = useMutation(
-    () =>
-      api.post<HouseHelpMonthOverview>(`${BASE}/month/${month}/attendance`, {
-        records: figures.flatMap((helper) =>
-          helper.roles.map(({ role, bonus, agreed }) => ({
-            role_id: role.role_id,
-            days_absent: helper.days,
-            excess_leave_action: helper.draft.action,
-            bonus_or_extra_paise: bonus.bonusPaise,
-            deduction_paise: agreed ? role.deduction_paise : null,
-            extra_notes: role.extra_notes,
-          })),
-        ),
-      }),
-    { onSuccess: onSaved },
+  const saveAttendance = useMutation(
+    () => api.post<HouseHelpMonthOverview>(`${BASE}/month/${month}/attendance`, { records: records(work(true, false)) }),
+    {
+      onSuccess: (updated) => {
+        setEditingAttendance(false)
+        onSaved(updated, 'Attendance saved')
+      },
+    },
   )
+  const saveSalaries = useMutation(
+    () => api.post<HouseHelpMonthOverview>(`${BASE}/month/${month}/attendance`, { records: records(work(false, true)) }),
+    {
+      onSuccess: (updated) => {
+        setEditingSalaries(false)
+        setAdded([])
+        onSaved(updated, 'Salaries & bonuses saved')
+      },
+    },
+  )
+  const saving = saveAttendance.pending || saveSalaries.pending
+  const editAttendance = () => {
+    setWorkerDrafts({})
+    saveAttendance.reset()
+    setEditingAttendance(true)
+  }
+  const editSalaries = () => {
+    setRoleDrafts({})
+    setAdded([])
+    saveSalaries.reset()
+    setEditingSalaries(true)
+  }
+  const unsaved = `Not saved yet: saving bills ${formatMonth(month)}.`
 
-  if (rows.length === 0 && data.roles_not_on_month.length === 0) {
+  if (data.roles.length === 0 && data.roles_not_on_month.length === 0) {
     return (
       <Panel
         title="Attendance & Salaries"
@@ -921,7 +964,7 @@ function AttendancePanel({
           title="No roles to pay this month."
           body={
             data.unassigned_roles.length > 0
-              ? `No helper yet: ${data.unassigned_roles.map((role) => role.role_name).join(', ')}. Give each role a helper under Staff & Roles.`
+              ? 'No active helpers are currently assigned. Assign a helper to each role under Staff & Roles to track attendance and salaries.'
               : 'Add a helper and the roles they do under Staff & Roles.'
           }
           action={
@@ -940,6 +983,11 @@ function AttendancePanel({
         title="Helper Attendance"
         icon={<CalendarCheck className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
         hint={`Days off each helper took in ${formatMonth(month)} (${data.days_in_month} days). Days beyond allowance are deducted from role salaries unless waived.`}
+        menuActions={
+          editable && !editingAttendance && data.roles.length > 0
+            ? [{ label: 'Edit Attendance', icon: Pencil, onClick: editAttendance }]
+            : undefined
+        }
       >
         {data.bill_state === 'frozen' ? (
           <p className="m-0 text-xs text-[var(--text-secondary)]">
@@ -953,15 +1001,22 @@ function AttendancePanel({
           <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
             {formatMonth(month)}&apos;s house help is already recorded as an expense entered by hand.
           </p>
+        ) : data.blocked_reason ? (
+          <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
+            {data.blocked_reason}
+          </p>
         ) : (
-          data.blocked_reason && (
-            <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
-              {data.blocked_reason}
+          editable &&
+          !data.saved &&
+          !editingAttendance &&
+          !editingSalaries && (
+            <p className="m-0 text-xs font-medium text-[var(--warning)]">
+              Not saved yet: {formatMonth(month)} is billed once its attendance or salaries are saved.
             </p>
           )
         )}
         <div className="overflow-x-auto min-w-0">
-          <table className="w-full table-fixed text-left text-xs min-w-[600px] border-collapse" aria-busy={save.pending}>
+          <table className="w-full table-fixed text-left text-xs min-w-[600px] border-collapse" aria-busy={saving}>
             <caption className="sr-only">Helper attendance for {formatMonth(month)}</caption>
             <thead>
               <tr className={TABLE_HEAD}>
@@ -981,7 +1036,7 @@ function AttendancePanel({
                     {allowance(helper.allowed)}
                   </td>
                   <td className="py-3 pr-3 text-center">
-                    {editable ? (
+                    {editingAttendance ? (
                       <div className="mx-auto max-w-[5rem]">
                         <TextField
                           label={<span className="sr-only">{helper.name} days absent</span>}
@@ -989,27 +1044,27 @@ function AttendancePanel({
                           min={0}
                           step={1}
                           inputMode="numeric"
-                          value={helper.draft.days}
+                          value={helper.attendance.days}
                           onChange={(value) => setWorkerDraft(helper.workerId, { days: value })}
-                          error={helper.days == null ? `0 to ${data.days_in_month}` : null}
+                          error={helper.absent == null ? `0 to ${data.days_in_month}` : null}
                         />
                       </div>
                     ) : (
-                      <span className="tabular">{helper.roles[0].role.days_absent}</span>
+                      <span className="tabular font-semibold">{helper.attendance.days}</span>
                     )}
                   </td>
                   <td className="py-3 text-center">
-                    {editable ? (
+                    {editingAttendance ? (
                       <div className="mx-auto min-w-[160px] max-w-[12rem]">
                         <SelectField
                           label={<span className="sr-only">{helper.name} leave beyond the allowance</span>}
-                          value={helper.draft.action}
+                          value={helper.attendance.action}
                           options={LEAVE_ACTIONS}
                           onChange={(value) => setWorkerDraft(helper.workerId, { action: value })}
                         />
                       </div>
                     ) : (
-                      LEAVE_ACTIONS.find((option) => option.value === helper.roles[0].role.excess_leave_action)?.label
+                      LEAVE_ACTIONS.find((option) => option.value === helper.attendance.action)?.label
                     )}
                   </td>
                 </tr>
@@ -1017,23 +1072,61 @@ function AttendancePanel({
             </tbody>
           </table>
         </div>
+
+        {editingAttendance && (
+          <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
+            {/* There while editing, so a screen reader hears it fill. */}
+            <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
+              {!data.saved
+                ? unsaved
+                : attendanceChanged
+                  ? 'Unsaved changes: the salaries below are a preview until you save.'
+                  : ''}
+            </p>
+            <div className="flex flex-wrap items-center justify-end gap-3 ml-auto">
+              <ErrorNotice error={saveAttendance.error} />
+              <button
+                type="button"
+                className={BUTTON_SECONDARY}
+                onClick={() => setEditingAttendance(false)}
+                disabled={saveAttendance.pending}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={BUTTON_PRIMARY}
+                disabled={!attendanceValid || (data.saved && !attendanceChanged) || saving}
+                onClick={() => void saveAttendance.run(undefined)}
+              >
+                <Save className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                {saveAttendance.pending ? 'Saving…' : 'Save Attendance'}
+              </button>
+            </div>
+          </div>
+        )}
       </Panel>
 
       <Panel
         title="Monthly Salaries & Bonuses"
         icon={<Wallet className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
         hint={`Base monthly salary for each role, attendance deductions, and optional bonuses. Saving bills ${formatMonth(month)}'s house help.`}
+        menuActions={
+          editable && !editingSalaries
+            ? [{ label: 'Edit Salaries & Bonuses', icon: Pencil, onClick: editSalaries }]
+            : undefined
+        }
       >
         <div className="overflow-x-auto min-w-0">
-          <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse" aria-busy={save.pending}>
+          <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse" aria-busy={saving}>
             <caption className="sr-only">Role salaries for {formatMonth(month)}</caption>
             <thead>
               <tr className={TABLE_HEAD}>
                 <th scope="col" className="w-[32%] pb-3 pr-3 font-bold text-left">Role & Helper</th>
-                <th scope="col" className="w-[17%] pb-3 pr-3 font-bold text-right">Base Salary</th>
-                <th scope="col" className="w-[17%] pb-3 pr-3 font-bold text-right">Deduction</th>
-                <th scope="col" className="w-[17%] pb-3 pr-3 font-bold text-right">Bonus / Extra</th>
-                <th scope="col" className="w-[17%] pb-3 font-bold text-right">Net Salary</th>
+                <th scope="col" className="w-[17%] pb-3 pr-3 font-bold text-center">Base Salary</th>
+                <th scope="col" className="w-[17%] pb-3 pr-3 font-bold text-center">Deduction</th>
+                <th scope="col" className="w-[17%] pb-3 pr-3 font-bold text-center">Bonus / Extra</th>
+                <th scope="col" className="w-[17%] pb-3 font-bold text-center">Net Salary</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -1046,10 +1139,10 @@ function AttendancePanel({
                       {added.includes(role.role_id) && ' · new this month'}
                     </span>
                   </th>
-                  <td className="py-3 pr-3 text-right tabular">
+                  <td className="py-3 pr-3 text-center tabular">
                     <Rupees paise={base} />
                   </td>
-                  <td className="py-3 pr-3 text-right tabular">
+                  <td className="py-3 pr-3 text-center tabular">
                     {worked && worked.deduction > 0 ? (
                       <>
                         −{formatInr(worked.deduction)}
@@ -1059,9 +1152,9 @@ function AttendancePanel({
                       DASH
                     )}
                   </td>
-                  <td className="py-3 pr-3 text-right">
-                    {editable ? (
-                      <div className="ml-auto max-w-[7.5rem]">
+                  <td className="py-3 pr-3 text-center">
+                    {editingSalaries ? (
+                      <div className="mx-auto max-w-[7.5rem]">
                         <MoneyInput
                           label={
                             <span className="sr-only">
@@ -1071,7 +1164,7 @@ function AttendancePanel({
                           value={bonus.bonus}
                           hint=""
                           onChange={(raw, parsed) =>
-                            setRoleDraft(role.role_id, {
+                            setRoleDraft(role, {
                               bonus: raw,
                               bonusPaise: raw.trim() ? parsed.paise : 0,
                               bonusOk: !raw.trim() || parsed.ok,
@@ -1079,11 +1172,13 @@ function AttendancePanel({
                           }
                         />
                       </div>
-                    ) : (
+                    ) : role.bonus_or_extra_paise > 0 ? (
                       <Rupees paise={role.bonus_or_extra_paise} />
+                    ) : (
+                      DASH
                     )}
                   </td>
-                  <td className="py-3 text-right tabular font-bold text-[var(--text-primary)]">
+                  <td className="py-3 text-center tabular font-bold text-[var(--text-primary)]">
                     {worked ? <Rupees paise={worked.net} /> : DASH}
                   </td>
                 </tr>
@@ -1093,14 +1188,14 @@ function AttendancePanel({
               <tfoot>
                 <tr className="border-t border-[var(--border-subtle)] font-bold text-[var(--text-primary)]">
                   <th scope="row" className="pt-3 pr-3 text-left">Total</th>
-                  <td className="pt-3 pr-3 text-right tabular">
+                  <td className="pt-3 pr-3 text-center tabular">
                     <Rupees paise={roleFigures.reduce((sum, row) => sum + row.base, 0)} />
                   </td>
-                  <td className="pt-3 pr-3 text-right tabular">
+                  <td className="pt-3 pr-3 text-center tabular">
                     {deducted > 0 ? `−${formatInr(deducted)}` : DASH}
                   </td>
-                  <td className="pt-3 pr-3 text-right tabular">{bonuses > 0 ? <Rupees paise={bonuses} /> : DASH}</td>
-                  <td className="pt-3 text-right tabular">
+                  <td className="pt-3 pr-3 text-center tabular">{bonuses > 0 ? <Rupees paise={bonuses} /> : DASH}</td>
+                  <td className="pt-3 text-center tabular">
                     <Rupees paise={total} />
                   </td>
                 </tr>
@@ -1109,7 +1204,7 @@ function AttendancePanel({
           </table>
         </div>
 
-        {editable && data.roles_not_on_month.some((role) => !added.includes(role.role_id)) && (
+        {editingSalaries && data.roles_not_on_month.some((role) => !added.includes(role.role_id)) && (
           <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
             <span>Not on {formatMonth(month)} yet:</span>
             {data.roles_not_on_month
@@ -1128,37 +1223,48 @@ function AttendancePanel({
           </div>
         )}
 
-        {data.unassigned_roles.length > 0 && (
+        {/* Only when nobody is left to do them: with active helpers, a role waiting for one is the Staff tab's business. */}
+        {data.active_worker_count === 0 && data.unassigned_roles.length > 0 && (
           <p className="m-0 text-xs text-[var(--text-secondary)]">
-            No helper yet, so not on {formatMonth(month)}:{' '}
-            {data.unassigned_roles.map((role) => role.role_name).join(', ')}. Give each role a helper under{' '}
+            No active helpers are currently assigned. Assign a helper to each role under{' '}
             <button type="button" className="font-semibold text-[var(--accent)] hover:underline" onClick={onOpenStaff}>
               Staff & Roles
-            </button>
-            .
+            </button>{' '}
+            to track attendance and salaries.
           </p>
         )}
 
-        {editable && (
+        {editingSalaries && (
           <div className="pt-4 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
-            {/* Always there, so a screen reader hears it fill. */}
+            {/* There while editing, so a screen reader hears it fill. */}
             <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
               {!data.saved
-                ? `Not saved yet: saving bills ${formatMonth(month)}.`
-                : changed
+                ? unsaved
+                : salariesChanged
                   ? 'Unsaved changes: the net salaries above are a preview until you save.'
                   : ''}
             </p>
             <div className="flex flex-wrap items-center justify-end gap-3 ml-auto">
-              <ErrorNotice error={save.error} />
+              <ErrorNotice error={saveSalaries.error} />
+              <button
+                type="button"
+                className={BUTTON_SECONDARY}
+                onClick={() => {
+                  setEditingSalaries(false)
+                  setAdded([])
+                }}
+                disabled={saveSalaries.pending}
+              >
+                Cancel
+              </button>
               <button
                 type="button"
                 className={BUTTON_PRIMARY}
-                disabled={!valid || rows.length === 0 || (data.saved && !changed) || save.pending}
-                onClick={() => void save.run(undefined)}
+                disabled={!salariesValid || (data.saved && !salariesChanged) || saving}
+                onClick={() => void saveSalaries.run(undefined)}
               >
                 <Save className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                {save.pending ? 'Saving…' : 'Save Attendance & Salaries'}
+                {saveSalaries.pending ? 'Saving…' : 'Save Salaries & Bonuses'}
               </button>
             </div>
           </div>

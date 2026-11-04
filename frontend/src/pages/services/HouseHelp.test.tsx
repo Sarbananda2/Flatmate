@@ -211,8 +211,9 @@ function show(payload: Record<string, unknown>, routes: Record<string, unknown> 
   )
 }
 
-const sent = (method: string, path: string) =>
-  stub!.calls.find((call) => call.method === method && call.path.split('?')[0] === path)
+const sentAll = (method: string, path: string) =>
+  stub!.calls.filter((call) => call.method === method && call.path.split('?')[0] === path)
+const sent = (method: string, path: string) => sentAll(method, path)[0]
 
 describe('HouseHelp', () => {
   it('opens on the monthly settlement and moves between tabs through the address', async () => {
@@ -451,13 +452,19 @@ describe('HouseHelp', () => {
     const cleaning = within(salaries).getByRole('row', { name: /^Cleaning/ })
     const cooking = within(salaries).getByRole('row', { name: /^Cooking/ })
     const total = within(salaries).getByRole('row', { name: /^Total/ })
-    expect(sunita).toHaveTextContent('Sunita2 days allowed')
-    expect(cleaning).toHaveTextContent('CleaningSunita₹3,000.00—')
+    // As saved, until edited.
+    expect(sunita).toHaveTextContent('Sunita2 days allowed0Deduct pro-rata')
+    expect(cleaning).toHaveTextContent('CleaningSunita₹3,000.00——₹3,000.00')
     expect(total).toHaveTextContent('Total₹7,500.00——₹7,500.00')
-    const save = screen.getByRole('button', { name: 'Save Attendance & Salaries' })
-    // Saved, and nothing changed.
-    expect(save).toBeDisabled()
+    expect(within(attendance).queryByRole('spinbutton')).toBeNull()
+    expect(within(salaries).queryByRole('textbox')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Save/ })).toBeNull()
 
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Attendance' }))
+    expect(screen.queryByRole('button', { name: 'Edit Attendance' })).toBeNull()
+    const save = screen.getByRole('button', { name: 'Save Attendance' })
+    // Nothing changed yet.
+    expect(save).toBeDisabled()
     // Away five days, two allowed: three days off each role, at that role's day's pay.
     const days = within(sunita).getByLabelText(/Sunita days absent/)
     await userEvent.clear(days)
@@ -468,36 +475,42 @@ describe('HouseHelp', () => {
     expect(cooking).toHaveTextContent('₹4,050.00')
     expect(total).toHaveTextContent('Total₹7,500.00−₹750.00—₹6,750.00')
     expect(within(salaries).queryByLabelText(/days absent/)).toBeNull()
-    expect(screen.getByText('Unsaved changes: the net salaries above are a preview until you save.')).toBeInTheDocument()
+    expect(screen.getByText('Unsaved changes: the salaries below are a preview until you save.')).toBeInTheDocument()
 
-    // Waived, for both roles; and a ₹200 bonus on the cleaning.
+    // Cancelled, it is as saved again.
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(sunita).toHaveTextContent('Sunita2 days allowed0Deduct pro-rata')
+    expect(total).toHaveTextContent('Total₹7,500.00——₹7,500.00')
+
+    // Five days, waived for both roles.
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Attendance' }))
+    const again = within(sunita).getByLabelText(/Sunita days absent/)
+    expect(again).toHaveValue(0)
+    await userEvent.clear(again)
+    await userEvent.type(again, '5')
     await userEvent.selectOptions(
       within(sunita).getByRole('combobox', { name: /Sunita leave beyond the allowance/ }),
       'waive',
     )
-    await userEvent.type(within(cleaning).getByLabelText(/Cleaning \(Sunita\) bonus or extra/), '200')
-    expect(cleaning).toHaveTextContent('₹3,200.00')
-    expect(cooking).toHaveTextContent('₹4,500.00')
-    expect(total).toHaveTextContent('Total₹7,500.00—₹200.00₹7,700.00')
-
+    expect(total).toHaveTextContent('Total₹7,500.00——₹7,500.00')
     // Too many days: nothing to save until it is a day of the month.
-    await userEvent.clear(days)
-    await userEvent.type(days, '31')
+    await userEvent.clear(again)
+    await userEvent.type(again, '31')
     expect(sunita).toHaveTextContent('0 to 30')
-    expect(save).toBeDisabled()
-    await userEvent.clear(days)
-    await userEvent.type(days, '5')
+    expect(screen.getByRole('button', { name: 'Save Attendance' })).toBeDisabled()
+    await userEvent.clear(again)
+    await userEvent.type(again, '5')
 
-    await userEvent.click(save)
+    await userEvent.click(screen.getByRole('button', { name: 'Save Attendance' }))
     await waitFor(() => expect(sent('POST', `${BASE}/month/${MONTH}/attendance`)).toBeDefined())
-    // Her days on each of her roles.
+    // Her days on each of her roles, and the bonuses as saved.
     expect(sent('POST', `${BASE}/month/${MONTH}/attendance`)!.body).toEqual({
       records: [
         {
           role_id: 'cleaning',
           days_absent: 5,
           excess_leave_action: 'waive',
-          bonus_or_extra_paise: 20000,
+          bonus_or_extra_paise: 0,
           deduction_paise: null,
           extra_notes: null,
         },
@@ -512,6 +525,38 @@ describe('HouseHelp', () => {
       ],
     })
     expect(await screen.findByText('Attendance saved')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save Attendance' })).toBeNull()
+
+    // A ₹200 bonus on the cleaning, saved on its own with the attendance as saved.
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Salaries & Bonuses' }))
+    expect(within(attendance).queryByRole('spinbutton')).toBeNull()
+    await userEvent.type(within(cleaning).getByLabelText(/Cleaning \(Sunita\) bonus or extra/), '200')
+    expect(cleaning).toHaveTextContent('₹3,200.00')
+    expect(cooking).toHaveTextContent('₹4,500.00')
+    expect(total).toHaveTextContent('Total₹7,500.00—₹200.00₹7,700.00')
+    await userEvent.click(screen.getByRole('button', { name: 'Save Salaries & Bonuses' }))
+    await waitFor(() => expect(sentAll('POST', `${BASE}/month/${MONTH}/attendance`)).toHaveLength(2))
+    expect(sentAll('POST', `${BASE}/month/${MONTH}/attendance`)[1].body).toEqual({
+      records: [
+        {
+          role_id: 'cleaning',
+          days_absent: 0,
+          excess_leave_action: 'deduct',
+          bonus_or_extra_paise: 20000,
+          deduction_paise: null,
+          extra_notes: null,
+        },
+        {
+          role_id: 'cooking',
+          days_absent: 0,
+          excess_leave_action: 'deduct',
+          bonus_or_extra_paise: 0,
+          deduction_paise: null,
+          extra_notes: null,
+        },
+      ],
+    })
+    expect(await screen.findByText('Salaries & bonuses saved')).toBeInTheDocument()
   })
 
   it("keeps each helper's days their own", async () => {
@@ -537,13 +582,14 @@ describe('HouseHelp', () => {
       ['Ramesh', 'No leave allowed'],
     ])
     // Ramesh away a day: only his role pays for it, ₹40 of a ₹1,200 month.
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Attendance' }))
     const ramesh = within(attendance).getByRole('row', { name: /^Ramesh/ })
     const days = within(ramesh).getByLabelText(/Ramesh days absent/)
     await userEvent.clear(days)
     await userEvent.type(days, '1')
     expect(within(salaries).getByRole('row', { name: /^Bathrooms/ })).toHaveTextContent('BathroomsRamesh₹1,200.00−₹40.00for 1 day')
     expect(within(salaries).getByRole('row', { name: /^Cleaning/ })).toHaveTextContent('CleaningSunita₹3,000.00—')
-    await userEvent.click(screen.getByRole('button', { name: 'Save Attendance & Salaries' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save Attendance' }))
     await waitFor(() => expect(sent('POST', `${BASE}/month/${MONTH}/attendance`)).toBeDefined())
     const body = sent('POST', `${BASE}/month/${MONTH}/attendance`)!.body as {
       records: Array<{ role_id: string; days_absent: number }>
@@ -565,8 +611,13 @@ describe('HouseHelp', () => {
       {},
       '/?tab=attendance',
     )
-    expect(await screen.findByText('Not saved yet: saving bills November 2026.')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Save Attendance & Salaries' }))
+    expect(
+      await screen.findByText('Not saved yet: November 2026 is billed once its attendance or salaries are saved.'),
+    ).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Attendance' }))
+    expect(screen.getByText('Not saved yet: saving bills November 2026.')).toBeInTheDocument()
+    // Nothing to change, but saving bills the month.
+    await userEvent.click(screen.getByRole('button', { name: 'Save Attendance' }))
     await waitFor(() => expect(sent('POST', `${BASE}/month/${MONTH}/attendance`)).toBeDefined())
     expect(sent('POST', `${BASE}/month/${MONTH}/attendance`)!.body).toMatchObject({
       records: [{ role_id: 'cleaning', days_absent: 0, excess_leave_action: 'deduct' }],
@@ -575,14 +626,27 @@ describe('HouseHelp', () => {
 
   it('offers a role not on a saved month, and saves it with the month', async () => {
     const { saved: _saved, sharers: _sharers, shares: _shares, ...cooking } = role('cooking')
-    show(overview({ roles: [role('cleaning')], roles_not_on_month: [cooking] }), {}, '/?tab=attendance')
+    show(
+      overview({
+        roles: [role('cleaning')],
+        roles_not_on_month: [cooking],
+        unassigned_roles: [{ role_id: 'utensils', role_name: 'Utensils', monthly_salary_paise: 150000 }],
+      }),
+      {},
+      '/?tab=attendance',
+    )
     const salaries = await screen.findByRole('table', { name: 'Role salaries for November 2026' })
+    // With an active helper, a role waiting for one is left to the Staff tab.
+    expect(screen.queryByText(/No active helpers are currently assigned/)).toBeNull()
     expect(within(salaries).queryByRole('row', { name: /^Cooking/ })).toBeNull()
+    // Offered while the salaries are edited.
+    expect(screen.queryByRole('button', { name: 'Add Cooking (Sunita)' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Salaries & Bonuses' }))
     await userEvent.click(screen.getByRole('button', { name: 'Add Cooking (Sunita)' }))
     expect(within(salaries).getByRole('row', { name: /^Cooking/ })).toHaveTextContent('CookingSunita · new this month')
     // The same helper: still one row of attendance.
     expect(within(screen.getByRole('table', { name: 'Helper attendance for November 2026' })).getAllByRole('row')).toHaveLength(2)
-    await userEvent.click(screen.getByRole('button', { name: 'Save Attendance & Salaries' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save Salaries & Bonuses' }))
     await waitFor(() => expect(sent('POST', `${BASE}/month/${MONTH}/attendance`)).toBeDefined())
     const body = sent('POST', `${BASE}/month/${MONTH}/attendance`)!.body as { records: Array<{ role_id: string }> }
     expect(body.records.map((record) => record.role_id)).toEqual(['cleaning', 'cooking'])
@@ -624,10 +688,10 @@ describe('HouseHelp', () => {
       'Sunita2 days allowed5Deduct pro-rata',
     )
     expect(within(salaries).getByRole('row', { name: /^Cleaning/ })).toHaveTextContent(
-      'CleaningSunita₹3,000.00−₹300.00for 3 days₹0.00₹2,700.00',
+      'CleaningSunita₹3,000.00−₹300.00for 3 days—₹2,700.00',
     )
     expect(within(salaries).getByRole('row', { name: /^Total/ })).toHaveTextContent('Total₹7,500.00−₹750.00—₹6,750.00')
-    expect(screen.queryByRole('button', { name: 'Save Attendance & Salaries' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Edit/ })).toBeNull()
   })
 
   it('lists the helpers and their roles, and adds a helper', async () => {
@@ -786,13 +850,18 @@ describe('HouseHelp', () => {
     expect(await screen.findByText('Utensils (Sunita)')).toBeInTheDocument()
   })
 
-  it('says which roles are on no month for want of a helper', async () => {
+  it('says when no active helper is left to do the roles', async () => {
     show(
-      overview({ unassigned_roles: [{ role_id: 'utensils', role_name: 'Utensils', monthly_salary_paise: 150000 }] }),
+      overview({
+        active_worker_count: 0,
+        unassigned_roles: [{ role_id: 'utensils', role_name: 'Utensils', monthly_salary_paise: 150000 }],
+      }),
       {},
       '/?tab=attendance',
     )
-    expect(await screen.findByText(/No helper yet, so not on November 2026: Utensils\./)).toBeInTheDocument()
+    expect(await screen.findByText(/No active helpers are currently assigned/)).toHaveTextContent(
+      'No active helpers are currently assigned. Assign a helper to each role under Staff & Roles to track attendance and salaries.',
+    )
     await userEvent.click(screen.getByRole('button', { name: 'Staff & Roles' }))
     expect(screen.getByLabelText('location')).toHaveTextContent('/?tab=staff')
   })
