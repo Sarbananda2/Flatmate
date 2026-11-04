@@ -477,7 +477,7 @@ describe('HouseHelp', () => {
     await userEvent.type(within(cleaning).getByLabelText(/Cleaning \(Sunita\) bonus or extra/), '200')
     expect(cleaning).toHaveTextContent('₹3,200.00')
     expect(cooking).toHaveTextContent('₹4,500.00')
-    expect(within(table).getByRole('row', { name: /Total/ })).toHaveTextContent('Total₹7,500.00₹7,700.00')
+    expect(within(table).getByRole('row', { name: /^Total/ })).toHaveTextContent('Total₹7,500.00₹7,700.00')
 
     // Too many days: nothing to save until it is a day of the month.
     await userEvent.clear(days)
@@ -604,7 +604,7 @@ describe('HouseHelp', () => {
     expect(within(table).queryByRole('textbox')).toBeNull()
     expect(within(table).queryByRole('spinbutton')).toBeNull()
     expect(within(table).getByRole('row', { name: /^Sunita/ })).toHaveTextContent(
-      'Sunita2 days allowed5Deduct pro-rata3 days beyond the allowance₹6,750.00',
+      'Sunita2 days allowedDays absent:5Excess leave:Deduct pro-rata3 days beyond the allowanceTotal Payout:₹6,750.00',
     )
     expect(within(table).getByRole('row', { name: /^Cleaning/ })).toHaveTextContent(
       'Cleaning₹3,000.00−₹300.00for 3 days₹0.00₹2,700.00',
