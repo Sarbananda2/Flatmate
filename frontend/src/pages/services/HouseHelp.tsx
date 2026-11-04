@@ -885,15 +885,14 @@ function AttendancePanel({
           netSalary(base, role.excess_leaves, role.excess_leave_action, 0, data.days_in_month).deduction
       return { role, bonus, base, worked, untouched, agreed }
     })
-    const net = roleFigures.every((row) => row.worked != null)
-      ? roleFigures.reduce((sum, row) => sum + row.worked!.net, 0)
-      : null
-    return { workerId, name, draft, allowed, days, excess, roles: roleFigures, net }
+    return { workerId, name, draft, allowed, days, excess, roles: roleFigures }
   })
   const roleFigures = figures.flatMap((helper) => helper.roles)
   const valid = roleFigures.every((row) => row.worked != null)
   const changed = roleFigures.some((row) => !row.untouched)
   const total = roleFigures.reduce((sum, row) => sum + (row.worked?.net ?? 0), 0)
+  const deducted = roleFigures.reduce((sum, row) => sum + (row.worked?.deduction ?? 0), 0)
+  const bonuses = roleFigures.reduce((sum, row) => sum + (row.bonus.bonusOk ? row.bonus.bonusPaise : 0), 0)
 
   const save = useMutation(
     () =>
@@ -960,93 +959,101 @@ function AttendancePanel({
           </p>
         )
       )}
-      <div className="overflow-x-auto min-w-0">
-        <table className="w-full table-fixed text-left text-xs min-w-[760px] border-collapse" aria-busy={save.pending}>
-          <caption className="sr-only">Attendance and salaries for {formatMonth(month)}</caption>
-          <thead>
-            <tr className={TABLE_HEAD}>
-              <th scope="col" className="w-[36%] pb-3 pl-4 pr-3 font-bold text-left">Role</th>
-              <th scope="col" className="w-[16%] pb-3 pr-3 font-bold text-right">Base Salary</th>
-              <th scope="col" className="w-[16%] pb-3 pr-3 font-bold text-right">Deduction</th>
-              <th scope="col" className="w-[16%] pb-3 pr-3 font-bold text-right">Bonus / Extra</th>
-              <th scope="col" className="w-[16%] pb-3 pr-4 font-bold text-right">Net Salary</th>
-            </tr>
-          </thead>
-          {figures.map((helper) => (
-            <tbody key={helper.workerId} className="font-medium">
-              {/* The helper, as a banner over the roles they do: their days are theirs, across every role. */}
-              <tr className="align-middle border-t border-[var(--border-subtle)] bg-[var(--bg-elevated)]">
-                <th scope="rowgroup" colSpan={3} className="py-2.5 px-4 text-left font-normal">
-                  <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="font-bold text-sm text-[var(--text-primary)] truncate">{helper.name}</span>
-                      <Pill>{allowance(helper.allowed)}</Pill>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-[var(--text-secondary)]" aria-hidden={editable || undefined}>
-                        Days absent:
-                      </span>
-                      {editable ? (
-                        <div className="w-16">
-                          <TextField
-                            label={<span className="sr-only">{helper.name} days absent</span>}
-                            type="number"
-                            min={0}
-                            step={1}
-                            inputMode="numeric"
-                            value={helper.draft.days}
-                            onChange={(value) => setWorkerDraft(helper.workerId, { days: value })}
-                            error={helper.days == null ? `0 to ${data.days_in_month}` : null}
-                          />
-                        </div>
-                      ) : (
-                        <span className="tabular font-semibold text-[var(--text-primary)]">
-                          {helper.roles[0].role.days_absent}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-[var(--text-secondary)]" aria-hidden={editable || undefined}>
-                        Excess leave:
-                      </span>
-                      {editable ? (
-                        <div className="w-44 min-w-[160px]">
-                          <SelectField
-                            label={<span className="sr-only">{helper.name} leave beyond the allowance</span>}
-                            value={helper.draft.action}
-                            options={LEAVE_ACTIONS}
-                            onChange={(value) => setWorkerDraft(helper.workerId, { action: value })}
-                          />
-                        </div>
-                      ) : (
-                        <span className="font-semibold text-[var(--text-primary)]">
-                          {LEAVE_ACTIONS.find((option) => option.value === helper.roles[0].role.excess_leave_action)?.label}
-                        </span>
-                      )}
-                    </div>
-                    {helper.excess ? (
-                      <span className="text-[11px] text-[var(--text-secondary)]">
-                        {dayCount(helper.excess)} beyond the allowance{helper.draft.action === 'waive' ? ', waived' : ''}
-                      </span>
-                    ) : null}
-                  </div>
-                </th>
-                <td colSpan={2} className="py-2.5 px-4 text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    <span className="uppercase text-xs text-[var(--text-tertiary)] font-semibold">Total Payout:</span>
-                    <span className="tabular font-bold text-sm text-[var(--text-primary)]">
-                      {helper.net != null ? <Rupees paise={helper.net} /> : DASH}
-                    </span>
-                  </div>
-                </td>
+      <section className="space-y-2" aria-labelledby="househelp-attendance">
+        <h3 id="househelp-attendance" className="m-0 text-sm font-bold text-[var(--text-primary)]">
+          Helper Attendance
+        </h3>
+        <div className="overflow-x-auto min-w-0">
+          <table className="w-full table-fixed text-left text-xs min-w-[600px] border-collapse" aria-busy={save.pending}>
+            <caption className="sr-only">Helper attendance for {formatMonth(month)}</caption>
+            <thead>
+              <tr className={TABLE_HEAD}>
+                <th scope="col" className="w-[32%] pb-3 pr-3 font-bold text-left">Helper</th>
+                <th scope="col" className="w-[16%] pb-3 pr-3 font-bold text-center">Days Absent</th>
+                <th scope="col" className="w-[26%] pb-3 pr-3 font-bold text-center">Beyond Allowance</th>
+                <th scope="col" className="w-[26%] pb-3 font-bold text-left">Status / Impact</th>
               </tr>
-              {helper.roles.map(({ role, bonus, base, worked }) => (
-                <tr key={role.role_id} className="align-middle border-t border-[var(--border-subtle)]">
-                  <th scope="row" className="py-3 pl-6 pr-3 text-left font-normal">
-                    <span className="block font-semibold text-[var(--text-primary)] truncate">{role.role_name}</span>
-                    {added.includes(role.role_id) && (
-                      <span className="block text-[11px] text-[var(--text-tertiary)]">new this month</span>
+            </thead>
+            <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+              {figures.map((helper) => (
+                <tr key={helper.workerId} className="align-middle">
+                  <th scope="row" className="py-3 pr-3 text-left font-normal">
+                    <span className="block font-semibold text-[var(--text-primary)] truncate">{helper.name}</span>
+                    <span className="mt-1 inline-flex">
+                      <Pill>{allowance(helper.allowed)}</Pill>
+                    </span>
+                  </th>
+                  <td className="py-3 pr-3 text-center">
+                    {editable ? (
+                      <div className="mx-auto max-w-[5rem]">
+                        <TextField
+                          label={<span className="sr-only">{helper.name} days absent</span>}
+                          type="number"
+                          min={0}
+                          step={1}
+                          inputMode="numeric"
+                          value={helper.draft.days}
+                          onChange={(value) => setWorkerDraft(helper.workerId, { days: value })}
+                          error={helper.days == null ? `0 to ${data.days_in_month}` : null}
+                        />
+                      </div>
+                    ) : (
+                      <span className="tabular">{helper.roles[0].role.days_absent}</span>
                     )}
+                  </td>
+                  <td className="py-3 pr-3 text-center">
+                    {editable ? (
+                      <div className="mx-auto min-w-[160px] max-w-[12rem]">
+                        <SelectField
+                          label={<span className="sr-only">{helper.name} leave beyond the allowance</span>}
+                          value={helper.draft.action}
+                          options={LEAVE_ACTIONS}
+                          onChange={(value) => setWorkerDraft(helper.workerId, { action: value })}
+                        />
+                      </div>
+                    ) : (
+                      LEAVE_ACTIONS.find((option) => option.value === helper.roles[0].role.excess_leave_action)?.label
+                    )}
+                  </td>
+                  <td className="py-3 text-left text-xs text-[var(--text-secondary)]">
+                    {helper.excess == null
+                      ? DASH
+                      : helper.excess === 0
+                        ? 'Within allowance'
+                        : `${dayCount(helper.excess)} beyond allowance${helper.draft.action === 'waive' ? ', waived' : ''}`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="space-y-2" aria-labelledby="househelp-salaries">
+        <h3 id="househelp-salaries" className="m-0 text-sm font-bold text-[var(--text-primary)]">
+          Monthly Salaries & Bonuses
+        </h3>
+        <div className="overflow-x-auto min-w-0">
+          <table className="w-full table-fixed text-left text-xs min-w-[640px] border-collapse" aria-busy={save.pending}>
+            <caption className="sr-only">Role salaries for {formatMonth(month)}</caption>
+            <thead>
+              <tr className={TABLE_HEAD}>
+                <th scope="col" className="w-[32%] pb-3 pr-3 font-bold text-left">Role & Helper</th>
+                <th scope="col" className="w-[17%] pb-3 pr-3 font-bold text-right">Base Salary</th>
+                <th scope="col" className="w-[17%] pb-3 pr-3 font-bold text-right">Deduction</th>
+                <th scope="col" className="w-[17%] pb-3 pr-3 font-bold text-right">Bonus / Extra</th>
+                <th scope="col" className="w-[17%] pb-3 font-bold text-right">Net Salary</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+              {roleFigures.map(({ role, bonus, base, worked }) => (
+                <tr key={role.role_id} className="align-middle">
+                  <th scope="row" className="py-3 pr-3 text-left font-normal">
+                    <span className="block font-semibold text-[var(--text-primary)] truncate">{role.role_name}</span>
+                    <span className="block text-[11px] text-[var(--text-tertiary)] truncate">
+                      {role.worker_name}
+                      {added.includes(role.role_id) && ' · new this month'}
+                    </span>
                   </th>
                   <td className="py-3 pr-3 text-right tabular">
                     <Rupees paise={base} />
@@ -1063,7 +1070,7 @@ function AttendancePanel({
                   </td>
                   <td className="py-3 pr-3 text-right">
                     {editable ? (
-                      <div className="ml-auto max-w-[7rem]">
+                      <div className="ml-auto max-w-[7.5rem]">
                         <MoneyInput
                           label={
                             <span className="sr-only">
@@ -1085,29 +1092,32 @@ function AttendancePanel({
                       <Rupees paise={role.bonus_or_extra_paise} />
                     )}
                   </td>
-                  <td className="py-3 pr-4 text-right tabular font-medium text-[var(--text-primary)]">
+                  <td className="py-3 text-right tabular font-bold text-[var(--text-primary)]">
                     {worked ? <Rupees paise={worked.net} /> : DASH}
                   </td>
                 </tr>
               ))}
             </tbody>
-          ))}
-          {figures.length > 0 && (
-            <tfoot>
-              <tr className="border-t border-[var(--border-subtle)] font-bold text-[var(--text-primary)]">
-                <th scope="row" className="pt-3 pl-4 pr-3 text-left">Total</th>
-                <td className="pt-3 pr-3 text-right tabular">
-                  <Rupees paise={roleFigures.reduce((sum, row) => sum + row.base, 0)} />
-                </td>
-                <td colSpan={2} />
-                <td className="pt-3 pr-4 text-right tabular">
-                  <Rupees paise={total} />
-                </td>
-              </tr>
-            </tfoot>
-          )}
-        </table>
-      </div>
+            {roleFigures.length > 0 && (
+              <tfoot>
+                <tr className="border-t border-[var(--border-subtle)] font-bold text-[var(--text-primary)]">
+                  <th scope="row" className="pt-3 pr-3 text-left">Total</th>
+                  <td className="pt-3 pr-3 text-right tabular">
+                    <Rupees paise={roleFigures.reduce((sum, row) => sum + row.base, 0)} />
+                  </td>
+                  <td className="pt-3 pr-3 text-right tabular">
+                    {deducted > 0 ? `−${formatInr(deducted)}` : DASH}
+                  </td>
+                  <td className="pt-3 pr-3 text-right tabular">{bonuses > 0 ? <Rupees paise={bonuses} /> : DASH}</td>
+                  <td className="pt-3 text-right tabular">
+                    <Rupees paise={total} />
+                  </td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </section>
 
       {editable && data.roles_not_on_month.some((role) => !added.includes(role.role_id)) && (
         <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
