@@ -101,8 +101,8 @@ def _paid_by(uow: UnitOfWork, scope: Scope, tranche: Mapping[str, Any]) -> str |
 def _payout_group(uow: UnitOfWork, scope: Scope,
                   tranche: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The tranches recorded with this one: a resident's payout is its advance and
-    the kitty's payout of their own share, written together; a payout from the
-    kitty is itself alone."""
+    the kitty's payout of their own share, written together -- to the same house
+    help worker, if it names one; a payout from the kitty is itself alone."""
     payer = _paid_by(uow, scope, tranche)
     if payer is None:
         return [dict(tranche)]
@@ -110,6 +110,7 @@ def _payout_group(uow: UnitOfWork, scope: Scope,
             if row["created_at"] == tranche["created_at"]
             and row["disbursed_at"] == tranche["disbursed_at"]
             and row["disbursement_reference"] == tranche["disbursement_reference"]
+            and row.get("worker_id") == tranche.get("worker_id")
             and _paid_by(uow, scope, row) == payer]
 
 

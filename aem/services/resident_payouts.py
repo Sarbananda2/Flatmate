@@ -43,9 +43,10 @@ def group_payouts(scope: Scope, tranches: Iterable[Mapping[str, Any]],
     payouts the kitty made itself.
 
     Tranches written together -- for the same bill, recorded at the same moment,
-    paid the same day under the same reference, by the same resident -- are one
-    payout. Each comes back with the resident, the whole amount, the date and
-    reference, its tranches, and the payment that stands for it:
+    paid the same day under the same reference, by the same resident, to the
+    same house help worker if they name one -- are one payout. Each comes back
+    with the resident, the whole amount, the date and reference, its tranches,
+    and the payment that stands for it:
     ``advance_payment_id`` when they paid beyond their share, otherwise
     ``share_payment_id``.
     """
@@ -64,7 +65,7 @@ def group_payouts(scope: Scope, tranches: Iterable[Mapping[str, Any]],
             continue
         bill = tranche["cycle_id"] if scope == "rent" else tranche["expense_id"]
         key = (bill, tranche["created_at"], tranche["disbursed_at"],
-               tranche["disbursement_reference"], resident_id)
+               tranche["disbursement_reference"], resident_id, tranche.get("worker_id"))
         group = groups.setdefault(key, {
             "scope": scope, "resident_id": resident_id, "resident_name": None,
             "settlement_month": tranche["settlement_month"],

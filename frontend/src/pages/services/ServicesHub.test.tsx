@@ -63,6 +63,16 @@ const noFurniture = {
 }
 
 const noWater = { service: null, config: null, month: null, next_billing_date: null }
+const noHouseHelp = {
+  service: null,
+  active_worker_count: 0,
+  saved: false,
+  total_paise: 0,
+  expense: null,
+  shares: [],
+  collected_count: 0,
+  disbursed_paise: 0,
+}
 
 function renderHub(
   overview: { rent: unknown; electricity: unknown },
@@ -72,6 +82,7 @@ function renderHub(
   documents: Record<string, unknown> = noDocuments,
   furniture: Record<string, unknown> = noFurniture,
   water: Record<string, unknown> = noWater,
+  househelp: Record<string, unknown> = noHouseHelp,
 ) {
   stub = installFetchStub({
     routes: {
@@ -82,6 +93,7 @@ function renderHub(
       '/api/property/documents': documents,
       '/api/services/furniture': furniture,
       '/api/services/water': water,
+      [`/api/services/househelp/month/${MONTH}`]: househelp,
     },
   })
   render(
@@ -185,11 +197,14 @@ describe('ServicesHub', () => {
       electricity: { bill: null, bills_for_month: 0, latest_bill: null },
     })
 
-    for (const name of ['Cooking Gas (LPG)', 'Broadband & WiFi', 'House Help & Cook']) {
+    for (const name of ['Cooking Gas (LPG)', 'Broadband & WiFi']) {
       const card = screen.getByRole('region', { name })
       expect(within(card).getByText('Planned')).toBeInTheDocument()
       expect(within(card).queryByRole('link')).toBeNull()
     }
+    // House help is live.
+    const househelp = screen.getByRole('region', { name: 'House Help & Cook' })
+    expect(within(househelp).queryByText('Planned')).toBeNull()
     const rent = screen.getByRole('region', { name: 'Rent' })
     expect(await within(rent).findByText('No lease')).toBeInTheDocument()
     expect(within(rent).getAllByText('Not configured')).toHaveLength(4)
@@ -316,6 +331,71 @@ describe('ServicesHub', () => {
     const card = screen.getByRole('region', { name: 'Water Supply' })
     expect(await within(card).findByText('Not set up')).toBeInTheDocument()
     expect(within(card).getByRole('link', { name: 'Set up water supply' })).toHaveAttribute('href', '/services/water')
+  })
+
+  it("summarises house help: the staff, the month's salaries and paying them", async () => {
+    const share = (id: string, total: number) => ({ resident_id: id, display_name: id, total_paise: total })
+    renderHub(
+      { rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
+      noDeposits,
+      noRooms,
+      noContacts,
+      noDocuments,
+      noFurniture,
+      noWater,
+      {
+        service: { service_id: 'svc-h', service_type: 'domestic_help', display_name: 'House Help' },
+        active_worker_count: 2,
+        saved: true,
+        total_paise: 750000,
+        expense: { expense_id: 'househelp-1', amount_paise: 750000 },
+        shares: [share('alice', 325000), share('bob', 325000), share('chris', 100000)],
+        collected_count: 1,
+        disbursed_paise: 300000,
+      },
+    )
+    const card = screen.getByRole('region', { name: 'House Help & Cook' })
+    expect(await within(card).findByText('Active')).toBeInTheDocument()
+    expect(fact(card, 'Staff')).toHaveTextContent('2 active helpers')
+    expect(fact(card, 'Oct 2026 salaries')).toHaveTextContent('₹7,500.00')
+    expect(fact(card, 'Kitty collection')).toHaveTextContent('1 of 3 covered')
+    expect(fact(card, 'Workers paid')).toHaveTextContent('₹3,000.00 of ₹7,500.00')
+    expect(within(card).getByRole('link', { name: 'Open House Help Hub' })).toHaveAttribute(
+      'href',
+      '/services/househelp',
+    )
+  })
+
+  it('says when a month of house help is not saved yet', async () => {
+    renderHub(
+      { rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
+      noDeposits,
+      noRooms,
+      noContacts,
+      noDocuments,
+      noFurniture,
+      noWater,
+      {
+        ...noHouseHelp,
+        service: { service_id: 'svc-h', service_type: 'domestic_help', display_name: 'House Help' },
+        active_worker_count: 1,
+        total_paise: 300000,
+      },
+    )
+    const card = screen.getByRole('region', { name: 'House Help & Cook' })
+    expect(await within(card).findByText('1 active helper')).toBeInTheDocument()
+    expect(fact(card, 'Oct 2026 salaries')).toHaveTextContent('Attendance not saved')
+    expect(fact(card, 'Kitty collection')).toHaveTextContent('Not billed')
+  })
+
+  it('offers to set up house help when there is none', async () => {
+    renderHub({ rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
+    const none = screen.getByRole('region', { name: 'House Help & Cook' })
+    expect(await within(none).findByText('Not set up')).toBeInTheDocument()
+    expect(within(none).getByRole('link', { name: 'Set up house help' })).toHaveAttribute(
+      'href',
+      '/services/househelp?tab=staff',
+    )
   })
 
   it('keeps a card that fails to itself', () => {

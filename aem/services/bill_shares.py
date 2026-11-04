@@ -51,8 +51,10 @@ _TRANCHE_ENTITY = {"rent": "rent_disbursement", "service": "service_disbursement
 
 def _paid_to(scope: Scope, tranche: Mapping[str, Any]) -> str:
     """Whom a payout went to: the month's rent cycle -- the landlord -- or the
-    provider's service."""
-    return tranche["cycle_id"] if scope == "rent" else tranche["service_id"]
+    provider's service, or the worker a house help payout names."""
+    if scope == "rent":
+        return tranche["cycle_id"]
+    return tranche.get("worker_id") or tranche["service_id"]
 
 
 def _refunds(uow: UnitOfWork, expense_id: str) -> list[dict[str, Any]]:
@@ -378,7 +380,8 @@ def _drop_tranche(uow: UnitOfWork, scope: Scope, disbursement_id: str) -> None:
 
 
 def _add_tranche(uow: UnitOfWork, scope: Scope, like: Mapping[str, Any], **fields: Any) -> None:
-    """A tranche of the same payout as ``like``: the same bill, day, reference and moment."""
+    """A tranche of the same payout as ``like``: the same bill, day, reference and
+    moment, to the same payee."""
     common = dict(apartment_id=like["apartment_id"], settlement_month=like["settlement_month"],
                   disbursed_at=like["disbursed_at"],
                   disbursement_reference=like["disbursement_reference"],
@@ -387,7 +390,8 @@ def _add_tranche(uow: UnitOfWork, scope: Scope, like: Mapping[str, Any], **field
         uow.rent.insert_disbursement(cycle_id=like["cycle_id"], **common)
     else:
         uow.furniture.insert_service_disbursement(service_id=like["service_id"],
-                                                  expense_id=like["expense_id"], **common)
+                                                  expense_id=like["expense_id"],
+                                                  worker_id=like.get("worker_id"), **common)
 
 
 def _trim_kitty_payout(uow: UnitOfWork, rebalance: Rebalance, tranche: Mapping[str, Any],

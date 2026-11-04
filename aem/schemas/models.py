@@ -1361,6 +1361,121 @@ class WaterReimburseRequest(ApiModel):
     notes: str | None = Field(None, max_length=500)
 
 
+class HouseHelpWorkerCreate(ApiModel):
+    """A maid, cook or cleaner the household employs."""
+    name: str = Field(min_length=1, max_length=100)
+    phone: str | None = Field(None, max_length=50)
+    upi_id: str | None = Field(None, max_length=320, description="name@bank, to pay them by UPI.")
+    notes: str | None = Field(None, max_length=2000)
+    allowed_leaves_per_month: int = Field(
+        2, ge=0, le=31,
+        description="Days off a month, across every role they do, before pay is deducted.")
+
+
+class HouseHelpWorkerUpdate(ApiModel):
+    """Only the fields sent change; a null clears an optional one. A worker who has
+    left is made inactive."""
+    name: str | None = Field(None, min_length=1, max_length=100)
+    phone: str | None = Field(None, max_length=50)
+    upi_id: str | None = Field(None, max_length=320)
+    notes: str | None = Field(None, max_length=2000)
+    is_active: bool | None = None
+    allowed_leaves_per_month: int | None = Field(None, ge=0, le=31)
+
+
+class HouseHelpRoleCreate(ApiModel):
+    """A role -- cleaning, cooking -- on its own salary and split, and the worker
+    who does it, or nobody yet: a role with no worker joins no month."""
+    worker_id: str | None = Field(None, min_length=1, max_length=64)
+    role_name: str = Field(min_length=1, max_length=100)
+    monthly_salary_paise: int = _money_field("The role's salary for a full month.", ge=1)
+    split_method: Literal["equal", "opt_in"] = Field(
+        "equal", description="equal: every flatmate shares it; opt_in: only `participants`.")
+    participants: list[str] | None = Field(
+        None, description="Resident IDs sharing an opt-in role.")
+
+
+class HouseHelpRoleUpdate(ApiModel):
+    """Only the fields sent change. A month already saved keeps the role as it was
+    saved until it is saved again."""
+    role_name: str | None = Field(None, min_length=1, max_length=100)
+    monthly_salary_paise: int | None = _money_field(
+        "The role's salary for a full month.", ge=1, default=None)
+    split_method: Literal["equal", "opt_in"] | None = None
+    worker_id: str | None = Field(
+        None, min_length=1, max_length=64,
+        description="Another worker, or null for nobody yet, while no month has been "
+                    "saved with the role.")
+
+
+class HouseHelpRoleParticipantsSet(ApiModel):
+    """Who shares an opt-in role, replacing whoever did."""
+    participants: list[str]
+
+
+class HouseHelpMonthlyRecordInput(ApiModel):
+    """A role's month. Its days absent and what is done about leave beyond the
+    allowance are its worker's: the same on each of their roles."""
+    role_id: str = Field(min_length=1, max_length=64)
+    days_absent: int = Field(0, ge=0, le=31, description="The worker's days absent.")
+    excess_leave_action: Literal["deduct", "waive"] = Field(
+        "deduct", description="The worker's leave beyond their allowance: deduct each role's "
+                              "pro-rata pay for it, or waive it.")
+    deduction_paise: int | None = _money_field(
+        "An agreed deduction for the excess leave, in place of its pro-rata pay.", default=None)
+    bonus_or_extra_paise: int = _money_field("A bonus or extra for the month.", default=0)
+    extra_notes: str | None = Field(None, max_length=500)
+
+
+class HouseHelpAttendanceSaveRequest(ApiModel):
+    """The month's roles, a record each. A role left out is taken off the month."""
+    records: list[HouseHelpMonthlyRecordInput]
+
+
+class HouseHelpPaymentCreate(ApiModel):
+    """A flatmate paying their share of a month's house help into the kitty."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "What the flatmate paid. Settles their share of the month first; any excess goes to "
+        "their other charges, oldest first.", ge=1)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    payment_mode: Literal["upi", "bank_transfer", "cash", "other"] | None = None
+    reference: str | None = Field(None, max_length=200)
+    note: str | None = Field(None, max_length=2000)
+
+
+class HouseHelpPayoutRequest(ApiModel):
+    """Paying a worker their salary for a month: from the kitty, or by a flatmate."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    worker_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "This payment: no more than the worker is still owed for the month.", ge=1)
+    disbursement_mode: Literal["pool", "resident_advance"] = Field(
+        description="pool: paid from the House Kitty; resident_advance: a flatmate paid the "
+                    "worker from their own account.")
+    disbursed_date: str = Field(pattern=DATE_PATTERN)
+    reference: str = Field(min_length=1, max_length=200,
+                           description="Bank UTR or UPI transaction ID.")
+    funding_resident_id: str | None = Field(
+        None, max_length=64, description="For a resident advance: who paid the worker.")
+    notes: str | None = Field(None, max_length=500)
+
+
+class HouseHelpReimburseRequest(ApiModel):
+    """The kitty paying back a flatmate who paid a worker beyond their share."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    recipient_resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "No more than the kitty holds for the month, nor more than the flatmate is still "
+        "owed.", ge=1)
+    disbursed_date: str = Field(pattern=DATE_PATTERN, description="The day it was paid back.")
+    reference: str | None = Field(None, max_length=200,
+                                  description="Bank UTR or UPI transaction ID.")
+    payment_mode: Literal["upi", "bank_transfer", "cash", "other"] | None = None
+    notes: str | None = Field(None, max_length=500)
+
+
 __all__ = [
     "AdjustmentCreate", "AdjustmentReverse", "RentReimburseRequest", "AuthStatusResponse", "AuthUser",
     "AuthUserResponse", "LoginRequest", "SignupRequest", "AllocationMethod", "OpeningBalanceCreate", "OpeningBalanceItem",
@@ -1388,6 +1503,10 @@ __all__ = [
     "FurnitureReimburseRequest",
     "FurnitureSetupRequest",
     "WaterPaymentCreate", "WaterPayoutRequest", "WaterReimburseRequest", "WaterSetupRequest",
+    "HouseHelpAttendanceSaveRequest", "HouseHelpMonthlyRecordInput", "HouseHelpPaymentCreate",
+    "HouseHelpPayoutRequest", "HouseHelpReimburseRequest", "HouseHelpRoleCreate",
+    "HouseHelpRoleParticipantsSet", "HouseHelpRoleUpdate", "HouseHelpWorkerCreate",
+    "HouseHelpWorkerUpdate",
     "ElectricityMonthBill", "ElectricityMonthInput",
     "ElectricityPaymentCreate", "ElectricityPayoutRequest", "ElectricityReimburseRequest",
     "RentLeaseConfigSave", "RentLeaseRenewRequest", "RentLeaseVacateRequest",

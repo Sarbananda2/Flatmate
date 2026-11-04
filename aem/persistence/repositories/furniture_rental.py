@@ -285,14 +285,16 @@ class FurnitureRentalRepository(Repository):
 
     def service_disbursements(self, expense_id: str) -> list[dict[str, Any]]:
         """The payouts to the provider towards a bill, oldest first, with who
-        funded each one that a resident paid."""
+        funded each one that a resident paid. A house help payout is to its
+        worker, whom it names as its provider."""
         return self._s.fetch_all(
             """SELECT d.*, d.row_seq AS seq, r.display_name AS funding_resident_name,
-                      COALESCE(c.provider_name, s.provider_name, s.display_name)
+                      COALESCE(w.name, c.provider_name, s.provider_name, s.display_name)
                           AS provider_name
                  FROM service_disbursement d
                  JOIN household_service s ON s.service_id = d.service_id
                  LEFT JOIN furniture_rental_config c ON c.service_id = d.service_id
+                 LEFT JOIN househelp_worker w ON w.worker_id = d.worker_id
                  LEFT JOIN resident r ON r.resident_id = d.funding_resident_id
                 WHERE d.expense_id = %s
                 ORDER BY d.disbursed_at, d.row_seq""", (expense_id,))
@@ -320,12 +322,13 @@ class FurnitureRentalRepository(Repository):
         and the order recorded."""
         return self._s.fetch_all(
             """SELECT d.*, d.row_seq AS seq, s.display_name,
-                      COALESCE(c.provider_name, s.provider_name, s.display_name)
+                      COALESCE(w.name, c.provider_name, s.provider_name, s.display_name)
                           AS provider_name,
                       r.display_name AS funding_resident_name
                  FROM service_disbursement d
                  JOIN household_service s ON s.service_id = d.service_id
                  LEFT JOIN furniture_rental_config c ON c.service_id = d.service_id
+                 LEFT JOIN househelp_worker w ON w.worker_id = d.worker_id
                  LEFT JOIN resident r ON r.resident_id = d.funding_resident_id
                 WHERE d.apartment_id = %s
                 ORDER BY d.disbursed_at, d.row_seq""", (apartment_id,))
@@ -336,16 +339,17 @@ class FurnitureRentalRepository(Repository):
                                     disbursement_reference: str, disbursed_by: str,
                                     funding_resident_id: str | None,
                                     funding_payment_id: str | None, note: str | None,
-                                    created_at: str) -> None:
+                                    created_at: str, worker_id: str | None = None) -> None:
+        """``worker_id``: the house help worker paid, for a house help payout."""
         self._s.execute(
             """INSERT INTO service_disbursement (disbursement_id, service_id, expense_id,
                    apartment_id, settlement_month, amount_paise, disbursed_at,
                    disbursement_reference, disbursed_by, funding_resident_id,
-                   funding_payment_id, note, created_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                   funding_payment_id, note, created_at, worker_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (disbursement_id, service_id, expense_id, apartment_id, settlement_month,
              amount_paise, disbursed_at, disbursement_reference, disbursed_by,
-             funding_resident_id, funding_payment_id, note, created_at))
+             funding_resident_id, funding_payment_id, note, created_at, worker_id))
 
     def reimbursements(self, payment_id_prefix: str) -> list[dict[str, Any]]:
         """Active refunds from the pool whose payment ID starts with the prefix,

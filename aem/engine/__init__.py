@@ -13,6 +13,13 @@ from .electricity import (
     calculate_consolidated_electricity,
     calculate_electricity,
 )
+from .househelp import (
+    HouseHelpCalculationError,
+    allocate_role_cost,
+    calculate_excess_leaves,
+    calculate_role_salary,
+    consolidate_resident_shares,
+)
 from .ledger import (
     Charge,
     PaymentAllocationResult,
@@ -41,4 +48,6 @@ __all__ = [
     "ComponentResult", "ElectricityCalculationError",
     "ElectricityCalculationResult", "ResidentAllocation", "calculate_electricity",
     "calculate_consolidated_electricity",
+    "HouseHelpCalculationError", "allocate_role_cost", "calculate_excess_leaves",
+    "calculate_role_salary", "consolidate_resident_shares",
 ]

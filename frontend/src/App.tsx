@@ -11,6 +11,7 @@ import DashboardPage from './pages/Dashboard'
 import DefinitionsPage from './pages/Definitions'
 import ElectricityPage from './pages/services/Electricity'
 import FurnitureRentalPage from './pages/services/FurnitureRental'
+import HouseHelpPage from './pages/services/HouseHelp'
 import HousingHubPage from './pages/housing/HousingHub'
 import LandingPage from './pages/LandingPage'
 import ExpensesPage from './pages/Expenses'
@@ -112,6 +113,7 @@ function SignedInApp() {
         <Route path="/services/electricity" element={<ElectricityPage />} />
         <Route path="/services/furniture" element={<FurnitureRentalPage />} />
         <Route path="/services/water" element={<WaterPage />} />
+        <Route path="/services/househelp" element={<HouseHelpPage />} />
         {/* The addresses these pages had before they moved under /services. */}
         <Route path="/rent" element={<Navigate to="/services/rent" replace />} />
         {/* Housing pages that used to stand alone, kept for old links and bookmarks. */}

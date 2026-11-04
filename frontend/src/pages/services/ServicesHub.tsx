@@ -2,8 +2,8 @@
  * Services & Utilities.
  *
  * One card per recurring monthly bill, each a module of its own: rent,
- * electricity, furniture rental and the water supply are live and link to their
- * own screens; the rest are placeholders for services that are planned but not
+ * electricity, furniture rental, the water supply and house help are live and
+ * link to their own screens; the rest are placeholders for services that are planned but not
  * built. Each card loads and fails on its own, so one service that cannot be
  * shown never takes the others with it. The lease, deposit, rooms and documents are not here:
  * they are the home itself, under Housing.
@@ -30,7 +30,12 @@ import {
 } from '../../components/ui'
 import { type Resource, useResource } from '../../lib/useApi'
 import { formatDate, formatInr, formatMonth, formatMonthShort } from '../../lib/format'
-import type { FurnitureRentalOverview, ServicesOverview, WaterOverview } from '../../api/types'
+import type {
+  FurnitureRentalOverview,
+  HouseHelpMonthOverview,
+  ServicesOverview,
+  WaterOverview,
+} from '../../api/types'
 
 const PLANNED_SERVICES: Array<{ title: string; icon: LucideIcon; body: string }> = [
   {
@@ -42,11 +47,6 @@ const PLANNED_SERVICES: Array<{ title: string; icon: LucideIcon; body: string }>
     title: 'Broadband & WiFi',
     icon: Wifi,
     body: 'Monthly ISP fiber plans and due date tracking.',
-  },
-  {
-    title: 'House Help & Cook',
-    icon: HandPlatter,
-    body: 'Maid and cook fixed monthly salaries and leave tracking.',
   },
 ]
 
@@ -65,6 +65,7 @@ const SERVICE_MODULES: Array<{
   { key: 'electricity', title: 'Electricity', Card: ElectricityCard },
   { key: 'furniture', title: 'Furniture Rental', Card: FurnitureRentalCard },
   { key: 'water', title: 'Water Supply', Card: WaterCard },
+  { key: 'househelp', title: 'House Help & Cook', Card: HouseHelpCard },
 ]
 
 export function ServicesHub({ month }: { month: string }) {
@@ -426,6 +427,67 @@ function WaterCard({ month }: CardProps) {
             <p className="m-0 text-xs text-[var(--text-secondary)]">
               Track a fixed monthly water contract, such as the society&apos;s pipeline: each
               month&apos;s rate split equally and paid through the House Kitty.
+            </p>
+          )
+        }
+      </AsyncSection>
+    </ServiceCard>
+  )
+}
+
+/* ------------------------------------------------------------- house help -- */
+
+function HouseHelpCard({ month }: CardProps) {
+  const househelp = useResource<HouseHelpMonthOverview>(`/api/services/househelp/month/${month}`)
+  const data = househelp.data
+  const live = Boolean(data?.service)
+
+  return (
+    <ServiceCard
+      title="House Help & Cook"
+      icon={HandPlatter}
+      badge={data ? live ? <Pill tone="success">Active</Pill> : <Pill>Not set up</Pill> : undefined}
+      actions={
+        <Link to={live || !data ? '/services/househelp' : '/services/househelp?tab=staff'} className={BUTTON_PRIMARY}>
+          {live || !data ? 'Open House Help Hub' : 'Set up house help'}
+        </Link>
+      }
+    >
+      <AsyncSection resource={househelp} loadingLabel="Loading house help…">
+        {(overview) =>
+          overview.service ? (
+            <dl className="m-0 space-y-2">
+              <Fact label="Staff">
+                {overview.active_worker_count} active helper{overview.active_worker_count === 1 ? '' : 's'}
+              </Fact>
+              {/* The month's salaries: saved from its attendance, or not yet. */}
+              <Fact label={`${formatMonthShort(month)} salaries`}>
+                {overview.saved ? (
+                  <Rupees paise={overview.total_paise} />
+                ) : (
+                  <span className="font-normal text-[var(--warning)]">Attendance not saved</span>
+                )}
+              </Fact>
+              {/* What flatmates have paid into the house kitty towards the month's salaries. */}
+              <Fact label="Kitty collection">
+                {!overview.expense ? (
+                  <span className="font-normal text-[var(--text-tertiary)]">Not billed</span>
+                ) : (
+                  `${overview.collected_count} of ${overview.shares.filter((share) => share.total_paise > 0).length} covered`
+                )}
+              </Fact>
+              <Fact label="Workers paid">
+                {!overview.expense ? (
+                  <span className="font-normal text-[var(--text-tertiary)]">Not billed</span>
+                ) : (
+                  `${formatInr(overview.disbursed_paise)} of ${formatInr(overview.total_paise)}`
+                )}
+              </Fact>
+            </dl>
+          ) : (
+            <p className="m-0 text-xs text-[var(--text-secondary)]">
+              Track the maid&apos;s and cook&apos;s monthly salaries: leave beyond each role&apos;s
+              allowance deducted or waived, each role shared by everyone or only those who opted in.
             </p>
           )
         }

@@ -27,6 +27,7 @@ from .repositories.deposits import DepositsRepository
 from .repositories.electricity import ElectricityRepository
 from .repositories.expenses import ExpensesRepository
 from .repositories.furniture_rental import FurnitureRentalRepository
+from .repositories.househelp import HouseHelpRepository
 from .repositories.water import WaterRepository
 from .repositories.ledger_view import LedgerViewRepository
 from .repositories.opening_balances import OpeningBalancesRepository
@@ -167,6 +168,11 @@ class UnitOfWork:
     @cached_property
     def water(self) -> WaterRepository:
         return WaterRepository(self._session)
+
+
+    @cached_property
+    def househelp(self) -> HouseHelpRepository:
+        return HouseHelpRepository(self._session)
 
 
     @cached_property

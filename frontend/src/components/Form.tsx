@@ -75,6 +75,7 @@ export function TextField({
   autoComplete,
   inputMode,
   min,
+  max,
   step,
 }: {
   label: ReactNode
@@ -89,8 +90,9 @@ export function TextField({
   disabled?: boolean
   autoComplete?: string
   inputMode?: 'numeric' | 'decimal' | 'tel' | 'email'
-  /** For a number: the least it may be, and the step it moves by. */
+  /** For a number: the least and most it may be, and the step it moves by. */
   min?: number
+  max?: number
   step?: number
 }) {
   return (
@@ -106,6 +108,7 @@ export function TextField({
           autoComplete={autoComplete}
           inputMode={inputMode}
           min={min}
+          max={max}
           step={step}
           aria-describedby={describedBy}
           aria-invalid={invalid || undefined}
@@ -562,6 +565,85 @@ export function CheckboxField({
       </label>
       {hint && (
         <span className="field-hint" id={`${id}-hint`}>
+          {hint}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * An on/off setting as a switch, laid out like every other field: its label
+ * on top, then the switch with what it is set to beside it -- on a row the
+ * height of an input, so it lines up with one next to it -- then the hint.
+ *
+ * The switch is a button with `role="switch"` and `aria-checked`, named
+ * "label: state" (e.g. "Helper status: Active"). Clicking the label or the
+ * state beside it toggles it too.
+ */
+export function SwitchField({
+  label,
+  checked,
+  onChange,
+  hint,
+  disabled,
+  onLabel = 'On',
+  offLabel = 'Off',
+}: {
+  label: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+  hint?: ReactNode
+  disabled?: boolean
+  /** What it reads as when on, and when off. */
+  onLabel?: string
+  offLabel?: string
+}) {
+  const id = useId()
+  const hintId = `${id}-hint`
+  const state = checked ? onLabel : offLabel
+  return (
+    <div className="field">
+      <label className="field-label cursor-pointer" htmlFor={id}>
+        {label}
+      </label>
+      <div className="flex items-center gap-3 min-h-[38px]">
+        <button
+          id={id}
+          type="button"
+          role="switch"
+          aria-checked={checked}
+          aria-label={`${label}: ${state}`}
+          aria-describedby={hint ? hintId : undefined}
+          disabled={disabled}
+          onClick={() => onChange(!checked)}
+          className={clsx(
+            'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-[var(--accent)]',
+            checked ? 'bg-[var(--accent)]' : 'bg-[var(--border-medium)]',
+            disabled && 'opacity-50 cursor-not-allowed',
+          )}
+        >
+          <span
+            aria-hidden="true"
+            className={clsx(
+              'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out',
+              checked ? 'translate-x-5' : 'translate-x-0',
+            )}
+          />
+        </button>
+        <label
+          htmlFor={id}
+          className={clsx(
+            'text-sm font-semibold',
+            checked ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]',
+            disabled ? 'cursor-not-allowed' : 'cursor-pointer',
+          )}
+        >
+          {state}
+        </label>
+      </div>
+      {hint && (
+        <span className="field-hint" id={hintId}>
           {hint}
         </span>
       )}

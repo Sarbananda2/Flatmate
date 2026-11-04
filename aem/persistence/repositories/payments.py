@@ -340,6 +340,8 @@ class PaymentsRepository(Repository):
                             WHERE f.expense_definition_id = e.expense_definition_id)
                    OR EXISTS (SELECT 1 FROM water_service_config w
                                WHERE w.expense_definition_id = e.expense_definition_id)
+                   OR EXISTS (SELECT 1 FROM househelp_service_config h
+                               WHERE h.expense_definition_id = e.expense_definition_id)
                    -- a month's electricity, settled through the kitty (0033)
                    OR EXISTS (SELECT 1 FROM electricity_bill b
                                WHERE b.expense_id = e.expense_id

@@ -349,6 +349,9 @@ ALLOWED_DROPS = {
     "postgresql furniture_bill_level_gst": (
         "drop column base_rent_paise, drop column is_gst_exclusive, "
         "drop column gst_rate_percent",),
+    # 0036 makes leave the worker's: each worker takes the largest allowance
+    # their roles had, and the roles' own go.
+    "postgresql househelp_leave_per_worker": ("drop column allowed_leaves_per_month",),
 }
 
 

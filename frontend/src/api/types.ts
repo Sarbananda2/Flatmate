@@ -1956,6 +1956,176 @@ export interface WaterOverview {
   next_billing_date: string | null
 }
 
+/* ------------------------------------------------------------- house help -- */
+
+/** 'equal': every flatmate shares the role; 'opt_in': only those who opted in. */
+export type HouseHelpSplitMethod = 'equal' | 'opt_in'
+/** Leave beyond the allowance: its pro-rata pay deducted, or waived. */
+export type HouseHelpLeaveAction = 'deduct' | 'waive'
+
+/** A role a worker does -- cleaning, cooking -- on its own salary, leave allowance and split. */
+export interface HouseHelpRole {
+  role_id: string
+  /** Null until the role is given a helper: it joins no month until then. */
+  worker_id: string | null
+  worker_name: string | null
+  role_name: string
+  monthly_salary_paise: number
+  split_method: HouseHelpSplitMethod
+  /** Who shares an opt-in role; an equal one is shared by every flatmate. */
+  participant_ids: string[]
+  participants: Array<{ resident_id: string; display_name: string }>
+  created_at: string
+}
+
+/** A maid, cook or cleaner, with the roles they do. */
+export interface HouseHelpWorker {
+  worker_id: string
+  name: string
+  phone: string | null
+  upi_id: string | null
+  notes: string | null
+  /** An inactive worker has left: their roles join no month saved after. */
+  is_active: boolean
+  /** Days off a month, across every role they do, before pay is deducted. */
+  allowed_leaves_per_month: number
+  created_at: string
+  updated_at: string
+  roles: HouseHelpRole[]
+}
+
+/** The helpers with their roles, and the roles not yet given a helper. */
+export interface HouseHelpStaff {
+  items: HouseHelpWorker[]
+  unassigned_roles: HouseHelpRole[]
+}
+
+/** A role's month: its attendance and the salary it comes to. */
+export interface HouseHelpRoleMonth {
+  role_id: string
+  role_name: string
+  worker_id: string
+  worker_name: string
+  split_method: HouseHelpSplitMethod
+  /** As saved; before the month is saved, the role's salary now. */
+  base_salary_paise: number
+  /** The worker's, as it now stands. */
+  allowed_leaves_per_month: number
+  /** The worker's: the same on each of their roles on the month. */
+  days_absent: number
+  /** The worker's days absent beyond their allowance. */
+  excess_leaves: number
+  /** The worker's: the same on each of their roles on the month. */
+  excess_leave_action: HouseHelpLeaveAction
+  deduction_paise: number
+  bonus_or_extra_paise: number
+  extra_notes: string | null
+  final_salary_paise: number
+}
+
+/** A role on the month -- as saved, or a preview with nobody absent -- and who pays it. */
+export interface HouseHelpMonthlyRecord extends HouseHelpRoleMonth {
+  sharers: string[]
+  /** Each sharer's part of the role's salary. */
+  shares: Record<string, number>
+  saved: boolean
+}
+
+/** A flatmate's share of the month's house help, and what they have paid of it. */
+export interface HouseHelpShare {
+  resident_id: string
+  display_name: string
+  total_paise: number
+  /** Paid towards it, into the kitty or by paying a worker. */
+  paid_paise: number
+  /** Paid into the kitty against it. */
+  settled_paise: number
+  outstanding_paise: number
+  /** Null until the month is saved. */
+  status: FurnitureShareStatus | null
+  paid_date: string | null
+  /** Into the kitty; `payout_id` names the payout to a worker a share was paid with, which it goes with. */
+  payments: Array<FurnitureShare['payments'][number] & { payout_id: string | null }>
+  /** Their part of each role. */
+  breakdown: Array<{ role_id: string; role_name: string; worker_id: string; worker_name: string; share_paise: number }>
+  /** Above zero the kitty owes them; below, they owe the kitty. */
+  net_balance_paise: number
+}
+
+/** One payout to a worker as it was made: by the kitty, or by a flatmate from their own account. */
+export interface HouseHelpPayout {
+  payout_id: string
+  worker_id: string
+  amount_paise: number
+  paid_on: string
+  reference: string
+  paid_by: 'kitty' | 'resident'
+  resident_id: string | null
+  resident_name: string | null
+  note: string | null
+}
+
+/** A worker's pay for the month: their roles' salaries, and what has been paid to them. */
+export interface HouseHelpWorkerPayout {
+  worker_id: string
+  name: string
+  phone: string | null
+  upi_id: string | null
+  is_active: boolean
+  role_ids: string[]
+  total_due_paise: number
+  paid_to_worker_paise: number
+  still_owed_paise: number
+  /** Null until the month is saved. */
+  payout_status: FurniturePayoutStatus | null
+  payouts: HouseHelpPayout[]
+}
+
+/** `GET /api/services/househelp/month/{month}`: a preview until the month is saved. */
+export interface HouseHelpMonthOverview {
+  settlement_month: string
+  days_in_month: number
+  /** Null until the household's first worker is added. */
+  service: {
+    service_id: string
+    service_type: 'domestic_help'
+    display_name: string
+    status: string
+    expense_definition_id: string | null
+    created_at: string
+    updated_at: string
+  } | null
+  active_worker_count: number
+  /** Whether the month's attendance has been saved. */
+  saved: boolean
+  /** 'live': billed, and can be saved again; 'frozen': its statement is finalized; 'upcoming': not begun. */
+  bill_state: 'live' | 'frozen' | 'not_billed' | 'upcoming' | 'recorded_elsewhere'
+  can_save: boolean
+  statement_status: StatementStatus | null
+  /** Whether a payment or payout recorded by mistake can still be deleted. */
+  transactions_open: boolean
+  participants: Array<{ resident_id: string; display_name: string }>
+  roles: HouseHelpMonthlyRecord[]
+  /** Active workers' roles not on a month already saved: saving the month with them adds them. */
+  roles_not_on_month: HouseHelpRoleMonth[]
+  /** Roles not yet given a helper, which join no month until they are. */
+  unassigned_roles: Array<{ role_id: string; role_name: string; monthly_salary_paise: number }>
+  total_paise: number
+  /** Why the month cannot be billed as it stands, if it cannot. */
+  blocked_reason: string | null
+  workers: HouseHelpWorkerPayout[]
+  shares: HouseHelpShare[]
+  expense: { expense_id: string; description: string; amount_paise: number; statement_id: string | null } | null
+  foreign_expense: { expense_id: string; description: string; amount_paise: number } | null
+  collected_paise: number
+  collected_count: number
+  payout_status: FurniturePayoutStatus
+  disbursed_paise: number
+  remaining_disbursement_paise: number
+  reimbursement: KittyReimbursement | null
+  reimbursements: KittyReimbursement[]
+}
+
 /* ------------------------------------------------------------ electricity -- */
 
 /** The month's two bills: the grid's (UPPCL) and the diesel generator's (DG). */
