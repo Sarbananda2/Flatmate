@@ -727,11 +727,11 @@ describe('HouseHelp', () => {
   it('lists the helpers and their roles, and adds a helper', async () => {
     show(overview(), {}, '/?tab=staff')
     const helpers = await screen.findByRole('table', { name: "The household's helpers" })
-    expect(within(helpers).getByRole('row', { name: /Sunita/ })).toHaveTextContent('Sunita2 days allowedActive')
+    expect(within(helpers).getByRole('row', { name: /Sunita/ })).toHaveTextContent('Sunita1 Mar 20262 days allowedActive')
     const roles = screen.getByRole('table', { name: "The helpers' roles" })
-    // The role, who does it, and its salary: the split is in the role's dialog.
-    expect(within(roles).getByRole('row', { name: /Cooking/ })).toHaveTextContent(/^CookingSunita₹4,500\.00$/)
-    expect(within(roles).getByRole('row', { name: /Cleaning/ })).toHaveTextContent(/^CleaningSunita₹3,000\.00$/)
+    // The role, who does it, who shares it, and its salary.
+    expect(within(roles).getByRole('row', { name: /Cooking/ })).toHaveTextContent(/^CookingSunitaOpt-in \(2\)₹4,500\.00$/)
+    expect(within(roles).getByRole('row', { name: /Cleaning/ })).toHaveTextContent(/^CleaningSunitaAll flatmates₹3,000\.00$/)
 
     await userEvent.click(screen.getByRole('button', { name: 'Add Helper' }))
     const dialog = screen.getByRole('dialog', { name: 'Add Helper' })
@@ -867,7 +867,7 @@ describe('HouseHelp', () => {
     )
     const roles = await screen.findByRole('table', { name: "The helpers' roles" })
     const row = within(roles).getByRole('row', { name: /Utensils/ })
-    expect(row).toHaveTextContent('UtensilsNo helper yet₹1,500.00')
+    expect(row).toHaveTextContent('UtensilsNo helper yetAll flatmates₹1,500.00')
     await userEvent.click(row)
     const dialog = screen.getByRole('dialog', { name: 'Edit Role' })
     expect(within(dialog).getByText('Utensils · No helper yet')).toBeInTheDocument()

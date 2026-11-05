@@ -1361,9 +1361,10 @@ function WorkersPanel({
             <caption className="sr-only">The household's helpers</caption>
             <thead>
               <tr className={TABLE_HEAD}>
-                <th scope="col" className="w-[44%] pb-3 pr-3 font-bold text-left">Helper</th>
-                <th scope="col" className="w-[32%] pb-3 pr-3 font-bold text-center">Allowed Leaves</th>
-                <th scope="col" className="w-[24%] pb-3 pr-3 font-bold text-center">Status</th>
+                <th scope="col" className="w-[32%] pb-3 pr-3 font-bold text-left">Helper</th>
+                <th scope="col" className="w-[24%] pb-3 pr-3 font-bold text-center">Joined Date</th>
+                <th scope="col" className="w-[24%] pb-3 pr-3 font-bold text-center">Allowed Leaves</th>
+                <th scope="col" className="w-[20%] pb-3 pr-3 font-bold text-center">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -1388,11 +1389,14 @@ function WorkersPanel({
                       <span className="font-semibold text-[var(--text-primary)] truncate">{worker.name}</span>
                     </span>
                   </th>
+                  <td className="py-3 pr-3 text-center tabular text-xs text-[var(--text-secondary)] whitespace-nowrap">
+                    {formatDate(worker.joined_date)}
+                  </td>
                   <td className="py-3 pr-3 text-center whitespace-nowrap">
                     <Pill>{allowance(worker.allowed_leaves_per_month)}</Pill>
                   </td>
                   <td className="py-3 pr-3 text-center whitespace-nowrap">
-                    {worker.is_active ? <Pill tone="success">Active</Pill> : <Pill>Inactive</Pill>}
+                    <Pill tone={worker.is_active ? 'success' : undefined}>{worker.is_active ? 'Active' : 'Inactive'}</Pill>
                   </td>
                 </tr>
               ))}
@@ -1440,9 +1444,10 @@ function RolesPanel({
             <caption className="sr-only">The helpers' roles</caption>
             <thead>
               <tr className={TABLE_HEAD}>
-                <th scope="col" className="w-[44%] pb-3 pr-3 font-bold text-left">Role</th>
-                <th scope="col" className="w-[32%] pb-3 pr-3 font-bold text-center">Worker</th>
-                <th scope="col" className="w-[24%] pb-3 pr-3 font-bold text-center">Base Salary</th>
+                <th scope="col" className="w-[32%] pb-3 pr-3 font-bold text-left">Role</th>
+                <th scope="col" className="w-[24%] pb-3 pr-3 font-bold text-center">Worker</th>
+                <th scope="col" className="w-[24%] pb-3 pr-3 font-bold text-center">Split</th>
+                <th scope="col" className="w-[20%] pb-3 pr-3 font-bold text-center">Base Salary</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
@@ -1466,6 +1471,13 @@ function RolesPanel({
                   </th>
                   <td className="py-3 pr-3 text-center truncate">
                     {role.worker_name ?? <span className="text-[var(--warning)]">No helper yet</span>}
+                  </td>
+                  <td className="py-3 pr-3 text-center text-xs text-[var(--text-secondary)] truncate">
+                    {role.split_method === 'equal'
+                      ? 'All flatmates'
+                      : role.participants.length > 0
+                        ? `Opt-in (${role.participants.length})`
+                        : 'Opt-in (nobody)'}
                   </td>
                   <td className="py-3 pr-3 text-center tabular font-bold text-[var(--text-primary)]">
                     <Rupees paise={role.monthly_salary_paise} />
