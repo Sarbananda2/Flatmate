@@ -203,7 +203,7 @@ describe('ServicesHub', () => {
       expect(within(card).queryByRole('link')).toBeNull()
     }
     // House help is live.
-    const househelp = screen.getByRole('region', { name: 'House Help & Cook' })
+    const househelp = screen.getByRole('region', { name: 'Household Staff' })
     expect(within(househelp).queryByText('Planned')).toBeNull()
     const rent = screen.getByRole('region', { name: 'Rent' })
     expect(await within(rent).findByText('No lease')).toBeInTheDocument()
@@ -344,7 +344,7 @@ describe('ServicesHub', () => {
       noFurniture,
       noWater,
       {
-        service: { service_id: 'svc-h', service_type: 'domestic_help', display_name: 'House Help' },
+        service: { service_id: 'svc-h', service_type: 'domestic_help', display_name: 'Household Staff' },
         active_worker_count: 2,
         saved: true,
         total_paise: 750000,
@@ -354,13 +354,13 @@ describe('ServicesHub', () => {
         disbursed_paise: 300000,
       },
     )
-    const card = screen.getByRole('region', { name: 'House Help & Cook' })
+    const card = screen.getByRole('region', { name: 'Household Staff' })
     expect(await within(card).findByText('Active')).toBeInTheDocument()
     expect(fact(card, 'Staff')).toHaveTextContent('2 active helpers')
     expect(fact(card, 'Oct 2026 salaries')).toHaveTextContent('₹7,500.00')
     expect(fact(card, 'Kitty collection')).toHaveTextContent('1 of 3 covered')
     expect(fact(card, 'Workers paid')).toHaveTextContent('₹3,000.00 of ₹7,500.00')
-    expect(within(card).getByRole('link', { name: 'Open House Help Hub' })).toHaveAttribute(
+    expect(within(card).getByRole('link', { name: 'Open Household Staff' })).toHaveAttribute(
       'href',
       '/services/househelp',
     )
@@ -377,12 +377,12 @@ describe('ServicesHub', () => {
       noWater,
       {
         ...noHouseHelp,
-        service: { service_id: 'svc-h', service_type: 'domestic_help', display_name: 'House Help' },
+        service: { service_id: 'svc-h', service_type: 'domestic_help', display_name: 'Household Staff' },
         active_worker_count: 1,
         total_paise: 300000,
       },
     )
-    const card = screen.getByRole('region', { name: 'House Help & Cook' })
+    const card = screen.getByRole('region', { name: 'Household Staff' })
     expect(await within(card).findByText('1 active helper')).toBeInTheDocument()
     expect(fact(card, 'Oct 2026 salaries')).toHaveTextContent('Attendance not saved')
     expect(fact(card, 'Kitty collection')).toHaveTextContent('Not billed')
@@ -390,9 +390,9 @@ describe('ServicesHub', () => {
 
   it('offers to set up house help when there is none', async () => {
     renderHub({ rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
-    const none = screen.getByRole('region', { name: 'House Help & Cook' })
+    const none = screen.getByRole('region', { name: 'Household Staff' })
     expect(await within(none).findByText('Not set up')).toBeInTheDocument()
-    expect(within(none).getByRole('link', { name: 'Set up house help' })).toHaveAttribute(
+    expect(within(none).getByRole('link', { name: 'Set up household staff' })).toHaveAttribute(
       'href',
       '/services/househelp?tab=staff',
     )

@@ -126,14 +126,14 @@ export function HouseHelp({ month }: { month: string }) {
   }
 
   return (
-    <AsyncSection resource={overview} loadingLabel="Loading house help…">
+    <AsyncSection resource={overview} loadingLabel="Loading household staff…">
       {(data) => (
         <Page
-          title="House Help & Cook"
-          subtitle="The household's maids and cooks: each month's salaries from attendance, shared by role and paid through the House Kitty."
-          breadcrumbs={[{ label: 'Services & Utilities', to: '/services' }, { label: 'House Help & Cook' }]}
+          title="Household Staff"
+          subtitle="The apartment's domestic staff: monthly attendance, salaries, resident expense splits, and kitty payouts."
+          breadcrumbs={[{ label: 'Services & Utilities', to: '/services' }, { label: 'Household Staff' }]}
         >
-          <div className="tabs" role="tablist" aria-label="House Help & Cook">
+          <div className="tabs" role="tablist" aria-label="Household Staff">
             {HOUSEHELP_TABS.map(({ value, label, icon: Icon }) => (
               <button
                 key={value}
@@ -439,7 +439,7 @@ export function HouseHelp({ month }: { month: string }) {
 function NoStaffYet({ onOpenStaff }: { onOpenStaff: () => void }) {
   return (
     <Panel
-      title="Set up house help"
+      title="Set up household staff"
       icon={<HandPlatter className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
     >
       <EmptyBlock
@@ -645,7 +645,7 @@ function HouseHelpStatementModal({
   const extra = reimbursement?.net_reimbursement_owed_paise ?? 0
   const pending = reimbursement?.pending_reimbursement_paise ?? 0
   return (
-    <Modal title="House Help Statement" description={`${share.display_name} · ${formatMonth(month)}`} onClose={onClose}>
+    <Modal title="Household Staff Statement" description={`${share.display_name} · ${formatMonth(month)}`} onClose={onClose}>
       <div className="stack">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <MiniStat label="Share" value={<Rupees paise={share.total_paise} />} />

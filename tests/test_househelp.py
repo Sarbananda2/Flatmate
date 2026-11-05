@@ -177,7 +177,7 @@ def test_a_worker_and_their_roles_are_set_up(apartment, clock):
     # The household's house help is set up with its first worker.
     service = _rows(apartment, "SELECT * FROM household_service")
     assert [(row["service_type"], row["display_name"]) for row in service] == [
-        ("domestic_help", "House Help")]
+        ("domestic_help", "Household Staff")]
     definition = _rows(apartment, "SELECT d.* FROM expense_definition d JOIN "
                                   "househelp_service_config c USING (expense_definition_id)")[0]
     assert (definition["name"], definition["category"], definition["is_recurring"]) == (

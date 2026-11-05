@@ -71,7 +71,7 @@ from .common import (
 from .residents import _upi_id
 
 SERVICE_TYPE = "domestic_help"
-DEFAULT_NAME = "House Help"
+DEFAULT_NAME = "Household Staff"
 #: What each charge's allocation basis says the bill is.
 SOURCE = "househelp"
 SPLIT_METHODS = ("equal", "opt_in")

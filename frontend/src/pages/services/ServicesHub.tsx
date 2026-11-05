@@ -65,7 +65,7 @@ const SERVICE_MODULES: Array<{
   { key: 'electricity', title: 'Electricity', Card: ElectricityCard },
   { key: 'furniture', title: 'Furniture Rental', Card: FurnitureRentalCard },
   { key: 'water', title: 'Water Supply', Card: WaterCard },
-  { key: 'househelp', title: 'House Help & Cook', Card: HouseHelpCard },
+  { key: 'househelp', title: 'Household Staff', Card: HouseHelpCard },
 ]
 
 export function ServicesHub({ month }: { month: string }) {
@@ -444,16 +444,16 @@ function HouseHelpCard({ month }: CardProps) {
 
   return (
     <ServiceCard
-      title="House Help & Cook"
+      title="Household Staff"
       icon={HandPlatter}
       badge={data ? live ? <Pill tone="success">Active</Pill> : <Pill>Not set up</Pill> : undefined}
       actions={
         <Link to={live || !data ? '/services/househelp' : '/services/househelp?tab=staff'} className={BUTTON_PRIMARY}>
-          {live || !data ? 'Open House Help Hub' : 'Set up house help'}
+          {live || !data ? 'Open Household Staff' : 'Set up household staff'}
         </Link>
       }
     >
-      <AsyncSection resource={househelp} loadingLabel="Loading house help…">
+      <AsyncSection resource={househelp} loadingLabel="Loading household staff…">
         {(overview) =>
           overview.service ? (
             <dl className="m-0 space-y-2">

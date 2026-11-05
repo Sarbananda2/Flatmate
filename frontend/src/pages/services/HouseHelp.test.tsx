@@ -96,7 +96,7 @@ const overview = (overrides: Record<string, unknown> = {}) => ({
   service: {
     service_id: 'svc-h',
     service_type: 'domestic_help',
-    display_name: 'House Help',
+    display_name: 'Household Staff',
     status: 'active',
     expense_definition_id: 'house-help',
     created_at: '2026-11-01T10:00:00+05:30',
@@ -218,7 +218,7 @@ const sent = (method: string, path: string) => sentAll(method, path)[0]
 describe('HouseHelp', () => {
   it('opens on the monthly settlement and moves between tabs through the address', async () => {
     show(overview())
-    const tabs = await screen.findByRole('tablist', { name: 'House Help & Cook' })
+    const tabs = await screen.findByRole('tablist', { name: 'Household Staff' })
     expect(within(tabs).getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
       'Monthly Settlement',
       'Attendance & Salaries',
@@ -301,7 +301,7 @@ describe('HouseHelp', () => {
     )
     const shares = await screen.findByRole('table', { name: 'House help shares for November 2026' })
     await userEvent.click(within(shares).getByRole('row', { name: /Alice/ }))
-    const statement = screen.getByRole('dialog', { name: 'House Help Statement' })
+    const statement = screen.getByRole('dialog', { name: 'Household Staff Statement' })
     expect(statement).toHaveTextContent('Alice · November 2026')
     expect(within(statement).getByRole('table', { name: 'Role breakdown of house help share' })).toHaveTextContent(
       'CleaningSunita₹1,000.00CookingSunita₹2,250.00Total Share₹3,250.00',
