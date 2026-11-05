@@ -1566,7 +1566,15 @@ function WorkerDialog({
           />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-          <TextField label="Phone" type="tel" value={phone} onChange={setPhone} maxLength={50} placeholder="+91..." />
+          <TextField
+            label="Phone"
+            type="tel"
+            prefix="+91"
+            placeholder="98765 43210"
+            value={phone.replace(/^(\+91\s*|0)/, '')}
+            onChange={(val) => setPhone(val.replace(/^(\+91\s*|0)/, ''))}
+            maxLength={15}
+          />
           <TextField label="UPI ID" value={upi} onChange={setUpi} maxLength={320} placeholder="name@bank" />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">

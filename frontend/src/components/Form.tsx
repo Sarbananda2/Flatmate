@@ -77,6 +77,7 @@ export function TextField({
   min,
   max,
   step,
+  prefix,
 }: {
   label: ReactNode
   value: string
@@ -94,28 +95,42 @@ export function TextField({
   min?: number
   max?: number
   step?: number
+  /** A fixed adornment joined to the input's leading edge, such as +91. */
+  prefix?: ReactNode
 }) {
   return (
     <Field label={label} hint={hint} error={error} required={required}>
-      {({ id, describedBy, invalid }) => (
-        <input
-          id={id}
-          type={type}
-          value={value}
-          placeholder={placeholder}
-          maxLength={maxLength}
-          disabled={disabled}
-          autoComplete={autoComplete}
-          inputMode={inputMode}
-          min={min}
-          max={max}
-          step={step}
-          aria-describedby={describedBy}
-          aria-invalid={invalid || undefined}
-          required={required}
-          onChange={(event) => onChange(event.target.value)}
-        />
-      )}
+      {({ id, describedBy, invalid }) => {
+        const input = (
+          <input
+            id={id}
+            type={type}
+            value={value}
+            placeholder={placeholder}
+            maxLength={maxLength}
+            disabled={disabled}
+            autoComplete={autoComplete}
+            inputMode={inputMode}
+            min={min}
+            max={max}
+            step={step}
+            aria-describedby={describedBy}
+            aria-invalid={invalid || undefined}
+            required={required}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        )
+        return prefix ? (
+          <div className="input-addon">
+            <span className="input-addon-prefix" aria-hidden="true">
+              {prefix}
+            </span>
+            {input}
+          </div>
+        ) : (
+          input
+        )
+      }}
     </Field>
   )
 }
