@@ -9,10 +9,13 @@ is :mod:`aem.engine.househelp`'s.
 absent, whether leave beyond the allowance is deducted or waived, and any bonus
 or extra, and works out each role's salary for the month from the role as it
 then stands. The roles saved are the month's: one left out of a later save is
-taken off it. The month is billed as one expense under the household's house
-help definition -- a component per role, a charge per resident -- split
-between the residents living in the flat and anyone already on the bill, so a
-resident who moves out keeps the month they were in. **Nothing prorates**, as
+taken off it. A role given a worker joins this month at once, once the month
+has been saved; one set up by a month's end and not on it otherwise shows with
+it, unsaved and on nobody's bill, until the month is saved again. The month is
+billed as one expense under the household's house help definition -- a
+component per role, a charge per resident -- split between the residents living
+in the flat and anyone already on the bill, so a resident who moves out keeps
+the month they were in. **Nothing prorates**, as
 everywhere in the household.
 
 The month is paid in two steps, as every household service's is (see
@@ -390,8 +393,10 @@ def create_role(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
                 actor: str = "operator") -> dict[str, Any]:
     """Add a role: ``role_name``, ``monthly_salary_paise``, and optionally
     ``worker_id`` -- who does it -- ``split_method`` ('equal') and
-    ``participant_ids`` -- who shares an opt-in role. The role joins the months saved from now on, once it has a worker: a
-    role with none joins no month, as there is nobody to pay."""
+    ``participant_ids`` -- who shares an opt-in role. The role joins the months
+    saved from now on, once it has a worker: a role with none joins no month, as
+    there is nobody to pay. Given a worker, it joins this month at once if the
+    month has been saved (:func:`_join_this_month`)."""
     cleaned = _clean_role(payload, creating=True)
     definition_id = _ensure_definition(db, apartment_id, actor)
     timestamp = now_timestamp()
@@ -408,7 +413,10 @@ def create_role(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
         audit.record(uow, entity_type="househelp_role", entity_id=role_id, action="create",
                      actor=actor, apartment_id=apartment_id,
                      new_value={"worker_id": worker_id, **cleaned, "participant_ids": opted})
-        return _role_view(uow, apartment_id, role_id)
+        view = _role_view(uow, apartment_id, role_id)
+    if worker_id is not None:
+        _join_this_month(db, apartment_id, role_id)
+    return view
 
 
 def update_role(db: Database, apartment_id: str, role_id: str, payload: Mapping[str, Any], *,
@@ -421,7 +429,8 @@ def update_role(db: Database, apartment_id: str, role_id: str, payload: Mapping[
     A role moves to another worker, or back to nobody, only while no month has
     been saved with it (``househelp_role_has_months``): each saved month's
     salary was the worker's, and may have been paid to them. Give the new
-    worker a role of their own."""
+    worker a role of their own. Given a worker, a role joins this month at once
+    if the month has been saved (:func:`_join_this_month`)."""
     cleaned = _clean_role(payload, creating=False)
     with db.transaction() as uow:
         get_apartment(uow, apartment_id)
@@ -445,7 +454,10 @@ def update_role(db: Database, apartment_id: str, role_id: str, payload: Mapping[
             audit.record(uow, entity_type="househelp_role", entity_id=role_id,
                          action="update", actor=actor, apartment_id=apartment_id,
                          old_value={key: before[key] for key in changed}, new_value=changed)
-        return _role_view(uow, apartment_id, role_id)
+        view = _role_view(uow, apartment_id, role_id)
+    if changed.get("worker_id"):
+        _join_this_month(db, apartment_id, role_id)
+    return view
 
 
 def set_role_participants(db: Database, apartment_id: str, role_id: str,
@@ -963,6 +975,55 @@ def save_monthly_attendance(db: Database, apartment_id: str, month: str,
         return _overview(uow, apartment_id, month)
 
 
+def _join_this_month(db: Database, apartment_id: str, role_id: str) -> None:
+    """Put a role just given a worker on this month and bill it, if the month
+    has been saved and can be saved again: at its worker's attendance as saved
+    -- none, for a worker not on the month yet -- with no bonus, at its salary
+    for the days its worker was there.
+
+    A month nobody has saved takes the role when it is first looked at
+    (:func:`get_month_overview`); a month gone by is left as it was saved. A
+    month that cannot take it -- finalized, recorded by hand, a worker who joins
+    later, a split nobody can share, a worker already paid more than the month
+    would owe them -- is left as it is, and nothing is written: the role shows
+    with the month, unsaved, until the month is saved with it."""
+    month = _current_month()
+    timestamp = now_timestamp()
+    try:
+        with db.transaction() as uow:
+            service, config = _service_and_config(uow, apartment_id)
+            statement = uow.furniture.statement_for_month(apartment_id, month)
+            records = uow.househelp.records_for_month(apartment_id, month)
+            role = uow.househelp.role(role_id)
+            if (service is None or config is None or not records or role is None
+                    or (statement is not None and statement["status"] != "draft")
+                    or any(record["role_id"] == role_id for record in records)
+                    or role["worker_id"] is None or not role["worker_is_active"]):
+                return
+            active = _days_active(role["worker_joined_date"], month)
+            if not active:
+                return
+            # A worker's attendance is the same on each of their roles.
+            absent, action = next(((record["days_absent"], record["excess_leave_action"])
+                                   for record in records
+                                   if record["worker_id"] == role["worker_id"]), (0, "deduct"))
+            salary = _salary(role, {"days_absent": min(absent, active),
+                                    "excess_leave_action": action,
+                                    "bonus_or_extra_paise": 0}, month)
+            figures = {key: salary[key] for key in (
+                "days_absent", "excess_leave_action", "deduction_paise",
+                "bonus_or_extra_paise", "final_salary_paise")}
+            uow.househelp.upsert_record(
+                record_id=new_id("hhrecord"), role_id=role_id, settlement_month=month,
+                apartment_id=apartment_id, extra_notes=None, **figures)
+            _write_bill(uow, apartment_id, service, config, month, timestamp, AUTO_SAVE_ACTOR)
+            audit.record(uow, entity_type="household_service", entity_id=service["service_id"],
+                         action="attendance", actor=AUTO_SAVE_ACTOR, apartment_id=apartment_id,
+                         new_value={"settlement_month": month, "records": {role_id: figures}})
+    except AemError as exc:
+        logger.warning("House help role %s did not join %s: %s", role_id, month, exc.message)
+
+
 # ----------------------------------------------------------------- overview --
 
 def get_month_overview(db: Database, apartment_id: str, month: str) -> dict[str, Any]:
@@ -1048,13 +1109,24 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
     days = _days_in_month(month)
     records = uow.househelp.records_for_month(apartment_id, month)
     saved = bool(records)
+    live = statement is None or statement["status"] == "draft"
+    can_save = live and foreign is None and month <= _current_month()
     on_month = {record["role_id"] for record in records}
+    # A worker's attendance is the same on each of their roles, so a role of
+    # theirs not on the month yet starts from what was saved for them.
+    attendance = {record["worker_id"]: (record["days_absent"], record["excess_leave_action"])
+                  for record in records}
     all_roles = uow.househelp.roles(apartment_id)
-    open_roles = [_salary(role, {"days_absent": 0, "excess_leave_action": "deduct",
-                                 "bonus_or_extra_paise": 0}, month)
-                  for role in all_roles
-                  if role["worker_is_active"] and role["role_id"] not in on_month
-                  and _days_active(role["worker_joined_date"], month)]
+    set_up = {role["role_id"]: role["created_at"][:7] for role in all_roles}
+    open_roles = []
+    for role in all_roles:
+        active = _days_active(role["worker_joined_date"], month)
+        if not role["worker_is_active"] or role["role_id"] in on_month or not active:
+            continue
+        absent, action = attendance.get(role["worker_id"], (0, "deduct"))
+        open_roles.append(_salary(role, {"days_absent": min(absent, active),
+                                         "excess_leave_action": action,
+                                         "bonus_or_extra_paise": 0}, month))
     roles = [_saved_role(record) for record in records] if saved else open_roles
     plan = _split(uow, apartment_id, roles, sharing)
     if expense is not None:
@@ -1066,6 +1138,18 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
             role.update(sharers=sorted(shares), shares=shares)
     for role in plan["roles"]:
         role["saved"] = saved
+    # A saved month that can be saved again lists, among its roles, each of an
+    # active worker's set up by the month's end and not on it yet -- one that
+    # could not join it as it was set up (_join_this_month), or set up before
+    # roles did. Each is unsaved, at its salary now with its own split, and on
+    # nobody's bill until the month is saved again, which adds it. A role set
+    # up after the month is not on it: a month gone by is not billed for it.
+    joining = [role for role in open_roles if set_up[role["role_id"]] <= month] \
+        if saved and can_save else []
+    joining_plan = _split(uow, apartment_id, joining, sharing)
+    for role in joining_plan["roles"]:
+        role["saved"] = False
+    problem = (plan["problem"] if expense is None else None) or joining_plan["problem"]
 
     funding = service_bills.funding(uow, apartment_id, expense) if expense else None
     owing = {entry["recipient_resident_id"]: entry["pending_reimbursement_paise"]
@@ -1131,8 +1215,6 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
             "payouts": [row for row in payouts if row["worker_id"] == worker_id],
         })
 
-    live = statement is None or statement["status"] == "draft"
-    can_save = live and foreign is None and month <= _current_month()
     result: dict[str, Any] = {
         "settlement_month": month,
         "days_in_month": days,
@@ -1151,19 +1233,15 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
         "transactions_open": deletions.month_is_open(uow, apartment_id, month),
         "participants": [{"resident_id": rid, "display_name": names.get(rid, rid)}
                          for rid in sorted(sharing, key=lambda r: (names.get(r, r), r))],
-        "roles": plan["roles"],
-        # Roles of active workers not on a month already saved: saving the month
-        # with them adds them.
-        "roles_not_on_month": open_roles if saved and can_save else [],
+        "roles": plan["roles"] + joining_plan["roles"],
         # Roles not yet given a worker, which join no month until they are.
         "unassigned_roles": [{key: role[key] for key in (
             "role_id", "role_name", "monthly_salary_paise")}
             for role in all_roles if role["worker_id"] is None],
         "total_paise": expense["amount_paise"] if expense else plan["total_paise"],
-        # Why the month cannot be billed as it stands. A billed month keeps the
-        # split it was saved with.
-        "blocked_reason": (plan["problem"].message if plan["problem"] and expense is None
-                           else None),
+        # Why the month cannot be billed as it stands, or saved again with the
+        # roles joining it. A billed month keeps the split it was saved with.
+        "blocked_reason": problem.message if problem else None,
         "workers": workers,
         "shares": shares,
         "expense": expense,

@@ -2032,6 +2032,11 @@ export interface HouseHelpMonthlyRecord extends HouseHelpRoleMonth {
   sharers: string[]
   /** Each sharer's part of the role's salary. */
   shares: Record<string, number>
+  /**
+   * Whether it is on the month as saved. A role given a helper joins this month at once once it
+   * is saved; one that could not -- nobody to share it, say -- is unsaved on a saved month, at its
+   * helper's attendance as saved and on nobody's bill, until the month is saved again with it.
+   */
   saved: boolean
 }
 
@@ -2113,8 +2118,6 @@ export interface HouseHelpMonthOverview {
   transactions_open: boolean
   participants: Array<{ resident_id: string; display_name: string }>
   roles: HouseHelpMonthlyRecord[]
-  /** Active workers' roles not on a month already saved: saving the month with them adds them. */
-  roles_not_on_month: HouseHelpRoleMonth[]
   /** Roles not yet given a helper, which join no month until they are. */
   unassigned_roles: Array<{ role_id: string; role_name: string; monthly_salary_paise: number }>
   total_paise: number

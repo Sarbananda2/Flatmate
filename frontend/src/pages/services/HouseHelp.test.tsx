@@ -114,7 +114,6 @@ const overview = (overrides: Record<string, unknown> = {}) => ({
     { resident_id: 'chris', display_name: 'Chris' },
   ],
   roles: [role('cleaning'), role('cooking')],
-  roles_not_on_month: [],
   unassigned_roles: [],
   total_paise: 750000,
   blocked_reason: null,
@@ -625,32 +624,65 @@ describe('HouseHelp', () => {
     })
   })
 
-  it('offers a role not on a saved month, and saves it with the month', async () => {
-    const { saved: _saved, sharers: _sharers, shares: _shares, ...cooking } = role('cooking')
-    show(
-      overview({
-        roles: [role('cleaning')],
-        roles_not_on_month: [cooking],
-        unassigned_roles: [{ role_id: 'utensils', role_name: 'Utensils', monthly_salary_paise: 150000 }],
-      }),
-      {},
-      '/?tab=attendance',
-    )
+  it('shows a role that could not join a saved month, and saves it with the month', async () => {
+    show(overview({ roles: [role('cleaning'), role('cooking', { saved: false })] }), {}, '/?tab=attendance')
     const salaries = await screen.findByRole('table', { name: 'Role salaries for November 2026' })
-    // With an active helper, a role waiting for one is left to the Staff tab.
-    expect(screen.queryByText(/No active helpers are currently assigned/)).toBeNull()
-    expect(within(salaries).queryByRole('row', { name: /^Cooking/ })).toBeNull()
-    // Offered while the salaries are edited.
-    expect(screen.queryByRole('button', { name: 'Add Cooking (Sunita)' })).toBeNull()
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Salaries & Bonuses' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Add Cooking (Sunita)' }))
-    expect(within(salaries).getByRole('row', { name: /^Cooking/ })).toHaveTextContent('CookingSunita · new this month')
-    // The same helper: still one row of attendance.
+    // On the table as it stands, and said to be new.
+    expect(within(salaries).getByRole('row', { name: /^Cooking/ })).toHaveTextContent(
+      'CookingSunita · new this month₹4,500.00——₹4,500.00',
+    )
+    expect(within(salaries).getByRole('row', { name: /^Cleaning/ })).not.toHaveTextContent('new this month')
+    expect(screen.getByText('New staff or roles added. Review and save attendance to update the bill.')).toBeInTheDocument()
+    // One helper: one row of attendance.
     expect(within(screen.getByRole('table', { name: 'Helper attendance for November 2026' })).getAllByRole('row')).toHaveLength(2)
-    await userEvent.click(screen.getByRole('button', { name: 'Save Salaries & Bonuses' }))
+
+    // Nothing else changed, and still something to save.
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Attendance' }))
+    const save = screen.getByRole('button', { name: 'Save Attendance' })
+    expect(save).toBeEnabled()
+    await userEvent.click(save)
     await waitFor(() => expect(sent('POST', `${BASE}/month/${MONTH}/attendance`)).toBeDefined())
     const body = sent('POST', `${BASE}/month/${MONTH}/attendance`)!.body as { records: Array<{ role_id: string }> }
     expect(body.records.map((record) => record.role_id)).toEqual(['cleaning', 'cooking'])
+    expect(await screen.findByText('Attendance saved')).toBeInTheDocument()
+  })
+
+  it('shows a role added to a saved month on it at once, with nothing to save', async () => {
+    const ironing = role('cleaning', {
+      role_id: 'ironing',
+      role_name: 'Ironing',
+      base_salary_paise: 90000,
+      final_salary_paise: 90000,
+      shares: { alice: 30000, bob: 30000, chris: 30000 },
+    })
+    // The backend puts the role on the month as it is added: the month read again has it.
+    show(
+      overview(),
+      {
+        [`${BASE}/month/${MONTH}`]: () =>
+          sent('POST', `${BASE}/roles`) ? overview({ roles: [role('cleaning'), role('cooking'), ironing] }) : overview(),
+      },
+      '/?tab=staff',
+    )
+    await screen.findByRole('table', { name: "The helpers' roles" })
+    await userEvent.click(screen.getByRole('button', { name: 'Add Role' }))
+    const dialog = screen.getByRole('dialog', { name: 'Add Role' })
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Edit manually' }))
+    await userEvent.type(within(dialog).getByLabelText(/^Role name/), 'Ironing')
+    await userEvent.type(within(dialog).getByLabelText(/^Base salary/), '900')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Add Role' }))
+    expect(await screen.findByText('Role added')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('tab', { name: /Attendance/ }))
+    const salaries = await screen.findByRole('table', { name: 'Role salaries for November 2026' })
+    // On the month, at no days absent and its whole salary, and not new: it is saved.
+    expect(within(salaries).getByRole('row', { name: /^Ironing/ })).toHaveTextContent(/^IroningSunita₹900\.00——₹900\.00$/)
+    expect(screen.queryByText(/New staff or roles added/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Add Ironing/ })).toBeNull()
+    expect(within(screen.getByRole('table', { name: 'Helper attendance for November 2026' })).getByRole('row', { name: /^Sunita/ })).toHaveTextContent('Sunita2 days allowed0')
+    // Nothing to save until something is changed.
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Attendance' }))
+    expect(screen.getByRole('button', { name: 'Save Attendance' })).toBeDisabled()
   })
 
   it('pays a helper who joined during the month for the days they were there', async () => {

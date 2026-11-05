@@ -878,14 +878,19 @@ function AttendancePanel({
   // Each panel reads as saved until it is edited, and is saved on its own.
   const [editingAttendance, setEditingAttendance] = useState(false)
   const [editingSalaries, setEditingSalaries] = useState(false)
-  // What has been changed while editing: a helper's attendance, a role's bonus, a role added to the month.
+  // What has been changed while editing: a helper's attendance, a role's bonus.
   const [workerDrafts, setWorkerDrafts] = useState<Record<string, WorkerDraft>>({})
   const [roleDrafts, setRoleDrafts] = useState<Record<string, RoleDraft>>({})
-  const [added, setAdded] = useState<string[]>([])
+
+  /** Whether a role is on the month as saved. */
+  const onBill = (role: HouseHelpMonthlyRecord) => data.saved && role.saved
+  // A role that could not join the saved month when it was given a helper -- nobody to share it,
+  // say -- shows with it, unsaved: saving the month adds it.
+  const joining = data.saved && editable && data.roles.some((role) => !role.saved)
 
   /** A helper's attendance as saved -- the same on each of their roles -- or none, on a month not saved yet. */
   const savedAttendance = (workerId: string): WorkerDraft => {
-    const role = [...data.roles, ...data.roles_not_on_month].find((entry) => entry.worker_id === workerId)
+    const role = data.roles.find((entry) => entry.worker_id === workerId)
     return { days: String(role?.days_absent ?? 0), action: role?.excess_leave_action ?? 'deduct' }
   }
   const setWorkerDraft = (workerId: string, change: Partial<WorkerDraft>) =>
@@ -900,10 +905,7 @@ function AttendancePanel({
    */
   const work = (attendanceDrafted: boolean, bonusesDrafted: boolean) => {
     const preview = editable && (attendanceDrafted || bonusesDrafted)
-    const rows: Array<HouseHelpMonthlyRecord | HouseHelpRoleMonth> = [
-      ...data.roles,
-      ...(bonusesDrafted ? data.roles_not_on_month.filter((role) => added.includes(role.role_id)) : []),
-    ]
+    const rows = data.roles
     // Each helper on the month with their roles, in the order the roles come.
     const helpers: Array<{ workerId: string; name: string; roles: typeof rows }> = []
     for (const role of rows) {
@@ -924,8 +926,7 @@ function AttendancePanel({
         const base = preview ? baseNow(role) : role.base_salary_paise
         // The deduction as saved stands while nothing it was worked out from has changed.
         const asSaved =
-          data.saved &&
-          data.roles.includes(role as HouseHelpMonthlyRecord) &&
+          onBill(role) &&
           attendance.days === String(role.days_absent) &&
           attendance.action === role.excess_leave_action &&
           base === role.base_salary_paise &&
@@ -969,19 +970,21 @@ function AttendancePanel({
     data.saved &&
     data.roles.some(
       (role) =>
-        baseNow(role) !== role.base_salary_paise ||
-        (allowanceNow.get(role.worker_id) ?? role.allowed_leaves_per_month) !== role.allowed_leaves_per_month,
+        role.saved &&
+        (baseNow(role) !== role.base_salary_paise ||
+          (allowanceNow.get(role.worker_id) ?? role.allowed_leaves_per_month) !== role.allowed_leaves_per_month),
     )
   const attendanceValid = figures.every((helper) => helper.absent != null)
   const attendanceChanged =
     stale ||
+    joining ||
     figures.some((helper) => {
       const saved = savedAttendance(helper.workerId)
       return helper.attendance.days !== saved.days || helper.attendance.action !== saved.action
     })
   const salariesValid = roleFigures.every((row) => row.bonus.bonusOk)
   const salariesChanged =
-    stale || added.length > 0 || roleFigures.some((row) => row.bonus.bonusPaise !== row.role.bonus_or_extra_paise)
+    stale || joining || roleFigures.some((row) => row.bonus.bonusPaise !== row.role.bonus_or_extra_paise)
 
   const saveAttendance = useMutation(
     () => api.post<HouseHelpMonthOverview>(`${BASE}/month/${month}/attendance`, { records: records(work(true, false)) }),
@@ -997,7 +1000,6 @@ function AttendancePanel({
     {
       onSuccess: (updated) => {
         setEditingSalaries(false)
-        setAdded([])
         onSaved(updated, 'Salaries & bonuses saved')
       },
     },
@@ -1010,13 +1012,12 @@ function AttendancePanel({
   }
   const editSalaries = () => {
     setRoleDrafts({})
-    setAdded([])
     saveSalaries.reset()
     setEditingSalaries(true)
   }
   const unsaved = `Not saved yet: saving bills ${formatMonth(month)}.`
 
-  if (data.roles.length === 0 && data.roles_not_on_month.length === 0) {
+  if (data.roles.length === 0) {
     return (
       <Panel
         title="Attendance & Salaries"
@@ -1069,6 +1070,11 @@ function AttendancePanel({
               {data.blocked_reason}
             </p>
           )
+        )}
+        {joining && (
+          <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
+            New staff or roles added. Review and save attendance to update the bill.
+          </p>
         )}
         <div className="overflow-x-auto min-w-0">
           <table className="w-full table-fixed text-left text-xs min-w-[600px] border-collapse" aria-busy={saving}>
@@ -1191,7 +1197,7 @@ function AttendancePanel({
                     <span className="block font-semibold text-[var(--text-primary)] truncate">{role.role_name}</span>
                     <span className="block text-[11px] text-[var(--text-tertiary)] truncate">
                       {role.worker_name}
-                      {added.includes(role.role_id) && ' · new this month'}
+                      {data.saved && !onBill(role) && ' · new this month'}
                     </span>
                     {role.pro_rated_days != null && role.pro_rated_days < days && (
                       <span className="block text-[11px] text-[var(--text-secondary)] truncate">
@@ -1265,25 +1271,6 @@ function AttendancePanel({
           </table>
         </div>
 
-        {editingSalaries && data.roles_not_on_month.some((role) => !added.includes(role.role_id)) && (
-          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-            <span>Not on {formatMonth(month)} yet:</span>
-            {data.roles_not_on_month
-              .filter((role) => !added.includes(role.role_id))
-              .map((role) => (
-                <button
-                  key={role.role_id}
-                  type="button"
-                  className={BUTTON_QUIET}
-                  onClick={() => setAdded((before) => [...before, role.role_id])}
-                >
-                  <Plus className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                  Add {role.role_name} ({role.worker_name})
-                </button>
-              ))}
-          </div>
-        )}
-
         {/* Only when nobody is left to do them: with active helpers, a role waiting for one is the Staff tab's business. */}
         {data.active_worker_count === 0 && data.unassigned_roles.length > 0 && (
           <p className="m-0 text-xs text-[var(--text-secondary)]">
@@ -1310,10 +1297,7 @@ function AttendancePanel({
               <button
                 type="button"
                 className={BUTTON_SECONDARY}
-                onClick={() => {
-                  setEditingSalaries(false)
-                  setAdded([])
-                }}
+                onClick={() => setEditingSalaries(false)}
                 disabled={saveSalaries.pending}
               >
                 Cancel

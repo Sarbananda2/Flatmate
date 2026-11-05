@@ -243,6 +243,10 @@ def test_a_role_waits_for_its_helper(apartment, clock):
              for row in staff["items"]],
             [role["role_name"] for role in staff["unassigned_roles"]]) == (
         [("Sunita", ["Cleaning"])], ["Cooking"])
+    # Until a month is saved with it, it can be given a helper and taken back.
+    househelp.update_role(apartment, APARTMENT, cooking["role_id"], {"worker_id": sunita})
+    back = househelp.update_role(apartment, APARTMENT, cooking["role_id"], {"worker_id": None})
+    assert (back["worker_id"], back["worker_name"]) == (None, None)
 
     # Nobody to pay: it joins no month.
     preview = _month(apartment)
@@ -254,19 +258,17 @@ def test_a_role_waits_for_its_helper(apartment, clock):
     with pytest.raises(ConflictError) as nobody:
         _save(apartment, (cleaning, {}), (cooking["role_id"], {}))
     assert nobody.value.code == "househelp_role_has_no_worker"
-    assert _save(apartment, (cleaning, {}))["roles_not_on_month"] == []
 
-    # Given a helper, it can join the month; until it has, it can go back to nobody.
+    # Given a helper, it joins the month saved already, at once, and stays theirs.
     given = househelp.update_role(apartment, APARTMENT, cooking["role_id"],
                                   {"worker_id": sunita})
     assert given["worker_name"] == "Sunita"
     month = _month(apartment)
-    assert ([role["role_name"] for role in month["roles_not_on_month"]],
-            month["unassigned_roles"]) == (["Cooking"], [])
-    back = househelp.update_role(apartment, APARTMENT, cooking["role_id"], {"worker_id": None})
-    assert (back["worker_id"], back["worker_name"]) == (None, None)
+    assert ([(role["role_name"], role["saved"], role["days_absent"]) for role in month["roles"]],
+            month["total_paise"], month["unassigned_roles"]) == (
+        [("Cleaning", True, 0), ("Cooking", True, 0)], 750_000, [])
     with pytest.raises(ConflictError) as saved:
-        househelp.update_role(apartment, APARTMENT, cleaning, {"worker_id": None})
+        househelp.update_role(apartment, APARTMENT, cooking["role_id"], {"worker_id": None})
     assert saved.value.code == "househelp_role_has_months"
     left = househelp.delete_role(apartment, APARTMENT, cooking["role_id"])
     assert (len(left["workers"]), left["unassigned_roles"]) == (1, [])
@@ -628,10 +630,67 @@ def test_saving_again_after_payments_moves_them_to_the_new_shares(apartment, clo
     # paid beyond it is owed back to her from the kitty.
     month = _save(apartment, (cleaning, {"days_absent": 5}))
     assert _shares(month) == {"alice": 90_000, "bob": 90_000, "chris": 90_000}
-    assert [row["role_name"] for row in month["roles"]] == ["Cleaning"]
-    assert [row["role_name"] for row in month["roles_not_on_month"]] == ["Cooking"]
+    # The cooking shows with the month again, to be saved back on to it.
+    assert [(row["role_name"], row["saved"]) for row in month["roles"]] == [
+        ("Cleaning", True), ("Cooking", False)]
     assert _standing(apartment)["alice"] == (90_000, 90_000, 0, "paid")
     assert _owed(apartment) == [("alice", 10_000, 10_000, True)]
+    _clean(apartment)
+
+
+def test_a_role_given_a_worker_joins_this_month_at_once(apartment, clock):
+    clock["now"] = "2026-10-20T09:00:00+05:30"
+    sunita = _worker(apartment)
+    cleaning = _role(apartment, sunita, "Cleaning", 300_000)
+    _save(apartment, (cleaning, {}), month="2026-10")
+    clock["now"] = "2026-11-10T09:00:00+05:30"
+    _save(apartment, (cleaning, {"days_absent": 5}))
+    _pay_worker(apartment, sunita, amount_paise=100_000)
+
+    # Set up after November was saved, they are on it and billed at once:
+    # Ramesh's ironing at no days away, Sunita's cooking at her five.
+    _role(apartment, sunita, "Cooking", 450_000, "opt_in", participant_ids=["alice", "bob"])
+    _role(apartment, _worker(apartment, "Ramesh"), "Ironing", 90_000)
+    month = _month(apartment)
+    assert [(row["role_name"], row["saved"], row["days_absent"], row["deduction_paise"],
+             row["final_salary_paise"]) for row in month["roles"]] == [
+        ("Ironing", True, 0, 0, 90_000),
+        ("Cleaning", True, 5, 30_000, 270_000),
+        ("Cooking", True, 5, 45_000, 405_000)]
+    assert (month["total_paise"], _shares(month)) == (
+        765_000, {"alice": 322_500, "bob": 322_500, "chris": 120_000})
+    assert _workers(month) == {"Ramesh": (90_000, 0, 90_000, "pending"),
+                               "Sunita": (675_000, 100_000, 575_000, "partially_disbursed")}
+
+    # A month gone by is not billed for a role set up after it.
+    october = _month(apartment, "2026-10")
+    assert ([row["role_name"] for row in october["roles"]], october["total_paise"]) == (
+        ["Cleaning"], 300_000)
+    _clean(apartment)
+
+
+def test_a_role_that_cannot_join_a_saved_month_shows_with_it_unsaved(apartment, clock):
+    sunita = _worker(apartment)
+    cleaning = _role(apartment, sunita, "Cleaning", 300_000)
+    _save(apartment, (cleaning, {}))
+    # Nobody has opted in to the cooking, so nobody can share it: the month is
+    # left as it was saved, and says why.
+    cooking = _role(apartment, sunita, "Cooking", 450_000, "opt_in")
+    month = _month(apartment)
+    assert ([(row["role_name"], row["saved"]) for row in month["roles"]],
+            month["total_paise"], month["blocked_reason"]) == (
+        [("Cleaning", True), ("Cooking", False)], 300_000,
+        "Nobody living in the flat has opted in to Cooking (Sunita), so there is nobody to "
+        "share its cost. Choose who shares it first.")
+    with pytest.raises(ValidationError) as nobody:
+        _save(apartment, (cleaning, {}), (cooking, {}))
+    assert nobody.value.code == "househelp_role_has_no_participants"
+
+    # Shared, saving the month adds it.
+    househelp.set_role_participants(apartment, APARTMENT, cooking, ["alice", "bob"])
+    month = _save(apartment, (cleaning, {}), (cooking, {}))
+    assert ([row["saved"] for row in month["roles"]], month["total_paise"],
+            month["blocked_reason"]) == ([True, True], 750_000, None)
     _clean(apartment)
 
 
