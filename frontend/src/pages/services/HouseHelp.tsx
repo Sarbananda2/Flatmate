@@ -13,7 +13,7 @@
  * attendance and salaries, and the staff and their roles. The open tab is kept
  * in the address (`?tab=attendance`).
  */
-import { useRef, useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { CalendarCheck, HandPlatter, Pencil, Plus, Receipt, Save, Trash2, UserPlus, Users, Wallet } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
@@ -1613,6 +1613,229 @@ function WorkerDialog({
   )
 }
 
+/* ------------------------------------------------------- the role builder -- */
+
+/** A role is named "Service | Area | Scope", such as "Cooking | Kitchen | Lunch & Dinner". */
+const ROLE_SERVICES = ['Cooking', 'Cleaning', 'Utensils', 'Housekeeping', 'Laundry'] as const
+const ROLE_AREAS = ['Common Areas', 'Kitchen', 'Whole House', 'Bathrooms'] as const
+/** Scopes suggested for each service; any other may be typed. */
+const ROLE_SCOPES: Record<string, readonly string[]> = {
+  Cooking: ['Lunch & Dinner', 'Dinner only', 'Breakfast & Lunch', 'All Meals'],
+  Cleaning: ['Floors & Mopping', 'Deep Clean', 'Sweeping & Mopping', 'Balconies & Toilets'],
+  Utensils: ['Twice daily', 'Once daily', 'All dishes'],
+  Laundry: ['Washing & Folding', 'Ironing', 'Twice weekly'],
+}
+const OTHER = 'Other'
+const ROLE_NAME_MAX = 100
+
+/** A role name answered question by question. A service or area is a choice, or Other with its own text. */
+interface RoleNameDraft {
+  service: string
+  serviceOther: string
+  area: string
+  areaOther: string
+  scope: string
+}
+
+const sameText = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+/** A part of the name may not hold the separator. */
+const namePart = (text: string) => text.replace(/\|/g, '')
+
+/** A role name's three parts, or null when it is not "Service | Area | Scope". */
+function roleParts(name: string): [string, string, string] | null {
+  const parts = name.split('|').map((piece) => piece.trim())
+  return parts.length === 3 && parts.every(Boolean) ? [parts[0], parts[1], parts[2]] : null
+}
+
+/** The answers a role name gives, or none when it is not "Service | Area | Scope". */
+function roleNameDraft(name: string): RoleNameDraft {
+  const parts = roleParts(name)
+  if (!parts) return { service: '', serviceOther: '', area: '', areaOther: '', scope: '' }
+  const [service, area, scope] = parts
+  const knownService = ROLE_SERVICES.find((choice) => sameText(choice, service))
+  // A flatmate's room is a choice of its own, even before the flatmates have loaded.
+  const knownArea = ROLE_AREAS.find((choice) => sameText(choice, area)) ?? (/'s room$/i.test(area) ? area : undefined)
+  return {
+    service: knownService ?? OTHER,
+    serviceOther: knownService ? '' : service,
+    area: knownArea ?? OTHER,
+    areaOther: knownArea ? '' : area,
+    scope,
+  }
+}
+
+/** "Cooking | Kitchen | Lunch & Dinner", or '' until all three are answered. */
+function roleNameOf(draft: RoleNameDraft): string {
+  const parts = [
+    draft.service === OTHER ? draft.serviceOther : draft.service,
+    draft.area === OTHER ? draft.areaOther : draft.area,
+    draft.scope,
+  ].map((piece) => piece.trim().replace(/\s+/g, ' '))
+  return parts.every(Boolean) ? parts.join(' | ') : ''
+}
+
+/** Each flatmate's room, by first name, or by full name where two share one. */
+function flatmateRooms(flatmates: Resident[]): Array<{ residentId: string; label: string }> {
+  const first = (person: Resident) => person.display_name.trim().split(/\s+/)[0]
+  return flatmates.map((person) => {
+    const shared = flatmates.filter((other) => sameText(first(other), first(person))).length > 1
+    return { residentId: person.resident_id, label: `${shared ? person.display_name.trim() : first(person)}'s Room` }
+  })
+}
+
+const CHOICE_ON =
+  'rounded-full border border-[var(--accent)] bg-[var(--accent-glow)] px-3 py-1 text-xs font-semibold text-[var(--text-primary)] cursor-pointer transition-colors'
+const CHOICE_OFF =
+  'rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer transition-colors'
+
+/** One question of the builder: its quick choices, then whatever it needs typed. */
+function RoleQuestion({
+  legend,
+  options,
+  value,
+  onPick,
+  children,
+}: {
+  legend: string
+  options: readonly string[]
+  value: string
+  onPick: (option: string) => void
+  children?: ReactNode
+}) {
+  return (
+    <fieldset className="m-0 border-0 p-0 space-y-2">
+      <legend className="p-0 pb-1 text-sm font-bold text-[var(--text-primary)]">{legend}</legend>
+      {options.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {options.map((option) => {
+            const on = sameText(option, value)
+            return (
+              <button
+                key={option}
+                type="button"
+                aria-pressed={on}
+                className={on ? CHOICE_ON : CHOICE_OFF}
+                onClick={() => onPick(option)}
+              >
+                {option}
+              </button>
+            )
+          })}
+        </div>
+      )}
+      {children}
+    </fieldset>
+  )
+}
+
+/** The role's name, from three questions: its service, its area and its scope. */
+function RoleNameBuilder({
+  draft,
+  onChange,
+  flatmates,
+  onPickRoom,
+}: {
+  draft: RoleNameDraft
+  onChange: (draft: RoleNameDraft) => void
+  flatmates: Resident[]
+  /** A flatmate's room was chosen: the role is theirs to share. */
+  onPickRoom: (residentId: string) => void
+}) {
+  const set = (changes: Partial<RoleNameDraft>) => onChange({ ...draft, ...changes })
+  const rooms = flatmateRooms(flatmates)
+  // A saved role's room stays a choice after its flatmate has left.
+  const gone =
+    draft.area !== '' &&
+    draft.area !== OTHER &&
+    !ROLE_AREAS.some((area) => sameText(area, draft.area)) &&
+    !rooms.some((room) => sameText(room.label, draft.area))
+      ? [draft.area]
+      : []
+  const areas = [
+    'Common Areas',
+    'Kitchen',
+    'Whole House',
+    ...rooms.map((room) => room.label),
+    ...gone,
+    'Bathrooms',
+    OTHER,
+  ]
+  const scopes = ROLE_SCOPES[draft.service] ?? []
+  const name = roleNameOf(draft)
+  return (
+    <div className="space-y-4">
+      <RoleQuestion
+        legend="Service"
+        options={[...ROLE_SERVICES, OTHER]}
+        value={draft.service}
+        onPick={(service) =>
+          set({
+            service,
+            // A suggestion for the old service is no answer for the new one.
+            scope: (ROLE_SCOPES[draft.service] ?? []).some((scope) => sameText(scope, draft.scope)) ? '' : draft.scope,
+          })
+        }
+      >
+        {draft.service === OTHER && (
+          <input
+            type="text"
+            aria-label="Other service"
+            placeholder="e.g. Gardening"
+            maxLength={40}
+            value={draft.serviceOther}
+            onChange={(event) => set({ serviceOther: namePart(event.target.value) })}
+          />
+        )}
+      </RoleQuestion>
+      <RoleQuestion
+        legend="Area"
+        options={areas}
+        value={draft.area}
+        onPick={(area) => {
+          set({ area })
+          const room = rooms.find((choice) => choice.label === area)
+          if (room) onPickRoom(room.residentId)
+        }}
+      >
+        {draft.area === OTHER && (
+          <input
+            type="text"
+            aria-label="Other area"
+            placeholder="e.g. Balcony"
+            maxLength={40}
+            value={draft.areaOther}
+            onChange={(event) => set({ areaOther: namePart(event.target.value) })}
+          />
+        )}
+      </RoleQuestion>
+      <RoleQuestion legend="Scope" options={scopes} value={draft.scope} onPick={(scope) => set({ scope })}>
+        <input
+          type="text"
+          aria-label="Scope"
+          placeholder={`e.g. ${scopes[0] ?? 'General Maintenance'}`}
+          maxLength={60}
+          value={draft.scope}
+          onChange={(event) => set({ scope: namePart(event.target.value) })}
+        />
+      </RoleQuestion>
+      <p
+        className="m-0 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2 text-xs"
+        aria-live="polite"
+      >
+        <span className="font-bold text-[var(--text-primary)]">Generated Role:</span>{' '}
+        {name ? (
+          <span className="font-semibold text-[var(--text-primary)]">{name}</span>
+        ) : (
+          <span className="text-[var(--text-tertiary)]">Answer the three questions above.</span>
+        )}
+      </p>
+      {name.length > ROLE_NAME_MAX && (
+        <p className="m-0 text-xs text-[var(--danger)]">A role name is at most {ROLE_NAME_MAX} characters: shorten it.</p>
+      )}
+    </div>
+  )
+}
+
 function RoleDialog({
   role,
   workers,
@@ -1630,7 +1853,12 @@ function RoleDialog({
   const people = useResource<{ items: Resident[] }>('/api/residents')
   const flatmates = (people.data?.items ?? []).filter((resident) => resident.is_active)
   const choices = workers.filter((worker) => worker.is_active || worker.worker_id === role?.worker_id)
-  const [name, setName] = useState(role?.role_name ?? '')
+  // A role named otherwise than "Service | Area | Scope" opens with its name to edit by hand.
+  const [manual, setManual] = useState(role != null && roleParts(role.role_name) == null)
+  const [manualName, setManualName] = useState(role?.role_name ?? '')
+  const [draft, setDraft] = useState(() => roleNameDraft(role?.role_name ?? ''))
+  const generated = roleNameOf(draft)
+  const name = manual ? manualName.trim() : generated
   const [workerId, setWorkerId] = useState(role?.worker_id ?? (choices.length === 1 ? choices[0].worker_id : ''))
   const [salary, setSalary] = useState(role ? paiseToInput(role.monthly_salary_paise) : '')
   const [salaryPaise, setSalaryPaise] = useState(role?.monthly_salary_paise ?? 0)
@@ -1638,7 +1866,8 @@ function RoleDialog({
   const [split, setSplit] = useState<HouseHelpSplitMethod>(role?.split_method ?? 'equal')
   const [opted, setOpted] = useState<string[]>(role?.participant_ids ?? [])
   const valid =
-    name.trim().length > 0 &&
+    name.length > 0 &&
+    name.length <= ROLE_NAME_MAX &&
     salaryOk &&
     salaryPaise > 0 &&
     (split === 'equal' || opted.length > 0)
@@ -1646,7 +1875,7 @@ function RoleDialog({
   const save = useMutation(
     async () => {
       const fields = {
-        role_name: name.trim(),
+        role_name: name,
         monthly_salary_paise: salaryPaise,
         split_method: split,
       }
@@ -1708,15 +1937,37 @@ function RoleDialog({
         }}
       >
         <ErrorNotice error={save.error} />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+        {manual ? (
           <TextField
             label="Role name"
             required
-            value={name}
-            onChange={setName}
-            maxLength={100}
-            placeholder="e.g. Cooking"
+            value={manualName}
+            onChange={setManualName}
+            maxLength={ROLE_NAME_MAX}
+            placeholder="e.g. Cooking | Kitchen | Lunch & Dinner"
+            hint="Service | Area | Scope reads back into the questions; any other name is kept as it is."
           />
+        ) : (
+          <RoleNameBuilder
+            draft={draft}
+            onChange={setDraft}
+            flatmates={flatmates}
+            onPickRoom={(residentId) => {
+              setSplit('opt_in')
+              setOpted([residentId])
+            }}
+          />
+        )}
+        <CheckboxField
+          label="Edit manually"
+          checked={manual}
+          onChange={(on) => {
+            if (on) setManualName(generated || manualName)
+            else if (roleParts(manualName)) setDraft(roleNameDraft(manualName))
+            setManual(on)
+          }}
+        />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <SelectField
             label="Worker"
             value={workerId}

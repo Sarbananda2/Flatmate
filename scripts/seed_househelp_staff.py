@@ -8,6 +8,8 @@ Two helpers: Sunita Sharma, who has done the housekeeping for everyone since
 April 2026, and Ramesh Kumar, who joined on 15 November 2026 -- so November pays
 him for its last 16 days -- and cooks for Sarbananda and Arnab and does
 everyone's dishes. Each may take two days off a month before pay is deducted.
+Each role is named the way the app's role builder names one: its service, its
+area and its scope, as in "Cooking | Kitchen | Lunch & Dinner".
 
 Sample data, so it is written only to a database on this machine: run it the
 way scripts/dev.sh runs the app, so .env.local's production settings, if any,
@@ -36,13 +38,13 @@ ACTOR = "seed_househelp_staff"
 STAFF = (
     {"name": "Sunita Sharma", "phone": "9876543210", "upi_id": "sunita.sharma@okaxis",
      "allowed_leaves_per_month": 2, "joined_date": "2026-04-01",
-     "roles": ({"role_name": "Housekeeping & Mopping", "monthly_salary_paise": 350_000,
-                "split_method": "equal"},)},
+     "roles": ({"role_name": "Housekeeping | Whole House | General Maintenance",
+                "monthly_salary_paise": 350_000, "split_method": "equal"},)},
     {"name": "Ramesh Kumar", "phone": "9812345678", "upi_id": "ramesh.cook@upi",
      "allowed_leaves_per_month": 2, "joined_date": "2026-11-15",
-     "roles": ({"role_name": "Cooking (Lunch & Dinner)", "monthly_salary_paise": 500_000,
+     "roles": ({"role_name": "Cooking | Kitchen | Lunch & Dinner", "monthly_salary_paise": 500_000,
                 "split_method": "opt_in", "participant_ids": ["sarbananda-taw", "arnab-deka"]},
-               {"role_name": "Utensils & Dishwashing", "monthly_salary_paise": 150_000,
+               {"role_name": "Utensils | Kitchen | Twice Daily", "monthly_salary_paise": 150_000,
                 "split_method": "equal"})},
 )
 

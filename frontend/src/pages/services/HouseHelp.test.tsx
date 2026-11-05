@@ -790,7 +790,10 @@ describe('HouseHelp', () => {
     await screen.findByRole('table', { name: "The helpers' roles" })
     await userEvent.click(screen.getByRole('button', { name: 'Add Role' }))
     const dialog = screen.getByRole('dialog', { name: 'Add Role' })
-    await userEvent.type(within(dialog).getByLabelText(/^Role name/), 'Ironing')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Laundry' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Whole House' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Ironing' }))
+    expect(within(dialog).getByText(/^Generated Role:/).parentElement).toHaveTextContent('Generated Role: Laundry | Whole House | Ironing')
     // The only helper is chosen already; leave is theirs, not the role's.
     expect(within(dialog).getByRole('combobox', { name: /^Worker/ })).toHaveValue('sunita')
     expect(within(dialog).queryByLabelText(/Allowed leaves/)).toBeNull()
@@ -804,7 +807,7 @@ describe('HouseHelp', () => {
     await waitFor(() => expect(sent('POST', `${BASE}/roles`)).toBeDefined())
     expect(sent('POST', `${BASE}/roles`)!.body).toEqual({
       worker_id: 'sunita',
-      role_name: 'Ironing',
+      role_name: 'Laundry | Whole House | Ironing',
       monthly_salary_paise: 80000,
       split_method: 'opt_in',
       participants: ['chris'],
@@ -817,6 +820,10 @@ describe('HouseHelp', () => {
     const roles = await screen.findByRole('table', { name: "The helpers' roles" })
     await userEvent.click(within(roles).getByRole('row', { name: /Cooking/ }))
     const dialog = screen.getByRole('dialog', { name: 'Edit Role' })
+    // Not "Service | Area | Scope": it opens as typed, to keep or edit by hand.
+    expect(within(dialog).getByRole('checkbox', { name: 'Edit manually' })).toBeChecked()
+    expect(within(dialog).getByLabelText(/^Role name/)).toHaveValue('Cooking')
+    expect(within(dialog).queryByRole('group', { name: 'Service' })).toBeNull()
     await userEvent.click(await within(dialog).findByRole('checkbox', { name: 'Chris' }))
     await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(sent('PUT', `${BASE}/roles/cooking/participants`)).toBeDefined())
@@ -837,11 +844,114 @@ describe('HouseHelp', () => {
     expect(await screen.findByText('Role deleted')).toBeInTheDocument()
   })
 
+  it('builds a role name from its service, area and scope', async () => {
+    show(overview(), {}, '/?tab=staff')
+    await screen.findByRole('table', { name: "The helpers' roles" })
+    await userEvent.click(screen.getByRole('button', { name: 'Add Role' }))
+    const dialog = screen.getByRole('dialog', { name: 'Add Role' })
+    const preview = within(dialog).getByText(/^Generated Role:/).parentElement
+    expect(preview).toHaveTextContent('Generated Role: Answer the three questions above.')
+    expect(within(dialog).getByRole('checkbox', { name: 'Edit manually' })).not.toBeChecked()
+
+    // The scopes suggested follow the service.
+    const scope = within(dialog).getByRole('group', { name: 'Scope' })
+    expect(within(scope).queryAllByRole('button')).toHaveLength(0)
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cooking' }))
+    expect(within(scope).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'Lunch & Dinner',
+      'Dinner only',
+      'Breakfast & Lunch',
+      'All Meals',
+    ])
+    await userEvent.click(within(scope).getByRole('button', { name: 'Dinner only' }))
+    expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('Dinner only')
+    expect(within(scope).getByRole('button', { name: 'Dinner only' })).toHaveAttribute('aria-pressed', 'true')
+    // A suggestion for cooking is no scope for utensils; one's own words stay.
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Utensils' }))
+    expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('')
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Scope' }), 'After | dinner')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cooking' }))
+    expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('After  dinner')
+
+    // An area of one's own, and a flatmate's room.
+    const area = within(dialog).getByRole('group', { name: 'Area' })
+    expect(within(area).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'Common Areas',
+      'Kitchen',
+      'Whole House',
+      "Alice's Room",
+      "Bob's Room",
+      "Chris's Room",
+      'Bathrooms',
+      'Other',
+    ])
+    await userEvent.click(within(area).getByRole('button', { name: 'Other' }))
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Other area' }), 'Terrace')
+    expect(preview).toHaveTextContent('Generated Role: Cooking | Terrace | After dinner')
+    // Chris's room is Chris's to pay for.
+    expect(within(dialog).getByRole('radio', { name: /All flatmates equally/ })).toBeChecked()
+    await userEvent.click(within(area).getByRole('button', { name: "Chris's Room" }))
+    expect(within(dialog).getByRole('radio', { name: /Opt-in flatmates/ })).toBeChecked()
+    expect(await within(dialog).findByRole('checkbox', { name: 'Chris' })).toBeChecked()
+    expect(within(dialog).getByRole('checkbox', { name: 'Alice' })).not.toBeChecked()
+    expect(preview).toHaveTextContent("Generated Role: Cooking | Chris's Room | After dinner")
+
+    // By hand, starting from what the questions made.
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Edit manually' }))
+    const typed = within(dialog).getByLabelText(/^Role name/)
+    expect(typed).toHaveValue("Cooking | Chris's Room | After dinner")
+    await userEvent.clear(typed)
+    await userEvent.type(typed, 'Laundry | Kitchen | Ironing')
+    // Back to the questions, which read the name back.
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Edit manually' }))
+    expect(within(dialog).getByRole('button', { name: 'Laundry' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(within(dialog).getByRole('group', { name: 'Area' })).getByRole('button', { name: 'Kitchen' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('Ironing')
+
+    await userEvent.type(within(dialog).getByLabelText(/^Base salary/), '800')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Add Role' }))
+    await waitFor(() => expect(sent('POST', `${BASE}/roles`)).toBeDefined())
+    expect(sent('POST', `${BASE}/roles`)!.body).toEqual({
+      worker_id: 'sunita',
+      role_name: 'Laundry | Kitchen | Ironing',
+      monthly_salary_paise: 80000,
+      split_method: 'opt_in',
+      participants: ['chris'],
+    })
+  })
+
+  it("reads a role's service, area and scope back from its name", async () => {
+    const dishes = { ...utensils, role_name: 'Utensils | Kitchen | Twice Daily' }
+    show(
+      overview(),
+      { [`${BASE}/workers`]: { ...staff, unassigned_roles: [dishes] }, [`PATCH ${BASE}/roles/utensils`]: dishes },
+      '/?tab=staff',
+    )
+    const roles = await screen.findByRole('table', { name: "The helpers' roles" })
+    await userEvent.click(within(roles).getByRole('row', { name: /Utensils/ }))
+    const dialog = screen.getByRole('dialog', { name: 'Edit Role' })
+    expect(within(dialog).getByRole('checkbox', { name: 'Edit manually' })).not.toBeChecked()
+    expect(within(dialog).getByRole('button', { name: 'Utensils' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(dialog).getByRole('button', { name: 'Kitchen' })).toHaveAttribute('aria-pressed', 'true')
+    // As saved, and still its suggestion whatever the case.
+    expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('Twice Daily')
+    expect(within(dialog).getByRole('button', { name: 'Twice daily' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(dialog).getByText(/^Generated Role:/).parentElement).toHaveTextContent('Generated Role: Utensils | Kitchen | Twice Daily')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(sent('PATCH', `${BASE}/roles/utensils`)).toBeDefined())
+    expect(sent('PATCH', `${BASE}/roles/utensils`)!.body).toMatchObject({
+      role_name: 'Utensils | Kitchen | Twice Daily',
+      monthly_salary_paise: 150000,
+      split_method: 'equal',
+    })
+  })
+
   it('adds a role with no helper yet', async () => {
     show(overview(), { [`POST ${BASE}/roles`]: utensils }, '/?tab=staff')
     await screen.findByRole('table', { name: "The helpers' roles" })
     await userEvent.click(screen.getByRole('button', { name: 'Add Role' }))
     const dialog = screen.getByRole('dialog', { name: 'Add Role' })
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Edit manually' }))
     await userEvent.type(within(dialog).getByLabelText(/^Role name/), 'Utensils')
     await userEvent.selectOptions(within(dialog).getByRole('combobox', { name: /^Worker/ }), 'No helper yet')
     expect(within(dialog).getByText('On no month’s salaries until it has a helper.')).toBeInTheDocument()
