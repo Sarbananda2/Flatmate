@@ -578,6 +578,22 @@ def test_the_kitty_passbook_leaves_out_what_a_resident_paid_the_provider_themsel
          120_000, "UTR-4472")]
 
 
+def test_the_kitty_passbook_leaves_out_a_bill_until_its_provider_is_paid(billed):
+    def kitty():
+        statement = pool_statements.get_payment_pools_statement(billed, APARTMENT)["pool_statement"]
+        ledger = payments.list_payments(billed, apartment_id=APARTMENT, view="ledger")["items"]
+        return ([(e["direction"], e["description"], e["amount_paise"]) for e in statement["items"]],
+                statement["closing_balance_paise"],
+                [(row["source"], row["amount_paise"]) for row in ledger])
+
+    # Billed, and nothing paid to Furlenco yet: nothing has left the kitty.
+    assert kitty() == ([], 0, [])
+    # Paid, the payout is what left it -- the bill is not money out a second time.
+    _payout(billed, amount_paise=50_000)
+    assert kitty() == ([("out", "Furniture rental payout · November 2026", 50_000)], -50_000,
+                       [("payout", 50_000)])
+
+
 @pytest.mark.parametrize("mode, details, code", [
     ("pool", {"amount_paise": 220_001}, "tranche_exceeds_remaining"),
     ("pool", {"reference": "  "}, None),

@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from .base import Repository
+from .expenses import SERVICE_BILL_SQL
 
 #: What has been applied out of payment ``p``. SUM over BIGINT is NUMERIC in
 #: PostgreSQL, so it is cast back to keep the value an ``int``.
@@ -311,7 +312,7 @@ class PaymentsRepository(Repository):
         its charges, what the kitty has paid out for it -- to the landlord or a
         provider, and back to whoever paid them -- and which kind of bill it is."""
         return self._s.fetch_one(
-            """SELECT
+            f"""SELECT
                   e.expense_id, e.apartment_id, e.settlement_period,
                   (COALESCE((SELECT SUM(pa.amount_paise) FROM payment_application pa
                                JOIN allocation a ON a.allocation_id = pa.allocation_id
@@ -336,17 +337,7 @@ class PaymentsRepository(Repository):
                            0)::BIGINT AS reimbursed_paise,
                   EXISTS (SELECT 1 FROM rent_cycle c WHERE c.expense_id = e.expense_id)
                       AS is_rent,
-                  (EXISTS (SELECT 1 FROM furniture_rental_config f
-                            WHERE f.expense_definition_id = e.expense_definition_id)
-                   OR EXISTS (SELECT 1 FROM water_service_config w
-                               WHERE w.expense_definition_id = e.expense_definition_id)
-                   OR EXISTS (SELECT 1 FROM househelp_service_config h
-                               WHERE h.expense_definition_id = e.expense_definition_id)
-                   -- a month's electricity, settled through the kitty (0033)
-                   OR EXISTS (SELECT 1 FROM electricity_bill b
-                               WHERE b.expense_id = e.expense_id
-                                 AND b.calculation_json::jsonb ->> 'model' = 'consolidated'))
-                      AS is_service
+                  {SERVICE_BILL_SQL} AS is_service
                  FROM expense_instance e WHERE e.expense_id = %s""", (expense_id,))
 
     def statement_status_for_month(self, apartment_id: str,

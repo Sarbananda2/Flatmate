@@ -5,6 +5,25 @@ from typing import Any
 
 from .base import Repository
 
+#: Whether expense ``e`` is a household service's bill -- one the kitty
+#: collects shares for and pays its provider in its own tranches
+#: (``service_disbursement``): a furniture rental, water or house help bill,
+#: by the definition its service records under; or a month's electricity
+#: settled through the kitty (0033). An electricity bill recorded some other
+#: way shares the definition but not the model, and is an expense like any.
+SERVICE_BILL_SQL = """(EXISTS (SELECT 1 FROM furniture_rental_config f
+                                WHERE f.expense_definition_id = e.expense_definition_id
+                                  AND f.apartment_id = e.apartment_id)
+       OR EXISTS (SELECT 1 FROM water_service_config w
+                   WHERE w.expense_definition_id = e.expense_definition_id
+                     AND w.apartment_id = e.apartment_id)
+       OR EXISTS (SELECT 1 FROM househelp_service_config h
+                   WHERE h.expense_definition_id = e.expense_definition_id
+                     AND h.apartment_id = e.apartment_id)
+       OR EXISTS (SELECT 1 FROM electricity_bill b
+                   WHERE b.expense_id = e.expense_id
+                     AND b.calculation_json::jsonb ->> 'model' = 'consolidated'))"""
+
 
 class ExpensesRepository(Repository):
     #: Sort key -> ORDER BY text for :meth:`list_page`. The service validates
@@ -193,21 +212,22 @@ class ExpensesRepository(Repository):
         """Expenses the house kitty paid for itself, oldest first, with the order
         recorded: no resident is their payer, no active advance funds them, and
         they are not a month's rent, which is paid out by its own rent cycle, nor
-        a household service's bill, whose payouts the kitty made are its own."""
+        a household service's bill (:data:`SERVICE_BILL_SQL`). What the kitty
+        pays a service's provider is its payouts, as it makes them; the bill
+        itself, paid out or not, is not money out of the kitty."""
         return self._s.fetch_all(
-            """SELECT e.*, e.row_seq AS recorded_order
-                 FROM expense_instance e
-                WHERE e.apartment_id = %s AND e.payer_resident_id IS NULL
-                  AND e.amount_paise > 0
-                  AND NOT EXISTS (SELECT 1 FROM payment p
-                                   WHERE p.expense_id = e.expense_id
-                                     AND p.payment_kind = 'provider_advance'
-                                     AND p.status = 'active')
-                  AND NOT EXISTS (SELECT 1 FROM rent_cycle rc
-                                   WHERE rc.expense_id = e.expense_id)
-                  AND NOT EXISTS (SELECT 1 FROM service_disbursement sd
-                                   WHERE sd.expense_id = e.expense_id)
-                ORDER BY e.expense_date, e.row_seq""",
+            f"""SELECT e.*, e.row_seq AS recorded_order
+                  FROM expense_instance e
+                 WHERE e.apartment_id = %s AND e.payer_resident_id IS NULL
+                   AND e.amount_paise > 0
+                   AND NOT EXISTS (SELECT 1 FROM payment p
+                                    WHERE p.expense_id = e.expense_id
+                                      AND p.payment_kind = 'provider_advance'
+                                      AND p.status = 'active')
+                   AND NOT EXISTS (SELECT 1 FROM rent_cycle rc
+                                    WHERE rc.expense_id = e.expense_id)
+                   AND NOT {SERVICE_BILL_SQL}
+                 ORDER BY e.expense_date, e.row_seq""",
             (apartment_id,))
 
     def rent_cycle_for_expense(self, expense_id: str) -> dict[str, Any] | None:
