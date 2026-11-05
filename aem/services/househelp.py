@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import calendar
 import json
+import logging
 from typing import Any, Mapping, Sequence
 
 from ..engine import (
@@ -39,8 +40,9 @@ from ..engine import (
     calculate_excess_leaves,
     calculate_role_salary,
     consolidate_resident_shares,
+    prorate_salary,
 )
-from ..errors import ConflictError, NotFoundError, ValidationError
+from ..errors import AemError, ConflictError, NotFoundError, ValidationError
 from ..ids import new_id, now_timestamp
 from ..money import ensure_paise, format_inr
 from ..periods import month_label, normalize_month, parse_iso_date
@@ -72,6 +74,10 @@ SOURCE = "househelp"
 SPLIT_METHODS = ("equal", "opt_in")
 EXCESS_LEAVE_ACTIONS = ("deduct", "waive")
 DEFAULT_ALLOWED_LEAVES = 2
+#: Who saved a month that was saved as it was first looked at.
+AUTO_SAVE_ACTOR = "househelp_auto_save"
+
+logger = logging.getLogger(__name__)
 #: Where a payout to a worker came from: the kitty, or a resident's own account.
 PAYOUT_MODES = ("pool", "resident_advance")
 
@@ -87,6 +93,19 @@ def _current_month() -> str:
 def _days_in_month(month: str) -> int:
     year, number = (int(part) for part in month.split("-"))
     return calendar.monthrange(year, number)[1]
+
+
+def _days_active(joined_date: str | None, month: str) -> int:
+    """The days of ``month`` a worker who joined on ``joined_date`` was there:
+    none before the month they joined, the days from that day on in it, and
+    every day after."""
+    days = _days_in_month(month)
+    joined = joined_date or "0000-00-00"
+    if joined[:7] > month:
+        return 0
+    if joined[:7] == month:
+        return days - int(joined[8:10]) + 1
+    return days
 
 
 def _names(uow: UnitOfWork, apartment_id: str) -> dict[str, str]:
@@ -190,7 +209,7 @@ def _public_worker(worker: Mapping[str, Any], roles: Sequence[Mapping[str, Any]]
                    ) -> dict[str, Any]:
     return {**{key: worker[key] for key in (
         "worker_id", "name", "phone", "upi_id", "notes", "is_active",
-        "allowed_leaves_per_month", "created_at", "updated_at")},
+        "allowed_leaves_per_month", "joined_date", "created_at", "updated_at")},
         "roles": [role for role in roles if role["worker_id"] == worker["worker_id"]]}
 
 
@@ -224,10 +243,14 @@ def _require_worker(uow: UnitOfWork, apartment_id: str, worker_id: Any) -> dict[
 
 
 def _clean_worker(payload: Mapping[str, Any], *, creating: bool) -> dict[str, Any]:
-    """The worker's fields sent, checked. Creating, the name is required."""
+    """The worker's fields sent, checked. Creating, the name and the day they
+    joined are required."""
     cleaned: dict[str, Any] = {}
     if creating or "name" in payload:
         cleaned["name"] = require_text(payload.get("name"), "name", max_length=100)
+    if creating or "joined_date" in payload:
+        cleaned["joined_date"] = parse_iso_date(payload.get("joined_date"),
+                                                "joined_date").isoformat()
     if "phone" in payload:
         cleaned["phone"] = optional_text(payload["phone"], "phone", max_length=50)
     if "upi_id" in payload:
@@ -254,7 +277,8 @@ def _allowed_leaves(value: Any) -> int:
 
 def create_worker(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
                   actor: str = "operator") -> dict[str, Any]:
-    """Add a worker: ``name``, and optionally ``phone``, ``upi_id``, ``notes``,
+    """Add a worker: ``name`` and ``joined_date`` -- the day they joined, from
+    which they are paid -- and optionally ``phone``, ``upi_id``, ``notes``,
     ``is_active`` (true unless sent) and ``allowed_leaves_per_month`` -- the days
     off a month, across every role they do, before pay is deducted (2). The
     household's house help is set up with its first worker."""
@@ -279,7 +303,8 @@ def update_worker(db: Database, apartment_id: str, worker_id: str,
     """Change a worker's details. Only the fields sent change; a null clears an
     optional one. A worker who has left is made inactive: their roles join no
     month saved after, and every month already saved keeps them. A new leave
-    allowance, like a role's new salary, reaches a month when it is saved."""
+    allowance or joining day, like a role's new salary, reaches a month when
+    it is saved."""
     cleaned = _clean_worker(payload, creating=False)
     timestamp = now_timestamp()
     with db.transaction() as uow:
@@ -520,15 +545,24 @@ def _month_residents(uow: UnitOfWork, apartment_id: str,
     return sorted(set(resident_ids(uow, apartment_id, active_only=True)) | (on_bill & everyone))
 
 
-def _salary(role: Mapping[str, Any], entry: Mapping[str, Any], days: int) -> dict[str, Any]:
+def _salary(role: Mapping[str, Any], entry: Mapping[str, Any], month: str) -> dict[str, Any]:
     """A role's month: its worker's attendance as entered, and the salary the
-    role comes to -- each of the worker's days beyond their allowance at the
-    role's daily rate."""
+    role comes to -- for the days from the day its worker joined, less each of
+    their days beyond their allowance at the role's daily rate."""
+    days = _days_in_month(month)
+    active = _days_active(role["worker_joined_date"], month)
+    if entry["days_absent"] > active:
+        raise ValidationError(
+            f"{role['worker_name']} joined on {role['worker_joined_date']}, so was due "
+            f"{active} days of {month_label(month)}: they cannot have been absent for "
+            f"{entry['days_absent']}.", code="househelp_absent_before_joining",
+            details={"role_id": role["role_id"], "days_active": active})
     excess = calculate_excess_leaves(entry["days_absent"], role["allowed_leaves_per_month"])
     try:
         final, deduction = calculate_role_salary(
             role["monthly_salary_paise"], excess, days, entry["excess_leave_action"],
-            entry["bonus_or_extra_paise"], entry.get("manual_deduction_paise"))
+            entry["bonus_or_extra_paise"], entry.get("manual_deduction_paise"),
+            days_active=active)
     except HouseHelpCalculationError as exc:
         raise ValidationError(f"{role['role_name']} ({role['worker_name']}): {exc}",
                               code="househelp_salary_invalid",
@@ -537,7 +571,9 @@ def _salary(role: Mapping[str, Any], entry: Mapping[str, Any], days: int) -> dic
         "role_id": role["role_id"], "role_name": role["role_name"],
         "worker_id": role["worker_id"], "worker_name": role["worker_name"],
         "split_method": role["split_method"],
-        "base_salary_paise": role["monthly_salary_paise"],
+        "base_salary_paise": prorate_salary(role["monthly_salary_paise"], active, days),
+        # Set only for the month the worker joined in, if not on its first day.
+        "pro_rated_days": active if active < days else None,
         "allowed_leaves_per_month": role["allowed_leaves_per_month"],
         "days_absent": entry["days_absent"],
         "excess_leaves": excess,
@@ -550,14 +586,17 @@ def _salary(role: Mapping[str, Any], entry: Mapping[str, Any], days: int) -> dic
 
 
 def _saved_role(record: Mapping[str, Any]) -> dict[str, Any]:
-    """A role's month as saved. Its base salary is what it was saved at; the
-    leave allowance is its worker's."""
+    """A role's month as saved. Its base salary is what it was saved at, for
+    the days its worker was there; the leave allowance is its worker's."""
+    days = _days_in_month(record["settlement_month"])
+    active = _days_active(record["worker_joined_date"], record["settlement_month"])
     return {
         "role_id": record["role_id"], "role_name": record["role_name"],
         "worker_id": record["worker_id"], "worker_name": record["worker_name"],
         "split_method": record["split_method"],
         "base_salary_paise": (record["final_salary_paise"] + record["deduction_paise"]
                               - record["bonus_or_extra_paise"]),
+        "pro_rated_days": active if 0 < active < days else None,
         "allowed_leaves_per_month": record["allowed_leaves_per_month"],
         "days_absent": record["days_absent"],
         "excess_leaves": calculate_excess_leaves(record["days_absent"],
@@ -847,7 +886,8 @@ def _one_attendance_each(roles: Sequence[tuple[Mapping[str, Any], Mapping[str, A
 
 def save_monthly_attendance(db: Database, apartment_id: str, month: str,
                             records_payload: Sequence[Mapping[str, Any]], *,
-                            actor: str = "operator") -> dict[str, Any]:
+                            actor: str = "operator",
+                            only_if_unsaved: bool = False) -> dict[str, Any]:
     """Save a month's attendance, and bill it.
 
     ``records_payload`` is the month's roles, a record each: ``role_id``,
@@ -862,7 +902,8 @@ def save_monthly_attendance(db: Database, apartment_id: str, month: str,
     with no worker cannot be on a month (``househelp_role_has_no_worker``).
 
     Refused once the month's statement is finalized
-    (``househelp_month_finalized``), and for a month that has not begun.
+    (``househelp_month_finalized``), and for a month that has not begun. With
+    ``only_if_unsaved``, a month someone has saved already is left as it is.
     Returns the month's overview."""
     month = normalize_month(month, "settlement_month")
     days = _days_in_month(month)
@@ -883,10 +924,20 @@ def save_monthly_attendance(db: Database, apartment_id: str, month: str,
                 code="househelp_month_not_started", details={"settlement_month": month})
         before = {row["role_id"]: row
                   for row in uow.househelp.records_for_month(apartment_id, month)}
+        if only_if_unsaved and before:
+            # Saved by someone else in the meantime: theirs stands.
+            return _overview(uow, apartment_id, month)
         roles = [(_role_with_worker(uow, apartment_id, entry["role_id"]), entry)
                  for entry in entries]
         _one_attendance_each(roles)
-        saved = [_salary(role, entry, days) for role, entry in roles]
+        for role, _ in roles:
+            if not _days_active(role["worker_joined_date"], month):
+                raise ConflictError(
+                    f"{role['worker_name']} joined on {role['worker_joined_date']}, after "
+                    f"{month_label(month)}, so {role['role_name']} is not on it.",
+                    code="househelp_worker_not_joined",
+                    details={"role_id": role["role_id"], "settlement_month": month})
+        saved = [_salary(role, entry, month) for role, entry in roles]
         for role_id in sorted(set(before) - {role["role_id"] for role in saved}):
             uow.househelp.delete_record(role_id, month)
         for role in saved:
@@ -919,12 +970,43 @@ def get_month_overview(db: Database, apartment_id: str, month: str) -> dict[str,
     worker is owed and has been paid, and each resident's share with what it is
     made of -- and where paying it stands, into the kitty and out to the workers.
 
-    A month not saved yet is a preview: every active worker's roles at their
-    full salary, nobody absent. Nothing is written."""
+    A month that can be billed and has roles to pay is saved as it is first
+    looked at, with nobody absent and no bonus: every active worker's roles
+    that were set up by then, at their full salary. It is billed like any
+    other month, and changed by saving it again. A month that cannot be --
+    not begun, finalized, recorded by hand, or with an opt-in role nobody has
+    opted in to -- is a preview of that, and nothing is written."""
     month = normalize_month(month, "month")
     with db.read() as uow:
         get_apartment(uow, apartment_id)
-        return _overview(uow, apartment_id, month)
+        overview = _overview(uow, apartment_id, month)
+        defaults = _defaults_to_save(uow, apartment_id, month, overview)
+    if not defaults:
+        return overview
+    try:
+        return save_monthly_attendance(db, apartment_id, month, defaults,
+                                       actor=AUTO_SAVE_ACTOR, only_if_unsaved=True)
+    except AemError as exc:
+        # Left as a preview: whoever saves it will be told why.
+        logger.warning("House help for %s was not saved by default: %s", month, exc.message)
+        return overview
+
+
+def _defaults_to_save(uow: UnitOfWork, apartment_id: str, month: str,
+                      overview: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The month's attendance to save by default, or none: each role an active
+    worker who had joined had by the month's end, nobody absent, for a month
+    nobody has saved that can be billed as it stands. A role set up after the
+    month is left out, whatever day its worker joined: a month gone by is saved
+    by hand."""
+    if (overview["saved"] or not overview["can_save"] or overview["expense"] is not None
+            or overview["blocked_reason"]):
+        return []
+    return [{"role_id": role["role_id"], "days_absent": 0, "excess_leave_action": "deduct",
+             "bonus_or_extra_paise": 0}
+            for role in uow.househelp.roles(apartment_id)
+            if role["worker_is_active"] and role["created_at"][:7] <= month
+            and _days_active(role["worker_joined_date"], month)]
 
 
 def _payouts(uow: UnitOfWork, apartment_id: str, tranches: Sequence[Mapping[str, Any]],
@@ -969,9 +1051,10 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
     on_month = {record["role_id"] for record in records}
     all_roles = uow.househelp.roles(apartment_id)
     open_roles = [_salary(role, {"days_absent": 0, "excess_leave_action": "deduct",
-                                 "bonus_or_extra_paise": 0}, days)
+                                 "bonus_or_extra_paise": 0}, month)
                   for role in all_roles
-                  if role["worker_is_active"] and role["role_id"] not in on_month]
+                  if role["worker_is_active"] and role["role_id"] not in on_month
+                  and _days_active(role["worker_joined_date"], month)]
     roles = [_saved_role(record) for record in records] if saved else open_roles
     plan = _split(uow, apartment_id, roles, sharing)
     if expense is not None:

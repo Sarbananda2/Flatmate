@@ -18,6 +18,7 @@ from aem.engine import (
     calculate_excess_leaves,
     calculate_role_salary,
     consolidate_resident_shares,
+    prorate_salary,
 )
 from aem.errors import ConflictError, NotFoundError, ValidationError
 from aem.services import apartments, definitions, househelp, reconciliation, statements
@@ -44,7 +45,8 @@ def _rows(db, sql, params=()):
 
 
 def _worker(db, name="Sunita", **fields):
-    return househelp.create_worker(db, APARTMENT, {"name": name, **fields})["worker_id"]
+    return househelp.create_worker(db, APARTMENT, {
+        "name": name, "joined_date": "2026-01-01", **fields})["worker_id"]
 
 
 def _role(db, worker_id, role_name, salary, split="equal", **fields):
@@ -119,6 +121,15 @@ def test_leave_beyond_the_allowance_costs_the_days_pro_rata_pay():
     assert calculate_role_salary(300_000, 3, 30, "waive", 0, 25_000) == (300_000, 0)
     # The day's pay is floored to the paisa: ₹5,000 over 31 days is ₹161.29.
     assert calculate_role_salary(500_000, 2, 31) == (467_742, 32_258)
+    # Joined on the 15th of a 30-day month: 16 days' pay; a day off still costs a whole day's.
+    assert prorate_salary(300_000, 16, 30) == 160_000
+    assert prorate_salary(500_000, 17, 31) == 274_193
+    assert calculate_role_salary(300_000, 0, 30, days_active=16) == (160_000, 0)
+    assert calculate_role_salary(300_000, 1, 30, days_active=16) == (150_000, 10_000)
+    for bad in [dict(days_active=0), dict(days_active=31), dict(excess_days=17)]:
+        with pytest.raises(HouseHelpCalculationError):
+            calculate_role_salary(**{"base_salary_paise": 300_000, "excess_days": 0,
+                                     "days_in_month": 30, "days_active": 16, **bad})
     for bad in [dict(excess_days=31), dict(excess_days=-1), dict(excess_leave_action="halve"),
                 dict(manual_deduction_paise=300_001), dict(base_salary_paise=0),
                 dict(days_in_month=27), dict(bonus_or_extra_paise=-1)]:
@@ -159,10 +170,10 @@ def test_each_residents_bill_is_their_parts_of_every_role():
 def test_a_worker_and_their_roles_are_set_up(apartment, clock):
     worker = househelp.create_worker(apartment, APARTMENT, {
         "name": "Sunita", "phone": "98100 12345", "upi_id": "sunita@okaxis",
-        "allowed_leaves_per_month": 4})
+        "allowed_leaves_per_month": 4, "joined_date": "2026-03-01"})
     assert (worker["name"], worker["phone"], worker["upi_id"], worker["is_active"],
-            worker["allowed_leaves_per_month"], worker["roles"]) == (
-        "Sunita", "98100 12345", "sunita@okaxis", True, 4, [])
+            worker["allowed_leaves_per_month"], worker["joined_date"], worker["roles"]) == (
+        "Sunita", "98100 12345", "sunita@okaxis", True, 4, "2026-03-01", [])
     # The household's house help is set up with its first worker.
     service = _rows(apartment, "SELECT * FROM household_service")
     assert [(row["service_type"], row["display_name"]) for row in service] == [
@@ -200,12 +211,12 @@ def test_a_worker_and_their_roles_are_set_up(apartment, clock):
     assert househelp.set_role_participants(apartment, APARTMENT, cooking["role_id"],
                                            ["chris"])["participant_ids"] == ["chris"]
 
-    for bad in [{"name": " "}, {"name": "Geeta", "upi_id": "not-a-upi"},
-                {"name": "Geeta", "is_active": "yes"},
-                {"name": "Geeta", "allowed_leaves_per_month": -1},
-                {"name": "Geeta", "allowed_leaves_per_month": 32}]:
+    for bad in [{"name": " "}, {"upi_id": "not-a-upi"}, {"is_active": "yes"},
+                {"allowed_leaves_per_month": -1}, {"allowed_leaves_per_month": 32},
+                {"joined_date": None}, {"joined_date": "2026-02-30"}]:
         with pytest.raises(ValidationError):
-            househelp.create_worker(apartment, APARTMENT, bad)
+            househelp.create_worker(apartment, APARTMENT,
+                                    {"name": "Geeta", "joined_date": "2026-01-01", **bad})
     for bad in [{"monthly_salary_paise": 0}, {"split_method": "weighted"}, {"role_name": ""}]:
         with pytest.raises(ValidationError):
             househelp.create_role(apartment, APARTMENT, {
@@ -420,6 +431,76 @@ def test_paise_that_do_not_divide_still_add_up_to_the_bill(apartment, clock):
     _clean(apartment)
 
 
+def test_a_worker_is_paid_from_the_day_they_joined(apartment, clock):
+    sunita = _worker(apartment)
+    cleaning = _role(apartment, sunita, "Cleaning", 300_000)
+    ramesh = _worker(apartment, "Ramesh", joined_date="2026-11-15")
+    cooking = _role(apartment, ramesh, "Cooking", 450_000)
+
+    # October was before Ramesh joined: only Sunita's cleaning is on it.
+    october = _month(apartment, "2026-10")
+    assert [row["role_name"] for row in october["roles"]] == ["Cleaning"]
+    with pytest.raises(ConflictError) as early:
+        _save(apartment, (cleaning, {}), (cooking, {}), month="2026-10")
+    assert early.value.code == "househelp_worker_not_joined"
+
+    # He joined on the 15th: 16 of November's 30 days, and his salary for them.
+    month = _save(apartment, (cleaning, {}), (cooking, {"days_absent": 3}))
+    assert [(row["role_name"], row["pro_rated_days"], row["base_salary_paise"],
+             row["deduction_paise"], row["final_salary_paise"]) for row in month["roles"]] == [
+        ("Cooking", 16, 240_000, 15_000, 225_000), ("Cleaning", None, 300_000, 0, 300_000)]
+    assert _workers(month)["Ramesh"][0] == 225_000
+    assert sum(_shares(month).values()) == month["total_paise"] == 525_000
+    # He cannot have been away for more than the days he was there.
+    with pytest.raises(ValidationError) as away:
+        _save(apartment, (cleaning, {}), (cooking, {"days_absent": 17}))
+    assert away.value.code == "househelp_absent_before_joining"
+
+    # December is his in full.
+    assert [(row["role_name"], row["pro_rated_days"], row["base_salary_paise"])
+            for row in _month(apartment, "2026-12")["roles"]] == [
+        ("Cooking", None, 450_000), ("Cleaning", None, 300_000)]
+
+    # Said to have joined on the 1st, November is his in full once saved again.
+    househelp.update_worker(apartment, APARTMENT, ramesh, {"joined_date": "2026-11-01"})
+    month = _save(apartment, (cleaning, {}), (cooking, {}))
+    assert [(row["pro_rated_days"], row["final_salary_paise"]) for row in month["roles"]] == [
+        (None, 450_000), (None, 300_000)]
+    _clean(apartment)
+
+
+def test_an_open_month_is_saved_and_billed_as_it_is_first_looked_at(apartment, clock):
+    sunita = _worker(apartment)
+    cleaning = _role(apartment, sunita, "Cleaning", 300_000)
+    gone = _worker(apartment, "Ramesh")
+    _role(apartment, gone, "Car wash", 60_000)
+    househelp.update_worker(apartment, APARTMENT, gone, {"is_active": False})
+
+    # Nobody absent, at full salary: billed like any month, by the default saver.
+    month = _month(apartment)
+    assert (month["bill_state"], month["saved"], month["total_paise"]) == ("live", True, 300_000)
+    assert [(row["role_name"], row["days_absent"], row["final_salary_paise"])
+            for row in month["roles"]] == [("Cleaning", 0, 300_000)]
+    assert _shares(month) == {"alice": 100_000, "bob": 100_000, "chris": 100_000}
+    assert [row["actor"] for row in _rows(
+        apartment, "SELECT actor FROM audit_log WHERE action='attendance'")] == [
+        househelp.AUTO_SAVE_ACTOR]
+    # Looked at again: the same bill.
+    _month(apartment)
+    assert len(_rows(apartment, "SELECT 1 FROM expense_instance")) == 1
+
+    # A month saved stays as it was saved.
+    _save(apartment, (cleaning, {"days_absent": 5}))
+    assert _month(apartment)["roles"][0]["days_absent"] == 5
+
+    # October came before any role was set up, and December has not begun: neither is billed.
+    for other in ("2026-10", "2026-12"):
+        assert (_month(apartment, other)["saved"], _month(apartment, other)["expense"]) == (
+            False, None)
+    assert len(_rows(apartment, "SELECT 1 FROM expense_instance")) == 1
+    _clean(apartment)
+
+
 def test_a_month_not_saved_is_a_preview_and_an_opt_in_role_needs_its_sharers(apartment, clock):
     sunita = _worker(apartment)
     cleaning = _role(apartment, sunita, "Cleaning", 300_000)
@@ -428,7 +509,8 @@ def test_a_month_not_saved_is_a_preview_and_an_opt_in_role_needs_its_sharers(apa
     _role(apartment, gone, "Car wash", 60_000)
     househelp.update_worker(apartment, APARTMENT, gone, {"is_active": False})
 
-    # Every active worker's roles at their full salary, nobody absent; nothing billed.
+    # Every active worker's roles at their full salary, nobody absent; nothing billed,
+    # as nobody has opted in to the cooking, so it is not saved by default.
     preview = _month(apartment)
     assert (preview["bill_state"], preview["saved"], preview["expense"],
             preview["can_save"]) == ("not_billed", False, None, True)

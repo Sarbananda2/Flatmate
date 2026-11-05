@@ -121,7 +121,8 @@ def delete_role(db: Db, apartment_id: ApartmentId, settings: AppSettings,
 def get_month(db: Db, apartment_id: ApartmentId,
               settlement_month: SettlementMonth) -> dict[str, Any]:
     """Each role's attendance and salary, each worker's pay, and each flatmate's
-    share. A month not saved yet is a preview: nobody absent."""
+    share. A month that can be billed is saved and billed the first time it is
+    read, with nobody absent; one that cannot be yet is a preview of that."""
     try:
         return househelp.get_month_overview(db, apartment_id, settlement_month)
     except AemError as exc:

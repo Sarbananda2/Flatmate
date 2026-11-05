@@ -4,9 +4,10 @@
     python scripts/seed_househelp_staff.py              seed the configured database
     python scripts/seed_househelp_staff.py --dry-run    say what it would do, change nothing
 
-Two helpers: Sunita Sharma, who does the housekeeping for everyone, and Ramesh
-Kumar, who cooks for Sarbananda and Arnab and does everyone's dishes. Each may
-take two days off a month before pay is deducted.
+Two helpers: Sunita Sharma, who has done the housekeeping for everyone since
+April 2026, and Ramesh Kumar, who joined on 15 November 2026 -- so November pays
+him for its last 16 days -- and cooks for Sarbananda and Arnab and does
+everyone's dishes. Each may take two days off a month before pay is deducted.
 
 Sample data, so it is written only to a database on this machine: run it the
 way scripts/dev.sh runs the app, so .env.local's production settings, if any,
@@ -34,11 +35,11 @@ ACTOR = "seed_househelp_staff"
 
 STAFF = (
     {"name": "Sunita Sharma", "phone": "9876543210", "upi_id": "sunita.sharma@okaxis",
-     "allowed_leaves_per_month": 2,
+     "allowed_leaves_per_month": 2, "joined_date": "2026-04-01",
      "roles": ({"role_name": "Housekeeping & Mopping", "monthly_salary_paise": 350_000,
                 "split_method": "equal"},)},
     {"name": "Ramesh Kumar", "phone": "9812345678", "upi_id": "ramesh.cook@upi",
-     "allowed_leaves_per_month": 2,
+     "allowed_leaves_per_month": 2, "joined_date": "2026-11-15",
      "roles": ({"role_name": "Cooking (Lunch & Dinner)", "monthly_salary_paise": 500_000,
                 "split_method": "opt_in", "participant_ids": ["sarbananda-taw", "arnab-deka"]},
                {"role_name": "Utensils & Dishwashing", "monthly_salary_paise": 150_000,
@@ -73,11 +74,11 @@ def seed(db: PostgresDatabase, apartment_id: str, *, dry_run: bool) -> list[str]
         if worker is not None:
             done.append(f"{helper['name']} already on file")
         elif dry_run:
-            done.append(f"would add {helper['name']}, "
+            done.append(f"would add {helper['name']}, joined {helper['joined_date']}, "
                         f"{helper['allowed_leaves_per_month']} days off a month")
         else:
             worker = househelp.create_worker(db, apartment_id, details, actor=ACTOR)
-            done.append(f"added {worker['name']}, "
+            done.append(f"added {worker['name']}, joined {worker['joined_date']}, "
                         f"{worker['allowed_leaves_per_month']} days off a month")
         theirs = {role["role_name"].strip().lower()
                   for role in (worker or {}).get("roles", [])}

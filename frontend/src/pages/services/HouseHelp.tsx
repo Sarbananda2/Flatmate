@@ -18,7 +18,7 @@ import { useSearchParams } from 'react-router-dom'
 import { CalendarCheck, HandPlatter, Pencil, Plus, Receipt, Save, Trash2, UserPlus, Users, Wallet } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
 import { AsyncSection, Callout, ConfirmDialog, ErrorNotice, Modal } from '../../components/Primitives'
-import { CheckboxField, MoneyInput, SelectField, SwitchField, TextAreaField, TextField } from '../../components/Form'
+import { CheckboxField, DateField, MoneyInput, SelectField, SwitchField, TextAreaField, TextField } from '../../components/Form'
 import {
   ResidentCollectionTable,
   type CollectionStatus,
@@ -507,7 +507,6 @@ function CollectionPanel({
     name: share.display_name,
     href: `/residents/${share.resident_id}`,
     sharePaise: share.total_paise,
-    shareNote: share.breakdown.length > 0 ? share.breakdown.map((part) => part.role_name).join(' + ') : undefined,
     paidIntoKittyPaise: billed ? share.settled_paise : null,
     stillOwedPaise: billed ? share.outstanding_paise : null,
     status: billed ? collectionStatus(share) : null,
@@ -558,7 +557,6 @@ function WorkerPayoutPanel({
           items={data.workers.map((worker) => ({
             id: worker.worker_id,
             name: worker.name,
-            subtitle: [worker.phone, worker.upi_id].filter(Boolean).join(' · ') || undefined,
             totalPaise: worker.total_due_paise,
             // Nothing is paid or owed until the month is saved.
             paidPaise: billed ? worker.paid_to_worker_paise : null,
@@ -650,11 +648,7 @@ function HouseHelpStatementModal({
     <Modal title="House Help Statement" description={`${share.display_name} · ${formatMonth(month)}`} onClose={onClose}>
       <div className="stack">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <MiniStat
-            label="Share"
-            value={<Rupees paise={share.total_paise} />}
-            note={share.breakdown.map((part) => `${part.role_name}: ${formatInr(part.share_paise)}`).join(' · ')}
-          />
+          <MiniStat label="Share" value={<Rupees paise={share.total_paise} />} />
           <MiniStat label="Paid into Kitty" value={billed ? <Rupees paise={share.settled_paise} /> : DASH} />
           <MiniStat label="Still Owed" value={billed ? <Rupees paise={share.outstanding_paise} /> : DASH} />
         </div>
@@ -669,6 +663,51 @@ function HouseHelpStatementModal({
                 ? `which will be reimbursed via the House Kitty: ${formatInr(pending)} still to come.`
                 : 'which will be reimbursed via the House Kitty.'}
           </Callout>
+        )}
+
+        {share.breakdown.length > 0 && (
+          <section aria-label="Share breakdown" className="space-y-2">
+            <h3 className="m-0 text-sm font-bold text-[var(--text-primary)]">Share Breakdown</h3>
+            <div className="overflow-x-auto min-w-0">
+              <table className="w-full text-left text-xs border-collapse">
+                <caption className="sr-only">Role breakdown of house help share</caption>
+                <thead>
+                  <tr className={TABLE_HEAD}>
+                    <th scope="col" className="pb-2.5 pr-3 font-bold text-left">
+                      Role
+                    </th>
+                    <th scope="col" className="pb-2.5 pr-3 font-bold text-center">
+                      Helper
+                    </th>
+                    <th scope="col" className="pb-2.5 font-bold text-right">
+                      Your Share
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)] font-medium">
+                  {share.breakdown.map((part) => (
+                    <tr key={part.role_id} className="align-middle">
+                      <td className="py-2.5 pr-3 text-left font-semibold text-[var(--text-primary)]">{part.role_name}</td>
+                      <td className="py-2.5 pr-3 text-center text-[var(--text-secondary)]">{part.worker_name}</td>
+                      <td className="py-2.5 text-right tabular font-bold text-[var(--text-primary)]">
+                        <Rupees paise={part.share_paise} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-[var(--border-subtle)] font-bold text-[var(--text-primary)]">
+                    <th scope="row" colSpan={2} className="pt-2.5 pr-3 text-left">
+                      Total Share
+                    </th>
+                    <td className="pt-2.5 text-right tabular">
+                      <Rupees paise={share.total_paise} />
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </section>
         )}
 
         <section aria-label="Payment history" className="space-y-3">
@@ -787,15 +826,28 @@ function dayCount(days: number): string {
   return `${days} day${days === 1 ? '' : 's'}`
 }
 
+/** A role's pay for the days of the month its helper was there (aem/engine/househelp.py). */
+function prorated(monthly: number, daysActive: number, daysInMonth: number): number {
+  return Math.floor((monthly * daysActive) / daysInMonth)
+}
+
 /**
  * A role's salary as the backend will work it out on saving
- * (aem/engine/househelp.py): each of its helper's days absent beyond their
- * allowance costs the role a day's pay, its salary over the month's days
- * floored to the paisa, unless waived; the bonus goes on top.
+ * (aem/engine/househelp.py): its pay for the days its helper was there
+ * (`earned`), less a day's pay -- its monthly salary over the month's days,
+ * floored to the paisa -- for each of their days absent beyond their
+ * allowance, unless waived; the bonus goes on top.
  */
-function netSalary(base: number, excess: number, action: HouseHelpLeaveAction, bonus: number, daysInMonth: number) {
-  const deduction = action === 'waive' ? 0 : Math.floor(base / daysInMonth) * excess
-  return { deduction, net: base - deduction + bonus }
+function netSalary(
+  monthly: number,
+  earned: number,
+  excess: number,
+  action: HouseHelpLeaveAction,
+  bonus: number,
+  daysInMonth: number,
+) {
+  const deduction = action === 'waive' ? 0 : Math.floor(monthly / daysInMonth) * excess
+  return { deduction, net: earned - deduction + bonus }
 }
 
 function AttendancePanel({
@@ -817,6 +869,12 @@ function AttendancePanel({
   const days = data.days_in_month
   const salaryNow = new Map(workers.flatMap((worker) => worker.roles).map((role) => [role.role_id, role.monthly_salary_paise]))
   const allowanceNow = new Map(workers.map((worker) => [worker.worker_id, worker.allowed_leaves_per_month]))
+  const joinedOn = new Map(workers.map((worker) => [worker.worker_id, worker.joined_date]))
+  // The days of the month a role's helper was there, and its pay for them at its salary now.
+  const daysThere = (role: HouseHelpRoleMonth) => role.pro_rated_days ?? days
+  const monthlyNow = (role: HouseHelpRoleMonth) => salaryNow.get(role.role_id) ?? role.base_salary_paise
+  const baseNow = (role: HouseHelpRoleMonth) =>
+    salaryNow.has(role.role_id) ? prorated(monthlyNow(role), daysThere(role), days) : role.base_salary_paise
   // Each panel reads as saved until it is edited, and is saved on its own.
   const [editingAttendance, setEditingAttendance] = useState(false)
   const [editingSalaries, setEditingSalaries] = useState(false)
@@ -856,11 +914,14 @@ function AttendancePanel({
     return helpers.map(({ workerId, name, roles }) => {
       const attendance = (attendanceDrafted && workerDrafts[workerId]) || savedAttendance(workerId)
       const allowed = preview ? (allowanceNow.get(workerId) ?? roles[0].allowed_leaves_per_month) : roles[0].allowed_leaves_per_month
-      const absent = parseDays(attendance.days, days)
+      // A helper who joined during the month cannot have been away for more days than they were there.
+      const active = daysThere(roles[0])
+      const absent = parseDays(attendance.days, active)
       const excess = absent == null ? null : Math.max(0, absent - allowed)
       const roleFigures = roles.map((role) => {
         const bonus = (bonusesDrafted && roleDrafts[role.role_id]) || roleDraftOf(role)
-        const base = preview ? (salaryNow.get(role.role_id) ?? role.base_salary_paise) : role.base_salary_paise
+        const monthly = monthlyNow(role)
+        const base = preview ? baseNow(role) : role.base_salary_paise
         // The deduction as saved stands while nothing it was worked out from has changed.
         const asSaved =
           data.saved &&
@@ -871,7 +932,8 @@ function AttendancePanel({
           allowed === role.allowed_leaves_per_month
         // A deduction agreed by hand, kept with it.
         const agreed =
-          asSaved && role.deduction_paise !== netSalary(base, role.excess_leaves, role.excess_leave_action, 0, days).deduction
+          asSaved &&
+          role.deduction_paise !== netSalary(monthly, base, role.excess_leaves, role.excess_leave_action, 0, days).deduction
         const worked =
           excess == null || !bonus.bonusOk
             ? null
@@ -879,10 +941,10 @@ function AttendancePanel({
               ? { excess: role.excess_leaves, deduction: role.deduction_paise, net: role.final_salary_paise }
               : asSaved
                 ? { excess: role.excess_leaves, deduction: role.deduction_paise, net: base - role.deduction_paise + bonus.bonusPaise }
-                : { excess, ...netSalary(base, excess, attendance.action, bonus.bonusPaise, days) }
+                : { excess, ...netSalary(monthly, base, excess, attendance.action, bonus.bonusPaise, days) }
         return { role, bonus, base, worked, agreed }
       })
-      return { workerId, name, attendance, allowed, absent, roles: roleFigures }
+      return { workerId, name, attendance, allowed, active, absent, roles: roleFigures }
     })
   }
   const records = (helpers: ReturnType<typeof work>) =>
@@ -907,7 +969,7 @@ function AttendancePanel({
     data.saved &&
     data.roles.some(
       (role) =>
-        (salaryNow.get(role.role_id) ?? role.base_salary_paise) !== role.base_salary_paise ||
+        baseNow(role) !== role.base_salary_paise ||
         (allowanceNow.get(role.worker_id) ?? role.allowed_leaves_per_month) !== role.allowed_leaves_per_month,
     )
   const attendanceValid = figures.every((helper) => helper.absent != null)
@@ -1001,17 +1063,10 @@ function AttendancePanel({
           <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
             {formatMonth(month)}&apos;s house help is already recorded as an expense entered by hand.
           </p>
-        ) : data.blocked_reason ? (
-          <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
-            {data.blocked_reason}
-          </p>
         ) : (
-          editable &&
-          !data.saved &&
-          !editingAttendance &&
-          !editingSalaries && (
-            <p className="m-0 text-xs font-medium text-[var(--warning)]">
-              Not saved yet: {formatMonth(month)} is billed once its attendance or salaries are saved.
+          data.blocked_reason && (
+            <p className="m-0 text-xs font-medium text-[var(--warning)]" role="status">
+              {data.blocked_reason}
             </p>
           )
         )}
@@ -1046,7 +1101,7 @@ function AttendancePanel({
                           inputMode="numeric"
                           value={helper.attendance.days}
                           onChange={(value) => setWorkerDraft(helper.workerId, { days: value })}
-                          error={helper.absent == null ? `0 to ${data.days_in_month}` : null}
+                          error={helper.absent == null ? `0 to ${helper.active}` : null}
                         />
                       </div>
                     ) : (
@@ -1138,6 +1193,12 @@ function AttendancePanel({
                       {role.worker_name}
                       {added.includes(role.role_id) && ' · new this month'}
                     </span>
+                    {role.pro_rated_days != null && role.pro_rated_days < days && (
+                      <span className="block text-[11px] text-[var(--text-secondary)] truncate">
+                        {joinedOn.has(role.worker_id) && `Joined ${formatDate(joinedOn.get(role.worker_id))} · `}
+                        {role.pro_rated_days}/{days} days pro-rated
+                      </span>
+                    )}
                   </th>
                   <td className="py-3 pr-3 text-center tabular">
                     <Rupees paise={base} />
@@ -1324,17 +1385,7 @@ function WorkersPanel({
                   <th scope="row" className="py-3 pr-3 text-left font-normal">
                     <span className="flex items-center gap-2.5 min-w-0">
                       <Avatar name={worker.name} />
-                      <span className="min-w-0">
-                        <span className="block font-semibold text-[var(--text-primary)] truncate">{worker.name}</span>
-                        {(worker.phone || worker.upi_id) && (
-                          <span className="block text-[11px] text-[var(--text-tertiary)] truncate">
-                            {[worker.phone, worker.upi_id].filter(Boolean).join(' · ')}
-                          </span>
-                        )}
-                        {worker.notes && (
-                          <span className="block text-[11px] text-[var(--text-tertiary)] truncate">{worker.notes}</span>
-                        )}
-                      </span>
+                      <span className="font-semibold text-[var(--text-primary)] truncate">{worker.name}</span>
                     </span>
                   </th>
                   <td className="py-3 pr-3 text-center whitespace-nowrap">
@@ -1445,10 +1496,12 @@ function WorkerDialog({
   const [notes, setNotes] = useState(worker?.notes ?? '')
   const [active, setActive] = useState(worker?.is_active ?? true)
   const [leaves, setLeaves] = useState(String(worker?.allowed_leaves_per_month ?? 2))
+  const [joined, setJoined] = useState(worker?.joined_date ?? '')
   const leavesOk = /^\d{1,2}$/.test(leaves.trim()) && Number(leaves) <= 31
-  const valid = name.trim().length > 0 && leavesOk
+  const valid = name.trim().length > 0 && leavesOk && /^\d{4}-\d{2}-\d{2}$/.test(joined)
   const details = {
     name: name.trim(),
+    joined_date: joined,
     phone: phone.trim() || null,
     upi_id: upi.trim() || null,
     notes: notes.trim() || null,
@@ -1490,7 +1543,16 @@ function WorkerDialog({
         }}
       >
         <ErrorNotice error={save.error} />
-        <TextField label="Name" required value={name} onChange={setName} maxLength={100} />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+          <TextField label="Name" required value={name} onChange={setName} maxLength={100} />
+          <DateField
+            label="Date of joining"
+            required
+            value={joined}
+            onChange={setJoined}
+            hint="Paid from this day: the month they join in, for its days from it."
+          />
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
           <TextField label="Phone" type="tel" value={phone} onChange={setPhone} maxLength={50} placeholder="+91..." />
           <TextField label="UPI ID" value={upi} onChange={setUpi} maxLength={320} placeholder="name@bank" />

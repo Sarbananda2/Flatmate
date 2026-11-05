@@ -1364,6 +1364,10 @@ class WaterReimburseRequest(ApiModel):
 class HouseHelpWorkerCreate(ApiModel):
     """A maid, cook or cleaner the household employs."""
     name: str = Field(min_length=1, max_length=100)
+    joined_date: str = Field(
+        pattern=DATE_PATTERN,
+        description="The day they joined: the month before is not theirs, and the month they "
+                    "joined in pays them from that day.")
     phone: str | None = Field(None, max_length=50)
     upi_id: str | None = Field(None, max_length=320, description="name@bank, to pay them by UPI.")
     notes: str | None = Field(None, max_length=2000)
@@ -1381,6 +1385,7 @@ class HouseHelpWorkerUpdate(ApiModel):
     notes: str | None = Field(None, max_length=2000)
     is_active: bool | None = None
     allowed_leaves_per_month: int | None = Field(None, ge=0, le=31)
+    joined_date: str | None = Field(None, pattern=DATE_PATTERN)
 
 
 class HouseHelpRoleCreate(ApiModel):

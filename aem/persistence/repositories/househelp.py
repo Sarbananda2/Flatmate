@@ -18,20 +18,23 @@ SERVICE_TYPE = "domestic_help"
 
 #: Columns a caller may change. Anything else is refused, so no caller-supplied
 #: name ever reaches the SQL.
-WORKER_COLUMNS = ("name", "phone", "upi_id", "notes", "is_active", "allowed_leaves_per_month")
+WORKER_COLUMNS = ("name", "phone", "upi_id", "notes", "is_active", "allowed_leaves_per_month",
+                  "joined_date")
 ROLE_COLUMNS = ("worker_id", "role_name", "monthly_salary_paise", "split_method")
 
-#: A role with the worker who does it, and the worker's leave allowance. A role
-#: not yet given a worker (migration 0035) has these null.
+#: A role with the worker who does it, the worker's leave allowance and the day
+#: they joined (migration 0037). A role not yet given a worker (migration 0035)
+#: has these null.
 ROLE_SELECT = """SELECT r.*, w.name AS worker_name, w.is_active AS worker_is_active,
-                        w.allowed_leaves_per_month
+                        w.allowed_leaves_per_month, w.joined_date AS worker_joined_date
                    FROM househelp_role r
                    LEFT JOIN househelp_worker w ON w.worker_id = r.worker_id"""
 
 #: A month's record with its role and the worker who does it. A role on a
 #: month always has its worker.
 RECORD_SELECT = """SELECT m.*, r.worker_id, r.role_name, r.monthly_salary_paise,
-                          w.allowed_leaves_per_month, r.split_method, w.name AS worker_name
+                          w.allowed_leaves_per_month, r.split_method, w.name AS worker_name,
+                          w.joined_date AS worker_joined_date
                      FROM househelp_monthly_record m
                      JOIN househelp_role r ON r.role_id = m.role_id
                      JOIN househelp_worker w ON w.worker_id = r.worker_id"""
@@ -107,13 +110,15 @@ class HouseHelpRepository(Repository):
 
     def insert_worker(self, *, worker_id: str, apartment_id: str, name: str,
                       phone: str | None, upi_id: str | None, notes: str | None,
-                      is_active: bool, allowed_leaves_per_month: int, created_at: str) -> None:
+                      is_active: bool, allowed_leaves_per_month: int, joined_date: str,
+                      created_at: str) -> None:
         self._s.execute(
             """INSERT INTO househelp_worker (worker_id, apartment_id, name, phone, upi_id,
-                   notes, is_active, allowed_leaves_per_month, created_at, updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,(%s)::int::boolean,%s,%s,%s)""",
+                   notes, is_active, allowed_leaves_per_month, joined_date, created_at,
+                   updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,(%s)::int::boolean,%s,%s,%s,%s)""",
             (worker_id, apartment_id, name, phone, upi_id, notes, is_active,
-             allowed_leaves_per_month, created_at, created_at))
+             allowed_leaves_per_month, joined_date, created_at, created_at))
 
     def update_worker(self, worker_id: str, *, updated_at: str, **values: Any) -> None:
         columns = _columns(WORKER_COLUMNS, values, "worker")

@@ -1989,6 +1989,8 @@ export interface HouseHelpWorker {
   is_active: boolean
   /** Days off a month, across every role they do, before pay is deducted. */
   allowed_leaves_per_month: number
+  /** The day they joined: no month before it is theirs, and the month they joined in pays them from it. */
+  joined_date: string
   created_at: string
   updated_at: string
   roles: HouseHelpRole[]
@@ -2007,8 +2009,10 @@ export interface HouseHelpRoleMonth {
   worker_id: string
   worker_name: string
   split_method: HouseHelpSplitMethod
-  /** As saved; before the month is saved, the role's salary now. */
+  /** As saved; before the month is saved, the role's salary now -- for the days its helper was there. */
   base_salary_paise: number
+  /** The days of the month its helper was there, in the month they joined in if not on its first day; else null. */
+  pro_rated_days?: number | null
   /** The worker's, as it now stands. */
   allowed_leaves_per_month: number
   /** The worker's: the same on each of their roles on the month. */
@@ -2081,7 +2085,10 @@ export interface HouseHelpWorkerPayout {
   payouts: HouseHelpPayout[]
 }
 
-/** `GET /api/services/househelp/month/{month}`: a preview until the month is saved. */
+/**
+ * `GET /api/services/househelp/month/{month}`. A month that can be billed is saved, nobody
+ * absent, the first time it is read; one that cannot be yet (`saved: false`) is a preview.
+ */
 export interface HouseHelpMonthOverview {
   settlement_month: string
   days_in_month: number

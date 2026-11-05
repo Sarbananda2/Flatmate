@@ -58,7 +58,8 @@ def _shares(month):
 
 def _set_up(api):
     """Sunita cleans for everyone and cooks for Alice and Bob."""
-    sunita = _ok(api.post(f"{BASE}/workers", json={"name": "Sunita"}), 201)["worker_id"]
+    sunita = _ok(api.post(f"{BASE}/workers", json={
+        "name": "Sunita", "joined_date": "2026-01-01"}), 201)["worker_id"]
     cleaning = _ok(api.post(f"{BASE}/roles", json={
         "worker_id": sunita, "role_name": "Cleaning", "monthly_salary_paise": 300_000}), 201)
     cooking = _ok(api.post(f"{BASE}/roles", json={
@@ -71,9 +72,10 @@ def test_workers_and_their_roles_over_http(api):
     assert _ok(api.get(f"{BASE}/workers")) == {"items": [], "unassigned_roles": []}
     worker = _ok(api.post(f"{BASE}/workers", json={
         "name": "Sunita", "phone": "98100 12345", "upi_id": "sunita@okaxis",
-        "notes": "Mornings", "allowed_leaves_per_month": 3}), 201)
+        "notes": "Mornings", "allowed_leaves_per_month": 3, "joined_date": "2026-11-15"}), 201)
     assert (worker["name"], worker["upi_id"], worker["is_active"],
-            worker["allowed_leaves_per_month"]) == ("Sunita", "sunita@okaxis", True, 3)
+            worker["allowed_leaves_per_month"], worker["joined_date"]) == (
+        "Sunita", "sunita@okaxis", True, 3, "2026-11-15")
     worker_id = worker["worker_id"]
 
     role = _ok(api.post(f"{BASE}/roles", json={
@@ -94,7 +96,8 @@ def test_workers_and_their_roles_over_http(api):
     assert (stranger.status_code, _code(stranger)) == (422, "househelp_participant_not_resident")
 
     # Before any month is saved with it, the role can go to another worker.
-    ramesh = _ok(api.post(f"{BASE}/workers", json={"name": "Ramesh"}), 201)["worker_id"]
+    ramesh = _ok(api.post(f"{BASE}/workers", json={
+        "name": "Ramesh", "joined_date": "2026-01-01"}), 201)["worker_id"]
     moved = _ok(api.patch(f"{BASE}/roles/{role_id}", json={"worker_id": ramesh}))
     assert (moved["worker_id"], moved["worker_name"]) == (ramesh, "Ramesh")
 
@@ -125,10 +128,14 @@ def test_workers_and_their_roles_over_http(api):
     assert (gone["workers"][0]["roles"], gone["unassigned_roles"]) == ([], [])
 
     # Malformed or unknown: the usual envelope.
-    assert api.post(f"{BASE}/workers", json={"name": ""}).status_code == 422
-    bad_upi = api.post(f"{BASE}/workers", json={"name": "Geeta", "upi_id": "geeta"})
+    joined = {"joined_date": "2026-01-01"}
+    assert api.post(f"{BASE}/workers", json={"name": "", **joined}).status_code == 422
+    bad_upi = api.post(f"{BASE}/workers", json={"name": "Geeta", "upi_id": "geeta", **joined})
     assert (bad_upi.status_code, _code(bad_upi)) == (422, "validation_error")
-    assert api.post(f"{BASE}/workers", json={"name": "Geeta", "age": 40}).status_code == 422
+    assert api.post(f"{BASE}/workers", json={"name": "Geeta", "age": 40, **joined}).status_code == 422
+    # The day they joined is needed, as a date.
+    for bad in [{}, {"joined_date": "15/11/2026"}]:
+        assert api.post(f"{BASE}/workers", json={"name": "Geeta", **bad}).status_code == 422
     assert _code(api.patch(f"{BASE}/workers/hhworker_nobody", json={"name": "X"})) == (
         "househelp_worker_not_found")
     assert api.post(f"{BASE}/roles", json={
@@ -140,13 +147,31 @@ def test_workers_and_their_roles_over_http(api):
     assert (deleted.status_code, _code(deleted)) == (404, "househelp_role_not_found")
 
 
+def test_a_worker_who_joined_mid_month_is_paid_for_their_days_over_http(api):
+    geeta = _ok(api.post(f"{BASE}/workers", json={
+        "name": "Geeta", "joined_date": "2026-11-15"}), 201)["worker_id"]
+    _ok(api.post(f"{BASE}/roles", json={
+        "worker_id": geeta, "role_name": "Ironing", "monthly_salary_paise": 90_000}), 201)
+    # 16 of November's 30 days; none of October's.
+    november = _ok(api.get(f"{BASE}/month/{MONTH}"))
+    assert [(row["role_name"], row["pro_rated_days"], row["base_salary_paise"],
+             row["final_salary_paise"]) for row in november["roles"]] == [
+        ("Ironing", 16, 48_000, 48_000)]
+    assert _ok(api.get(f"{BASE}/month/2026-10"))["roles"] == []
+    moved = _ok(api.patch(f"{BASE}/workers/{geeta}", json={"joined_date": "2026-10-20"}))
+    assert moved["joined_date"] == "2026-10-20"
+    assert api.patch(f"{BASE}/workers/{geeta}",
+                     json={"joined_date": "next week"}).status_code == 422
+
+
 def test_a_month_saved_and_paid_over_http(api, apartment):
     sunita, cleaning, cooking = _set_up(api)
 
-    # Not saved yet: a preview, at full salary.
-    preview = _ok(api.get(f"{BASE}/month/{MONTH}"))
-    assert (preview["bill_state"], preview["saved"], preview["total_paise"],
-            preview["active_worker_count"]) == ("not_billed", False, 750_000, 1)
+    # Opened, the month is saved and billed: nobody absent, at full salary.
+    opened = _ok(api.get(f"{BASE}/month/{MONTH}"))
+    assert (opened["bill_state"], opened["saved"], opened["total_paise"],
+            opened["active_worker_count"], [row["days_absent"] for row in opened["roles"]]) == (
+        "live", True, 750_000, 1, [0, 0])
     assert api.get(f"{BASE}/month/2026-13").status_code == 422
 
     # Sunita was away five days, two allowed: the cleaning loses three days' pay;
@@ -172,7 +197,8 @@ def test_a_month_saved_and_paid_over_http(api, apartment):
     assert (early.status_code, _code(early)) == (409, "househelp_month_not_started")
     # A saved role stays its worker's.
     moved = api.patch(f"{BASE}/roles/{cleaning}", json={
-        "worker_id": _ok(api.post(f"{BASE}/workers", json={"name": "Ramesh"}), 201)["worker_id"]})
+        "worker_id": _ok(api.post(f"{BASE}/workers", json={
+            "name": "Ramesh", "joined_date": "2026-01-01"}), 201)["worker_id"]})
     assert (moved.status_code, _code(moved)) == (409, "househelp_role_has_months")
 
     # Chris pays his share into the kitty; Bob pays Sunita the whole ₹7,500 himself.

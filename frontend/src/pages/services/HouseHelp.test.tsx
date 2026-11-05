@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { HouseHelp } from './HouseHelp'
 import { ToastProvider } from '../../components/Toast'
@@ -161,6 +161,7 @@ const staff = {
       notes: 'Mornings',
       is_active: true,
       allowed_leaves_per_month: 2,
+      joined_date: '2026-03-01',
       created_at: '2026-11-01T10:00:00+05:30',
       updated_at: '2026-11-01T10:00:00+05:30',
       roles: [staffRole('cleaning'), staffRole('cooking')],
@@ -244,12 +245,12 @@ describe('HouseHelp', () => {
     show(overview())
     const shares = await screen.findByRole('table', { name: 'House help shares for November 2026' })
     expect(within(shares).getByRole('row', { name: /Alice/ })).toHaveTextContent(
-      'Alice₹3,250.00Cleaning + Cooking₹0.00₹3,250.00Unpaid',
+      'Alice₹3,250.00₹0.00₹3,250.00Unpaid',
     )
-    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Chris₹1,000.00Cleaning₹0.00')
+    expect(within(shares).getByRole('row', { name: /Chris/ })).toHaveTextContent('Chris₹1,000.00₹0.00')
     const salaries = screen.getByRole('table', { name: 'House help salaries for November 2026' })
     const sunita = within(salaries).getByRole('row', { name: /Sunita/ })
-    expect(sunita).toHaveTextContent('Sunita98100 12345 · sunita@okaxis₹7,500.00₹0.00₹7,500.00Unpaid')
+    expect(sunita).toHaveTextContent('Sunita₹7,500.00₹0.00₹7,500.00Unpaid')
     expect(within(sunita).getByRole('button', { name: 'Pay now to Sunita' })).toBeEnabled()
   })
 
@@ -303,7 +304,9 @@ describe('HouseHelp', () => {
     await userEvent.click(within(shares).getByRole('row', { name: /Alice/ }))
     const statement = screen.getByRole('dialog', { name: 'House Help Statement' })
     expect(statement).toHaveTextContent('Alice · November 2026')
-    expect(statement).toHaveTextContent('Cleaning: ₹1,000.00 · Cooking: ₹2,250.00')
+    expect(within(statement).getByRole('table', { name: 'Role breakdown of house help share' })).toHaveTextContent(
+      'CleaningSunita₹1,000.00CookingSunita₹2,250.00Total Share₹3,250.00',
+    )
     expect(within(statement).getByRole('table', { name: "Payments towards Alice's house help share" })).toHaveTextContent(
       '5 Nov 2026₹1,000.00UPIUPI-7',
     )
@@ -600,7 +603,8 @@ describe('HouseHelp', () => {
     ])
   })
 
-  it('saves a month not saved yet, and adds a role new this month to one that is', async () => {
+  it('saves a month the server has not saved by default', async () => {
+    // An open month with active staff is saved as it is first looked at; one it could not save is a preview.
     show(
       overview({
         saved: false,
@@ -611,10 +615,7 @@ describe('HouseHelp', () => {
       {},
       '/?tab=attendance',
     )
-    expect(
-      await screen.findByText('Not saved yet: November 2026 is billed once its attendance or salaries are saved.'),
-    ).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Attendance' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit Attendance' }))
     expect(screen.getByText('Not saved yet: saving bills November 2026.')).toBeInTheDocument()
     // Nothing to change, but saving bills the month.
     await userEvent.click(screen.getByRole('button', { name: 'Save Attendance' }))
@@ -650,6 +651,35 @@ describe('HouseHelp', () => {
     await waitFor(() => expect(sent('POST', `${BASE}/month/${MONTH}/attendance`)).toBeDefined())
     const body = sent('POST', `${BASE}/month/${MONTH}/attendance`)!.body as { records: Array<{ role_id: string }> }
     expect(body.records.map((record) => record.role_id)).toEqual(['cleaning', 'cooking'])
+  })
+
+  it('pays a helper who joined during the month for the days they were there', async () => {
+    show(
+      overview({
+        roles: [role('cleaning', { pro_rated_days: 16, base_salary_paise: 160000, final_salary_paise: 160000 })],
+        total_paise: 160000,
+      }),
+      { [`${BASE}/workers`]: { ...staff, items: [{ ...staff.items[0], joined_date: '2026-11-15' }] } },
+      '/?tab=attendance',
+    )
+    const attendance = await screen.findByRole('table', { name: 'Helper attendance for November 2026' })
+    const salaries = screen.getByRole('table', { name: 'Role salaries for November 2026' })
+    // 16 of November's 30 days: ₹1,600 of a ₹3,000 month.
+    const cleaning = within(salaries).getByRole('row', { name: /^Cleaning/ })
+    expect(cleaning).toHaveTextContent('CleaningSunitaJoined 15 Nov 2026 · 16/30 days pro-rated₹1,600.00')
+    // Away three days, two allowed: a whole day's pay off, ₹100.
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Attendance' }))
+    const sunita = within(attendance).getByRole('row', { name: /^Sunita/ })
+    const days = within(sunita).getByLabelText(/Sunita days absent/)
+    await userEvent.clear(days)
+    await userEvent.type(days, '3')
+    expect(cleaning).toHaveTextContent('₹1,600.00−₹100.00for 1 day')
+    expect(cleaning).toHaveTextContent('₹1,500.00')
+    // No more days away than she was there.
+    await userEvent.clear(days)
+    await userEvent.type(days, '17')
+    expect(sunita).toHaveTextContent('0 to 16')
+    expect(screen.getByRole('button', { name: 'Save Attendance' })).toBeDisabled()
   })
 
   it('shows a finalized month as it was saved, with nothing to change', async () => {
@@ -697,9 +727,7 @@ describe('HouseHelp', () => {
   it('lists the helpers and their roles, and adds a helper', async () => {
     show(overview(), {}, '/?tab=staff')
     const helpers = await screen.findByRole('table', { name: "The household's helpers" })
-    expect(within(helpers).getByRole('row', { name: /Sunita/ })).toHaveTextContent(
-      'Sunita98100 12345 · sunita@okaxisMornings2 days allowedActive',
-    )
+    expect(within(helpers).getByRole('row', { name: /Sunita/ })).toHaveTextContent('Sunita2 days allowedActive')
     const roles = screen.getByRole('table', { name: "The helpers' roles" })
     // The role, who does it, and its salary: the split is in the role's dialog.
     expect(within(roles).getByRole('row', { name: /Cooking/ })).toHaveTextContent(/^CookingSunita₹4,500\.00$/)
@@ -718,6 +746,9 @@ describe('HouseHelp', () => {
     expect(within(dialog).getByRole('button', { name: 'Add Helper' })).toBeDisabled()
     await userEvent.clear(leaves)
     await userEvent.type(leaves, '3')
+    // Nothing to add until the day they joined is given.
+    expect(within(dialog).getByRole('button', { name: 'Add Helper' })).toBeDisabled()
+    fireEvent.change(within(dialog).getByLabelText(/^Date of joining/), { target: { value: '2026-11-15' } })
     await userEvent.click(within(dialog).getByRole('button', { name: 'Add Helper' }))
     await waitFor(() => expect(sent('POST', `${BASE}/workers`)).toBeDefined())
     expect(sent('POST', `${BASE}/workers`)!.body).toEqual({
@@ -726,6 +757,7 @@ describe('HouseHelp', () => {
       upi_id: null,
       notes: null,
       allowed_leaves_per_month: 3,
+      joined_date: '2026-11-15',
     })
     expect(await screen.findByText('Helper added')).toBeInTheDocument()
   })
@@ -748,6 +780,7 @@ describe('HouseHelp', () => {
       upi_id: 'sunita@okaxis',
       notes: 'Mornings',
       allowed_leaves_per_month: 2,
+      joined_date: '2026-03-01',
       is_active: false,
     })
   })
