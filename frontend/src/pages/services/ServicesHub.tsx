@@ -2,9 +2,9 @@
  * Services & Utilities.
  *
  * One card per recurring monthly bill, each a module of its own: rent,
- * electricity, furniture rental, the water supply and house help are live and
- * link to their own screens; the rest are placeholders for services that are planned but not
- * built. Each card loads and fails on its own, so one service that cannot be
+ * electricity, furniture rental, the water supply, house help and broadband are
+ * live and link to their own screens; the rest are placeholders for services
+ * that are planned but not built. Each card loads and fails on its own, so one service that cannot be
  * shown never takes the others with it. The lease, deposit, rooms and documents are not here:
  * they are the home itself, under Housing.
  */
@@ -31,6 +31,7 @@ import {
 import { type Resource, useResource } from '../../lib/useApi'
 import { formatDate, formatInr, formatMonth, formatMonthShort } from '../../lib/format'
 import type {
+  BroadbandOverview,
   FurnitureRentalOverview,
   HouseHelpMonthOverview,
   ServicesOverview,
@@ -42,11 +43,6 @@ const PLANNED_SERVICES: Array<{ title: string; icon: LucideIcon; body: string }>
     title: 'Cooking Gas (LPG)',
     icon: Flame,
     body: 'Piped natural gas meter readings or shared commercial LPG cylinder bookings.',
-  },
-  {
-    title: 'Broadband & WiFi',
-    icon: Wifi,
-    body: 'Monthly ISP fiber plans and due date tracking.',
   },
 ]
 
@@ -66,6 +62,7 @@ const SERVICE_MODULES: Array<{
   { key: 'furniture', title: 'Furniture Rental', Card: FurnitureRentalCard },
   { key: 'water', title: 'Water Supply', Card: WaterCard },
   { key: 'househelp', title: 'Household Staff', Card: HouseHelpCard },
+  { key: 'broadband', title: 'Broadband & WiFi', Card: BroadbandCard },
 ]
 
 export function ServicesHub({ month }: { month: string }) {
@@ -427,6 +424,59 @@ function WaterCard({ month }: CardProps) {
             <p className="m-0 text-xs text-[var(--text-secondary)]">
               Track a fixed monthly water contract, such as the society&apos;s pipeline: each
               month&apos;s rate split equally and paid through the House Kitty.
+            </p>
+          )
+        }
+      </AsyncSection>
+    </ServiceCard>
+  )
+}
+
+/* -------------------------------------------------------------- broadband -- */
+
+function BroadbandCard({ month }: CardProps) {
+  const broadband = useResource<BroadbandOverview>('/api/services/broadband', { month })
+  const data = broadband.data
+  const live = Boolean(data?.service)
+
+  return (
+    <ServiceCard
+      title="Broadband & WiFi"
+      icon={Wifi}
+      badge={data ? live ? <Pill tone="success">Active</Pill> : <Pill>Not set up</Pill> : undefined}
+      actions={
+        <Link to="/services/broadband" className={BUTTON_PRIMARY}>
+          {live || !data ? 'Open Broadband' : 'Set up broadband'}
+        </Link>
+      }
+    >
+      <AsyncSection resource={broadband} loadingLabel="Loading broadband…">
+        {(overview) =>
+          overview.service && overview.config && overview.month ? (
+            <dl className="m-0 space-y-2">
+              <Fact label="ISP">{overview.config.provider_name}</Fact>
+              <Fact label="Plan">
+                <Rupees paise={overview.config.monthly_rate_paise} />
+                <span className="font-normal text-[var(--text-secondary)]">
+                  /mo{overview.config.speed_mbps ? ` · ${overview.config.speed_mbps} Mbps` : ''}
+                </span>
+              </Fact>
+              <Fact label="Due date">
+                {overview.month.due_date ? formatDate(overview.month.due_date) : 'No billing day set'}
+              </Fact>
+              {/* What flatmates have paid into the house kitty towards the month's broadband. */}
+              <Fact label="Kitty collection">
+                {!overview.month.expense ? (
+                  <span className="font-normal text-[var(--text-tertiary)]">Not billed</span>
+                ) : (
+                  `${overview.month.collected_count} of ${overview.month.shares.filter((share) => share.total_paise > 0).length} covered`
+                )}
+              </Fact>
+            </dl>
+          ) : (
+            <p className="m-0 text-xs text-[var(--text-secondary)]">
+              Track the flat&apos;s fiber plan and its due date: each month&apos;s rate split
+              equally and paid to the ISP through the House Kitty.
             </p>
           )
         }

@@ -19,6 +19,7 @@ from typing import ContextManager
 from .repositories.adjustments import AdjustmentsRepository
 from .repositories.apartments import ApartmentsRepository
 from .repositories.audit import AuditRepository
+from .repositories.broadband import BroadbandRepository
 from .repositories.auth import AuthRepository
 from .repositories.clearance import ClearanceRepository
 from .repositories.dashboard import DashboardRepository
@@ -173,6 +174,11 @@ class UnitOfWork:
     @cached_property
     def househelp(self) -> HouseHelpRepository:
         return HouseHelpRepository(self._session)
+
+
+    @cached_property
+    def broadband(self) -> BroadbandRepository:
+        return BroadbandRepository(self._session)
 
 
     @cached_property

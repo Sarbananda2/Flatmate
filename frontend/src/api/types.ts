@@ -1956,6 +1956,78 @@ export interface WaterOverview {
   next_billing_date: string | null
 }
 
+/* -------------------------------------------------------------- broadband -- */
+
+/** The broadband plan: the ISP, its account, the fixed rate and the WiFi network. No password is kept. */
+export interface BroadbandConfig {
+  provider_name: string
+  /** The ISP's account or customer ID. */
+  account_number: string | null
+  /** The fixed rate the flat pays its ISP a month, split equally. */
+  monthly_rate_paise: number
+  speed_mbps: number | null
+  billing_day_of_month: number | null
+  /** The definition each month's bill is recorded under. */
+  expense_definition_id: string | null
+  /** The WiFi network's name. */
+  wifi_ssid: string | null
+  /** Where the router is, OTT subscriptions bundled with the plan, and the like. */
+  notes: string | null
+  updated_at: string
+}
+
+/** One resident's equal share of a month's broadband bill, and what they have paid of it. */
+export interface BroadbandShare {
+  resident_id: string
+  display_name: string
+  total_paise: number
+  /** Paid towards their charge, into the kitty or by paying the ISP. 0 until the bill is recorded. */
+  paid_paise: number
+  /** Paid into the kitty against their charge. */
+  settled_paise: number
+  outstanding_paise: number
+  /** Null until the bill is recorded. */
+  status: FurnitureShareStatus | null
+  paid_date: string | null
+  /** Payments into the kitty that settled their charge, oldest first. */
+  payments: FurnitureShare['payments']
+}
+
+export interface BroadbandMonthBill {
+  settlement_month: string
+  /** The month's fixed rate, split equally. */
+  total_paise: number
+  participant_count: number
+  base_share_paise: number
+  remainder_paise: number
+  shares: BroadbandShare[]
+  /** Why the month cannot be billed, if it cannot. */
+  blocked_reason: string | null
+  due_date: string | null
+  expense: { expense_id: string; description: string; amount_paise: number; statement_id: string | null } | null
+  statement_status: StatementStatus | null
+  /** 'live': billed, following the plan; 'frozen': its snapshot; 'upcoming': not begun; 'not_billed'. */
+  bill_state: 'live' | 'frozen' | 'upcoming' | 'not_billed'
+  /** Whether a payment or payout recorded by mistake can still be deleted. */
+  transactions_open: boolean
+  collected_paise: number
+  collected_count: number
+  payout_status: FurniturePayoutStatus
+  disbursed_paise: number
+  remaining_disbursement_paise: number
+  disbursements: FurnitureDisbursement[]
+  reimbursement: KittyReimbursement | null
+  reimbursements: KittyReimbursement[]
+}
+
+/** `GET /api/services/broadband`: null service and config until broadband is set up. */
+export interface BroadbandOverview {
+  service: HouseholdService | null
+  config: BroadbandConfig | null
+  month: BroadbandMonthBill | null
+  next_billing_date: string | null
+}
+
 /* ------------------------------------------------------------- house help -- */
 
 /** 'equal': every flatmate shares the role; 'opt_in': only those who opted in. */

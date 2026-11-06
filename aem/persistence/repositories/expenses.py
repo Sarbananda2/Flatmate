@@ -7,9 +7,9 @@ from .base import Repository
 
 #: Whether expense ``e`` is a household service's bill -- one the kitty
 #: collects shares for and pays its provider in its own tranches
-#: (``service_disbursement``): a furniture rental, water or house help bill,
-#: by the definition its service records under; or a month's electricity
-#: settled through the kitty (0033). An electricity bill recorded some other
+#: (``service_disbursement``): a furniture rental, water, house help or
+#: broadband bill, by the definition its service records under; or a month's
+#: electricity settled through the kitty (0033). An electricity bill recorded some other
 #: way shares the definition but not the model, and is an expense like any.
 SERVICE_BILL_SQL = """(EXISTS (SELECT 1 FROM furniture_rental_config f
                                 WHERE f.expense_definition_id = e.expense_definition_id
@@ -20,6 +20,9 @@ SERVICE_BILL_SQL = """(EXISTS (SELECT 1 FROM furniture_rental_config f
        OR EXISTS (SELECT 1 FROM househelp_service_config h
                    WHERE h.expense_definition_id = e.expense_definition_id
                      AND h.apartment_id = e.apartment_id)
+       OR EXISTS (SELECT 1 FROM broadband_service_config bb
+                   WHERE bb.expense_definition_id = e.expense_definition_id
+                     AND bb.apartment_id = e.apartment_id)
        OR EXISTS (SELECT 1 FROM electricity_bill b
                    WHERE b.expense_id = e.expense_id
                      AND b.calculation_json::jsonb ->> 'model' = 'consolidated'))"""

@@ -29,6 +29,7 @@ import StatementDetailPage from './pages/StatementDetail'
 import StatementsPage from './pages/Statements'
 import TransactionsPage from './pages/Transactions'
 import WaterPage from './pages/services/Water'
+import BroadbandPage from './pages/services/Broadband'
 
 export default function App() {
   return (
@@ -114,6 +115,7 @@ function SignedInApp() {
         <Route path="/services/furniture" element={<FurnitureRentalPage />} />
         <Route path="/services/water" element={<WaterPage />} />
         <Route path="/services/househelp" element={<HouseHelpPage />} />
+        <Route path="/services/broadband" element={<BroadbandPage />} />
         {/* The addresses these pages had before they moved under /services. */}
         <Route path="/rent" element={<Navigate to="/services/rent" replace />} />
         {/* Housing pages that used to stand alone, kept for old links and bookmarks. */}

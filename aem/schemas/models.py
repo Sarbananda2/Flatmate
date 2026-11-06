@@ -1361,6 +1361,68 @@ class WaterReimburseRequest(ApiModel):
     notes: str | None = Field(None, max_length=500)
 
 
+
+class BroadbandSetupRequest(ApiModel):
+    """The broadband plan. Only the fields sent change; a clearable field sent as
+    null is cleared."""
+    display_name: str | None = Field(None, min_length=1, max_length=100)
+    provider_name: str | None = Field(None, min_length=1, max_length=100,
+                                      description="Airtel Xstream Fiber, unless named.")
+    account_number: str | None = Field(None, max_length=100,
+                                       description="The ISP's account or customer ID.")
+    monthly_rate_paise: int | None = _money_field(
+        "The fixed rate the flat pays its ISP a month, split equally.", default=None)
+    speed_mbps: int | None = Field(None, ge=1, le=100_000, description="The plan's speed.")
+    billing_day_of_month: int | None = Field(None, ge=1, le=31,
+                                             description="The day the ISP's bill is due.")
+    wifi_ssid: str | None = Field(None, max_length=32,
+                                  description="The WiFi network's name. No password is kept.")
+    notes: str | None = Field(None, max_length=2000,
+                              description="Where the router is, OTT subscriptions bundled "
+                                          "with the plan, and the like.")
+
+
+class BroadbandPaymentCreate(ApiModel):
+    """A resident paying their share of a month's broadband bill into the kitty."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "What the resident paid. Settles their share of the month's bill first; any "
+        "excess goes to their other charges, oldest first.", ge=1)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    payment_mode: Literal["upi", "bank_transfer", "cash", "other"] | None = None
+    reference: str | None = Field(None, max_length=200)
+    note: str | None = Field(None, max_length=2000)
+
+
+class BroadbandPayoutRequest(ApiModel):
+    """A payment to the ISP towards a month's bill: from the kitty, or by a resident."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    disbursement_mode: Literal["pool", "resident_advance"] = Field(
+        description="pool: paid from the House Kitty; resident_advance: a resident paid it "
+                    "from their own account.")
+    funding_resident_id: str | None = Field(
+        None, max_length=64, description="For a resident advance: who paid the ISP.")
+    reference: str = Field(min_length=1, max_length=200,
+                           description="Bank UTR or UPI transaction ID.")
+    disbursed_date: str = Field(pattern=DATE_PATTERN)
+    amount_paise: int | None = _money_field(
+        "This payment; omit for everything still owed to the ISP.", ge=1, default=None)
+    notes: str | None = Field(None, max_length=500)
+
+
+class BroadbandReimburseRequest(ApiModel):
+    """The kitty paying back a resident who paid the ISP beyond their share."""
+    settlement_month: str = Field(pattern=MONTH_PATTERN)
+    recipient_resident_id: str = Field(min_length=1, max_length=64)
+    amount_paise: int = _money_field(
+        "No more than the kitty collected for the bill and has not paid back, nor more "
+        "than the resident is still owed.", ge=1)
+    payment_date: str = Field(pattern=DATE_PATTERN)
+    reference: str | None = Field(None, max_length=200,
+                                  description="Bank UTR or UPI transaction ID.")
+    notes: str | None = Field(None, max_length=500)
+
 class HouseHelpWorkerCreate(ApiModel):
     """A maid, cook or cleaner the household employs."""
     name: str = Field(min_length=1, max_length=100)
@@ -1508,6 +1570,8 @@ __all__ = [
     "FurnitureReimburseRequest",
     "FurnitureSetupRequest",
     "WaterPaymentCreate", "WaterPayoutRequest", "WaterReimburseRequest", "WaterSetupRequest",
+    "BroadbandPaymentCreate", "BroadbandPayoutRequest", "BroadbandReimburseRequest",
+    "BroadbandSetupRequest",
     "HouseHelpAttendanceSaveRequest", "HouseHelpMonthlyRecordInput", "HouseHelpPaymentCreate",
     "HouseHelpPayoutRequest", "HouseHelpReimburseRequest", "HouseHelpRoleCreate",
     "HouseHelpRoleParticipantsSet", "HouseHelpRoleUpdate", "HouseHelpWorkerCreate",

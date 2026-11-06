@@ -63,6 +63,7 @@ const noFurniture = {
 }
 
 const noWater = { service: null, config: null, month: null, next_billing_date: null }
+const noBroadband = { service: null, config: null, month: null, next_billing_date: null }
 const noHouseHelp = {
   service: null,
   active_worker_count: 0,
@@ -83,6 +84,7 @@ function renderHub(
   furniture: Record<string, unknown> = noFurniture,
   water: Record<string, unknown> = noWater,
   househelp: Record<string, unknown> = noHouseHelp,
+  broadband: Record<string, unknown> = noBroadband,
 ) {
   stub = installFetchStub({
     routes: {
@@ -94,6 +96,7 @@ function renderHub(
       '/api/services/furniture': furniture,
       '/api/services/water': water,
       [`/api/services/househelp/month/${MONTH}`]: househelp,
+      '/api/services/broadband': broadband,
     },
   })
   render(
@@ -197,14 +200,13 @@ describe('ServicesHub', () => {
       electricity: { bill: null, bills_for_month: 0, latest_bill: null },
     })
 
-    for (const name of ['Cooking Gas (LPG)', 'Broadband & WiFi']) {
-      const card = screen.getByRole('region', { name })
-      expect(within(card).getByText('Planned')).toBeInTheDocument()
-      expect(within(card).queryByRole('link')).toBeNull()
+    const gas = screen.getByRole('region', { name: 'Cooking Gas (LPG)' })
+    expect(within(gas).getByText('Planned')).toBeInTheDocument()
+    expect(within(gas).queryByRole('link')).toBeNull()
+    // House help and broadband are live.
+    for (const name of ['Household Staff', 'Broadband & WiFi']) {
+      expect(within(screen.getByRole('region', { name })).queryByText('Planned')).toBeNull()
     }
-    // House help is live.
-    const househelp = screen.getByRole('region', { name: 'Household Staff' })
-    expect(within(househelp).queryByText('Planned')).toBeNull()
     const rent = screen.getByRole('region', { name: 'Rent' })
     expect(await within(rent).findByText('No lease')).toBeInTheDocument()
     expect(within(rent).getAllByText('Not configured')).toHaveLength(4)
@@ -396,6 +398,45 @@ describe('ServicesHub', () => {
       'href',
       '/services/househelp?tab=staff',
     )
+  })
+
+  it('summarises the broadband plan and its month', async () => {
+    const share = (id: string, paid: number) => ({ resident_id: id, display_name: id, total_paise: 39300, paid_paise: paid })
+    renderHub(
+      { rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
+      noDeposits,
+      noRooms,
+      noContacts,
+      noDocuments,
+      noFurniture,
+      noWater,
+      noHouseHelp,
+      {
+        service: { service_id: 'svc-b', service_type: 'broadband', display_name: 'Broadband & WiFi' },
+        config: { provider_name: 'Airtel Xstream Fiber', monthly_rate_paise: 117900, speed_mbps: 200 },
+        month: {
+          due_date: '2026-10-05',
+          expense: { expense_id: 'broadband-1', amount_paise: 117900 },
+          collected_count: 1,
+          shares: [share('alice', 39300), share('bob', 0), share('chris', 0)],
+        },
+        next_billing_date: '2026-11-05',
+      },
+    )
+    const card = screen.getByRole('region', { name: 'Broadband & WiFi' })
+    expect(await within(card).findByText('Airtel Xstream Fiber')).toBeInTheDocument()
+    expect(within(card).getByText('Active')).toBeInTheDocument()
+    expect(fact(card, 'Plan')).toHaveTextContent('₹1,179.00/mo · 200 Mbps')
+    expect(fact(card, 'Due date')).toHaveTextContent('5 Oct 2026')
+    expect(fact(card, 'Kitty collection')).toHaveTextContent('1 of 3 covered')
+    expect(within(card).getByRole('link', { name: 'Open Broadband' })).toHaveAttribute('href', '/services/broadband')
+  })
+
+  it('offers to set up broadband when there is none', async () => {
+    renderHub({ rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } })
+    const card = screen.getByRole('region', { name: 'Broadband & WiFi' })
+    expect(await within(card).findByText('Not set up')).toBeInTheDocument()
+    expect(within(card).getByRole('link', { name: 'Set up broadband' })).toHaveAttribute('href', '/services/broadband')
   })
 
   it('keeps a card that fails to itself', () => {

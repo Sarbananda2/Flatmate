@@ -2,6 +2,7 @@
 from . import (  # noqa: F401
     audit,
     auth,
+    broadband,
     clearance,
     dashboard,
     definitions,
@@ -46,6 +47,7 @@ ALL_ROUTERS = [
     furniture_rental.router,
     water.router,
     househelp.router,
+    broadband.router,
     statements.router,
     reconciliation.router,
     transactions.router,
