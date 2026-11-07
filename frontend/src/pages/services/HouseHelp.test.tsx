@@ -179,6 +179,13 @@ const utensils = {
   monthly_salary_paise: 150000,
 }
 
+/** The quick choices of a builder question that are on, in the order shown. */
+const pressed = (group: HTMLElement) =>
+  within(group)
+    .queryAllByRole('button')
+    .filter((button) => button.getAttribute('aria-pressed') === 'true')
+    .map((button) => button.textContent)
+
 function Where() {
   const location = useLocation()
   return <output aria-label="location">{location.pathname + location.search}</output>
@@ -876,7 +883,7 @@ describe('HouseHelp', () => {
     expect(await screen.findByText('Role deleted')).toBeInTheDocument()
   })
 
-  it('builds a role name from its service, area and scope', async () => {
+  it('builds a role name from its services, area and scope', async () => {
     show(overview(), {}, '/?tab=staff')
     await screen.findByRole('table', { name: "The helpers' roles" })
     await userEvent.click(screen.getByRole('button', { name: 'Add Role' }))
@@ -885,25 +892,47 @@ describe('HouseHelp', () => {
     expect(preview).toHaveTextContent('Generated Role: Answer the three questions above.')
     expect(within(dialog).getByRole('checkbox', { name: 'Edit manually' })).not.toBeChecked()
 
-    // The scopes suggested follow the service.
+    // The tasks offered are those of the services picked.
+    const services = within(dialog).getByRole('group', { name: 'Services' })
     const scope = within(dialog).getByRole('group', { name: 'Scope' })
-    expect(within(scope).queryAllByRole('button')).toHaveLength(0)
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Cooking' }))
-    expect(within(scope).getAllByRole('button').map((button) => button.textContent)).toEqual([
-      'Lunch & Dinner',
-      'Dinner only',
-      'Breakfast & Lunch',
-      'All Meals',
-    ])
-    await userEvent.click(within(scope).getByRole('button', { name: 'Dinner only' }))
-    expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('Dinner only')
-    expect(within(scope).getByRole('button', { name: 'Dinner only' })).toHaveAttribute('aria-pressed', 'true')
-    // A suggestion for cooking is no scope for utensils; one's own words stay.
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Utensils' }))
-    expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('')
-    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Scope' }), 'After | dinner')
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Cooking' }))
-    expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('After  dinner')
+    const scopeText = within(dialog).getByRole('textbox', { name: 'Scope' })
+    const tasks = () => within(scope).queryAllByRole('button').map((button) => button.textContent)
+    expect(tasks()).toEqual([])
+    await userEvent.click(within(services).getByRole('button', { name: 'Cooking' }))
+    expect(tasks()).toEqual(['Breakfast', 'Lunch', 'Dinner', 'Tea & Snacks', 'Prep & Chopping'])
+
+    // Each task picked joins the scope's list, and leaves it when picked again.
+    await userEvent.click(within(scope).getByRole('button', { name: 'Lunch' }))
+    await userEvent.click(within(scope).getByRole('button', { name: 'Dinner' }))
+    expect(scopeText).toHaveValue('Lunch & Dinner')
+    await userEvent.click(within(scope).getByRole('button', { name: 'Tea & Snacks' }))
+    expect(scopeText).toHaveValue('Lunch, Dinner & Tea & Snacks')
+    expect(pressed(scope)).toEqual(['Lunch', 'Dinner', 'Tea & Snacks'])
+    await userEvent.click(within(scope).getByRole('button', { name: 'Dinner' }))
+    expect(scopeText).toHaveValue('Lunch & Tea & Snacks')
+    expect(pressed(scope)).toEqual(['Lunch', 'Tea & Snacks'])
+
+    // Several services, named in their order, offer their tasks together, each once.
+    await userEvent.click(within(services).getByRole('button', { name: 'Utensils' }))
+    expect(preview).toHaveTextContent('Generated Role: Answer the three questions above.')
+    await userEvent.click(within(services).getByRole('button', { name: 'Cleaning' }))
+    expect(pressed(services)).toEqual(['Cooking', 'Cleaning', 'Utensils'])
+    await userEvent.click(within(services).getByRole('button', { name: 'Housekeeping' }))
+    expect(tasks().filter((task) => task === 'Dusting')).toHaveLength(1)
+    await userEvent.click(within(services).getByRole('button', { name: 'Housekeeping' }))
+    await userEvent.click(within(scope).getByRole('button', { name: 'All Dishes' }))
+    expect(scopeText).toHaveValue('Lunch, Tea & Snacks & All Dishes')
+    // The scope is one's own to type in, and a task typed is picked.
+    await userEvent.type(scopeText, ', mopping, After | dinner')
+    expect(scopeText).toHaveValue('Lunch, Tea & Snacks & All Dishes, mopping, After  dinner')
+    expect(pressed(scope)).toEqual(['Lunch', 'Tea & Snacks', 'Mopping', 'All Dishes'])
+    // A service dropped takes its own tasks with it; one's own words stay.
+    await userEvent.click(within(services).getByRole('button', { name: 'Cooking' }))
+    expect(scopeText).toHaveValue('All Dishes, mopping & After  dinner')
+    expect(pressed(services)).toEqual(['Cleaning', 'Utensils'])
+    // A service of one's own joins the list once it is named.
+    await userEvent.click(within(services).getByRole('button', { name: 'Other' }))
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Other service' }), 'Gardening')
 
     // An area of one's own, and a flatmate's room.
     const area = within(dialog).getByRole('group', { name: 'Area' })
@@ -919,26 +948,31 @@ describe('HouseHelp', () => {
     ])
     await userEvent.click(within(area).getByRole('button', { name: 'Other' }))
     await userEvent.type(within(dialog).getByRole('textbox', { name: 'Other area' }), 'Terrace')
-    expect(preview).toHaveTextContent('Generated Role: Cooking | Terrace | After dinner')
+    expect(preview).toHaveTextContent(
+      'Generated Role: Cleaning, Utensils & Gardening | Terrace | All Dishes, mopping & After dinner',
+    )
     // Chris's room is Chris's to pay for.
     expect(within(dialog).getByRole('radio', { name: /All flatmates equally/ })).toBeChecked()
     await userEvent.click(within(area).getByRole('button', { name: "Chris's Room" }))
     expect(within(dialog).getByRole('radio', { name: /Opt-in flatmates/ })).toBeChecked()
     expect(await within(dialog).findByRole('checkbox', { name: 'Chris' })).toBeChecked()
     expect(within(dialog).getByRole('checkbox', { name: 'Alice' })).not.toBeChecked()
-    expect(preview).toHaveTextContent("Generated Role: Cooking | Chris's Room | After dinner")
+    expect(preview).toHaveTextContent(
+      "Generated Role: Cleaning, Utensils & Gardening | Chris's Room | All Dishes, mopping & After dinner",
+    )
 
     // By hand, starting from what the questions made.
     await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Edit manually' }))
     const typed = within(dialog).getByLabelText(/^Role name/)
-    expect(typed).toHaveValue("Cooking | Chris's Room | After dinner")
+    expect(typed).toHaveValue("Cleaning, Utensils & Gardening | Chris's Room | All Dishes, mopping & After dinner")
     await userEvent.clear(typed)
     await userEvent.type(typed, 'Laundry | Kitchen | Ironing')
     // Back to the questions, which read the name back.
     await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Edit manually' }))
-    expect(within(dialog).getByRole('button', { name: 'Laundry' })).toHaveAttribute('aria-pressed', 'true')
-    expect(within(within(dialog).getByRole('group', { name: 'Area' })).getByRole('button', { name: 'Kitchen' })).toHaveAttribute('aria-pressed', 'true')
+    expect(pressed(within(dialog).getByRole('group', { name: 'Services' }))).toEqual(['Laundry'])
+    expect(pressed(within(dialog).getByRole('group', { name: 'Area' }))).toEqual(['Kitchen'])
     expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('Ironing')
+    expect(pressed(within(dialog).getByRole('group', { name: 'Scope' }))).toEqual(['Ironing'])
 
     await userEvent.type(within(dialog).getByLabelText(/^Base salary/), '800')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Add Role' }))
@@ -976,6 +1010,60 @@ describe('HouseHelp', () => {
       monthly_salary_paise: 150000,
       split_method: 'equal',
     })
+  })
+
+  it('reads the services and tasks back from roles saved before', async () => {
+    const both = { ...utensils, role_name: 'Cleaning & Utensils | Kitchen | Floors & Mopping' }
+    const meals = { ...utensils, role_id: 'meals', role_name: 'Cooking | Kitchen | Lunch & Dinner' }
+    const plain = { ...utensils, role_id: 'plain', role_name: 'Cleaning & Mopping' }
+    show(
+      overview(),
+      {
+        [`${BASE}/workers`]: { ...staff, unassigned_roles: [both, meals, plain] },
+        [`PATCH ${BASE}/roles/utensils`]: both,
+      },
+      '/?tab=staff',
+    )
+    const roles = await screen.findByRole('table', { name: "The helpers' roles" })
+
+    // Two services, and a scope of words of its own around a task.
+    await userEvent.click(within(roles).getByRole('row', { name: /Cleaning & Utensils/ }))
+    let dialog = screen.getByRole('dialog', { name: 'Edit Role' })
+    expect(pressed(within(dialog).getByRole('group', { name: 'Services' }))).toEqual(['Cleaning', 'Utensils'])
+    expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('Floors & Mopping')
+    expect(pressed(within(dialog).getByRole('group', { name: 'Scope' }))).toEqual(['Mopping'])
+    expect(within(dialog).getByText(/^Generated Role:/).parentElement).toHaveTextContent(
+      'Generated Role: Cleaning & Utensils | Kitchen | Floors & Mopping',
+    )
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(sent('PATCH', `${BASE}/roles/utensils`)).toBeDefined())
+    expect(sent('PATCH', `${BASE}/roles/utensils`)!.body).toMatchObject({
+      role_name: 'Cleaning & Utensils | Kitchen | Floors & Mopping',
+    })
+
+    // A scope that was one suggestion is its tasks.
+    await userEvent.click(within(roles).getByRole('row', { name: /Lunch & Dinner/ }))
+    dialog = screen.getByRole('dialog', { name: 'Edit Role' })
+    expect(pressed(within(dialog).getByRole('group', { name: 'Services' }))).toEqual(['Cooking'])
+    expect(pressed(within(dialog).getByRole('group', { name: 'Scope' }))).toEqual(['Lunch', 'Dinner'])
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+    // A name of another shape opens as typed; the questions take what it names.
+    await userEvent.click(within(roles).getByRole('row', { name: /Cleaning & Mopping/ }))
+    dialog = screen.getByRole('dialog', { name: 'Edit Role' })
+    const manually = within(dialog).getByRole('checkbox', { name: 'Edit manually' })
+    expect(manually).toBeChecked()
+    expect(within(dialog).getByLabelText(/^Role name/)).toHaveValue('Cleaning & Mopping')
+    await userEvent.click(manually)
+    expect(pressed(within(dialog).getByRole('group', { name: 'Services' }))).toEqual(['Cleaning'])
+    expect(within(dialog).getByRole('textbox', { name: 'Scope' })).toHaveValue('Mopping')
+    expect(pressed(within(dialog).getByRole('group', { name: 'Area' }))).toEqual([])
+    expect(within(dialog).getByText(/^Generated Role:/).parentElement).toHaveTextContent(
+      'Generated Role: Answer the three questions above.',
+    )
+    // Back by hand, the name is as it was.
+    await userEvent.click(manually)
+    expect(within(dialog).getByLabelText(/^Role name/)).toHaveValue('Cleaning & Mopping')
   })
 
   it('adds a role with no helper yet', async () => {

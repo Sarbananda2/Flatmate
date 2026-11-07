@@ -1601,22 +1601,34 @@ function WorkerDialog({
 
 /* ------------------------------------------------------- the role builder -- */
 
-/** A role is named "Service | Area | Scope", such as "Cooking | Kitchen | Lunch & Dinner". */
+/**
+ * A role is named "Services | Area | Scope", such as "Cooking & Utensils |
+ * Kitchen | Lunch, Dinner & All Dishes": one service or several, the area, and
+ * the tasks it covers.
+ */
 const ROLE_SERVICES = ['Cooking', 'Cleaning', 'Utensils', 'Housekeeping', 'Laundry'] as const
 const ROLE_AREAS = ['Common Areas', 'Kitchen', 'Whole House', 'Bathrooms'] as const
-/** Scopes suggested for each service; any other may be typed. */
-const ROLE_SCOPES: Record<string, readonly string[]> = {
-  Cooking: ['Lunch & Dinner', 'Dinner only', 'Breakfast & Lunch', 'All Meals'],
-  Cleaning: ['Floors & Mopping', 'Deep Clean', 'Sweeping & Mopping', 'Balconies & Toilets'],
-  Utensils: ['Twice daily', 'Once daily', 'All dishes'],
-  Laundry: ['Washing & Folding', 'Ironing', 'Twice weekly'],
+/** The tasks each service is made of, each picked into the scope by itself; any other may be typed. */
+const ROLE_TASKS: Record<string, readonly string[]> = {
+  Cooking: ['Breakfast', 'Lunch', 'Dinner', 'Tea & Snacks', 'Prep & Chopping'],
+  Cleaning: ['Sweeping', 'Mopping', 'Dusting', 'Bathrooms', 'Balconies', 'Deep Clean', 'Trash Disposal'],
+  Utensils: ['All Dishes', 'Cookware & Pots', 'Twice daily', 'Once daily'],
+  Housekeeping: ['Tidying', 'Bed Making', 'Organization', 'Dusting'],
+  Laundry: ['Machine Wash', 'Hand Wash', 'Drying & Folding', 'Ironing'],
 }
+/** Every service's tasks, once each: what a scope's words are read against. */
+const ALL_TASKS = [...new Set(Object.values(ROLE_TASKS).flat())]
 const OTHER = 'Other'
 const ROLE_NAME_MAX = 100
 
-/** A role name answered question by question. A service or area is a choice, or Other with its own text. */
+/**
+ * A role name answered question by question. The services are any of the
+ * choices, Other among them for one typed in `serviceOther`; the area is a
+ * choice, or Other with its own text; the scope is free text the task chips
+ * add to and take from.
+ */
 interface RoleNameDraft {
-  service: string
+  services: string[]
   serviceOther: string
   area: string
   areaOther: string
@@ -1627,36 +1639,89 @@ const sameText = (a: string, b: string) => a.trim().toLowerCase() === b.trim().t
 /** A part of the name may not hold the separator. */
 const namePart = (text: string) => text.replace(/\|/g, '')
 
-/** A role name's three parts, or null when it is not "Service | Area | Scope". */
+/** "Cooking", "Cleaning & Utensils", "Cooking, Cleaning & Utensils". */
+function listOf(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? ''
+  return `${items.slice(0, -1).join(', ')} & ${items[items.length - 1]}`
+}
+
+/** A list read back from its text: split at commas and ampersands, a known item that holds one ("Tea & Snacks") kept whole. */
+function listItems(text: string, known: readonly string[] = ALL_TASKS): string[] {
+  const pieces = text
+    .split(/\s*[,&]\s*/)
+    .map((piece) => piece.trim())
+    .filter(Boolean)
+  const items: string[] = []
+  for (let index = 0; index < pieces.length; index += 1) {
+    const pair = index + 1 < pieces.length ? `${pieces[index]} & ${pieces[index + 1]}` : ''
+    if (pair && known.some((item) => sameText(item, pair))) {
+      items.push(pair)
+      index += 1
+    } else {
+      items.push(pieces[index])
+    }
+  }
+  return items
+}
+
+const SERVICE_ORDER: readonly string[] = [...ROLE_SERVICES, OTHER]
+const inServiceOrder = (services: string[]) =>
+  [...services].sort((one, other) => SERVICE_ORDER.indexOf(one) - SERVICE_ORDER.indexOf(other))
+
+/** The services a name's first part lists: the choices it names, and any other as Other's text. */
+function servicesOf(text: string): Pick<RoleNameDraft, 'services' | 'serviceOther'> {
+  const items = listItems(text, [])
+  const named = ROLE_SERVICES.filter((service) => items.some((item) => sameText(item, service)))
+  const others = items.filter((item) => !ROLE_SERVICES.some((service) => sameText(service, item)))
+  return { services: others.length ? [...named, OTHER] : [...named], serviceOther: listOf(others) }
+}
+
+/** A role name's three parts, or null when it is not "Services | Area | Scope". */
 function roleParts(name: string): [string, string, string] | null {
   const parts = name.split('|').map((piece) => piece.trim())
   return parts.length === 3 && parts.every(Boolean) ? [parts[0], parts[1], parts[2]] : null
 }
 
-/** The answers a role name gives, or none when it is not "Service | Area | Scope". */
+/**
+ * The answers a role name gives. A name that is not "Services | Area | Scope",
+ * such as "Cleaning & Mopping", gives the services and tasks it names, and no area.
+ */
 function roleNameDraft(name: string): RoleNameDraft {
   const parts = roleParts(name)
-  if (!parts) return { service: '', serviceOther: '', area: '', areaOther: '', scope: '' }
-  const [service, area, scope] = parts
-  const knownService = ROLE_SERVICES.find((choice) => sameText(choice, service))
+  if (!parts) {
+    const items = listItems(name.replace(/\|/g, ','))
+    return {
+      services: ROLE_SERVICES.filter((service) => items.some((item) => sameText(item, service))),
+      serviceOther: '',
+      area: '',
+      areaOther: '',
+      scope: listOf(items.filter((item) => ALL_TASKS.some((task) => sameText(task, item)))),
+    }
+  }
+  const [services, area, scope] = parts
   // A flatmate's room is a choice of its own, even before the flatmates have loaded.
   const knownArea = ROLE_AREAS.find((choice) => sameText(choice, area)) ?? (/'s room$/i.test(area) ? area : undefined)
   return {
-    service: knownService ?? OTHER,
-    serviceOther: knownService ? '' : service,
+    ...servicesOf(services),
     area: knownArea ?? OTHER,
     areaOther: knownArea ? '' : area,
     scope,
   }
 }
 
-/** "Cooking | Kitchen | Lunch & Dinner", or '' until all three are answered. */
+/** The services, listed: the choices in their order, then Other's text; '' while Other has none. */
+function servicesText(draft: RoleNameDraft): string {
+  const named = ROLE_SERVICES.filter((service) => draft.services.includes(service))
+  if (!draft.services.includes(OTHER)) return listOf(named)
+  const other = draft.serviceOther.trim()
+  return other ? listOf([...named, other]) : ''
+}
+
+/** "Cooking & Utensils | Kitchen | Lunch & All Dishes", or '' until all three are answered. */
 function roleNameOf(draft: RoleNameDraft): string {
-  const parts = [
-    draft.service === OTHER ? draft.serviceOther : draft.service,
-    draft.area === OTHER ? draft.areaOther : draft.area,
-    draft.scope,
-  ].map((piece) => piece.trim().replace(/\s+/g, ' '))
+  const parts = [servicesText(draft), draft.area === OTHER ? draft.areaOther : draft.area, draft.scope].map(
+    (piece) => piece.trim().replace(/\s+/g, ' '),
+  )
   return parts.every(Boolean) ? parts.join(' | ') : ''
 }
 
@@ -1669,17 +1734,17 @@ function flatmateRooms(flatmates: Resident[]): Array<{ residentId: string; label
   })
 }
 
-/** One question of the builder: its quick choices, then whatever it needs typed. */
+/** One question of the builder: its quick choices, those on pressed, then whatever it needs typed. */
 function RoleQuestion({
   legend,
   options,
-  value,
+  selected,
   onPick,
   children,
 }: {
   legend: string
   options: readonly string[]
-  value: string
+  selected: readonly string[]
   onPick: (option: string) => void
   children?: ReactNode
 }) {
@@ -1689,7 +1754,7 @@ function RoleQuestion({
       {options.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {options.map((option) => {
-            const on = sameText(option, value)
+            const on = selected.some((choice) => sameText(choice, option))
             return (
               <button
                 key={option}
@@ -1709,7 +1774,7 @@ function RoleQuestion({
   )
 }
 
-/** The role's name, from three questions: its service, its area and its scope. */
+/** The role's name, from three questions: its services, its area and its scope. */
 function RoleNameBuilder({
   draft,
   onChange,
@@ -1741,23 +1806,31 @@ function RoleNameBuilder({
     'Bathrooms',
     OTHER,
   ]
-  const scopes = ROLE_SCOPES[draft.service] ?? []
+  // The tasks of every service picked, each once.
+  const tasks = [...new Set(draft.services.flatMap((service) => ROLE_TASKS[service] ?? []))]
+  const scopeItems = listItems(draft.scope)
+  const toggleService = (service: string) => {
+    const dropping = draft.services.includes(service)
+    const services = inServiceOrder(
+      dropping ? draft.services.filter((choice) => choice !== service) : [...draft.services, service],
+    )
+    // Tasks only the service dropped is made of go with it; one's own words stay.
+    const kept = services.flatMap((choice) => ROLE_TASKS[choice] ?? [])
+    const gone = dropping ? (ROLE_TASKS[service] ?? []).filter((task) => !kept.some((other) => sameText(other, task))) : []
+    const scope = gone.length
+      ? listOf(scopeItems.filter((item) => !gone.some((task) => sameText(task, item))))
+      : draft.scope
+    set({ services, scope })
+  }
+  const toggleTask = (task: string) => {
+    const on = scopeItems.some((item) => sameText(item, task))
+    set({ scope: listOf(on ? scopeItems.filter((item) => !sameText(item, task)) : [...scopeItems, task]) })
+  }
   const name = roleNameOf(draft)
   return (
     <div className="space-y-4">
-      <RoleQuestion
-        legend="Service"
-        options={[...ROLE_SERVICES, OTHER]}
-        value={draft.service}
-        onPick={(service) =>
-          set({
-            service,
-            // A suggestion for the old service is no answer for the new one.
-            scope: (ROLE_SCOPES[draft.service] ?? []).some((scope) => sameText(scope, draft.scope)) ? '' : draft.scope,
-          })
-        }
-      >
-        {draft.service === OTHER && (
+      <RoleQuestion legend="Services" options={SERVICE_ORDER} selected={draft.services} onPick={toggleService}>
+        {draft.services.includes(OTHER) && (
           <input
             type="text"
             aria-label="Other service"
@@ -1771,7 +1844,7 @@ function RoleNameBuilder({
       <RoleQuestion
         legend="Area"
         options={areas}
-        value={draft.area}
+        selected={[draft.area]}
         onPick={(area) => {
           set({ area })
           const room = rooms.find((choice) => choice.label === area)
@@ -1789,12 +1862,12 @@ function RoleNameBuilder({
           />
         )}
       </RoleQuestion>
-      <RoleQuestion legend="Scope" options={scopes} value={draft.scope} onPick={(scope) => set({ scope })}>
+      <RoleQuestion legend="Scope" options={tasks} selected={scopeItems} onPick={toggleTask}>
         <input
           type="text"
           aria-label="Scope"
-          placeholder={`e.g. ${scopes[0] ?? 'General Maintenance'}`}
-          maxLength={60}
+          placeholder={`e.g. ${tasks.length ? listOf(tasks.slice(0, 2)) : 'General Maintenance'}`}
+          maxLength={ROLE_NAME_MAX}
           value={draft.scope}
           onChange={(event) => set({ scope: namePart(event.target.value) })}
         />
@@ -1834,7 +1907,7 @@ function RoleDialog({
   const people = useResource<{ items: Resident[] }>('/api/residents')
   const flatmates = (people.data?.items ?? []).filter((resident) => resident.is_active)
   const choices = workers.filter((worker) => worker.is_active || worker.worker_id === role?.worker_id)
-  // A role named otherwise than "Service | Area | Scope" opens with its name to edit by hand.
+  // A role named otherwise than "Services | Area | Scope" opens with its name to edit by hand.
   const [manual, setManual] = useState(role != null && roleParts(role.role_name) == null)
   const [manualName, setManualName] = useState(role?.role_name ?? '')
   const [draft, setDraft] = useState(() => roleNameDraft(role?.role_name ?? ''))
@@ -1926,7 +1999,7 @@ function RoleDialog({
             onChange={setManualName}
             maxLength={ROLE_NAME_MAX}
             placeholder="e.g. Cooking | Kitchen | Lunch & Dinner"
-            hint="Service | Area | Scope reads back into the questions; any other name is kept as it is."
+            hint="Services | Area | Scope reads back into the questions; any other name is kept as it is."
           />
         ) : (
           <RoleNameBuilder
@@ -1944,7 +2017,7 @@ function RoleDialog({
           checked={manual}
           onChange={(on) => {
             if (on) setManualName(generated || manualName)
-            else if (roleParts(manualName)) setDraft(roleNameDraft(manualName))
+            else setDraft(roleNameDraft(manualName))
             setManual(on)
           }}
         />
