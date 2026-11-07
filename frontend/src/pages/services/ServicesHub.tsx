@@ -29,7 +29,7 @@ import {
   StatementPill,
 } from '../../components/ui'
 import { type Resource, useResource } from '../../lib/useApi'
-import { formatDate, formatInr, formatMonth, formatMonthShort } from '../../lib/format'
+import { formatDate, formatInr, formatMonth, formatMonthShort, formatSpeed } from '../../lib/format'
 import type {
   BroadbandOverview,
   FurnitureRentalOverview,
@@ -458,20 +458,27 @@ function BroadbandCard({ month }: CardProps) {
               <Fact label="Plan">
                 <Rupees paise={overview.config.monthly_rate_paise} />
                 <span className="font-normal text-[var(--text-secondary)]">
-                  /mo{overview.config.speed_mbps ? ` · ${overview.config.speed_mbps} Mbps` : ''}
+                  /mo{overview.config.speed_mbps ? ` · ${formatSpeed(overview.config.speed_mbps)}` : ''}
                 </span>
               </Fact>
-              <Fact label="Due date">
-                {overview.month.due_date ? formatDate(overview.month.due_date) : 'No billing day set'}
-              </Fact>
-              {/* What flatmates have paid into the house kitty towards the month's broadband. */}
-              <Fact label="Kitty collection">
-                {!overview.month.expense ? (
-                  <span className="font-normal text-[var(--text-tertiary)]">Not billed</span>
-                ) : (
-                  `${overview.month.collected_count} of ${overview.month.shares.filter((share) => share.total_paise > 0).length} covered`
-                )}
-              </Fact>
+              {!overview.active_in_month ? (
+                // A month before the connection began has no bill to collect for.
+                <Fact label="Connection">From {formatDate(overview.config.start_date)}</Fact>
+              ) : (
+                <>
+                  <Fact label="Due date">
+                    {overview.month.due_date ? formatDate(overview.month.due_date) : 'No billing day set'}
+                  </Fact>
+                  {/* What flatmates have paid into the house kitty towards the month's broadband. */}
+                  <Fact label="Kitty collection">
+                    {!overview.month.expense ? (
+                      <span className="font-normal text-[var(--text-tertiary)]">Not billed</span>
+                    ) : (
+                      `${overview.month.collected_count} of ${overview.month.shares.filter((share) => share.total_paise > 0).length} covered`
+                    )}
+                  </Fact>
+                </>
+              )}
             </dl>
           ) : (
             <p className="m-0 text-xs text-[var(--text-secondary)]">

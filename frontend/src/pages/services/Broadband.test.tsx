@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Broadband } from './Broadband'
 import { ToastProvider } from '../../components/Toast'
@@ -64,12 +64,15 @@ const bill = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 })
 
+const PRESETS = ['Airtel Xstream Fiber', 'JioFiber', 'ACT Fibernet', 'Tata Play Fiber', 'Excitel', 'Other']
+
 const config = {
   provider_name: 'Airtel Xstream Fiber',
   account_number: 'AX-2048-7731',
   monthly_rate_paise: 117900,
   speed_mbps: 200,
   billing_day_of_month: 5,
+  start_date: '2026-11-01',
   expense_definition_id: 'broadband',
   wifi_ssid: 'Capetown-1805',
   notes: 'Router on the living room shelf. Disney+ Hotstar bundled.',
@@ -91,10 +94,19 @@ const overview = (overrides: Record<string, unknown> = {}) => ({
   config,
   month: bill(),
   next_billing_date: '2026-12-05',
+  active_in_month: true,
+  provider_presets: PRESETS,
   ...overrides,
 })
 
-const notSetUp = { service: null, config: null, month: null, next_billing_date: null }
+const notSetUp = {
+  service: null,
+  config: null,
+  month: null,
+  next_billing_date: null,
+  active_in_month: false,
+  provider_presets: PRESETS,
+}
 
 /** Alice has paid her share into the kitty; Bob paid Airtel ₹786.00, his share and ₹393.00 beyond it. */
 const paidMonth = (overrides: Record<string, unknown> = {}) =>
@@ -189,7 +201,6 @@ describe('Broadband', () => {
     expect(within(tabs).getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
       'Monthly Settlement',
       'Plan & WiFi',
-      'Connection & Settings',
     ])
     expect(within(tabs).getByRole('tab', { name: 'Monthly Settlement' })).toHaveAttribute('aria-selected', 'true')
     const headings = within(screen.getByRole('tabpanel')).getAllByRole('heading').map((h) => h.textContent)
@@ -197,20 +208,35 @@ describe('Broadband', () => {
 
     await userEvent.click(within(tabs).getByRole('tab', { name: 'Plan & WiFi' }))
     expect(screen.getByLabelText('location')).toHaveTextContent('/?tab=plan')
-    const isp = screen.getByLabelText('ISP connection')
+    expect(within(screen.getByRole('tabpanel')).getAllByRole('heading').map((h) => h.textContent)).toEqual([
+      'Connection Details',
+      'WiFi Details',
+    ])
+    // Saved, the plan is shown, not a form (Rule U1).
+    expect(screen.queryByRole('form', { name: 'Broadband plan' })).toBeNull()
+    const isp = screen.getByLabelText('Connection details')
     expect(isp).toHaveTextContent('ProviderAirtel Xstream Fiber')
+    expect(isp).toHaveTextContent('Connection Started1 Nov 2026')
     expect(isp).toHaveTextContent('Account NumberAX-2048-7731')
     expect(isp).toHaveTextContent('Speed200 Mbps')
     expect(isp).toHaveTextContent('Due DateDay 5 of each month · next 5 Dec 2026')
     expect(isp).toHaveTextContent('Monthly Rate₹1,179.00 · ₹393.00 each')
-    const wifi = screen.getByLabelText('WiFi network')
+    const wifi = screen.getByLabelText('WiFi details')
     expect(wifi).toHaveTextContent('Network Name (SSID)Capetown-1805')
     expect(wifi).toHaveTextContent('Router & NotesRouter on the living room shelf. Disney+ Hotstar bundled.')
     expect(screen.getByText('The WiFi password is not stored here. Share it with flatmates in person.')).toBeInTheDocument()
 
-    await userEvent.click(within(tabs).getByRole('tab', { name: 'Connection & Settings' }))
-    expect(screen.getByLabelText('location')).toHaveTextContent('/?tab=config')
-    expect(screen.getByRole('form', { name: 'Broadband plan' })).toBeInTheDocument()
+    // Each panel's pencil opens the one dialog both are edited in; cancelling it sends nothing.
+    const edits = screen.getAllByRole('button', { name: 'Edit Plan & WiFi' })
+    expect(edits).toHaveLength(2)
+    for (const edit of edits) {
+      await userEvent.click(edit)
+      const dialog = screen.getByRole('dialog', { name: 'Edit Plan & WiFi' })
+      expect(within(dialog).getByRole('form', { name: 'Broadband plan' })).toBeInTheDocument()
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      expect(screen.queryByRole('dialog')).toBeNull()
+    }
+    expect(sent('POST', '/api/services/broadband/setup')).toBeUndefined()
   })
 
   it('sums up the month: the bill, what the kitty holds, and the payout', async () => {
@@ -361,14 +387,36 @@ describe('Broadband', () => {
     })
   })
 
-  it('changes the plan from its settings', async () => {
-    show(overview(), {}, '/?tab=config')
-    const form = await screen.findByRole('form', { name: 'Broadband plan' })
-    expect(within(form).getByLabelText(/^Provider name/)).toHaveValue('Airtel Xstream Fiber')
+  it('changes the plan from its edit dialog', async () => {
+    show(overview(), {}, '/?tab=plan')
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Edit Plan & WiFi' }))[0])
+    const dialog = screen.getByRole('dialog', { name: 'Edit Plan & WiFi' })
+    const form = within(dialog).getByRole('form', { name: 'Broadband plan' })
+    const provider = within(form).getByRole('combobox', { name: /^Provider/ })
+    expect(provider).toHaveValue('Airtel Xstream Fiber')
+    expect(within(provider).getAllByRole('option').map((option) => option.textContent)).toEqual(PRESETS)
+    expect(within(form).queryByLabelText(/^Provider name/)).toBeNull()
     expect(within(form).getByLabelText(/^Monthly rate/)).toHaveValue('1179.00')
     expect(within(form).getByLabelText(/^Speed \(Mbps\)/)).toHaveValue(200)
     expect(within(form).getByLabelText(/^Due day/)).toHaveValue(5)
     expect(within(form).getByLabelText(/^Wi-Fi SSID/)).toHaveValue('Capetown-1805')
+    const start = within(form).getByLabelText(/^Connection start date/)
+    expect(start).toHaveValue('2026-11-01')
+    fireEvent.change(start, { target: { value: '2026-10-15' } })
+    const quick = within(form).getByRole('group', { name: 'Quick speeds' })
+    const pressed = () =>
+      within(quick)
+        .getAllByRole('button')
+        .filter((button) => button.getAttribute('aria-pressed') === 'true')
+        .map((button) => button.textContent)
+    expect(within(quick).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      '40 Mbps',
+      '100 Mbps',
+      '200 Mbps',
+      '300 Mbps',
+      '1 Gbps',
+    ])
+    expect(pressed()).toEqual(['200 Mbps'])
 
     const speed = within(form).getByLabelText(/^Speed \(Mbps\)/)
     await userEvent.clear(speed)
@@ -378,28 +426,97 @@ describe('Broadband', () => {
     await userEvent.clear(day)
     await userEvent.type(day, '40')
     expect(within(form).getByText('Enter a day from 1 to 31.')).toBeInTheDocument()
-    expect(within(form).getByRole('button', { name: 'Save plan' })).toBeDisabled()
+    expect(within(dialog).getByRole('button', { name: 'Save Changes' })).toBeDisabled()
 
     await userEvent.clear(speed)
     await userEvent.type(speed, '300')
+    expect(pressed()).toEqual(['300 Mbps'])
+    await userEvent.click(within(quick).getByRole('button', { name: '1 Gbps' }))
+    expect(speed).toHaveValue(1000)
+    expect(pressed()).toEqual(['1 Gbps'])
+    await userEvent.selectOptions(provider, 'JioFiber')
     await userEvent.clear(day)
     await userEvent.type(day, '7')
     const rate = within(form).getByLabelText(/^Monthly rate/)
     await userEvent.clear(rate)
     await userEvent.type(rate, '1415.82')
     await userEvent.clear(within(form).getByLabelText(/^Wi-Fi SSID/))
-    await userEvent.click(within(form).getByRole('button', { name: 'Save plan' }))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save Changes' }))
     await waitFor(() => expect(sent('POST', '/api/services/broadband/setup')).toBeDefined())
     expect(sent('POST', '/api/services/broadband/setup')!.body).toEqual({
-      provider_name: 'Airtel Xstream Fiber',
+      start_date: '2026-10-15',
+      provider_name: 'JioFiber',
       account_number: 'AX-2048-7731',
       monthly_rate_paise: 141582,
-      speed_mbps: 300,
+      speed_mbps: 1000,
       billing_day_of_month: 7,
       wifi_ssid: null,
       notes: 'Router on the living room shelf. Disney+ Hotstar bundled.',
     })
     expect(await screen.findByText('Plan saved')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('names an ISP that is not listed under Other', async () => {
+    show(overview({ config: { ...config, provider_name: 'Hathway' } }), {}, '/?tab=plan')
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Edit Plan & WiFi' }))[0])
+    const dialog = screen.getByRole('dialog', { name: 'Edit Plan & WiFi' })
+    const form = within(dialog).getByRole('form', { name: 'Broadband plan' })
+    const provider = within(form).getByRole('combobox', { name: /^Provider/ })
+    expect(provider).toHaveValue('Other')
+    const name = within(form).getByLabelText(/^Provider name/)
+    expect(name).toHaveValue('Hathway')
+
+    // A listed ISP needs no name typed; going back to Other keeps the one typed.
+    await userEvent.selectOptions(provider, 'Excitel')
+    expect(within(form).queryByLabelText(/^Provider name/)).toBeNull()
+    await userEvent.selectOptions(provider, 'Other')
+    expect(within(form).getByLabelText(/^Provider name/)).toHaveValue('Hathway')
+
+    const typed = within(form).getByLabelText(/^Provider name/)
+    await userEvent.clear(typed)
+    const save = within(dialog).getByRole('button', { name: 'Save Changes' })
+    expect(save).toBeDisabled()
+    await userEvent.type(typed, 'other')
+    expect(within(form).getByText("Enter the ISP's own name.")).toBeInTheDocument()
+    expect(save).toBeDisabled()
+    await userEvent.clear(typed)
+    await userEvent.type(typed, '  Hathway Broadband ')
+    await userEvent.click(save)
+    await waitFor(() => expect(sent('POST', '/api/services/broadband/setup')).toBeDefined())
+    expect(sent('POST', '/api/services/broadband/setup')!.body).toMatchObject({ provider_name: 'Hathway Broadband' })
+  })
+
+  it('settles nothing for a month before the connection began', async () => {
+    const start = { ...config, start_date: '2026-12-15' }
+    show(
+      overview({
+        config: start,
+        active_in_month: false,
+        next_billing_date: '2027-01-05',
+        month: bill({
+          total_paise: 0,
+          participant_count: 0,
+          base_share_paise: 0,
+          shares: [],
+          blocked_reason: 'Broadband started on 15 December 2026, so November 2026 has no broadband bill.',
+          due_date: null,
+          expense: null,
+          bill_state: 'before_start',
+          remaining_disbursement_paise: 0,
+        }),
+      }),
+    )
+    expect(await screen.findByText('Broadband was not active in November 2026.')).toBeInTheDocument()
+    expect(screen.getByText('Connection started on 15 Dec 2026.')).toBeInTheDocument()
+    const panel = screen.getByRole('tabpanel')
+    expect(within(panel).queryByRole('heading')).toBeNull()
+    expect(within(panel).queryByRole('button', { name: /Pay Now/ })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Month summary' })).toBeNull()
+
+    // The plan still shows when it began.
+    await userEvent.click(screen.getByRole('tab', { name: 'Plan & WiFi' }))
+    expect(screen.getByLabelText('Connection details')).toHaveTextContent('Connection Started15 Dec 2026')
   })
 
   it('asks for the plan before anything else', async () => {
@@ -408,9 +525,14 @@ describe('Broadband', () => {
     expect(screen.queryByRole('tablist')).toBeNull()
     const form = screen.getByRole('form', { name: 'Broadband plan' })
     await userEvent.type(within(form).getByLabelText(/^Monthly rate/), '1179')
-    await userEvent.click(within(form).getByRole('button', { name: 'Set up broadband' }))
+    // Nothing is set up until the day the connection began is given.
+    const setUp = within(form).getByRole('button', { name: 'Set up broadband' })
+    expect(setUp).toBeDisabled()
+    fireEvent.change(within(form).getByLabelText(/^Connection start date/), { target: { value: '2026-11-01' } })
+    await userEvent.click(setUp)
     await waitFor(() => expect(sent('POST', '/api/services/broadband/setup')).toBeDefined())
     expect(sent('POST', '/api/services/broadband/setup')!.body).toEqual({
+      start_date: '2026-11-01',
       provider_name: 'Airtel Xstream Fiber',
       account_number: null,
       monthly_rate_paise: 117900,

@@ -10,7 +10,8 @@ connection: the ISP's account number, its speed, and the WiFi network's name
 
 **Nothing prorates**, as everywhere in the household: a resident who moves in
 joins the open month's bill, and one who moves out keeps their full share of
-the months they were in.
+the months they were in. The plan keeps the day the connection began: a month
+before it has no broadband bill, and the month it began in is billed in full.
 
 The month is paid in two steps, as every household service's is (see
 :mod:`aem.services.service_bills`): flatmates pay their shares into the House
@@ -50,6 +51,11 @@ from .common import (
 SERVICE_TYPE = "broadband"
 DEFAULT_NAME = "Broadband & WiFi"
 DEFAULT_PROVIDER = "Airtel Xstream Fiber"
+#: The choice to type the ISP's name instead of picking a listed one; it is not a name.
+OTHER_PROVIDER = "Other"
+#: The ISPs offered by name when the plan is set up, in the order they are offered.
+PROVIDER_PRESETS = ("Airtel Xstream Fiber", "JioFiber", "ACT Fibernet", "Tata Play Fiber",
+                    "Excitel", OTHER_PROVIDER)
 #: Kept with each charge the plan bills, so a bill entered some other way is told apart.
 SOURCE = "broadband"
 #: Where a payout to the ISP came from: the kitty, or a resident's own account.
@@ -74,6 +80,21 @@ def _billing_date(month: str, day: int | None) -> str | None:
 
 # ----------------------------------------------------------- the service --
 
+def _date_label(value: str) -> str:
+    day = parse_iso_date(value)
+    return f"{day.day} {calendar.month_name[day.month]} {day.year}"
+
+
+def _active_in(config: Mapping[str, Any], month: str) -> bool:
+    """Whether the connection had begun by the end of `month`."""
+    return month >= config["start_date"][:7]
+
+
+def _not_started(config: Mapping[str, Any], month: str) -> str:
+    return (f"Broadband started on {_date_label(config['start_date'])}, so "
+            f"{month_label(month)} has no broadband bill.")
+
+
 def _live(uow: UnitOfWork, apartment_id: str) -> dict[str, Any] | None:
     return uow.broadband.live_service(apartment_id)
 
@@ -95,7 +116,8 @@ def _public_service(service: Mapping[str, Any]) -> dict[str, Any]:
 def _public_config(config: Mapping[str, Any]) -> dict[str, Any]:
     return {key: config[key] for key in (
         "provider_name", "account_number", "monthly_rate_paise", "speed_mbps",
-        "billing_day_of_month", "expense_definition_id", "wifi_ssid", "notes", "updated_at")}
+        "billing_day_of_month", "start_date", "expense_definition_id", "wifi_ssid", "notes",
+        "updated_at")}
 
 
 # -------------------------------------------------------- the month's bill --
@@ -107,7 +129,8 @@ def _month_bill(uow: UnitOfWork, apartment_id: str, config: Mapping[str, Any], m
     The active residents take part, and ``include_resident_ids`` -- those
     already on the month's bill -- stay on it after they move out. The rate is
     split equally between them: the remainder paise go one each, in resident
-    order, so the shares add up to the rate exactly."""
+    order, so the shares add up to the rate exactly. A month before the
+    connection began has nothing to bill."""
     everyone = resident_ids(uow, apartment_id)
     participants = sorted(set(resident_ids(uow, apartment_id, active_only=True))
                           | (set(include_resident_ids) & set(everyone)))
@@ -115,7 +138,9 @@ def _month_bill(uow: UnitOfWork, apartment_id: str, config: Mapping[str, Any], m
     blocked: str | None = None
     shares: dict[str, int] = {}
     basis: dict[str, Any] = {}
-    if total <= 0:
+    if not _active_in(config, month):
+        blocked = _not_started(config, month)
+    elif total <= 0:
         blocked = "The broadband plan has no monthly rate yet, so there is nothing to bill."
     elif not participants:
         blocked = "Nobody lives in the flat, so there is nobody to share the broadband bill."
@@ -370,10 +395,32 @@ def get_overview(db: Database, apartment_id: str, settlement_month: str) -> dict
 def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
     service = _live(uow, apartment_id)
     config = uow.broadband.config(service["service_id"]) if service else None
+    presets = list(PROVIDER_PRESETS)
     if service is None or config is None:
-        return {"service": None, "config": None, "month": None, "next_billing_date": None}
-    names = {row["resident_id"]: row["display_name"] for row in list_residents(uow, apartment_id)}
+        return {"service": None, "config": None, "month": None, "next_billing_date": None,
+                "active_in_month": False, "provider_presets": presets}
+    # The next bill due: none before the connection began.
+    start = max(_today(), config["start_date"])
+    due = _billing_date(start[:7], config["billing_day_of_month"])
+    if due and due < start:
+        year, mon = (int(part) for part in start[:7].split("-"))
+        due = _billing_date(f"{year + mon // 12}-{mon % 12 + 1:02d}",
+                            config["billing_day_of_month"])
+    head = {"service": _public_service(service), "config": _public_config(config),
+            "next_billing_date": due, "provider_presets": presets}
     statement = uow.furniture.statement_for_month(apartment_id, month)
+    if not _active_in(config, month):
+        return {**head, "active_in_month": False, "month": {
+            "settlement_month": month, "total_paise": 0, "participant_count": 0,
+            "base_share_paise": 0, "remainder_paise": 0, "shares": [],
+            "blocked_reason": _not_started(config, month), "due_date": None, "expense": None,
+            "statement_status": statement["status"] if statement else None,
+            "bill_state": "before_start",
+            "transactions_open": deletions.month_is_open(uow, apartment_id, month),
+            "collected_paise": 0, "collected_count": 0, "payout_status": "pending",
+            "disbursed_paise": 0, "remaining_disbursement_paise": 0, "disbursements": [],
+            "reimbursement": None, "reimbursements": []}}
+    names = {row["resident_id"]: row["display_name"] for row in list_residents(uow, apartment_id)}
     expense = _recorded_bill(uow, apartment_id, config["expense_definition_id"], month)
     if expense is not None:
         allocations = uow.furniture.allocations_for_expense(expense["expense_id"])
@@ -440,14 +487,7 @@ def _overview(uow: UnitOfWork, apartment_id: str, month: str) -> dict[str, Any]:
         month_bill.update(collected_paise=0, collected_count=0, payout_status="pending",
                           disbursed_paise=0, remaining_disbursement_paise=0, disbursements=[],
                           reimbursement=None, reimbursements=[])
-    today = _today()
-    due = _billing_date(today[:7], config["billing_day_of_month"])
-    if due and due < today:
-        year, mon = (int(part) for part in today[:7].split("-"))
-        due = _billing_date(f"{year + mon // 12}-{mon % 12 + 1:02d}",
-                            config["billing_day_of_month"])
-    return {"service": _public_service(service), "config": _public_config(config),
-            "month": month_bill, "next_billing_date": due}
+    return {**head, "active_in_month": True, "month": month_bill}
 
 
 # -------------------------------------------------------------------- setup --
@@ -468,15 +508,28 @@ def _whole_number(value: Any, field: str, low: int, high: int, what: str) -> int
     return value
 
 
+def _provider_name(value: Any) -> str:
+    """The ISP's name, a listed one kept as it is listed however it was typed."""
+    name = require_text(value or DEFAULT_PROVIDER, "provider_name", max_length=100)
+    if name.casefold() == OTHER_PROVIDER.casefold():
+        raise ValidationError("Name the ISP: Other is not a provider's name.",
+                              code="broadband_provider_unnamed",
+                              details={"field": "provider_name"})
+    return next((preset for preset in PROVIDER_PRESETS if preset.casefold() == name.casefold()),
+                name)
+
+
 def _clean_setup(payload: Mapping[str, Any], before: Mapping[str, Any] | None) -> dict[str, Any]:
     merged = {**(before or {}), **{key: value for key, value in payload.items()
                                    if value is not None or key in _CLEARABLE}}
     rate = merged.get("monthly_rate_paise")
+    if merged.get("start_date") is None:
+        raise ValidationError("start_date is required: the day the connection began.",
+                              details={"field": "start_date"})
     return {
         "display_name": require_text(merged.get("display_name") or DEFAULT_NAME,
                                      "display_name", max_length=100),
-        "provider_name": require_text(merged.get("provider_name") or DEFAULT_PROVIDER,
-                                      "provider_name", max_length=100),
+        "provider_name": _provider_name(merged.get("provider_name")),
         "account_number": optional_text(merged.get("account_number"), "account_number",
                                         max_length=100),
         "monthly_rate_paise": ensure_paise(0 if rate is None else rate, "monthly_rate_paise"),
@@ -485,10 +538,31 @@ def _clean_setup(payload: Mapping[str, Any], before: Mapping[str, Any] | None) -
         "billing_day_of_month": _whole_number(merged.get("billing_day_of_month"),
                                               "billing_day_of_month", 1, 31,
                                               "a day from 1 to 31"),
+        "start_date": parse_iso_date(merged["start_date"], "start_date").isoformat(),
         "wifi_ssid": optional_text(merged.get("wifi_ssid"), "wifi_ssid",
                                    max_length=MAX_SSID_LENGTH),
         "notes": optional_text(merged.get("notes"), "notes", max_length=2000),
     }
+
+
+def _refuse_start_after_frozen_bill(uow: UnitOfWork, apartment_id: str, definition_id: str,
+                                    start_date: str) -> None:
+    """A month whose statement is finalized keeps its bill, so the connection
+    cannot be moved to start after a month the plan billed and froze."""
+    for month in uow.furniture.bill_months(apartment_id, definition_id):
+        if month >= start_date[:7]:
+            return
+        expense = _recorded_bill(uow, apartment_id, definition_id, month)
+        if expense is None or _bill_is_live(month, uow.furniture.statement_for_month(
+                apartment_id, month)):
+            continue
+        if _stored_basis(uow.furniture.allocations_for_expense(
+                expense["expense_id"])).get("source") == SOURCE:
+            raise ConflictError(
+                f"The {month_label(month)} broadband bill is in a finalized statement, so the "
+                f"connection cannot start after {month_label(month)}.",
+                code="broadband_start_after_billed_month",
+                details={"settlement_month": month, "start_date": start_date})
 
 
 def setup_broadband(db: Database, apartment_id: str, payload: Mapping[str, Any], *,
@@ -527,7 +601,7 @@ def setup_broadband(db: Database, apartment_id: str, payload: Mapping[str, Any],
 
     config_fields = {key: cleaned[key] for key in (
         "provider_name", "account_number", "monthly_rate_paise", "speed_mbps",
-        "billing_day_of_month", "wifi_ssid", "notes")}
+        "billing_day_of_month", "start_date", "wifi_ssid", "notes")}
     with db.transaction() as uow:
         service = _live(uow, apartment_id)
         if service is None:
@@ -561,8 +635,10 @@ def setup_broadband(db: Database, apartment_id: str, payload: Mapping[str, Any],
                              old_value={key: {**before_config, **service}.get(key)
                                         for key in changed},
                              new_value=changed)
+        _refuse_start_after_frozen_bill(uow, apartment_id, definition_id,
+                                        cleaned["start_date"])
         # Every open month follows the plan: this one, and each billed whose
-        # statement is still a draft.
+        # statement is still a draft -- one before the start taken away.
         _sync_open_months(uow, apartment_id, timestamp=timestamp, actor=actor)
         return _overview(uow, apartment_id, month)
 
@@ -571,6 +647,10 @@ def setup_broadband(db: Database, apartment_id: str, payload: Mapping[str, Any],
 
 def _require_recorded_bill(uow: UnitOfWork, apartment_id: str, config: Mapping[str, Any],
                            month: str) -> dict[str, Any]:
+    if not _active_in(config, month):
+        raise ConflictError(_not_started(config, month), code="broadband_not_active",
+                            details={"settlement_month": month,
+                                     "start_date": config["start_date"]})
     expense = _recorded_bill(uow, apartment_id, config["expense_definition_id"], month)
     if expense is None:
         raise ConflictError(f"The {month_label(month)} broadband bill is not recorded yet.",

@@ -9,16 +9,19 @@
  * payment or payout recorded by mistake can be deleted from its statement
  * while the month is open.
  *
- * Three tabs: the month's settlement, the plan and the WiFi network, and the
- * connection's settings. The open tab is kept in the address (`?tab=plan`).
- * No WiFi password is kept anywhere.
+ * A month before the connection began has no bill, and its settlement says so.
+ *
+ * Two tabs: the month's settlement, and the plan and the WiFi network, shown
+ * read-only and edited in a dialog that offers the common ISPs and plan speeds
+ * to pick with one tap. The open tab is kept in the address (`?tab=plan`). No
+ * WiFi password is kept anywhere.
  */
-import { useRef, useState, type FormEvent } from 'react'
+import { useId, useRef, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Gauge, Receipt, Router, Settings, Trash2, Users, Wifi } from 'lucide-react'
+import { Gauge, Receipt, Router, Trash2, Users, Wifi } from 'lucide-react'
 import { Page, useApp } from '../../components/Layout'
 import { AsyncSection, Callout, ErrorNotice, Modal } from '../../components/Primitives'
-import { MoneyInput, TextAreaField, TextField } from '../../components/Form'
+import { DateField, MoneyInput, SelectField, TextAreaField, TextField } from '../../components/Form'
 import {
   ResidentCollectionTable,
   type CollectionStatus,
@@ -38,10 +41,23 @@ import { DeleteTransactionDialog, type PendingDeletion } from '../../components/
 import { ServiceDisbursementDialog } from '../../components/ServiceDisbursementDialog'
 import { PAYMENT_MODES, ServicePaymentDialog } from '../../components/ServicePaymentDialog'
 import { useToast } from '../../components/Toast'
-import { BUTTON_PRIMARY, BUTTON_QUIET, DetailFact, EmptyBlock, MiniStat, Panel, Pill, Rupees } from '../../components/ui'
+import {
+  BUTTON_PRIMARY,
+  BUTTON_QUIET,
+  BUTTON_SECONDARY,
+  CHOICE_OFF,
+  CHOICE_ON,
+  DetailFact,
+  EditButton,
+  EmptyBlock,
+  MiniStat,
+  Panel,
+  Pill,
+  Rupees,
+} from '../../components/ui'
 import { api } from '../../api/client'
 import { useMutation, useResource } from '../../lib/useApi'
-import { formatDate, formatInr, formatMonth, paiseToInput } from '../../lib/format'
+import { formatDate, formatInr, formatMonth, formatSpeed, paiseToInput } from '../../lib/format'
 import type {
   BroadbandConfig,
   BroadbandMonthBill,
@@ -64,7 +80,6 @@ const DASH = <span className="text-[var(--text-tertiary)]">—</span>
 export const BROADBAND_TABS = [
   { value: 'settlement', label: 'Monthly Settlement', icon: Receipt },
   { value: 'plan', label: 'Plan & WiFi', icon: Wifi },
-  { value: 'config', label: 'Connection & Settings', icon: Settings },
 ] as const
 
 export type BroadbandTab = (typeof BROADBAND_TABS)[number]['value']
@@ -77,6 +92,7 @@ type Dialog =
   | { kind: 'reimburse'; reimbursement: KittyReimbursement }
   | { kind: 'reimbursement_statement'; residentId: string }
   | { kind: 'delete'; deletion: PendingDeletion; message: string }
+  | { kind: 'edit_plan' }
 
 export default function BroadbandPage() {
   const { month } = useApp()
@@ -114,7 +130,12 @@ export function Broadband({ month }: { month: string }) {
               icon={<Wifi className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
               hint="Enter the plan's fixed monthly rate once. Each month is then billed by itself and split equally."
             >
-              <PlanForm config={null} month={month} onSaved={() => done('Broadband set up')} />
+              <PlanForm
+                config={null}
+                presets={data.provider_presets}
+                month={month}
+                onSaved={() => done('Broadband set up')}
+              />
             </Panel>
           ) : (
             <>
@@ -141,7 +162,13 @@ export function Broadband({ month }: { month: string }) {
                 aria-labelledby={`broadband-tab-${tab}`}
                 className="space-y-4"
               >
-                {tab === 'settlement' && (
+                {tab === 'settlement' && !data.active_in_month && (
+                  <EmptyBlock
+                    title={`Broadband was not active in ${formatMonth(month)}.`}
+                    body={`Connection started on ${formatDate(data.config.start_date)}.`}
+                  />
+                )}
+                {tab === 'settlement' && data.active_in_month && (
                   <>
                     <SettlementSummary bill={data.month} provider={data.config.provider_name} />
                     <CollectionPanel
@@ -168,19 +195,12 @@ export function Broadband({ month }: { month: string }) {
                   </>
                 )}
                 {tab === 'plan' && (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-                    <ConnectionPanel config={data.config} bill={data.month} nextBillingDate={data.next_billing_date} />
-                    <WifiPanel config={data.config} />
-                  </div>
-                )}
-                {tab === 'config' && (
-                  <Panel
-                    title="Connection & Settings"
-                    icon={<Settings className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-                    hint="The plan each month is billed from. A new rate moves this month's bill with it; a month whose statement is finalized keeps its own."
-                  >
-                    <PlanForm config={data.config} month={month} onSaved={() => done('Plan saved')} />
-                  </Panel>
+                  <PlanPanel
+                    config={data.config}
+                    bill={data.month}
+                    nextBillingDate={data.next_billing_date}
+                    onEdit={() => setDialog({ kind: 'edit_plan' })}
+                  />
                 )}
               </div>
             </>
@@ -342,6 +362,15 @@ export function Broadband({ month }: { month: string }) {
                 )
               )
             })()}
+          {dialog?.kind === 'edit_plan' && data.config && (
+            <PlanForm
+              config={data.config}
+              presets={data.provider_presets}
+              month={month}
+              onSaved={() => done('Plan saved')}
+              onCancel={() => setDialog(null)}
+            />
+          )}
           {dialog?.kind === 'delete' && (
             <DeleteTransactionDialog
               deletion={dialog.deletion}
@@ -589,63 +618,73 @@ function BroadbandStatementModal({
 
 const notSet = <span className="text-[var(--text-tertiary)]">Not set</span>
 
-function ConnectionPanel({
+/**
+ * The plan and the WiFi network, read-only: a panel each, stacked. Both are
+ * saved together, so each one's pencil opens the same Edit Plan & WiFi dialog.
+ */
+function PlanPanel({
   config,
   bill,
   nextBillingDate,
+  onEdit,
 }: {
   config: BroadbandConfig
   bill: BroadbandMonthBill
   nextBillingDate: string | null
+  onEdit: () => void
 }) {
   return (
-    <Panel
-      title="ISP Connection"
-      icon={<Gauge className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="Who the flat's internet comes from, and what the plan costs."
-    >
-      <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm" aria-label="ISP connection">
-        <DetailFact label="Provider">{config.provider_name}</DetailFact>
-        <DetailFact label="Account Number">
-          {config.account_number ? <span className="tabular break-all">{config.account_number}</span> : notSet}
-        </DetailFact>
-        <DetailFact label="Speed">{config.speed_mbps ? `${config.speed_mbps} Mbps` : notSet}</DetailFact>
-        <DetailFact label="Due Date">
-          {config.billing_day_of_month
-            ? `Day ${config.billing_day_of_month} of each month${nextBillingDate ? ` · next ${formatDate(nextBillingDate)}` : ''}`
-            : 'No billing day set'}
-        </DetailFact>
-        <DetailFact label="Monthly Rate">
-          <span className="tabular">
-            {formatInr(config.monthly_rate_paise)}
-            {bill.participant_count > 0 && ` · ${formatInr(bill.base_share_paise)} each`}
-          </span>
-        </DetailFact>
-        <DetailFact label="Split Rule">Equal share among all active flatmates</DetailFact>
-      </dl>
-    </Panel>
-  )
-}
-
-function WifiPanel({ config }: { config: BroadbandConfig }) {
-  return (
-    <Panel
-      title="WiFi Network"
-      icon={<Wifi className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
-      hint="What flatmates and guests need to get online."
-    >
-      <dl className="m-0 grid grid-cols-1 gap-4 text-sm" aria-label="WiFi network">
-        <DetailFact label="Network Name (SSID)">
-          {config.wifi_ssid ? <span className="font-semibold break-all">{config.wifi_ssid}</span> : notSet}
-        </DetailFact>
-        <DetailFact label="Router & Notes">
-          {config.notes ? <span className="whitespace-pre-line">{config.notes}</span> : notSet}
-        </DetailFact>
-      </dl>
-      <p className="m-0 mt-4 text-xs text-[var(--text-secondary)]">
-        The WiFi password is not stored here. Share it with flatmates in person.
-      </p>
-    </Panel>
+    <>
+      <Panel
+        title="Connection Details"
+        icon={<Gauge className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+        hint="The ISP subscription, speed, account number, and billing details."
+        actions={<EditButton label="Edit Plan & WiFi" onClick={onEdit} />}
+      >
+        <dl className="m-0 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm" aria-label="Connection details">
+          <DetailFact label="Provider">
+            <Pill tone="accent">{config.provider_name}</Pill>
+          </DetailFact>
+          {config.start_date && (
+            <DetailFact label="Connection Started">{formatDate(config.start_date)}</DetailFact>
+          )}
+          <DetailFact label="Account Number">
+            {config.account_number ? <span className="tabular break-all">{config.account_number}</span> : notSet}
+          </DetailFact>
+          <DetailFact label="Speed">{config.speed_mbps ? formatSpeed(config.speed_mbps) : notSet}</DetailFact>
+          <DetailFact label="Due Date">
+            {config.billing_day_of_month
+              ? `Day ${config.billing_day_of_month} of each month${nextBillingDate ? ` · next ${formatDate(nextBillingDate)}` : ''}`
+              : 'No billing day set'}
+          </DetailFact>
+          <DetailFact label="Monthly Rate">
+            <span className="tabular">
+              {formatInr(config.monthly_rate_paise)}
+              {bill.participant_count > 0 && ` · ${formatInr(bill.base_share_paise)} each`}
+            </span>
+          </DetailFact>
+          <DetailFact label="Split Rule">Equal share among all active flatmates</DetailFact>
+        </dl>
+      </Panel>
+      <Panel
+        title="WiFi Details"
+        icon={<Wifi className="w-4 h-4 shrink-0 text-[var(--accent)]" aria-hidden="true" />}
+        hint="Network credentials and hardware placement for flatmates."
+        actions={<EditButton label="Edit Plan & WiFi" onClick={onEdit} />}
+      >
+        <dl className="m-0 grid grid-cols-1 gap-4 text-sm" aria-label="WiFi details">
+          <DetailFact label="Network Name (SSID)">
+            {config.wifi_ssid ? <span className="font-semibold break-all">{config.wifi_ssid}</span> : notSet}
+          </DetailFact>
+          <DetailFact label="Router & Notes">
+            {config.notes ? <span className="whitespace-pre-line">{config.notes}</span> : notSet}
+          </DetailFact>
+        </dl>
+        <p className="m-0 text-xs text-[var(--text-secondary)]">
+          The WiFi password is not stored here. Share it with flatmates in person.
+        </p>
+      </Panel>
+    </>
   )
 }
 
@@ -659,8 +698,39 @@ function parseWhole(raw: string, low: number, high: number): { ok: boolean; valu
   return /^\d+$/.test(text) && value >= low && value <= high ? { ok: true, value } : { ok: false, value: null }
 }
 
-function PlanForm({ config, month, onSaved }: { config: BroadbandConfig | null; month: string; onSaved: () => void }) {
-  const [provider, setProvider] = useState(config?.provider_name ?? 'Airtel Xstream Fiber')
+const DEFAULT_PROVIDER = 'Airtel Xstream Fiber'
+/** The preset to pick to type the ISP's name instead; it is not a name itself. */
+const OTHER_PROVIDER = 'Other'
+/** Plan speeds offered with one tap, in Mbps. Any other is typed. */
+const SPEED_PRESETS = [40, 100, 200, 300, 1000] as const
+
+const sameName = (one: string, other: string) => one.trim().toLowerCase() === other.trim().toLowerCase()
+
+function PlanForm({
+  config,
+  presets,
+  month,
+  onSaved,
+  onCancel,
+}: {
+  config: BroadbandConfig | null
+  /** The ISPs offered by name, 'Other' among them. */
+  presets: string[]
+  month: string
+  onSaved: () => void
+  /** Given once the plan is saved: the form opens as the edit dialog, and this closes it. */
+  onCancel?: () => void
+}) {
+  // A listed ISP is picked from the presets; any other is Other, and typed.
+  const startName = config?.provider_name ?? DEFAULT_PROVIDER
+  const listed = presets.find((preset) => !sameName(preset, OTHER_PROVIDER) && sameName(preset, startName))
+  const [providerChoice, setProviderChoice] = useState(listed ?? OTHER_PROVIDER)
+  const [otherProvider, setOtherProvider] = useState(listed ? '' : startName)
+  const typingProvider = providerChoice === OTHER_PROVIDER
+  const provider = (typingProvider ? otherProvider : providerChoice).trim()
+  const providerError = typingProvider && sameName(otherProvider, OTHER_PROVIDER) ? "Enter the ISP's own name." : null
+  const [startDate, setStartDate] = useState(config?.start_date ?? '')
+  const startOk = /^\d{4}-\d{2}-\d{2}$/.test(startDate)
   const [account, setAccount] = useState(config?.account_number ?? '')
   const [rate, setRate] = useState(config ? paiseToInput(config.monthly_rate_paise) : '')
   const [ratePaise, setRatePaise] = useState(config?.monthly_rate_paise ?? 0)
@@ -671,11 +741,12 @@ function PlanForm({ config, month, onSaved }: { config: BroadbandConfig | null; 
   const day = parseWhole(dayRaw, 1, 31)
   const [ssid, setSsid] = useState(config?.wifi_ssid ?? '')
   const [notes, setNotes] = useState(config?.notes ?? '')
-  const valid = provider.trim().length > 0 && rateOk && speed.ok && day.ok
+  const valid = startOk && provider.length > 0 && !providerError && rateOk && speed.ok && day.ok
   const save = useMutation(
     () =>
       api.post<BroadbandOverview>(`${BASE}/setup?month=${encodeURIComponent(month)}`, {
-        provider_name: provider.trim(),
+        start_date: startDate,
+        provider_name: provider,
         account_number: account.trim() || null,
         monthly_rate_paise: ratePaise,
         speed_mbps: speed.value,
@@ -685,8 +756,10 @@ function PlanForm({ config, month, onSaved }: { config: BroadbandConfig | null; 
       }),
     { onSuccess: onSaved },
   )
-  return (
+  const formId = useId()
+  const form = (
     <form
+      id={formId}
       className="stack"
       noValidate
       aria-label="Broadband plan"
@@ -697,7 +770,34 @@ function PlanForm({ config, month, onSaved }: { config: BroadbandConfig | null; 
     >
       <ErrorNotice error={save.error} />
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
-        <TextField label="Provider name" required value={provider} onChange={setProvider} maxLength={100} />
+        <DateField
+          label="Connection start date"
+          required
+          value={startDate}
+          onChange={setStartDate}
+          hint="No month before it is billed. The month it began in is billed in full."
+        />
+        <div className="space-y-3">
+          <SelectField
+            label="Provider"
+            required
+            value={providerChoice}
+            options={presets.map((name) => ({ value: name, label: name }))}
+            onChange={setProviderChoice}
+            hint={typingProvider ? undefined : 'Pick Other for an ISP not listed.'}
+          />
+          {typingProvider && (
+            <TextField
+              label="Provider name"
+              required
+              value={otherProvider}
+              onChange={setOtherProvider}
+              maxLength={100}
+              error={providerError}
+              hint="The ISP's name, as on its bill."
+            />
+          )}
+        </div>
         <TextField
           label="Account number"
           value={account}
@@ -716,16 +816,34 @@ function PlanForm({ config, month, onSaved }: { config: BroadbandConfig | null; 
           }}
           hint="What the plan costs a month, taxes included. Split equally."
         />
-        <TextField
-          label="Speed (Mbps)"
-          type="number"
-          min={1}
-          step={1}
-          inputMode="numeric"
-          value={speedRaw}
-          onChange={setSpeedRaw}
-          error={speed.ok ? null : 'Enter a speed in whole Mbps.'}
-        />
+        <div className="space-y-2">
+          <TextField
+            label="Speed (Mbps)"
+            type="number"
+            min={1}
+            step={1}
+            inputMode="numeric"
+            value={speedRaw}
+            onChange={setSpeedRaw}
+            error={speed.ok ? null : 'Enter a speed in whole Mbps.'}
+          />
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Quick speeds">
+            {SPEED_PRESETS.map((mbps) => {
+              const on = speed.value === mbps
+              return (
+                <button
+                  key={mbps}
+                  type="button"
+                  aria-pressed={on}
+                  className={on ? CHOICE_ON : CHOICE_OFF}
+                  onClick={() => setSpeedRaw(String(mbps))}
+                >
+                  {formatSpeed(mbps)}
+                </button>
+              )
+            })}
+          </div>
+        </div>
         <TextField
           label="Due day"
           type="number"
@@ -752,11 +870,34 @@ function PlanForm({ config, month, onSaved }: { config: BroadbandConfig | null; 
         rows={3}
         hint="Where the router is, OTT subscriptions bundled with the plan, the ISP's helpline."
       />
-      <div className="flex justify-end">
-        <button type="submit" className={BUTTON_PRIMARY} disabled={!valid || save.pending}>
-          {save.pending ? 'Saving…' : config ? 'Save plan' : 'Set up broadband'}
-        </button>
-      </div>
+      {!onCancel && (
+        <div className="flex justify-end">
+          <button type="submit" className={BUTTON_PRIMARY} disabled={!valid || save.pending}>
+            {save.pending ? 'Saving…' : 'Set up broadband'}
+          </button>
+        </div>
+      )}
     </form>
+  )
+  if (!onCancel) return form
+  return (
+    <Modal
+      title="Edit Plan & WiFi"
+      description="A new rate moves this month's bill with it; a month whose statement is finalized keeps its own."
+      onClose={onCancel}
+      wide
+      footer={
+        <>
+          <button type="button" className={BUTTON_SECONDARY} onClick={onCancel} disabled={save.pending}>
+            Cancel
+          </button>
+          <button type="submit" form={formId} className={BUTTON_PRIMARY} disabled={!valid || save.pending}>
+            {save.pending ? 'Saving…' : 'Save Changes'}
+          </button>
+        </>
+      }
+    >
+      {form}
+    </Modal>
   )
 }

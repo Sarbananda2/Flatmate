@@ -1967,6 +1967,8 @@ export interface BroadbandConfig {
   monthly_rate_paise: number
   speed_mbps: number | null
   billing_day_of_month: number | null
+  /** The day the connection began, YYYY-MM-DD: no month before it is billed. */
+  start_date: string
   /** The definition each month's bill is recorded under. */
   expense_definition_id: string | null
   /** The WiFi network's name. */
@@ -2006,8 +2008,11 @@ export interface BroadbandMonthBill {
   due_date: string | null
   expense: { expense_id: string; description: string; amount_paise: number; statement_id: string | null } | null
   statement_status: StatementStatus | null
-  /** 'live': billed, following the plan; 'frozen': its snapshot; 'upcoming': not begun; 'not_billed'. */
-  bill_state: 'live' | 'frozen' | 'upcoming' | 'not_billed'
+  /**
+   * 'live': billed, following the plan; 'frozen': its snapshot; 'upcoming': not
+   * begun; 'not_billed'; 'before_start': before the connection began, so no bill.
+   */
+  bill_state: 'live' | 'frozen' | 'upcoming' | 'not_billed' | 'before_start'
   /** Whether a payment or payout recorded by mistake can still be deleted. */
   transactions_open: boolean
   collected_paise: number
@@ -2026,6 +2031,10 @@ export interface BroadbandOverview {
   config: BroadbandConfig | null
   month: BroadbandMonthBill | null
   next_billing_date: string | null
+  /** False for a month before the connection began: it has no bill. */
+  active_in_month: boolean
+  /** The ISPs offered by name, in order; the last, 'Other', is the choice to type one. */
+  provider_presets: string[]
 }
 
 /* ------------------------------------------------------------- house help -- */

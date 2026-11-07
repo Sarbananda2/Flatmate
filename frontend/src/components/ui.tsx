@@ -21,6 +21,12 @@ export const BUTTON_SECONDARY =
 export const BUTTON_QUIET =
   'inline-flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap rounded-lg border border-blue-500/20 bg-blue-500/10 hover:bg-blue-500/20 px-3 py-1.5 text-xs font-semibold text-blue-500 no-underline transition-colors cursor-pointer'
 
+/** A quick choice the operator can pick with one tap; `aria-pressed` says which is picked. */
+export const CHOICE_ON =
+  'rounded-full border border-[var(--accent)] bg-[var(--accent-glow)] px-3 py-1 text-xs font-semibold text-[var(--text-primary)] cursor-pointer transition-colors'
+export const CHOICE_OFF =
+  'rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer transition-colors'
+
 export function Panel({
   title,
   hint,

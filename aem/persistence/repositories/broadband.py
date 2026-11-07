@@ -16,7 +16,8 @@ SERVICE_TYPE = "broadband"
 #: Plan columns a caller may change. Anything else is refused, so no
 #: caller-supplied name ever reaches the SQL.
 CONFIG_COLUMNS = ("provider_name", "account_number", "monthly_rate_paise", "speed_mbps",
-                  "billing_day_of_month", "expense_definition_id", "wifi_ssid", "notes")
+                  "billing_day_of_month", "start_date", "expense_definition_id", "wifi_ssid",
+                  "notes")
 
 
 class BroadbandRepository(Repository):

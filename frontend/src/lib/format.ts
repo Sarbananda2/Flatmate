@@ -223,6 +223,11 @@ export function shiftMonth(month: string, delta: number): string {
   return `${String(year).padStart(4, '0')}-${String(monthNumber).padStart(2, '0')}`
 }
 
+/** An internet plan's speed: whole gigabits as Gbps, anything else in Mbps. */
+export function formatSpeed(mbps: number): string {
+  return mbps >= 1000 && mbps % 1000 === 0 ? `${mbps / 1000} Gbps` : `${mbps} Mbps`
+}
+
 /** Hours remaining, phrased for a person. */
 export function formatHoursRemaining(hours: number): string {
   if (hours <= 0) return 'expired'

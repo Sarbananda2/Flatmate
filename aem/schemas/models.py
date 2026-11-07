@@ -1375,6 +1375,10 @@ class BroadbandSetupRequest(ApiModel):
     speed_mbps: int | None = Field(None, ge=1, le=100_000, description="The plan's speed.")
     billing_day_of_month: int | None = Field(None, ge=1, le=31,
                                              description="The day the ISP's bill is due.")
+    start_date: str | None = Field(None, pattern=DATE_PATTERN,
+                                   description="The day the connection began, YYYY-MM-DD: "
+                                               "required to set broadband up. No month "
+                                               "before it is billed.")
     wifi_ssid: str | None = Field(None, max_length=32,
                                   description="The WiFi network's name. No password is kept.")
     notes: str | None = Field(None, max_length=2000,

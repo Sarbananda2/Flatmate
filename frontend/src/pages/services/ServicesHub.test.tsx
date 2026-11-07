@@ -414,6 +414,7 @@ describe('ServicesHub', () => {
       {
         service: { service_id: 'svc-b', service_type: 'broadband', display_name: 'Broadband & WiFi' },
         config: { provider_name: 'Airtel Xstream Fiber', monthly_rate_paise: 117900, speed_mbps: 200 },
+        active_in_month: true,
         month: {
           due_date: '2026-10-05',
           expense: { expense_id: 'broadband-1', amount_paise: 117900 },
@@ -430,6 +431,36 @@ describe('ServicesHub', () => {
     expect(fact(card, 'Due date')).toHaveTextContent('5 Oct 2026')
     expect(fact(card, 'Kitty collection')).toHaveTextContent('1 of 3 covered')
     expect(within(card).getByRole('link', { name: 'Open Broadband' })).toHaveAttribute('href', '/services/broadband')
+  })
+
+  it('says from when broadband is billed for a month before its connection began', async () => {
+    renderHub(
+      { rent: { config: null, cycle: null }, electricity: { bill: null, bills_for_month: 0, latest_bill: null } },
+      noDeposits,
+      noRooms,
+      noContacts,
+      noDocuments,
+      noFurniture,
+      noWater,
+      noHouseHelp,
+      {
+        service: { service_id: 'svc-b', service_type: 'broadband', display_name: 'Broadband & WiFi' },
+        config: {
+          provider_name: 'JioFiber',
+          monthly_rate_paise: 117900,
+          speed_mbps: 1000,
+          start_date: '2026-12-15',
+        },
+        active_in_month: false,
+        month: { due_date: null, expense: null, collected_count: 0, shares: [] },
+        next_billing_date: '2027-01-05',
+      },
+    )
+    const card = screen.getByRole('region', { name: 'Broadband & WiFi' })
+    expect(await within(card).findByText('JioFiber')).toBeInTheDocument()
+    expect(fact(card, 'Plan')).toHaveTextContent('₹1,179.00/mo · 1 Gbps')
+    expect(fact(card, 'Connection')).toHaveTextContent('From 15 Dec 2026')
+    expect(within(card).queryByText('Kitty collection')).toBeNull()
   })
 
   it('offers to set up broadband when there is none', async () => {

@@ -43,6 +43,8 @@ import {
   BUTTON_PRIMARY,
   BUTTON_QUIET,
   BUTTON_SECONDARY,
+  CHOICE_OFF,
+  CHOICE_ON,
   EmptyBlock,
   MiniStat,
   Panel,
@@ -1666,11 +1668,6 @@ function flatmateRooms(flatmates: Resident[]): Array<{ residentId: string; label
     return { residentId: person.resident_id, label: `${shared ? person.display_name.trim() : first(person)}'s Room` }
   })
 }
-
-const CHOICE_ON =
-  'rounded-full border border-[var(--accent)] bg-[var(--accent-glow)] px-3 py-1 text-xs font-semibold text-[var(--text-primary)] cursor-pointer transition-colors'
-const CHOICE_OFF =
-  'rounded-full border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)] cursor-pointer transition-colors'
 
 /** One question of the builder: its quick choices, then whatever it needs typed. */
 function RoleQuestion({

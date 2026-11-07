@@ -32,6 +32,8 @@ MONTH = "2026-11"
 #: ₹1,179 a month: ₹393 each for Alice, Bob and Chris.
 RATE = 117_900
 SHARE = 39_300
+#: The connection began on 1 November 2026, the month most tests are in.
+START = "2026-11-01"
 
 
 @pytest.fixture()
@@ -51,7 +53,8 @@ def _rows(db, sql, params=()):
 
 def _setup(db, **payload):
     return broadband.setup_broadband(db, APARTMENT, {"monthly_rate_paise": RATE,
-                                                     "billing_day_of_month": 5, **payload})
+                                                     "billing_day_of_month": 5,
+                                                     "start_date": START, **payload})
 
 
 def _month(db, month=MONTH):
@@ -113,10 +116,11 @@ def test_the_plan_is_set_up_with_its_connection_details(apartment, clock):
         "broadband", "Broadband & WiFi")
     config = overview["config"]
     assert (config["provider_name"], config["account_number"], config["monthly_rate_paise"],
-            config["speed_mbps"], config["billing_day_of_month"], config["wifi_ssid"],
-            config["notes"]) == (
-        "Airtel Xstream Fiber", "AX-2048-7731", RATE, 200, 5, "Capetown-1805",
+            config["speed_mbps"], config["billing_day_of_month"], config["start_date"],
+            config["wifi_ssid"], config["notes"]) == (
+        "Airtel Xstream Fiber", "AX-2048-7731", RATE, 200, 5, START, "Capetown-1805",
         "Router in the living room; Disney+ bundled")
+    assert overview["active_in_month"] is True
     assert overview["next_billing_date"] == "2026-11-05"
     definition = _rows(apartment, "SELECT * FROM expense_definition WHERE expense_definition_id=%s",
                        (config["expense_definition_id"],))[0]
@@ -137,9 +141,139 @@ def test_the_plan_is_set_up_with_its_connection_details(apartment, clock):
         {"provider_name": "ACT Fibernet"}]
 
     for bad in ({"billing_day_of_month": 32}, {"speed_mbps": 0}, {"wifi_ssid": "x" * 33},
-                {"monthly_rate_paise": -1}):
+                {"monthly_rate_paise": -1}, {"start_date": "2026-02-30"},
+                {"start_date": "1 Nov 2026"}):
         with pytest.raises(ValidationError):
             _setup(apartment, **bad)
+
+
+def test_broadband_is_set_up_from_the_day_its_connection_began(apartment, clock):
+    with pytest.raises(ValidationError) as refused:
+        broadband.setup_broadband(apartment, APARTMENT, {"monthly_rate_paise": RATE})
+    assert refused.value.details["field"] == "start_date"
+    assert broadband.get_overview(apartment, APARTMENT, MONTH)["service"] is None
+    _setup(apartment, start_date="2026-11-20")
+    # Changing the plan keeps the start, unless one is sent.
+    again = broadband.setup_broadband(apartment, APARTMENT, {"speed_mbps": 300})
+    assert (again["config"]["start_date"], again["config"]["speed_mbps"]) == ("2026-11-20", 300)
+    # The month it began in is billed in full: nothing prorates.
+    assert _shares(_month(apartment)) == {"alice": SHARE, "bob": SHARE, "chris": SHARE}
+
+
+def test_no_month_before_the_connection_began_is_billed(apartment, clock):
+    overview = _setup(apartment, start_date="2026-12-15")
+    # November, this month, is before it: no bill, and nobody owes anything.
+    november = overview["month"]
+    assert overview["active_in_month"] is False
+    assert (november["bill_state"], november["expense"], november["total_paise"],
+            november["shares"], november["blocked_reason"]) == (
+        "before_start", None, 0, [],
+        "Broadband started on 15 December 2026, so November 2026 has no broadband bill.")
+    assert broadband.get_overview(apartment, APARTMENT, "2026-10")["active_in_month"] is False
+    assert _rows(apartment, "SELECT 1 FROM expense_instance") == []
+    # The first bill due is after it began: 5 January, not 5 December.
+    assert overview["next_billing_date"] == "2027-01-05"
+    with pytest.raises(ConflictError) as refused:
+        _pay_in(apartment, "alice", SHARE)
+    assert refused.value.code == "broadband_not_active"
+
+    # December, the month it began in, bills in full once it has begun.
+    clock["now"] = "2026-12-16T09:00:00+05:30"
+    december = broadband.get_overview(apartment, APARTMENT, "2026-12")
+    assert december["active_in_month"] is True
+    assert (december["month"]["bill_state"], _shares(december["month"])) == (
+        "live", {"alice": SHARE, "bob": SHARE, "chris": SHARE})
+    assert _month(apartment)["expense"] is None
+    assert [row["settlement_period"] for row in _rows(
+        apartment, "SELECT settlement_period FROM expense_instance")] == ["2026-12"]
+
+
+def test_the_connection_is_moved_to_begin_later_only_while_its_bills_can_follow(
+        apartment, clock):
+    _setup(apartment)
+    assert _month(apartment)["expense"] is not None
+    # November's bill, open and unpaid, goes when the connection begins after it...
+    later = _setup(apartment, start_date="2026-12-01")
+    assert (later["active_in_month"], later["month"]["bill_state"]) == (False, "before_start")
+    assert _rows(apartment, "SELECT 1 FROM expense_instance") == []
+    # ... and comes back when it begins in November again.
+    assert _setup(apartment)["month"]["bill_state"] == "live"
+
+    # Paid towards, it stays, and so does the start.
+    _pay_in(apartment, "alice", SHARE)
+    with pytest.raises(ConflictError) as refused:
+        _setup(apartment, start_date="2026-12-01")
+    assert refused.value.code == "broadband_bill_has_payments"
+    assert broadband.get_overview(apartment, APARTMENT, MONTH)["config"]["start_date"] == START
+
+    # Finalized, it is November's for good.
+    clock["now"] = "2026-12-02T09:00:00+05:30"
+    statement = statements.create_monthly_statement(apartment, apartment_id=APARTMENT,
+                                                    settlement_month=MONTH)
+    statements.finalize_statement(apartment, statement_id=statement, finalized_by="operator",
+                                  require_clean=False)
+    with pytest.raises(ConflictError) as refused:
+        _setup(apartment, start_date="2026-12-01")
+    assert refused.value.code == "broadband_start_after_billed_month"
+    assert _month(apartment)["bill_state"] == "frozen"
+
+
+def test_migration_0039_starts_a_plan_on_file_no_later_than_its_first_bill(database_factory):
+    db = database_factory(migrated=False)
+    db.migrate(target_version=38)
+    stamp = "2026-11-07T09:00:00+05:30"
+    with connect(db, as_owner=True) as conn:
+        # Two flats: one billed under its definition before it was set up, one not.
+        plans = ((APARTMENT, "svc-billed", "broadband"), ("other", "svc-new", "internet"))
+        for flat, service_id, definition_id in plans:
+            conn.execute(
+                "INSERT INTO apartment (apartment_id, name, created_at) VALUES (%s,%s,%s)",
+                (flat, flat.title(), stamp))
+            conn.execute(
+                """INSERT INTO expense_definition (expense_definition_id, apartment_id, name,
+                       category, period_rule, default_allocation_method)
+                   VALUES (%s,%s,%s,'Utilities','current_month','equal')""",
+                (definition_id, flat, definition_id.title()))
+            conn.execute(
+                """INSERT INTO household_service (service_id, apartment_id, service_type,
+                       display_name, created_at, updated_at)
+                   VALUES (%s,%s,'broadband','Broadband & WiFi',%s,%s)""",
+                (service_id, flat, stamp, stamp))
+            conn.execute(
+                """INSERT INTO broadband_service_config (service_id, apartment_id,
+                       expense_definition_id, created_at, updated_at)
+                   VALUES (%s,%s,%s,%s,%s)""", (service_id, flat, definition_id, stamp, stamp))
+        # Set up in November, with October already billed under its definition.
+        conn.execute(
+            """INSERT INTO expense_instance (expense_id, expense_definition_id, description,
+                   amount_paise, expense_date, expense_period, created_at, settlement_period,
+                   apartment_id)
+               VALUES ('broadband-oct','broadband','Broadband for October 2026',117900,
+                       '2026-10-05','2026-10',%s,'2026-10',%s)""", (stamp, APARTMENT))
+    db.migrate()
+    assert {row["service_id"]: row["start_date"] for row in _rows(
+        db, "SELECT service_id, start_date FROM broadband_service_config")} == {
+        "svc-billed": "2026-10-01", "svc-new": "2026-11-07"}
+
+
+def test_the_isp_is_one_of_the_listed_ones_or_named(apartment, clock):
+    listed = ["Airtel Xstream Fiber", "JioFiber", "ACT Fibernet", "Tata Play Fiber", "Excitel",
+              "Other"]
+    # Offered before the plan is set up, to set it up with, and after.
+    assert broadband.get_overview(apartment, APARTMENT, MONTH)["provider_presets"] == listed
+    # A listed ISP keeps its own spelling, however it was typed.
+    overview = _setup(apartment, provider_name="  jiofiber ")
+    assert (overview["config"]["provider_name"], overview["provider_presets"]) == (
+        "JioFiber", listed)
+    assert _setup(apartment, provider_name="Hathway")["config"]["provider_name"] == "Hathway"
+    # "Other" is the choice to name one, not a name.
+    for unnamed in ("Other", " other "):
+        with pytest.raises(ValidationError) as refused:
+            _setup(apartment, provider_name=unnamed)
+        assert refused.value.code == "broadband_provider_unnamed"
+    assert _month(apartment)["expense"] is not None
+    assert _rows(apartment, "SELECT provider_name FROM expense_instance") == [
+        {"provider_name": "Hathway"}]
 
 
 def test_the_households_own_broadband_definition_is_used(apartment, clock):
@@ -401,9 +535,11 @@ def api(apartment):
 
 def test_broadband_over_http(api, clock):
     base = "/api/services/broadband"
-    assert api.get(base, params={"month": MONTH}).json()["service"] is None
+    before = api.get(base, params={"month": MONTH}).json()
+    assert (before["service"], before["provider_presets"][0]) == (None, "Airtel Xstream Fiber")
     setup = api.post(f"{base}/setup", params={"month": MONTH}, json={
-        "monthly_rate_paise": RATE, "billing_day_of_month": 5, "speed_mbps": 200,
+        "monthly_rate_paise": RATE, "billing_day_of_month": 5, "start_date": START,
+        "speed_mbps": 200,
         "account_number": "AX-2048-7731", "wifi_ssid": "Capetown-1805"})
     assert setup.status_code == 200, setup.text
     assert setup.json()["config"]["speed_mbps"] == 200
@@ -444,7 +580,9 @@ def test_broadband_over_http(api, clock):
     assert api.delete(f"{base}/payments/{payment_id}").status_code == 404
     assert api.delete(f"{base}/disbursements/svcdisb_nope").status_code == 404
 
-    for bad in ({"billing_day_of_month": 32}, {"speed_mbps": 0}, {"wifi_ssid": "x" * 33}):
+    for bad in ({"billing_day_of_month": 32}, {"speed_mbps": 0}, {"wifi_ssid": "x" * 33},
+                {"provider_name": "Other"}, {"start_date": "2026-02-30"},
+                {"start_date": "01/11/2026"}):
         assert api.post(f"{base}/setup", json=bad).status_code == 422
     assert api.post(f"{base}/disburse-payout", json={
         "settlement_month": MONTH, "disbursement_mode": "pool",

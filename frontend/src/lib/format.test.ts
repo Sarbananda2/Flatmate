@@ -16,6 +16,7 @@ import {
   formatInr,
   formatMonth,
   formatMonthShort,
+  formatSpeed,
   paiseToInput,
   parseKwh,
   parseRupees,
@@ -143,6 +144,15 @@ describe('period helpers', () => {
     expect(shiftMonth('2026-12', 1)).toBe('2027-01')
     expect(shiftMonth('2026-09', -1)).toBe('2026-08')
     expect(shiftMonth('2026-09', 0)).toBe('2026-09')
+  })
+})
+
+describe('formatSpeed', () => {
+  it('names whole gigabits in Gbps and every other speed in Mbps', () => {
+    expect(formatSpeed(40)).toBe('40 Mbps')
+    expect(formatSpeed(1000)).toBe('1 Gbps')
+    expect(formatSpeed(1500)).toBe('1500 Mbps')
+    expect(formatSpeed(10000)).toBe('10 Gbps')
   })
 })
 
