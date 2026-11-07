@@ -145,11 +145,19 @@ an agreed exception. You review the full calculation before committing it.
 
 ### Housing & Utilities
 
-One hub (`/services`) for the household's recurring services. Rent and
-electricity are live, each with a card summarising the selected settlement
-month and a link to its own screen; water, cooking gas, broadband and house
-help are shown as planned. The rent and electricity screens live under it at
-`/services/rent`, `/services/rent/config` and `/services/electricity`.
+One hub (`/services`) for the household's recurring services. Rent,
+electricity, furniture rental, water supply, household staff and broadband &
+WiFi are live, each with a card summarising the selected settlement month and a
+link to its own screen; cooking gas is shown as planned. Their screens live
+under it at `/services/rent`, `/services/electricity`, `/services/furniture`,
+`/services/water`, `/services/househelp` and `/services/broadband`.
+
+Broadband & WiFi keeps the flat's ISP plan: the provider, account number,
+speed, due day, the day the connection began, and the WiFi network's name (never
+its password). Each month from the one the connection began in is billed the
+plan's fixed rate, split equally between the flatmates; they pay their shares
+into the House Kitty, and the ISP is paid from it, or by a flatmate whom the
+kitty pays back.
 
 ### Rent management
 
